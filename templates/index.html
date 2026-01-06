@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuickScribe - AI Transcription</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <div class="main-container">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo" class="logo">
+        
+        <h1>Transcription made simple.</h1>
+        <p class="subtitle">Fast, accurate AI transcription for your audio and meetings.</p>
+
+        <div class="feature-box upload-zone" id="drop-zone">
+            <p>Drag & Drop audio files here</p>
+            <span>or</span>
+            <input type="file" id="fileInput" hidden>
+            <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Browse Files</button>
+            <p id="upload-status"></p>
+        </div>
+
+        <div class="feature-box zoom-zone">
+            <p>Want automatic meeting notes?</p>
+            <a href="/zoom/login" class="btn btn-secondary zoom-btn">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                Connect Zoom Account
+            </a>
+        </div>
+
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const statusTxt = document.getElementById('upload-status');
+
+        fileInput.addEventListener('change', async function() {
+            const file = this.files[0];
+            if (!file) return;
+
+            statusTxt.innerText = "Uploading " + file.name + "...";
+            
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                // שליחת הקובץ לשרת הפייתון שלנו
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                if(response.ok) {
+                    statusTxt.innerText = "Done! " + result.message;
+                    statusTxt.style.color = "green";
+                } else {
+                    statusTxt.innerText = "Error: " + result.error;
+                }
+            } catch (error) {
+                statusTxt.innerText = "Upload failed.";
+                console.error('Error:', error);
+            }
+        });
+    </script>
+
+</body>
+</html>
