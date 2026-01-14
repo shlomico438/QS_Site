@@ -1,4 +1,4 @@
-/* Navigation Bar - Stays at the top */
+/* --- Keep your existing Navigation Styles --- */
 .navbar {
     background: #ffffff;
     border-bottom: 1px solid #f0f0f0;
@@ -9,26 +9,23 @@
     z-index: 1000;
 }
 
-/* Flexbox puts the logo on left and menu on right */
 .nav-container {
     max-width: 1200px;
     margin: 0 auto;
     display: flex;
-    justify-content: space-between; /* This creates the professional gap */
+    justify-content: space-between;
     align-items: center;
     padding: 0 40px;
 }
 
-/* Make the brand name look like a designed logo */
 .nav-logo {
     font-size: 1.6rem;
     font-weight: 800;
-    color: #4f46e5; /* Indigo Tech color */
+    color: #4f46e5;
     text-decoration: none;
-    letter-spacing: -1.5px; /* Modern tight spacing */
+    letter-spacing: -1.5px;
 }
 
-/* Remove default link styling for menu items */
 .nav-item {
     margin-left: 35px;
     text-decoration: none;
@@ -39,22 +36,57 @@
     position: relative;
 }
 
-/* Graphic underline effect on hover */
-.nav-item:hover {
-    color: #4f46e5;
-}
-
+.nav-item:hover { color: #4f46e5; }
 .nav-item::after {
-    content: '';
-    position: absolute;
-    width: 0;
-    height: 2px;
-    bottom: -5px;
-    left: 0;
-    background-color: #4f46e5;
-    transition: width 0.3s;
+    content: ''; position: absolute; width: 0; height: 2px;
+    bottom: -5px; left: 0; background-color: #4f46e5; transition: width 0.3s;
+}
+.nav-item:hover::after { width: 100%; }
+
+/* --- NEW: Page Alignment & Content Styling --- */
+
+/* This centers everything on the page */
+.main-container {
+    max-width: 900px;
+    margin: 60px auto; /* This creates the professional centered look */
+    text-align: center; /* Centers text and images */
+    padding: 0 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
-.nav-item:hover::after {
+/* Style for the Hero section (Home Page) */
+h1 {
+    font-size: 2.5rem;
+    font-weight: 800;
+    margin: 20px 0;
+    color: #111827;
+}
+
+.subtitle {
+    font-size: 1.1rem;
+    color: #6b7280;
+    margin-bottom: 40px;
+}
+
+/* Style for About/Blog/Contact headers to be left-aligned in centered container */
+.about-page, .blog-container, .contact-page {
+    text-align: left;
     width: 100%;
+}
+
+/* Professional Footer Styling */
+.footer {
+    margin-top: 100px;
+    padding: 40px 0;
+    border-top: 1px solid #f0f0f0;
+    color: #9ca3af;
+    font-size: 0.9rem;
+}
+
+.footer-links a {
+    color: #4f46e5;
+    text-decoration: none;
+    margin: 0 10px;
 }

@@ -1,14 +1,15 @@
-<!DOCTYPE html>
-<html>
-<head><title>About Us | QuickScribe</title></head>
-<body>
-    <nav><a href="/">Home</a> | <a href="/about">About</a> | <a href="/blog">Blog</a> | <a href="/contact">Contact</a></nav>
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-container about-page">
     <h1>About QuickScribe</h1>
-    <p>QuickScribe is an AI-native transcription platform built for high-context languages. 
-	<p>We solve the failure of voice to text models in noisy environments through specialized acoustic pre-processing.</p>
+    <p>QuickScribe is an AI-native transcription platform built for high-context languages.</p>
+    <p>We solve the failure of voice-to-text models in noisy environments through specialized acoustic pre-processing.</p>
     
+    <hr>
+
     <h2>The Team</h2>
-    <p><strong>Shlomi Cohen, Founder & CEO:</strong> 
-	<p>A Voice AI veteran with deep expertise in adapting speech technology for global markets</p>
-</body>
-</html>
+    <p><strong>Shlomi Cohen, Founder & CEO:</strong></p>
+    <p>A Voice AI veteran with deep expertise in adapting speech technology for global markets.</p>
+</div>
+{% endblock %}

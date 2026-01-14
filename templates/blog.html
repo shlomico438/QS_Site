@@ -1,70 +1,30 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QuickScribe Blog | Engineering & Vision</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-    <style>
-        .blog-post { margin-bottom: 60px; line-height: 1.6; }
-        .post-meta { color: #888; font-size: 0.9rem; margin-bottom: 15px; }
-        .blog-container { max-width: 800px; margin: 40px auto; padding: 0 20px; }
-        h2 { color: #333; margin-top: 0; }
-        hr { border: 0; border-top: 1px solid #eee; margin: 40px 0; }
-    </style>
-</head>
-<body>
+{% extends "base.html" %}
 
-    <header class="navbar">
-        <div class="nav-container">
-            <a href="/" class="nav-logo">QuickScribe</a>
-            <nav>
-                <a href="/about">About Us</a>
-                <a href="/blog">Blog</a>
-                <a href="/contact">Contact</a>
-            </nav>
-        </div>
-    </header>
+{% block content %}
+<div class="blog-container">
+    <h1>Insights & Engineering</h1>
+    <p class="subtitle">Exploring the frontier of specialized AI transcription.</p>
+    <hr>
 
-    <div class="blog-container">
-        <h1>Insights & Engineering</h1>
-        <p class="subtitle">Exploring the frontier of specialized AI transcription.</p>
-        <hr>
+    <article class="blog-post">
+        <p class="post-meta">January 13, 2026 | By Shlomi Cohen, Founder</p>
+        <h2>The Spark: Why I Built QuickScribe</h2>
+        <p>The idea for QuickScribe didn't start in a lab; it started with my sister-in-law, Dr. Sarit Barzilay. While writing her latest book, she was interviewing subjects via Zoom and relying on standard AI tools for transcription. She mentioned the results were so poor that she actually had to hire human editors to fix the mistakes manually.</p>
+        <p>In 2025, with all our AI capabilities, I found it hard to believe that professional-grade transcription was still this unreliable. After searching the market and finding only generic, one-size-fits-all solutions, I decided to leverage my experience in Voice AI and Cloud Architecture to build a platform that actually works for high-stakes, real-world audio.</p>
+    </article>
 
-        <article class="blog-post">
-            <p class="post-meta">January 13, 2026 | By Shlomi Cohen, Founder</p>
-            <h2>The Spark: Why I Built QuickScribe</h2>
-            <p>The idea for QuickScribe didn't start in a lab; it started with my sister-in-law Dr Sarit Barzilay. While writing her latest book, she was interviewing subjects via Zoom and relying on standard AI tools for transcription. She mentioned the results were so poor that she had to hire human editors to fix the mistakes manually.</p>
-            <p>In 2025, with all our AI capabilities, I found it hard to believe that professional-grade transcription was still this unreliable. After searching the market and finding only generic, one-size-fits-all solutions, I decided to leverage my experience in Voice AI and Cloud Architecture to build a platform that actually works for high-stakes, real-world audio.</p>
-        </article>
+    <article class="blog-post">
+        <p class="post-meta">Technical Deep Dive | Intelligent Routing</p>
+        <h2>Overcoming the 'Curse of Multilinguality'</h2>
+        <p>Most standard transcription APIs rely on massive models trained on dozens of languages simultaneously. However, research in neural acoustics confirms a challenge known as the <strong>'Curse of Multilinguality.'</strong> As a model's linguistic scope expands, its neural capacity is diluted, leading to a plateau in accuracy for any single language. By forcing a model to share its parameters across vastly different phonetics, the nuances of specific languages often get lost.</p>
+        <p>QuickScribe solves this through a <strong>Dual-Stage Routing strategy</strong>. We use a high-speed detection layer to identify the audio's language, then dynamically route the task to a <strong>Language-Specific Expert Module</strong>. By utilizing specialized engines rather than generalist models, we eliminate accuracy trade-offs and deliver precision that generic platforms cannot match.</p>
+    </article>
 
-        <article class="blog-post">
-            <p class="post-meta">Technical Deep Dive | Intelligent Routing</p>
-            <h2>Overcoming the 'Curse of Multilinguality'</h2>
-            <p>Most standard transcription APIs rely on massive models trained on dozens of languages simultaneously. However, research confirms a challenge known as the <strong>'Curse of Multilinguality.'</strong> As a model's linguistic scope expands, its neural capacity is diluted, leading to a plateau in accuracy for any single language.</p>
-            <p>QuickScribe solves this through a Dual-Stage Routing strategy. We use a high-speed detection layer to identify the audio's language, then dynamically route the task to a <strong>Language-Specific Expert Module</strong>. By utilizing specialized engines rather than generalist models, we eliminate accuracy trade-offs and deliver precision that generic platforms cannot match.</p>
-        </article>
-
-        
-
-        <article class="blog-post">
-            <p class="post-meta">Engineering Excellence | Signal Processing</p>
-            <h2>Advanced Signal Enhancement for Real-World Audio</h2>
-            <p>Accuracy isn't just about the model; it’s about the input quality. In real-world scenarios—lecture halls, noisy offices, or calls with poor microphones—environmental hum and reverberation act as 'noise floors' that confuse AI transformers.</p>
-            <p>We treat the audio before it ever reaches the core engine. QuickScribe utilizes a proprietary <strong>Environment Adaptation layer</strong> that applies advanced Digital Signal Processing (DSP) algorithms to isolate human speech from interference. By enhancing the vocal signal-to-noise ratio, our models focus entirely on linguistic content, ensuring high precision even in suboptimal acoustic conditions.</p>
-        </article>
-
-    </div>
-
-    <footer class="footer">
-        <div class="footer-content">
-            <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
-            <div class="footer-links">
-                <a href="/contact">Support</a> | <a href="https://linkedin.com/company/quickscribe">LinkedIn</a>
-            </div>
-        </div>
-    </footer>
-
-</body>
-</html>
+    <article class="blog-post">
+        <p class="post-meta">Engineering Excellence | Signal Processing</p>
+        <h2>Advanced Signal Enhancement for Real-World Audio</h2>
+        <p>Accuracy isn't just about the model; it’s about the input quality. In real-world scenarios—lecture halls, noisy offices, or calls with poor microphones—environmental hum and reverberation act as 'noise floors' that confuse AI transformers. Laboratory-grade models often fail when faced with these unpredictable acoustic variables.</p>
+        <p>We treat the audio before it ever reaches the core engine. QuickScribe utilizes a proprietary <strong>Environment Adaptation layer</strong> that applies advanced Digital Signal Processing (DSP) algorithms to isolate human speech from interference. By enhancing the vocal signal-to-noise ratio, our models focus entirely on linguistic content, ensuring high precision even in suboptimal acoustic conditions while maintaining high operational efficiency.</p>
+    </article>
+</div>
+{% endblock %}
