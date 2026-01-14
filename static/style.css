@@ -1,102 +1,60 @@
-/* איפוס הגדרות בסיסי */
-body, html {
-    margin: 0;
-    padding: 0;
-    font-family: 'Inter', sans-serif;
-    background-color: #ffffff;
-    height: 100%;
-    color: #202124; /* צבע טקסט כהה של גוגל */
-}
-
-/* מירכוז התוכן לאמצע המסך */
-.main-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 90vh;
-    padding: 20px;
-    text-align: center;
-}
-
-.logo {
-    height: 80px; /* גודל לוגו */
-    margin-bottom: 20px;
-}
-
-h1 {
-    font-size: 2.5rem;
-    font-weight: 700;
-    margin-bottom: 10px;
-}
-
-.subtitle {
-    font-size: 1.1rem;
-    color: #5f6368; /* אפור של גוגל */
-    margin-bottom: 40px;
-}
-
-/* עיצוב הקופסאות */
-.feature-box {
-    background: #fff;
-    border: 1px solid #dfe1e5;
-    border-radius: 12px;
-    padding: 30px;
+/* Navigation Bar - Stays at the top */
+.navbar {
+    background: #ffffff;
+    border-bottom: 1px solid #f0f0f0;
+    padding: 1.2rem 0;
     width: 100%;
-    max-width: 480px; /* רוחב מקסימלי כמו תיבת חיפוש */
-    margin-bottom: 20px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    transition: all 0.2s ease;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
 }
 
-.upload-zone {
-    border: 2px dashed #dfe1e5;
-    background-color: #f8f9fa;
-}
-.upload-zone:hover {
-    border-color: #9b5de5; /* סגול מהלוגו */
-}
-
-/* כפתורים */
-.btn {
-    padding: 12px 24px;
-    border-radius: 30px;
-    font-weight: 600;
-    cursor: pointer;
-    border: none;
-    font-size: 1rem;
-    transition: transform 0.1s;
-    display: inline-flex;
+/* Flexbox puts the logo on left and menu on right */
+.nav-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between; /* This creates the professional gap */
     align-items: center;
-    gap: 10px;
+    padding: 0 40px;
+}
+
+/* Make the brand name look like a designed logo */
+.nav-logo {
+    font-size: 1.6rem;
+    font-weight: 800;
+    color: #4f46e5; /* Indigo Tech color */
     text-decoration: none;
-}
-.btn:active { transform: scale(0.98); }
-
-/* כפתור ראשי - הגרדיאנט של הלוגו שלך */
-.btn-primary {
-    background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%); /* סגול לכחול/טורקיז */
-    color: white;
-    margin-top: 15px;
+    letter-spacing: -1.5px; /* Modern tight spacing */
 }
 
-/* כפתור משני לזום */
-.btn-secondary {
-    background-color: #f1f3f4;
-    color: #202124;
-    border: 1px solid transparent;
-}
-.btn-secondary:hover {
-    background-color: #e8eaed;
-    border-color: #dadce0;
-}
-
-.zoom-btn svg {
-    color: #2D8CFF; /* כחול של זום */
+/* Remove default link styling for menu items */
+.nav-item {
+    margin-left: 35px;
+    text-decoration: none;
+    color: #374151;
+    font-weight: 600;
+    font-size: 0.95rem;
+    transition: all 0.3s ease;
+    position: relative;
 }
 
-#upload-status {
-    margin-top: 15px;
-    font-size: 0.9rem;
-    color: #5f6368;
+/* Graphic underline effect on hover */
+.nav-item:hover {
+    color: #4f46e5;
+}
+
+.nav-item::after {
+    content: '';
+    position: absolute;
+    width: 0;
+    height: 2px;
+    bottom: -5px;
+    left: 0;
+    background-color: #4f46e5;
+    transition: width 0.3s;
+}
+
+.nav-item:hover::after {
+    width: 100%;
 }
