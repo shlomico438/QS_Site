@@ -9,11 +9,22 @@
 </head>
 <body>
 
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="/" class="nav-logo">QuickScribe</a>
+            <nav>
+                <a href="/about">About Us</a>
+                <a href="/blog">Engineering Blog</a>
+                <a href="/contact">Contact</a>
+            </nav>
+        </div>
+    </header>
+
     <div class="main-container">
         <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo" style="width: 350px; height: auto; margin-bottom: 20px;" class="logo">
         
         <h1>Transcription made simple.</h1>
-        <p class="subtitle">Fast, accurate AI transcription for your audio and meetings.</p>
+        <p class="subtitle">Precision AI transcription for high-context languages and noisy environments.</p>
 
         <div class="feature-box upload-zone" id="drop-zone">
             <p>Drag & Drop audio files here</p>
@@ -30,8 +41,17 @@
                 Connect Zoom Account
             </a>
         </div>
-
     </div>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
+            <div class="footer-links">
+                <a href="/contact">Support</a> | 
+                <a href="https://linkedin.com/company/quickscribe">LinkedIn</a>
+            </div>
+        </div>
+    </footer>
 
     <script>
         const fileInput = document.getElementById('fileInput');
@@ -42,12 +62,12 @@
             if (!file) return;
 
             statusTxt.innerText = "Uploading " + file.name + "...";
+            statusTxt.style.color = "inherit";
             
             const formData = new FormData();
             formData.append('file', file);
 
             try {
-                // שליחת הקובץ לשרת הפייתון שלנו
                 const response = await fetch('/api/upload', {
                     method: 'POST',
                     body: formData
@@ -58,9 +78,11 @@
                     statusTxt.style.color = "green";
                 } else {
                     statusTxt.innerText = "Error: " + result.error;
+                    statusTxt.style.color = "red";
                 }
             } catch (error) {
                 statusTxt.innerText = "Upload failed.";
+                statusTxt.style.color = "red";
                 console.error('Error:', error);
             }
         });
