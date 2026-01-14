@@ -44,6 +44,7 @@
 </div>
 
 <script>
+
     document.addEventListener('DOMContentLoaded', () => {
         const modal = document.getElementById('authModal');
         const guestBtn = document.getElementById('guestBtn');
@@ -62,48 +63,62 @@
             modal.style.display = 'none';
         };
 
-        // 3. Handle File Upload
-        fileInput.addEventListener('change', async function() {
-            // Check credits first
-            let credits = parseInt(localStorage.getItem('qs_guest_credits') || "0");
-            
-            if (localStorage.getItem('qs_user_type') === 'guest' && credits <= 0) {
-                alert("You have used all free credits. Please subscribe to continue.");
-                modal.style.display = 'flex';
-                return;
-            }
+		// 3. Handle File Upload with Credit Management
+		fileInput.addEventListener('change', async function() {
+			const userType = localStorage.getItem('qs_user_type');
+			let credits = parseInt(localStorage.getItem('qs_guest_credits') || "0");
 
-            const file = this.files[0];
-            if (!file) return;
+			// Check if guest has credits left BEFORE starting the upload
+			if (userType === 'guest' && credits <= 0) {
+				alert("Free limit reached! Please subscribe to continue.");
+				document.getElementById('authModal').style.display = 'flex';
+				return;
+			}
 
-            statusTxt.innerText = "Uploading to S3...";
-            
-            const formData = new FormData();
-            formData.append('file', file);
+			const file = this.files[0];
+			if (!file) return;
 
-            try {
-                const response = await fetch('/api/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
-                
-                if(response.ok) {
-                    statusTxt.innerText = "Success! Saved to S3.";
-                    statusTxt.style.color = "green";
-                    // Deduct credit
-                    if (localStorage.getItem('qs_user_type') === 'guest') {
-                        localStorage.setItem('qs_guest_credits', (credits - 1).toString());
-                    }
-                } else {
-                    statusTxt.innerText = "Error: " + result.error;
-                    statusTxt.style.color = "red";
-                }
-            } catch (error) {
-                statusTxt.innerText = "Upload failed.";
-                statusTxt.style.color = "red";
-            }
-        });
+			statusTxt.innerText = "Uploading to S3...";
+			statusTxt.style.color = "blue";
+			
+			const formData = new FormData();
+			formData.append('file', file);
+
+			try {
+				const response = await fetch('/api/upload', {
+					method: 'POST',
+					body: formData
+				});
+				
+				const result = await response.json();
+				
+				if (response.ok) {
+					statusTxt.innerText = "Success! File saved to S3.";
+					statusTxt.style.color = "green";
+
+					// Deduct and update credits only on successful upload
+					if (userType === 'guest') {
+						const newCredits = credits - 1;
+						localStorage.setItem('qs_guest_credits', newCredits.toString());
+						alert(`Upload successful! You have ${newCredits} free credits left.`);
+						
+						// If they just used their last credit, show the subscription modal
+						if (newCredits <= 0) {
+							setTimeout(() => {
+								alert("You've used your last free credit. Join QuickScribe for unlimited access!");
+								document.getElementById('authModal').style.display = 'flex';
+							}, 1000);
+						}
+					}
+				} else {
+					statusTxt.innerText = "Error: " + (result.error || "Upload failed");
+					statusTxt.style.color = "red";
+				}
+			} catch (error) {
+				statusTxt.innerText = "Network error. Check your connection.";
+				statusTxt.style.color = "red";
+			}
+		});
     });
 </script>
 {% endblock %}

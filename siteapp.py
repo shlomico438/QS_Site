@@ -2,13 +2,38 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify
 import os
 import boto3
 
+# Initialize S3 Client using Environment Variables
 s3_client = boto3.client(
     's3',
     aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
     aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-    region_name='us-east-1' # Make sure this matches your bucket region
+    region_name='us-east-1' # Ensure this matches your bucket region
 )
+
+BUCKET_NAME = "getquickscribe-bucket"
+
+@app.route('/api/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    try:
+        # Stream the file directly to S3
+        s3_client.upload_fileobj(
+            file,
+            BUCKET_NAME,
+            file.filename,
+            ExtraArgs={"ContentType": file.content_type}
+        )
+        return jsonify({"message": "Upload successful!"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 app = Flask(__name__)
+
 
 # --- Settings ---
 UPLOAD_FOLDER = 'temp_uploads'
