@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuickScribe - Precision AI Transcription</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="/" class="nav-logo">QuickScribe</a>
+            <div class="nav-menu">
+                <a href="/about" class="nav-item">About Us</a>
+                <a href="/blog" class="nav-item">Blog</a>
+                <a href="/contact" class="nav-item">Contact</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
+    </footer>
+</body>
+</html>
