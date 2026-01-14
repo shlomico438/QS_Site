@@ -15,5 +15,95 @@
         <p id="upload-status"></p>
     </div>
 
+    <div class="feature-box zoom-zone">
+        <p>Want automatic meeting notes?</p>
+        <a href="/zoom/login" class="btn btn-secondary zoom-btn">
+            Connect Zoom Account
+        </a>
     </div>
+
+    <div id="authModal" class="modal">
+        <div class="modal-content">
+            <h2>Welcome to QuickScribe</h2>
+            <p>Subscribe for unlimited transcriptions and Zoom integration.</p>
+            
+            <form id="subscribeForm">
+                <input type="text" placeholder="Full Name" required class="modal-input">
+                <input type="email" placeholder="Email Address" required class="modal-input">
+                <button type="submit" class="btn btn-primary">Subscribe Now</button>
+            </form>
+
+            <div class="social-auth">
+                <button class="btn btn-google">Continue with Google</button>
+                <button class="btn btn-apple">Continue with Apple</button>
+            </div>
+
+            <button id="guestBtn" class="btn btn-secondary">Continue as Guest (2 free credits)</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const modal = document.getElementById('authModal');
+        const guestBtn = document.getElementById('guestBtn');
+        const fileInput = document.getElementById('fileInput');
+        const statusTxt = document.getElementById('upload-status');
+
+        // 1. Show modal if it's the user's first time
+        if (!localStorage.getItem('qs_user_type')) {
+            modal.style.display = 'flex';
+        }
+
+        // 2. Handle Guest Button Click
+        guestBtn.onclick = () => {
+            localStorage.setItem('qs_user_type', 'guest');
+            localStorage.setItem('qs_credits', '2');
+            modal.style.display = 'none';
+        };
+
+        // 3. Handle File Upload
+        fileInput.addEventListener('change', async function() {
+            // Check credits first
+            let credits = parseInt(localStorage.getItem('qs_guest_credits') || "0");
+            
+            if (localStorage.getItem('qs_user_type') === 'guest' && credits <= 0) {
+                alert("You have used all free credits. Please subscribe to continue.");
+                modal.style.display = 'flex';
+                return;
+            }
+
+            const file = this.files[0];
+            if (!file) return;
+
+            statusTxt.innerText = "Uploading to S3...";
+            
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                
+                if(response.ok) {
+                    statusTxt.innerText = "Success! Saved to S3.";
+                    statusTxt.style.color = "green";
+                    // Deduct credit
+                    if (localStorage.getItem('qs_user_type') === 'guest') {
+                        localStorage.setItem('qs_guest_credits', (credits - 1).toString());
+                    }
+                } else {
+                    statusTxt.innerText = "Error: " + result.error;
+                    statusTxt.style.color = "red";
+                }
+            } catch (error) {
+                statusTxt.innerText = "Upload failed.";
+                statusTxt.style.color = "red";
+            }
+        });
+    });
+</script>
 {% endblock %}
