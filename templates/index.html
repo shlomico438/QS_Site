@@ -9,16 +9,18 @@
 </head>
 <body>
 
-	<header class="navbar">
-		<div class="nav-container">
-			<a href="/" class="nav-logo">QuickScribe</a>
-			<div class="nav-links">
-				<a href="/about">About Us</a>
-				<a href="/blog">Engineering Blog</a>
-				<a href="/contact">Contact</a>
-			</div>
-		</div>
-	</header>
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="/" class="nav-logo">QuickScribe</a>
+            <nav>
+                <a href="/about">About Us</a>
+                <a href="/blog">Engineering Blog</a>
+                <a href="/contact">Contact</a>
+            </nav>
+        </div>
+    </header>
+	
+
     <div class="main-container">
         <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo" style="width: 350px; height: auto; margin-bottom: 20px;" class="logo">
         
