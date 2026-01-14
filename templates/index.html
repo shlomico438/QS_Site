@@ -119,6 +119,15 @@
 				statusTxt.style.color = "red";
 			}
 		});
+		// 2. Handle Guest Button Click
+		guestBtn.onclick = () => {
+			// This is the initialization step
+			localStorage.setItem('qs_user_type', 'guest');
+			localStorage.setItem('qs_guest_credits', '2'); // Give them exactly 2
+			
+			modal.style.display = 'none';
+			alert("Welcome! You have 2 free transcription credits.");
+		};
     });
 </script>
 {% endblock %}
