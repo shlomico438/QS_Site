@@ -45,89 +45,82 @@
 
 <script>
 
-    document.addEventListener('DOMContentLoaded', () => {
-        const modal = document.getElementById('authModal');
-        const guestBtn = document.getElementById('guestBtn');
-        const fileInput = document.getElementById('fileInput');
-        const statusTxt = document.getElementById('upload-status');
+document.addEventListener('DOMContentLoaded', () => {
+    const modal = document.getElementById('authModal');
+    const guestBtn = document.getElementById('guestBtn');
+    const fileInput = document.getElementById('fileInput');
+    const statusTxt = document.getElementById('upload-status');
 
-        // 1. Show modal if it's the user's first time
-        if (!localStorage.getItem('qs_user_type')) {
+    // 1. Initial State Check
+    // If they haven't chosen a type yet, show the modal
+    if (!localStorage.getItem('qs_user_type')) {
+        modal.style.display = 'flex';
+    }
+
+    // 2. Handle Guest Button Click (Initialization)
+    guestBtn.onclick = () => {
+        localStorage.setItem('qs_user_type', 'guest');
+        localStorage.setItem('qs_guest_credits', '2'); 
+        modal.style.display = 'none';
+        alert("Welcome! You have 2 free transcription credits.");
+    };
+
+    // 3. Handle File Upload with Credit Management
+    fileInput.addEventListener('change', async function() {
+        const userType = localStorage.getItem('qs_user_type');
+        let credits = parseInt(localStorage.getItem('qs_guest_credits') || "0");
+
+        // Logic check: Allow upload if they are NOT a guest, 
+        // OR if they ARE a guest and have credits
+        if (userType === 'guest' && credits <= 0) {
+            alert("Free limit reached! Please subscribe to continue.");
             modal.style.display = 'flex';
+            return;
         }
 
-        // 2. Handle Guest Button Click
-        guestBtn.onclick = () => {
-            localStorage.setItem('qs_user_type', 'guest');
-            localStorage.setItem('qs_credits', '2');
-            modal.style.display = 'none';
-        };
+        const file = this.files[0];
+        if (!file) return;
 
-		// 3. Handle File Upload with Credit Management
-		fileInput.addEventListener('change', async function() {
-			const userType = localStorage.getItem('qs_user_type');
-			let credits = parseInt(localStorage.getItem('qs_guest_credits') || "0");
+        statusTxt.innerText = "Uploading to S3...";
+        statusTxt.style.color = "blue";
+        
+        const formData = new FormData();
+        formData.append('file', file);
 
-			// Check if guest has credits left BEFORE starting the upload
-			if (userType === 'guest' && credits <= 0) {
-				alert("Free limit reached! Please subscribe to continue.");
-				document.getElementById('authModal').style.display = 'flex';
-				return;
-			}
+        try {
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok) {
+                statusTxt.innerText = "Success! File saved to S3.";
+                statusTxt.style.color = "green";
 
-			const file = this.files[0];
-			if (!file) return;
-
-			statusTxt.innerText = "Uploading to S3...";
-			statusTxt.style.color = "blue";
-			
-			const formData = new FormData();
-			formData.append('file', file);
-
-			try {
-				const response = await fetch('/api/upload', {
-					method: 'POST',
-					body: formData
-				});
-				
-				const result = await response.json();
-				
-				if (response.ok) {
-					statusTxt.innerText = "Success! File saved to S3.";
-					statusTxt.style.color = "green";
-
-					// Deduct and update credits only on successful upload
-					if (userType === 'guest') {
-						const newCredits = credits - 1;
-						localStorage.setItem('qs_guest_credits', newCredits.toString());
-						alert(`Upload successful! You have ${newCredits} free credits left.`);
-						
-						// If they just used their last credit, show the subscription modal
-						if (newCredits <= 0) {
-							setTimeout(() => {
-								alert("You've used your last free credit. Join QuickScribe for unlimited access!");
-								document.getElementById('authModal').style.display = 'flex';
-							}, 1000);
-						}
-					}
-				} else {
-					statusTxt.innerText = "Error: " + (result.error || "Upload failed");
-					statusTxt.style.color = "red";
-				}
-			} catch (error) {
-				statusTxt.innerText = "Network error. Check your connection.";
-				statusTxt.style.color = "red";
-			}
-		});
-		// 2. Handle Guest Button Click
-		guestBtn.onclick = () => {
-			// This is the initialization step
-			localStorage.setItem('qs_user_type', 'guest');
-			localStorage.setItem('qs_guest_credits', '2'); // Give them exactly 2
-			
-			modal.style.display = 'none';
-			alert("Welcome! You have 2 free transcription credits.");
-		};
+                // Deduct credits if applicable
+                if (userType === 'guest') {
+                    const newCredits = credits - 1;
+                    localStorage.setItem('qs_guest_credits', newCredits.toString());
+                    alert(`Upload successful! You have ${newCredits} free credits left.`);
+                    
+                    if (newCredits <= 0) {
+                        setTimeout(() => {
+                            alert("You've used your last free credit.");
+                            modal.style.display = 'flex';
+                        }, 1000);
+                    }
+                }
+            } else {
+                statusTxt.innerText = "Error: " + (result.error || "Upload failed");
+                statusTxt.style.color = "red";
+            }
+        } catch (error) {
+            statusTxt.innerText = "Network error. Check your connection.";
+            statusTxt.style.color = "red";
+        }
     });
+});
 </script>
 {% endblock %}

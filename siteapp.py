@@ -2,6 +2,9 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify
 import os
 import boto3
 
+# Initialize the Flask application FIRST
+app = Flask(__name__)
+
 # Initialize S3 Client using Environment Variables
 s3_client = boto3.client(
     's3',
