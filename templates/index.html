@@ -44,7 +44,6 @@
 </div>
 
 <script>
-
 document.addEventListener('DOMContentLoaded', () => {
     const modal = document.getElementById('authModal');
     const guestBtn = document.getElementById('guestBtn');
@@ -92,6 +91,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 statusTxt.style.color = "red";
             }
         };
+        xhr.open('POST', '/api/upload');
+        xhr.timeout = 0; // 0 means no timeout
+        xhr.send(formData);
 
         xhr.onerror = () => {
             statusTxt.innerText = "Upload failed. Check server logs.";
