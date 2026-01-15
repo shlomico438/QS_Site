@@ -12,7 +12,7 @@ s3_client = boto3.client(
     's3',
     aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
     aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-    region_name='us-east-1' # Ensure this matches your bucket region
+    region_name='uu-north-1' # Ensure this matches your bucket region
 )
 
 BUCKET_NAME = "getquickscribe-bucket"
