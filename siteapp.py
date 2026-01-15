@@ -14,8 +14,6 @@ s3_client = boto3.client(
     aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
     region_name='eu-north-1' # Ensure this matches your bucket region
 )
-print(f"DEBUG: AWS Key loaded: {os.environ.get('AWS_ACCESS_KEY')[:5]}****")
-print(f"DEBUG: AWS Key loaded: {os.environ.get('AWS_SECRET_KEY')[:5]}****")
 BUCKET_NAME = "getquickscribe-bucket"
 
 # Define a safe temporary directory
