@@ -85,7 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         xhr.onload = function() {
             if (xhr.status === 200) {
-                statusTxt.innerText = "Success! Saved to S3.";
+                statusTxt.innerText = "upload Success! ";
                 statusTxt.style.color = "green";
             } else {
                 statusTxt.innerText = "Error: " + xhr.statusText;
