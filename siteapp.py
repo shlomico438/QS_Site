@@ -18,40 +18,52 @@ print(f"DEBUG: AWS Key loaded: {os.environ.get('AWS_ACCESS_KEY')[:5]}****")
 print(f"DEBUG: AWS Key loaded: {os.environ.get('AWS_SECRET_KEY')[:5]}****")
 BUCKET_NAME = "getquickscribe-bucket"
 
+# Define a safe temporary directory
+TEMP_DIR = "/tmp"
 
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    file = request.files.get('file')
-    if not file:
-        return jsonify({"error": "No file received by server"}), 400
 
-    # Check if the file actually has data
-    file.seek(0, os.SEEK_END)
-    size = file.tell()
-    if size == 0:
-        return jsonify({"error": "File is empty (0 bytes)"}), 400
-
-    # Reset pointer to the start so S3 can read it
-    file.seek(0)
-
+@app.route('/api/upload_chunk', methods=['POST'])
+def upload_chunk():
     try:
-        s3_client.upload_fileobj(
-            file,
-            BUCKET_NAME,
-            file.filename,
-            ExtraArgs={"ContentType": file.content_type}
-        )
-        return jsonify({"message": f"Success! Uploaded {size} bytes"}), 200
-    except Exception as e:
-        # This will show the REAL S3 error in your blue status text
-        return jsonify({"error": f"S3 Error: {str(e)}"}), 500
+        file = request.files.get('file')
+        filename = request.form.get('filename')
+        chunk_index = int(request.form.get('chunkIndex'))
+        total_chunks = int(request.form.get('totalChunks'))
 
-app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
-# --- Settings ---
-UPLOAD_FOLDER = 'temp_uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+        if not file or not filename:
+            return jsonify({"error": "Invalid chunk data"}), 400
+
+        # Create the temp path
+        temp_path = os.path.join(TEMP_DIR, filename)
+
+        # Append this chunk to the file
+        # 'ab' mode = Append Binary (crucial for videos!)
+        with open(temp_path, 'ab') as f:
+            f.write(file.read())
+
+        # Check if this was the LAST chunk
+        if chunk_index + 1 == total_chunks:
+            print(f"DEBUG: Assembly complete. Uploading {filename} to S3...")
+
+            # Now upload the FULL file from disk to S3
+            with open(temp_path, 'rb') as f:
+                s3_client.upload_fileobj(
+                    f,
+                    BUCKET_NAME,
+                    filename,  # Or strip the timestamp if you prefer
+                    ExtraArgs={"ContentType": "video/mp4"}  # Assuming MP4 for now
+                )
+
+            # Cleanup: Delete the temp file to free up disk space
+            os.remove(temp_path)
+
+            return jsonify({"message": "File reassembled and uploaded to S3"}), 200
+
+        return jsonify({"message": f"Chunk {chunk_index} received"}), 200
+
+    except Exception as e:
+        print(f"CHUNK ERROR: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # --- Routes ---
 
