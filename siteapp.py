@@ -21,26 +21,30 @@ BUCKET_NAME = "getquickscribe-bucket"
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
+    file = request.files.get('file')
+    if not file:
+        return jsonify({"error": "No file received by server"}), 400
+
+    # Check if the file actually has data
+    file.seek(0, os.SEEK_END)
+    size = file.tell()
+    if size == 0:
+        return jsonify({"error": "File is empty (0 bytes)"}), 400
+
+    # Reset pointer to the start so S3 can read it
+    file.seek(0)
 
     try:
-        # Stream the file directly to S3
         s3_client.upload_fileobj(
             file,
             BUCKET_NAME,
             file.filename,
             ExtraArgs={"ContentType": file.content_type}
         )
-        return jsonify({"message": "Upload successful!"}), 200
+        return jsonify({"message": f"Success! Uploaded {size} bytes"}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-app = Flask(__name__)
-
+        # This will show the REAL S3 error in your blue status text
+        return jsonify({"error": f"S3 Error: {str(e)}"}), 500
 
 # --- Settings ---
 UPLOAD_FOLDER = 'temp_uploads'
