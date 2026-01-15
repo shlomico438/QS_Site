@@ -65,8 +65,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // 3. Handle File Upload with Credit Management
-const fileInput = document.getElementById('fileInput');
-    const statusTxt = document.getElementById('upload-status');
     const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk (Safe for Koyeb RAM)
 
     fileInput.addEventListener('change', async function() {
