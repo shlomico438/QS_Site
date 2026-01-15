@@ -81,43 +81,35 @@ document.addEventListener('DOMContentLoaded', () => {
         const file = this.files[0];
         if (!file) return;
 
-        statusTxt.innerText = "Uploading to S3...";
+        statusTxt.innerText = "Uploading...";
         statusTxt.style.color = "blue";
         
         const formData = new FormData();
         formData.append('file', file);
 
-        try {
+         try {
             const response = await fetch('/api/upload', {
                 method: 'POST',
                 body: formData
             });
-            
-            const result = await response.json();
-            
-            if (response.ok) {
-                statusTxt.innerText = "Success! File saved to S3.";
-                statusTxt.style.color = "green";
 
-                // Deduct credits if applicable
-                if (userType === 'guest') {
-                    const newCredits = credits - 1;
-                    localStorage.setItem('qs_guest_credits', newCredits.toString());
-                    alert(`Upload successful! You have ${newCredits} free credits left.`);
-                    
-                    if (newCredits <= 0) {
-                        setTimeout(() => {
-                            alert("You've used your last free credit.");
-                            modal.style.display = 'flex';
-                        }, 1000);
-                    }
-                }
-            } else {
-                statusTxt.innerText = "Error: " + (result.error || "Upload failed");
+            // 1. CHECK THE STATUS FIRST
+            if (!response.ok) {
+                // If the file is too big (413), this line catches it
+                statusTxt.innerText = "Error: File is too large or server rejected it.";
                 statusTxt.style.color = "red";
+                return; // Stop here! Don't try to parse JSON.
             }
+
+            // 2. ONLY NOW PARSE THE JSON
+            const result = await response.json();
+            statusTxt.innerText = "Success! File saved to S3.";
+            statusTxt.style.color = "green";
+
+            // ... rest of your credit logic ...
+
         } catch (error) {
-            statusTxt.innerText = "Network error. Check your connection.";
+            statusTxt.innerText = "Upload failed. Check console for details.";
             statusTxt.style.color = "red";
         }
     });

@@ -4,6 +4,8 @@ import boto3
 
 # Initialize the Flask application FIRST
 app = Flask(__name__)
+# Set the maximum upload size to 100 Megabytes
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 # Initialize S3 Client using Environment Variables
 s3_client = boto3.client(
