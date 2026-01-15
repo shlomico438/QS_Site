@@ -55,7 +55,7 @@ def upload_chunk():
             # Cleanup: Delete the temp file to free up disk space
             os.remove(temp_path)
 
-            return jsonify({"message": "File reassembled and uploaded to S3"}), 200
+            return jsonify({"message": "File uploaded successfully"}), 200
 
         return jsonify({"message": f"Chunk {chunk_index} received"}), 200
 

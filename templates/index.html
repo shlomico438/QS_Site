@@ -65,7 +65,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // 3. Handle File Upload with Credit Management
-    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk (Safe for Koyeb RAM)
+// 3. Handle File Upload with "Soft Landing" Progress
+    const CHUNK_SIZE = 5 * 1024 * 1024;
 
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
@@ -76,7 +77,7 @@ document.addEventListener('DOMContentLoaded', () => {
         statusTxt.style.color = "blue";
 
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-        const fileName = Date.now() + "_" + file.name; // Unique name to prevent collisions
+        const fileName = Date.now() + "_" + file.name;
 
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
             const start = chunkIndex * CHUNK_SIZE;
@@ -89,33 +90,50 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('chunkIndex', chunkIndex);
             formData.append('totalChunks', totalChunks);
 
+            // --- SPECIAL LOGIC FOR THE LAST CHUNK ---
+            let progressInterval;
+            if (chunkIndex === totalChunks - 1) {
+                // If this is the last chunk, we start the "30-second creep"
+                let fakePercent = 90;
+                statusTxt.innerText = `Uploading: ${fakePercent}% (Syncing to S3...)`;
+
+                // Increase by 1% every 3 seconds (roughly 30s to get to 99%)
+                progressInterval = setInterval(() => {
+                    if (fakePercent < 99) {
+                        fakePercent++;
+                        statusTxt.innerText = `Uploading: ${fakePercent}% (Syncing to S3...)`;
+                    }
+                }, 3000);
+            }
+
             try {
-                // Retry logic can be added here, but let's keep it simple first
                 const response = await fetch('/api/upload_chunk', {
                     method: 'POST',
                     body: formData
                 });
 
-                if (!response.ok) {
-                    throw new Error(`Chunk ${chunkIndex} failed`);
-                }
+                if (!response.ok) throw new Error(`Chunk ${chunkIndex} failed`);
 
-                // Update Progress Bar
-                const percent = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-                statusTxt.innerText = `Uploading: ${percent}%`;
-
-                // If this was the last chunk, we are done!
-                if (chunkIndex === totalChunks - 1) {
+                // --- PROGRESS CALCULATION ---
+                if (chunkIndex < totalChunks - 1) {
+                    // For normal chunks, map them to 0-90% range
+                    // This reserves the last 10% for the S3 wait time
+                    const percent = Math.round(((chunkIndex + 1) / totalChunks) * 90);
+                    statusTxt.innerText = `Uploading: ${percent}%`;
+                } else {
+                    // LAST CHUNK FINISHED!
+                    clearInterval(progressInterval); // Stop the fake timer
                     const result = await response.json();
                     statusTxt.innerText = "Success! " + result.message;
                     statusTxt.style.color = "green";
                 }
 
             } catch (error) {
+                if (progressInterval) clearInterval(progressInterval);
                 console.error(error);
-                statusTxt.innerText = "Upload failed at chunk " + chunkIndex;
+                statusTxt.innerText = "Upload failed. Check console.";
                 statusTxt.style.color = "red";
-                return; // Stop the loop on error
+                return;
             }
         }
     });
