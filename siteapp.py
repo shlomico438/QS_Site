@@ -47,7 +47,7 @@ def upload_file():
         return jsonify({"error": f"S3 Error: {str(e)}"}), 500
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 # --- Settings ---
 UPLOAD_FOLDER = 'temp_uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
