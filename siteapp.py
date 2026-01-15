@@ -46,6 +46,7 @@ def upload_file():
         # This will show the REAL S3 error in your blue status text
         return jsonify({"error": f"S3 Error: {str(e)}"}), 500
 
+app = Flask(__name__)
 # --- Settings ---
 UPLOAD_FOLDER = 'temp_uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
