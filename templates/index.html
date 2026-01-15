@@ -66,52 +66,40 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // 3. Handle File Upload with Credit Management
-    fileInput.addEventListener('change', async function() {
-        const userType = localStorage.getItem('qs_user_type');
-        let credits = parseInt(localStorage.getItem('qs_guest_credits') || "0");
-
-        // Logic check: Allow upload if they are NOT a guest, 
-        // OR if they ARE a guest and have credits
-        if (userType === 'guest' && credits <= 0) {
-            alert("Free limit reached! Please subscribe to continue.");
-            modal.style.display = 'flex';
-            return;
-        }
-
+    fileInput.addEventListener('change', function() {
         const file = this.files[0];
         if (!file) return;
 
-        statusTxt.innerText = "Uploading...";
-        statusTxt.style.color = "blue";
-        
+        const xhr = new XMLHttpRequest();
         const formData = new FormData();
         formData.append('file', file);
 
-         try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData
-            });
-
-            // 1. CHECK THE STATUS FIRST
-            if (!response.ok) {
-                // If the file is too big (413), this line catches it
-                statusTxt.innerText = "Error: File is too large or server rejected it.";
-                statusTxt.style.color = "red";
-                return; // Stop here! Don't try to parse JSON.
+        // This shows you the REAL progress
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                statusTxt.innerText = `Uploading: ${percent}%`;
+                statusTxt.style.color = "blue";
             }
+        });
 
-            // 2. ONLY NOW PARSE THE JSON
-            const result = await response.json();
-            statusTxt.innerText = "Success! File saved to S3.";
-            statusTxt.style.color = "green";
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                statusTxt.innerText = "Success! Saved to S3.";
+                statusTxt.style.color = "green";
+            } else {
+                statusTxt.innerText = "Error: " + xhr.statusText;
+                statusTxt.style.color = "red";
+            }
+        };
 
-            // ... rest of your credit logic ...
-
-        } catch (error) {
-            statusTxt.innerText = "Upload failed. Check console for details.";
+        xhr.onerror = () => {
+            statusTxt.innerText = "Upload failed. Check server logs.";
             statusTxt.style.color = "red";
-        }
+        };
+
+        xhr.open('POST', '/api/upload');
+        xhr.send(formData);
     });
 });
 </script>
