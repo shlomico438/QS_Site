@@ -95,7 +95,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (chunkIndex === totalChunks - 1) {
                 // If this is the last chunk, we start the "30-second creep"
                 let fakePercent = 90;
-                statusTxt.innerText = `Uploading: ${fakePercent}% (Syncing to S3...)`;
+                statusTxt.innerText = `Uploading: ${fakePercent}% (Syncing to cloud...)`;
 
                 // Increase by 1% every 3 seconds (roughly 30s to get to 99%)
                 progressInterval = setInterval(() => {

@@ -14,7 +14,7 @@ s3_client = boto3.client(
     aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
     region_name='eu-north-1' # Ensure this matches your bucket region
 )
-BUCKET_NAME = "getquickscribe-bucket"
+BUCKET_NAME = "quickscribe-v2-12345"
 
 # Define a safe temporary directory
 TEMP_DIR = "/tmp"
@@ -48,7 +48,7 @@ def upload_chunk():
                 s3_client.upload_fileobj(
                     f,
                     BUCKET_NAME,
-                    filename,  # Or strip the timestamp if you prefer
+                    f"input/{filename}",  # Or strip the timestamp if you prefer
                     ExtraArgs={"ContentType": "video/mp4"}  # Assuming MP4 for now
                 )
 
@@ -96,7 +96,7 @@ def upload_file():
         s3_client.upload_fileobj(
             file,
             BUCKET_NAME,
-            file.filename,
+            f"input/{filename}",
             ExtraArgs={
                 "ContentType": file.content_type  # Matches the file type (mp3/mp4)
             }
