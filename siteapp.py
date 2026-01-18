@@ -11,6 +11,7 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 # Initialize SocketIO for live transcription delivery
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
+# Initialize S3 Client
 s3_client = boto3.client(
     's3',
     aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
@@ -19,7 +20,6 @@ s3_client = boto3.client(
 )
 BUCKET_NAME = "quickscribe-v2-12345"
 
-
 # --- WEB ROUTES ---
 
 @app.route('/')
@@ -27,52 +27,61 @@ def index():
     return render_template('index.html')
 
 @app.route('/about')
-def about(): return render_template('about.html')
-
+def about():
+    return render_template('about.html')
 
 # --- STREAMING API ---
 
 @app.route('/api/upload_streaming_chunk', methods=['POST'])
 def upload_streaming_chunk():
     """
-    Receives an independent 30s chunk and pushes it to S3 immediately.
+    Receives a raw binary chunk and pushes it to S3 immediately.
     """
     try:
         file = request.files.get('file')
         job_id = request.form.get('jobId')
-        filename = request.form.get('filename')
+        filename = request.form.get('filename')  # e.g., chunk_001.bin
 
         # Strict validation for all required fields
         if not file or not job_id or not filename:
             missing = [k for k, v in {"file": file, "jobId": job_id, "filename": filename}.items() if not v]
             return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
+        # Upload as a raw binary object under the job_id prefix
         s3_key = f"input/{job_id}/{filename}"
 
         s3_client.upload_fileobj(
             file,
             BUCKET_NAME,
             s3_key,
-            ExtraArgs={"ContentType": "video/webm"}
+            # Changed to octet-stream to handle raw binary fragments correctly
+            ExtraArgs={"ContentType": "application/octet-stream"}
         )
 
-        print(f"DEBUG: Streaming chunk {filename} uploaded for {job_id}")
+        print(f"DEBUG: Binary chunk {filename} uploaded for {job_id}")
         return jsonify({"message": f"Chunk {filename} uploaded", "jobId": job_id}), 200
 
     except Exception as e:
         print(f"STREAMING ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
+# --- GPU FEEDBACK API ---
+
 @app.route('/api/push_transcription/<job_id>', methods=['POST'])
 def push_transcription(job_id):
+    """
+    Endpoint for the GPU to send back the finished text.
+    """
     try:
-        data = request.json
+        data = request.json  # {"text": "...", "chunkIndex": 0}
         socketio.emit('new_transcription', data, room=job_id)
         print(f"DEBUG: Pushed chunk {data.get('chunkIndex')} text to user {job_id}")
         return jsonify({"status": "success"}), 200
     except Exception as e:
         print(f"PUSH ERROR: {e}")
         return jsonify({"error": str(e)}), 500
+
+# --- WEBSOCKET EVENT HANDLERS ---
 
 @socketio.on('connect')
 def handle_connect():

@@ -27,8 +27,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusTxt = document.getElementById('upload-status');
     const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
-    let headerBlob = null;
-
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
@@ -38,28 +36,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         const jobId = "job_" + Date.now();
-        const contentType = 'video/webm';
 
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
             const start = chunkIndex * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, file.size);
-            const chunkData = file.slice(start, end);
 
-            let uploadBlob;
-            if (chunkIndex === 0) {
-                // Capture a 4KB header to ensure all metadata is included
-                headerBlob = chunkData.slice(0, 4096);
-                uploadBlob = chunkData;
-            } else {
-                // Explicitly combine the header with the raw audio slice
-                uploadBlob = new Blob([headerBlob, chunkData], { type: contentType });
-            }
+            // Capture the raw binary slice without any modifications
+            const rawChunk = file.slice(start, end);
 
             const formData = new FormData();
-            const s3Filename = `chunk_${String(chunkIndex).padStart(3, '0')}.webm`;
+            // We use .bin to signify this is a raw fragment, not a complete media file
+            const s3Filename = `chunk_${String(chunkIndex).padStart(3, '0')}.bin`;
 
-            // Explicitly pass the blob, filename, and additional fields
-            formData.append('file', uploadBlob, s3Filename);
+            formData.append('file', rawChunk, s3Filename);
             formData.append('jobId', jobId);
             formData.append('filename', s3Filename);
 
@@ -75,6 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
+                // Uploading to siteapp.py endpoint
                 const response = await fetch('/api/upload_streaming_chunk', {
                     method: 'POST',
                     body: formData
