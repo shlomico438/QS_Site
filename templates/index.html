@@ -207,13 +207,31 @@ document.addEventListener('DOMContentLoaded', () => {
             const start = i * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, file.size);
             const formData = new FormData();
-            formData.append('file', file.slice(start, end));
-            formData.append('jobId', jobId);
 
-            await fetch('/api/upload_streaming_chunk', {
-                method: 'POST',
-                body: formData
-            });
+            // Create the sequential filename
+            const s3Filename = `chunk_${String(i).padStart(3, '0')}.bin`;
+
+            formData.append('file', file.slice(start, end), s3Filename);
+            formData.append('jobId', jobId);
+            formData.append('filename', s3Filename); // Re-add this line!
+
+            try {
+                const response = await fetch('/api/upload_streaming_chunk', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error("Upload failed at chunk " + i);
+
+                // Update progress UI
+                const percent = Math.round(((i + 1) / totalChunks) * 100);
+                progressBar.style.width = percent + "%";
+                statusTxt.innerText = `Syncing: ${percent}%`;
+
+            } catch (e) {
+                statusTxt.innerText = "Error: " + e.message;
+                break;
+            }
         }
     });
 });
