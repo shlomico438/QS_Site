@@ -2,62 +2,164 @@
 
 {% block content %}
 <style>
-    .transcription-area {
-        width: 90%; /* Wide for presenter view */
-        max-width: 900px;
-        margin: 20px auto;
+    /* =========================
+       GLOBAL FIXES (DO NOT LOCK BODY)
+    ========================= */
+    html, body {
+        margin: 0;
+        min-height: 100dvh;
+        overflow-x: hidden;
+        background-color: #fcfcfc;
+    }
+
+    /* =========================
+       APP SHELL (KEY FIX)
+       Everything below navbar lives here
+    ========================= */
+    .app-shell {
+        height: calc(100dvh - var(--nav-height, 80px));
         display: flex;
         flex-direction: column;
-        gap: 10px;
-        /* Start transparent so buttons don't jump, but take up space */
-        opacity: 0;
-        transition: opacity 0.3s ease;
+    }
+
+    /* =========================
+       HEADER
+    ========================= */
+    .header-section {
+        flex-shrink: 0;
+        text-align: center;
+        padding: 20px 0 10px;
+    }
+
+    .header-section img {
+        height: 40px;
+        margin-bottom: 5px;
+    }
+
+    .header-section h2 {
+        font-size: 1.2rem;
+        margin: 0;
+        color: #444;
+    }
+
+    /* =========================
+       MAIN APP CONTAINER
+    ========================= */
+    .main-app-container {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        padding: 10px;
+        box-sizing: border-box;
+    }
+
+    /* =========================
+       TRANSCRIPTION
+    ========================= */
+    .transcription-area {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 95%;
+        max-width: 900px;
+        margin: 10px auto;
+        display: flex;
     }
 
     #transcript-window {
-        height: 400px; /* Fixed height for stability */
+        flex: 1;
         overflow-y: auto;
         background: #ffffff;
-        padding: 30px;
+        padding: 20px;
         border-radius: 12px;
-        border: 2px solid #eaee00;
-        font-size: 1.6rem; /* Large, clear text */
-        color: #2c3e50;
-        line-height: 1.8;
-        box-shadow: inset 0 2px 5px rgba(0,0,0,0.1);
+        border: 2px solid #eee;
+        font-size: 1.8rem;
+        font-weight: 500;
+        color: #1a1a1a;
+        line-height: 1.5;
         text-align: left;
     }
 
+    /* =========================
+       UPLOAD / BUTTON
+    ========================= */
     .upload-zone {
-        margin-top: 30px;
-        padding-bottom: 50px;
+        flex-shrink: 0;
+        padding: 10px 0;
+        text-align: center;
+    }
+
+    .progress-container {
+        width: 100%;
+        max-width: 250px;
+        margin: 0 auto 10px;
+        height: 6px;
+        background: #eee;
+        border-radius: 10px;
+        display: none;
+    }
+
+    #progress-bar {
+        width: 0%;
+        height: 100%;
+        background: #5d5dff;
+        border-radius: 10px;
+        transition: width 0.3s ease;
     }
 
     .btn-primary {
-        padding: 18px 50px;
-        font-size: 1.2rem;
+        padding: 12px 45px;
+        font-size: 1.1rem;
+        font-weight: bold;
+        border-radius: 50px;
+        background: #5d5dff;
+        color: white;
+        border: none;
         cursor: pointer;
+    }
+
+    .active-mode #transcript-window {
+        border-color: #00ff88;
     }
 </style>
 
-<div class="main-container">
-    <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo" style="width: 300px; margin-bottom: 20px;">
+<!-- APP SHELL -->
+<div class="app-shell">
 
-    <h1>Transcription made simple.</h1>
-    <p class="subtitle">Precision AI transcription for high-context languages and noisy environments.</p>
-
-    <div id="transcription-container" class="transcription-area">
-        <h3 style="margin-bottom: 5px; color: #666; text-align: left;">Live Transcript</h3>
-        <div id="transcript-window">
-            </div>
+    <!-- HEADER -->
+    <div class="header-section">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe">
+        <h2>Live Transcription</h2>
     </div>
 
-    <div class="upload-zone" id="upload-box">
-        <input type="file" id="fileInput" hidden>
-        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
-            Start Recording/Upload
-        </button>
-        <p id="upload-status" style="margin-top: 15px; font-weight: bold; min-height: 24px;"></p>
+    <!-- MAIN APP -->
+    <div class="main-app-container">
+
+        <div class="transcription-area">
+            <div id="transcript-window">
+                <p id="placeholder" style="color:#ccc;text-align:center;margin-top:30%;">
+                    Ready. Click below to begin.
+                </p>
+            </div>
+        </div>
+
+        <div class="upload-zone">
+            <div class="progress-container" id="p-container">
+                <div id="progress-bar"></div>
+            </div>
+
+            <p id="upload-status"
+               style="margin:0 0 10px;font-weight:600;font-size:0.9rem;color:#666;">
+                Ready
+            </p>
+
+            <input type="file" id="fileInput" hidden>
+            <button class="btn btn-primary"
+                    id="main-btn"
+                    onclick="document.getElementById('fileInput').click()">
+                Start Session
+            </button>
+        </div>
+
     </div>
 </div>
 
@@ -67,10 +169,14 @@
 document.addEventListener('DOMContentLoaded', () => {
     const fileInput = document.getElementById('fileInput');
     const statusTxt = document.getElementById('upload-status');
+    const progressBar = document.getElementById('progress-bar');
+    const pContainer = document.getElementById('p-container');
     const transcriptWindow = document.getElementById('transcript-window');
-    const transcriptContainer = document.getElementById('transcription-container');
+    const placeholder = document.getElementById('placeholder');
+    const mainBtn = document.getElementById('main-btn');
 
     let socket;
+    let fakeProgressInterval;
     const CHUNK_SIZE = 5 * 1024 * 1024;
 
     fileInput.addEventListener('change', async function() {
@@ -80,57 +186,34 @@ document.addEventListener('DOMContentLoaded', () => {
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         const jobId = "job_" + Date.now();
 
-        // Reveal the window smoothly
-        transcriptContainer.style.opacity = '1';
-        transcriptWindow.innerHTML = '<p style="color: #888;">Connecting to GPU...</p>';
+        pContainer.style.display = 'block';
+        mainBtn.disabled = true;
+        placeholder.innerText = "Connecting...";
 
-        socket = io({ query: { jobId: jobId } });
+        socket = io({ query: { jobId } });
 
         socket.on('new_transcription', (data) => {
-            // Remove placeholder on first message
-            if (transcriptWindow.querySelector('p')) transcriptWindow.innerHTML = "";
+            clearInterval(fakeProgressInterval);
+            pContainer.style.display = 'none';
+            statusTxt.innerText = "Transcribing Live";
+            statusTxt.style.color = "#28a745";
+            document.body.classList.add('active-mode');
 
-            const newEntry = document.createElement('span');
-            newEntry.innerText = data.text + " ";
-            transcriptWindow.appendChild(newEntry);
+            transcriptWindow.innerHTML += data.text + " ";
             transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
         });
 
-        statusTxt.innerText = "Starting upload...";
-        statusTxt.style.color = "#007bff";
-
-        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-            const start = chunkIndex * CHUNK_SIZE;
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, file.size);
-            const rawChunk = file.slice(start, end);
-
             const formData = new FormData();
-            const s3Filename = `chunk_${String(chunkIndex).padStart(3, '0')}.bin`;
-
-            formData.append('file', rawChunk, s3Filename);
+            formData.append('file', file.slice(start, end));
             formData.append('jobId', jobId);
-            formData.append('filename', s3Filename);
 
-            try {
-                const response = await fetch('/api/upload_streaming_chunk', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!response.ok) throw new Error("Upload failed");
-
-                const percent = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-                statusTxt.innerText = `Uploading: ${percent}%`;
-
-                if (percent === 100) {
-                    statusTxt.innerText = "Upload Complete. Processing audio...";
-                    statusTxt.style.color = "green";
-                }
-            } catch (error) {
-                statusTxt.innerText = "Upload failed: " + error.message;
-                statusTxt.style.color = "red";
-                break;
-            }
+            await fetch('/api/upload_streaming_chunk', {
+                method: 'POST',
+                body: formData
+            });
         }
     });
 });
