@@ -2,40 +2,60 @@
 
 {% block content %}
 <div class="main-container">
-    <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo" style="width: 350px; height: auto; margin-bottom: 20px;" class="logo">
-    
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" style="width: 250px; margin-bottom: 20px;">
+
     <h1>Transcription made simple.</h1>
     <p class="subtitle">Precision AI transcription for high-context languages and noisy environments.</p>
 
-    <div class="feature-box upload-zone" id="drop-zone">
-        <p>Drag & Drop audio files here</p>
-        <span>or</span>
-        <input type="file" id="fileInput" hidden>
-        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Browse Files</button>
-        <p id="upload-status" style="margin-top: 15px; font-weight: bold;"></p>
+    <div id="transcription-container" class="feature-box" style="display:none; text-align: left;">
+        <h3>Live Output</h3>
+        <div id="transcript-window" style="height: 300px; overflow-y: auto; background: #f9f9f9; padding: 15px; border-radius: 8px; border: 1px solid #ddd; font-family: monospace; line-height: 1.6;">
+            <p style="color: #888;">Waiting for GPU to start transcribing...</p>
+        </div>
     </div>
 
-    <div class="feature-box zoom-zone">
-        <p>Want automatic meeting notes?</p>
-        <a href="/zoom/login" class="btn btn-secondary zoom-btn">Connect Zoom Account</a>
+    <div class="feature-box upload-zone" id="upload-box">
+        <input type="file" id="fileInput" hidden>
+        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Start Recording/Upload</button>
+        <p id="upload-status"></p>
     </div>
 </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
     const fileInput = document.getElementById('fileInput');
     const statusTxt = document.getElementById('upload-status');
-    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+    const transcriptWindow = document.getElementById('transcript-window');
+    const transcriptContainer = document.getElementById('transcription-container');
+
+    let socket;
+    const CHUNK_SIZE = 5 * 1024 * 1024;
 
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
 
-        statusTxt.innerText = "Starting upload...";
-        statusTxt.style.color = "blue";
-
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         const jobId = "job_" + Date.now();
+
+        // 1. Show the transcription window
+        transcriptContainer.style.display = 'block';
+        transcriptWindow.innerHTML = ""; // Clear initial message
+
+        // 2. Connect to WebSocket room for this specific job
+        socket = io({ query: { jobId: jobId } });
+
+        // 3. Listen for new text from the GPU
+        socket.on('new_transcription', (data) => {
+            console.log("Received text:", data.text);
+            const newEntry = document.createElement('span');
+            newEntry.innerText = data.text + " ";
+            transcriptWindow.appendChild(newEntry);
+
+            // Auto-scroll to bottom
+            transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
+        });
 
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
             const start = chunkIndex * CHUNK_SIZE;
