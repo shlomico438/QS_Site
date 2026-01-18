@@ -27,7 +27,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusTxt = document.getElementById('upload-status');
     const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
-    // Variable to store the header from the very first chunk
     let headerBlob = null;
 
     fileInput.addEventListener('change', async function() {
@@ -38,26 +37,31 @@ document.addEventListener('DOMContentLoaded', () => {
         statusTxt.style.color = "blue";
 
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-        const jobId = "job_" + Date.now(); // Adding Job ID for backend isolation
-        const fileNameBase = file.name;
+        const jobId = "job_" + Date.now();
+        const contentType = 'video/webm';
 
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-            let chunk = file.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
+            const start = chunkIndex * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunkData = file.slice(start, end);
 
-            // --- HEADER LOGIC ---
-            // If it's chunk 0, capture the first 1KB which contains the WebM/MP4 header
+            let uploadBlob;
             if (chunkIndex === 0) {
-                headerBlob = chunk.slice(0, 1000);
-            } else if (headerBlob) {
-                // For all other chunks, glue the header to the front
-                // This makes every chunk a valid, playable standalone file
-                chunk = new Blob([headerBlob, chunk], { type: file.type });
+                // Capture a 4KB header to ensure all metadata is included
+                headerBlob = chunkData.slice(0, 4096);
+                uploadBlob = chunkData;
+            } else {
+                // Explicitly combine the header with the raw audio slice
+                uploadBlob = new Blob([headerBlob, chunkData], { type: contentType });
             }
 
             const formData = new FormData();
-            formData.append('file', chunk);
+            const s3Filename = `chunk_${String(chunkIndex).padStart(3, '0')}.webm`;
+
+            // Explicitly pass the blob, filename, and additional fields
+            formData.append('file', uploadBlob, s3Filename);
             formData.append('jobId', jobId);
-            formData.append('filename', `chunk_${String(chunkIndex).padStart(3, '0')}.webm`);
+            formData.append('filename', s3Filename);
 
             let progressInterval;
             if (chunkIndex === totalChunks - 1) {
@@ -71,7 +75,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
-                // Ensure this matches your siteapp.py route exactly
                 const response = await fetch('/api/upload_streaming_chunk', {
                     method: 'POST',
                     body: formData
@@ -86,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const percent = Math.round(((chunkIndex + 1) / totalChunks) * 90);
                     statusTxt.innerText = `Uploading: ${percent}%`;
                 } else {
-                    clearInterval(progressInterval);
+                    if (progressInterval) clearInterval(progressInterval);
                     const result = await response.json();
                     statusTxt.innerText = "Success! " + result.message;
                     statusTxt.style.color = "green";
