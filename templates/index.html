@@ -27,6 +27,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusTxt = document.getElementById('upload-status');
     const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
+    // Variable to store the header from the very first chunk
+    let headerBlob = null;
+
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
@@ -35,15 +38,26 @@ document.addEventListener('DOMContentLoaded', () => {
         statusTxt.style.color = "blue";
 
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-        const fileName = Date.now() + "_" + file.name;
+        const jobId = "job_" + Date.now(); // Adding Job ID for backend isolation
+        const fileNameBase = file.name;
 
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-            const chunk = file.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
+            let chunk = file.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
+
+            // --- HEADER LOGIC ---
+            // If it's chunk 0, capture the first 1KB which contains the WebM/MP4 header
+            if (chunkIndex === 0) {
+                headerBlob = chunk.slice(0, 1000);
+            } else if (headerBlob) {
+                // For all other chunks, glue the header to the front
+                // This makes every chunk a valid, playable standalone file
+                chunk = new Blob([headerBlob, chunk], { type: file.type });
+            }
+
             const formData = new FormData();
             formData.append('file', chunk);
-            formData.append('filename', fileName);
-            formData.append('chunkIndex', chunkIndex);
-            formData.append('totalChunks', totalChunks);
+            formData.append('jobId', jobId);
+            formData.append('filename', `chunk_${String(chunkIndex).padStart(3, '0')}.webm`);
 
             let progressInterval;
             if (chunkIndex === totalChunks - 1) {
@@ -57,8 +71,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
-                const response = await fetch('/api/upload_streaming_chunk', { method: 'POST', body: formData });
-                if (!response.ok) throw new Error("Upload failed");
+                // Ensure this matches your siteapp.py route exactly
+                const response = await fetch('/api/upload_streaming_chunk', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || "Upload failed");
+                }
 
                 if (chunkIndex < totalChunks - 1) {
                     const percent = Math.round(((chunkIndex + 1) / totalChunks) * 90);
@@ -71,7 +93,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } catch (error) {
                 if (progressInterval) clearInterval(progressInterval);
-                statusTxt.innerText = "Error during upload.";
+                statusTxt.innerText = "Upload failed: " + error.message;
                 statusTxt.style.color = "red";
                 break;
             }
