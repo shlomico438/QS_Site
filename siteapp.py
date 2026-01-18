@@ -1,117 +1,109 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, join_room
 import os
 import boto3
+import json
 
-# Initialize the Flask application FIRST
 app = Flask(__name__)
-# Set the maximum upload size to 100 Megabytes
+app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
-# Initialize S3 Client using Environment Variables
+# Initialize SocketIO for live transcription delivery
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# Initialize S3 Client
 s3_client = boto3.client(
     's3',
     aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
     aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-    region_name='eu-north-1' # Ensure this matches your bucket region
+    region_name='eu-north-1'
 )
 BUCKET_NAME = "quickscribe-v2-12345"
 
-# Define a safe temporary directory
-TEMP_DIR = "/tmp"
 
-
-@app.route('/api/upload_chunk', methods=['POST'])
-def upload_chunk():
-    try:
-        file = request.files.get('file')
-        filename = request.form.get('filename')
-        chunk_index = int(request.form.get('chunkIndex'))
-        total_chunks = int(request.form.get('totalChunks'))
-
-        if not file or not filename:
-            return jsonify({"error": "Invalid chunk data"}), 400
-
-        # Create the temp path
-        temp_path = os.path.join(TEMP_DIR, filename)
-
-        # Append this chunk to the file
-        # 'ab' mode = Append Binary (crucial for videos!)
-        with open(temp_path, 'ab') as f:
-            f.write(file.read())
-
-        # Check if this was the LAST chunk
-        if chunk_index + 1 == total_chunks:
-            print(f"DEBUG: Assembly complete. Uploading {filename} to S3...")
-
-            # Now upload the FULL file from disk to S3
-            with open(temp_path, 'rb') as f:
-                s3_client.upload_fileobj(
-                    f,
-                    BUCKET_NAME,
-                    f"input/{filename}",  # Or strip the timestamp if you prefer
-                    ExtraArgs={"ContentType": "video/mp4"}  # Assuming MP4 for now
-                )
-
-            # Cleanup: Delete the temp file to free up disk space
-            os.remove(temp_path)
-
-            return jsonify({"message": "File uploaded successfully"}), 200
-
-        return jsonify({"message": f"Chunk {chunk_index} received"}), 200
-
-    except Exception as e:
-        print(f"CHUNK ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# --- Routes ---
+# --- WEB ROUTES ---
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
+
 @app.route('/about')
-def about():
-    return render_template('about.html')
+def about(): return render_template('about.html')
 
-@app.route('/blog')
-def blog():
-    return render_template('blog.html')
 
-@app.route('/contact')
-def contact():
-    return render_template('contact.html')
+# --- STREAMING API ---
 
-# --- API: Handling Uploads ---
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    file = request.files.get('file')
-    if not file:
-        return jsonify({"error": "No file"}), 400
-
+@app.route('/api/upload_streaming_chunk', methods=['POST'])
+def upload_streaming_chunk():
+    """
+    Receives an independent 30s chunk and pushes it to S3 immediately.
+    Expected form data: file, filename, jobId
+    """
     try:
-        # ENSURE the cursor is at the very beginning of the file
-        file.seek(0)
+        file = request.files.get('file')
+        job_id = request.form.get('jobId')
+        filename = request.form.get('filename')  # e.g., chunk_001.webm
 
-        # Use upload_fileobj - it is the most reliable for Flask file objects
+        if not file or not job_id:
+            return jsonify({"error": "Missing file or jobId"}), 400
+
+        # Upload directly to S3 under the job_id prefix
+        # Path: input/job_12345/chunk_001.webm
+        s3_key = f"input/{job_id}/{filename}"
+
         s3_client.upload_fileobj(
             file,
             BUCKET_NAME,
-            f"input/{filename}",
-            ExtraArgs={
-                "ContentType": file.content_type  # Matches the file type (mp3/mp4)
-            }
+            s3_key,
+            ExtraArgs={"ContentType": "video/webm"}  # Common for browser recordings
         )
 
-        # Log to the terminal so you can see it in Koyeb
-        print(f"DEBUG: Successfully uploaded {file.filename} to {BUCKET_NAME}")
-
-        return jsonify({"message": "Upload successful"}), 200
+        print(f"DEBUG: Streaming chunk {filename} uploaded for {job_id}")
+        return jsonify({"message": "Chunk uploaded", "jobId": job_id}), 200
 
     except Exception as e:
-        print(f"DEBUG S3 ERROR: {str(e)}")  # This is vital for debugging
+        print(f"STREAMING ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+# --- GPU FEEDBACK API ---
+
+@app.route('/api/push_transcription/<job_id>', methods=['POST'])
+def push_transcription(job_id):
+    """
+    Endpoint for the GPU to send back the finished text for a specific chunk.
+    """
+    try:
+        data = request.json  # {"text": "...", "chunkIndex": 0}
+
+        # Broadcast the text to the specific user via WebSockets
+        socketio.emit('new_transcription', data, room=job_id)
+
+        print(f"DEBUG: Pushed chunk {data.get('chunkIndex')} text to user {job_id}")
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        print(f"PUSH ERROR: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# --- WEBSOCKET EVENT HANDLERS ---
+
+@socketio.on('connect')
+def handle_connect():
+    # User provides their jobId in the connection string to join their private room
+    job_id = request.args.get('jobId')
+    if job_id:
+        join_room(job_id)
+        print(f"CLIENT CONNECTED: Joined room {job_id}")
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print("CLIENT DISCONNECTED")
+
+
 if __name__ == '__main__':
-    # Use 0.0.0.0 for Koyeb compatibility
     port = int(os.environ.get("PORT", 8000))
-    app.run(host='0.0.0.0', port=port)
+    # Note: Use socketio.run instead of app.run for WebSockets
+    socketio.run(app, host='0.0.0.0', port=port)

@@ -12,67 +12,25 @@
         <span>or</span>
         <input type="file" id="fileInput" hidden>
         <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Browse Files</button>
-        <p id="upload-status"></p>
+        <p id="upload-status" style="margin-top: 15px; font-weight: bold;"></p>
     </div>
 
     <div class="feature-box zoom-zone">
         <p>Want automatic meeting notes?</p>
-        <a href="/zoom/login" class="btn btn-secondary zoom-btn">
-            Connect Zoom Account
-        </a>
-    </div>
-
-    <div id="authModal" class="modal">
-        <div class="modal-content">
-            <h2>Welcome to QuickScribe</h2>
-            <p>Subscribe for unlimited transcriptions and Zoom integration.</p>
-            
-            <form id="subscribeForm">
-                <input type="text" placeholder="Full Name" required class="modal-input">
-                <input type="email" placeholder="Email Address" required class="modal-input">
-                <button type="submit" class="btn btn-primary">Subscribe Now</button>
-            </form>
-
-            <div class="social-auth">
-                <button class="btn btn-google">Continue with Google</button>
-                <button class="btn btn-apple">Continue with Apple</button>
-            </div>
-
-            <button id="guestBtn" class="btn btn-secondary">Continue as Guest (2 free credits)</button>
-        </div>
+        <a href="/zoom/login" class="btn btn-secondary zoom-btn">Connect Zoom Account</a>
     </div>
 </div>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    const modal = document.getElementById('authModal');
-    const guestBtn = document.getElementById('guestBtn');
     const fileInput = document.getElementById('fileInput');
     const statusTxt = document.getElementById('upload-status');
-
-    // 1. Initial State Check
-    // If they haven't chosen a type yet, show the modal
-    if (!localStorage.getItem('qs_user_type')) {
-        modal.style.display = 'flex';
-    }
-
-    // 2. Handle Guest Button Click (Initialization)
-    guestBtn.onclick = () => {
-        localStorage.setItem('qs_user_type', 'guest');
-        localStorage.setItem('qs_guest_credits', '2'); 
-        modal.style.display = 'none';
-        alert("Welcome! You have 2 free transcription credits.");
-    };
-
-    // 3. Handle File Upload with Credit Management
-// 3. Handle File Upload with "Soft Landing" Progress
-    const CHUNK_SIZE = 5 * 1024 * 1024;
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
 
-        // Reset UI
         statusTxt.innerText = "Starting upload...";
         statusTxt.style.color = "blue";
 
@@ -80,60 +38,42 @@ document.addEventListener('DOMContentLoaded', () => {
         const fileName = Date.now() + "_" + file.name;
 
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-            const start = chunkIndex * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, file.size);
-            const chunk = file.slice(start, end);
-
+            const chunk = file.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
             const formData = new FormData();
             formData.append('file', chunk);
             formData.append('filename', fileName);
             formData.append('chunkIndex', chunkIndex);
             formData.append('totalChunks', totalChunks);
 
-            // --- SPECIAL LOGIC FOR THE LAST CHUNK ---
             let progressInterval;
             if (chunkIndex === totalChunks - 1) {
-                // If this is the last chunk, we start the "30-second creep"
                 let fakePercent = 90;
-                statusTxt.innerText = `Uploading: ${fakePercent}% (Syncing to cloud...)`;
-
-                // Increase by 1% every 3 seconds (roughly 30s to get to 99%)
                 progressInterval = setInterval(() => {
                     if (fakePercent < 99) {
                         fakePercent++;
-                        statusTxt.innerText = `Uploading: ${fakePercent}% (Syncing to S3...)`;
+                        statusTxt.innerText = `Finalizing: ${fakePercent}% (Syncing to cloud...)`;
                     }
-                }, 3000);
+                }, 2000);
             }
 
             try {
-                const response = await fetch('/api/upload_chunk', {
-                    method: 'POST',
-                    body: formData
-                });
+                const response = await fetch('/api/upload_streaming_chunk', { method: 'POST', body: formData });
+                if (!response.ok) throw new Error("Upload failed");
 
-                if (!response.ok) throw new Error(`Chunk ${chunkIndex} failed`);
-
-                // --- PROGRESS CALCULATION ---
                 if (chunkIndex < totalChunks - 1) {
-                    // For normal chunks, map them to 0-90% range
-                    // This reserves the last 10% for the S3 wait time
                     const percent = Math.round(((chunkIndex + 1) / totalChunks) * 90);
                     statusTxt.innerText = `Uploading: ${percent}%`;
                 } else {
-                    // LAST CHUNK FINISHED!
-                    clearInterval(progressInterval); // Stop the fake timer
+                    clearInterval(progressInterval);
                     const result = await response.json();
                     statusTxt.innerText = "Success! " + result.message;
                     statusTxt.style.color = "green";
                 }
-
             } catch (error) {
                 if (progressInterval) clearInterval(progressInterval);
-                console.error(error);
-                statusTxt.innerText = "Upload failed. Check console.";
+                statusTxt.innerText = "Error during upload.";
                 statusTxt.style.color = "red";
-                return;
+                break;
             }
         }
     });
