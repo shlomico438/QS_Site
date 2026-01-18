@@ -1,23 +1,58 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+    /* Fixed container prevents the button from "jumping" */
+    .transcription-area {
+        width: 100%;
+        max-width: 800px;
+        margin: 20px auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    #transcript-window {
+        height: 400px; /* Fixed height for stability */
+        overflow-y: auto;
+        background: #ffffff;
+        padding: 25px;
+        border-radius: 12px;
+        border: 2px solid #eaee00; /* QuickScribe Brand Yellow/Gold */
+
+        /* Larger, more readable text for presenters */
+        font-size: 1.4rem;
+        color: #2c3e50;
+        line-height: 1.8;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        text-align: left;
+    }
+
+    /* Keep the upload box at the bottom consistently */
+    .upload-zone {
+        margin-top: 20px;
+    }
+</style>
+
 <div class="main-container">
-    <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" style="width: 250px; margin-bottom: 20px;">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo" style="width: 300px; margin-bottom: 20px;">
 
     <h1>Transcription made simple.</h1>
     <p class="subtitle">Precision AI transcription for high-context languages and noisy environments.</p>
 
-    <div id="transcription-container" class="feature-box" style="display:none; text-align: left;">
-        <h3>Live Output</h3>
-        <div id="transcript-window" style="height: 300px; overflow-y: auto; background: #f9f9f9; padding: 15px; border-radius: 8px; border: 1px solid #ddd; font-family: monospace; line-height: 1.6;">
-            <p style="color: #888;">Waiting for GPU to start transcribing...</p>
+    <div id="transcription-container" class="transcription-area" style="visibility: hidden;">
+        <h3 style="margin-bottom: 5px; color: #666; text-align: left;">Live Transcript</h3>
+        <div id="transcript-window">
+            <p style="color: #bbb;">Transcription will appear here...</p>
         </div>
     </div>
 
     <div class="feature-box upload-zone" id="upload-box">
         <input type="file" id="fileInput" hidden>
-        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">Start Recording/Upload</button>
-        <p id="upload-status"></p>
+        <button class="btn btn-primary" style="padding: 15px 40px; font-size: 1.1rem;" onclick="document.getElementById('fileInput').click()">
+            Start Recording/Upload
+        </button>
+        <p id="upload-status" style="margin-top: 10px; font-weight: bold;"></p>
     </div>
 </div>
 
@@ -31,16 +66,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptContainer = document.getElementById('transcription-container');
 
     let socket;
-    const CHUNK_SIZE = 5 * 1024 * 1024;
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
 
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         const jobId = "job_" + Date.now();
 
-        // 1. Show the transcription window
-        transcriptContainer.style.display = 'block';
+        // 1. Show the transcription window by changing visibility
+        transcriptContainer.style.visibility = 'visible';
         transcriptWindow.innerHTML = ""; // Clear initial message
 
         // 2. Connect to WebSocket room for this specific job
@@ -57,15 +93,15 @@ document.addEventListener('DOMContentLoaded', () => {
             transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
         });
 
+        statusTxt.innerText = "Starting upload...";
+        statusTxt.style.color = "blue";
+
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
             const start = chunkIndex * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, file.size);
-
-            // Capture the raw binary slice without any modifications
             const rawChunk = file.slice(start, end);
 
             const formData = new FormData();
-            // We use .bin to signify this is a raw fragment, not a complete media file
             const s3Filename = `chunk_${String(chunkIndex).padStart(3, '0')}.bin`;
 
             formData.append('file', rawChunk, s3Filename);
@@ -84,7 +120,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
-                // Uploading to siteapp.py endpoint
                 const response = await fetch('/api/upload_streaming_chunk', {
                     method: 'POST',
                     body: formData
