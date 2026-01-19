@@ -8,14 +8,15 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
-# Initialize SocketIO for live transcription delivery
-# Strict configuration to eliminate polling-related 400 errors
+# Strict settings to keep connections alive during long GPU gaps
 socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
-    transports=['websocket'], # Force server to only accept websockets
-    ping_timeout=120,         # Double the timeout for slow AI processing
-    ping_interval=20          # Send heartbeats every 20 seconds
+    transports=['websocket'],
+    # Send a ping every 20 seconds to prevent Cloudflare/Nginx timeouts
+    ping_timeout=120,
+    ping_interval=20,
+    manage_session=False # Improves performance for high-traffic streaming
 )
 
 # Initialize S3 Client

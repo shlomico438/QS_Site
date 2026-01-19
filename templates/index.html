@@ -158,6 +158,19 @@ document.addEventListener('DOMContentLoaded', () => {
     let fakeProgressInterval;
     const CHUNK_SIZE = 5 * 1024 * 1024;
 
+document.addEventListener('DOMContentLoaded', () => {
+    const fileInput = document.getElementById('fileInput');
+    const statusTxt = document.getElementById('upload-status');
+    const progressBar = document.getElementById('progress-bar');
+    const pContainer = document.getElementById('p-container');
+    const transcriptWindow = document.getElementById('transcript-window');
+    const placeholder = document.getElementById('placeholder');
+    const mainBtn = document.getElementById('main-btn');
+
+    let socket;
+    let fakeProgressInterval;
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
@@ -167,34 +180,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
         pContainer.style.display = 'block';
         mainBtn.disabled = true;
-        placeholder.innerText = "Initializing Secure WebSocket...";
+        placeholder.innerText = "Opening Secure Stream...";
 
-        // Strict transport enforcement to stop 400 errors
+        // Force WebSocket and increase timeout for slower proxies
         socket = io({
             query: { jobId },
             transports: ['websocket'],
             upgrade: false,
             reconnection: true,
-            timeout: 20000
+            reconnectionDelay: 2000,
+            reconnectionDelayMax: 5000,
+            timeout: 60000 // 60s timeout to allow for GPU cold starts
         });
 
-        socket.on('new_transcription', (data) => {
-            if (fakeProgressInterval) clearInterval(fakeProgressInterval);
-            pContainer.style.display = 'none';
-            statusTxt.innerText = "Processing Live Data";
-            statusTxt.style.color = "#28a745";
+        // Only start handling events once the connection is confirmed
+        socket.on('connect', () => {
+            console.log("WebSocket connected successfully.");
 
-            if (document.getElementById('placeholder')) {
-                transcriptWindow.innerHTML = "";
-            }
+            socket.on('new_transcription', (data) => {
+                if (fakeProgressInterval) clearInterval(fakeProgressInterval);
+                pContainer.style.display = 'none';
+                statusTxt.innerText = "Transcribing Live";
+                statusTxt.style.color = "#28a745";
 
-            transcriptWindow.innerHTML += data.text + " ";
-            transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
+                if (document.getElementById('placeholder')) {
+                    transcriptWindow.innerHTML = "";
+                }
+
+                transcriptWindow.innerHTML += data.text + " ";
+                transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
+            });
         });
 
-        // Error handling for session gaps
-        socket.on('connect_error', () => {
-            console.log("WebSocket gap detected. Re-establishing connection...");
+        // Log specific errors to the console for easier debugging
+        socket.on('connect_error', (err) => {
+            console.error("Connection Gap:", err.message);
+            statusTxt.innerText = "Retrying connection...";
         });
 
         for (let i = 0; i < totalChunks; i++) {
