@@ -167,23 +167,34 @@
 
 <script>
 fileInput.addEventListener('change', async function() {
+    const fileInput = document.getElementById('fileInput');
+    const statusTxt = document.getElementById('upload-status');
+    const progressBar = document.getElementById('progress-bar');
+    const pContainer = document.getElementById('p-container');
+    const transcriptWindow = document.getElementById('transcript-window');
+    const placeholder = document.getElementById('placeholder');
+    const mainBtn = document.getElementById('main-btn');
+
+    let socket;
+    let fakeProgressInterval;
+    const CHUNK_SIZE = 5 * 1024 * 1024;
     const file = this.files[0];
+
     if (!file) return;
 
-    // חישוב כמות הצ'אנקים: $totalChunks = \lceil \frac{file.size}{CHUNK\_SIZE} \rceil$
+    // $totalChunks = \lceil \frac{file.size}{CHUNK\_SIZE} \rceil$
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     const jobId = "job_" + Date.now();
 
-    // הכנת ממשק המשתמש
     pContainer.style.display = 'block';
     mainBtn.disabled = true;
-    placeholder.innerText = "מתחבר לשרת...";
+    placeholder.innerText = "Connecting to server...";
 
     socket = io({ query: { jobId } });
 
-    // האזנה לטקסט מה-GPU
+    // expecting text from -GPU
     socket.on('new_transcription', (data) => {
-        if (fakeProgressInterval) clearInterval(fakeProgressInterval); // עצירת הטיפוס המדומה
+        if (fakeProgressInterval) clearInterval(fakeProgressInterval);
 
         pContainer.style.display = 'none';
         statusTxt.innerText = "מתמלל בשידור חי...";
