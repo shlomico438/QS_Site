@@ -9,7 +9,14 @@ app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 # Initialize SocketIO for live transcription delivery
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# Strict configuration to eliminate polling-related 400 errors
+socketio = SocketIO(app,
+    cors_allowed_origins="*",
+    async_mode='gevent',
+    transports=['websocket'], # Force server to only accept websockets
+    ping_timeout=120,         # Double the timeout for slow AI processing
+    ping_interval=20          # Send heartbeats every 20 seconds
+)
 
 # Initialize S3 Client
 s3_client = boto3.client(

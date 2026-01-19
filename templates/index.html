@@ -3,19 +3,15 @@
 {% block content %}
 <style>
     /* =========================
-       GLOBAL FIXES (DO NOT LOCK BODY)
+       GLOBAL & APP SHELL
     ========================= */
     html, body {
         margin: 0;
         min-height: 100dvh;
-        overflow-x: hidden;
+        overflow: hidden; /* Lock the page to prevent scrolling */
         background-color: #fcfcfc;
     }
 
-    /* =========================
-       APP SHELL (KEY FIX)
-       Everything below navbar lives here
-    ========================= */
     .app-shell {
         height: calc(100dvh - var(--nav-height, 80px));
         display: flex;
@@ -23,45 +19,44 @@
     }
 
     /* =========================
-       HEADER
+       HEADER - FORCED LOGO SIZE
     ========================= */
     .header-section {
-        flex-shrink: 0;
+        flex: 0 0 auto; /* Do not allow the header to shrink */
         text-align: center;
         padding: 20px 0 10px;
     }
 
     .header-section img {
-        height: 40px;
-        margin-bottom: 5px;
+        height: 100px !important; /* Forced larger size */
+        width: auto;
+        display: block;
+        margin: 0 auto 10px;
     }
 
     .header-section h2 {
-        font-size: 1.2rem;
+        font-size: 1.4rem;
         margin: 0;
-        color: #444;
+        color: #333;
     }
 
     /* =========================
-       MAIN APP CONTAINER
+       TRANSCRIPTION AREA
     ========================= */
     .main-app-container {
         flex: 1 1 auto;
         display: flex;
         flex-direction: column;
         padding: 10px;
-        box-sizing: border-box;
+        min-height: 0; /* Critical for inner scroll stability */
     }
 
-    /* =========================
-       TRANSCRIPTION
-    ========================= */
     .transcription-area {
-        flex: 1 1 auto;
+        flex: 1;
         min-height: 0;
         width: 95%;
-        max-width: 900px;
-        margin: 10px auto;
+        max-width: 1000px;
+        margin: 0 auto;
         display: flex;
     }
 
@@ -69,30 +64,30 @@
         flex: 1;
         overflow-y: auto;
         background: #ffffff;
-        padding: 20px;
-        border-radius: 12px;
+        padding: 30px;
+        border-radius: 15px;
         border: 2px solid #eee;
-        font-size: 1.8rem;
+        font-size: 2rem; /* Optimized for presenters */
         font-weight: 500;
         color: #1a1a1a;
-        line-height: 1.5;
+        line-height: 1.6;
         text-align: left;
     }
 
     /* =========================
-       UPLOAD / BUTTON
+       UPLOAD CONTROLS
     ========================= */
     .upload-zone {
-        flex-shrink: 0;
-        padding: 10px 0;
+        flex: 0 0 auto;
+        padding: 15px 0 25px;
         text-align: center;
     }
 
     .progress-container {
         width: 100%;
-        max-width: 250px;
-        margin: 0 auto 10px;
-        height: 6px;
+        max-width: 350px;
+        margin: 0 auto 12px;
+        height: 10px;
         background: #eee;
         border-radius: 10px;
         display: none;
@@ -103,41 +98,33 @@
         height: 100%;
         background: #5d5dff;
         border-radius: 10px;
-        transition: width 0.3s ease;
+        transition: width 0.4s ease;
     }
 
     .btn-primary {
-        padding: 12px 45px;
-        font-size: 1.1rem;
+        padding: 18px 60px;
+        font-size: 1.3rem;
         font-weight: bold;
         border-radius: 50px;
         background: #5d5dff;
         color: white;
         border: none;
         cursor: pointer;
-    }
-
-    .active-mode #transcript-window {
-        border-color: #00ff88;
+        box-shadow: 0 4px 15px rgba(93, 93, 255, 0.3);
     }
 </style>
 
-<!-- APP SHELL -->
 <div class="app-shell">
-
-    <!-- HEADER -->
     <div class="header-section">
-        <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe">
-        <h2>Live Transcription</h2>
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo">
+        <h2>Live Transcription Dashboard</h2>
     </div>
 
-    <!-- MAIN APP -->
     <div class="main-app-container">
-
         <div class="transcription-area">
             <div id="transcript-window">
-                <p id="placeholder" style="color:#ccc;text-align:center;margin-top:30%;">
-                    Ready. Click below to begin.
+                <p id="placeholder" style="color:#ccc;text-align:center;margin-top:15vh;">
+                    System Ready. Upload a file to start transcribing.
                 </p>
             </div>
         </div>
@@ -146,27 +133,19 @@
             <div class="progress-container" id="p-container">
                 <div id="progress-bar"></div>
             </div>
-
-            <p id="upload-status"
-               style="margin:0 0 10px;font-weight:600;font-size:0.9rem;color:#666;">
-                Ready
-            </p>
-
+            <p id="upload-status" style="margin:0 0 15px;font-weight:600;font-size:1rem;color:#555;">Waiting for upload...</p>
             <input type="file" id="fileInput" hidden>
-            <button class="btn btn-primary"
-                    id="main-btn"
-                    onclick="document.getElementById('fileInput').click()">
-                Start Session
+            <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">
+                Start Transcription
             </button>
         </div>
-
     </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 
 <script>
-fileInput.addEventListener('change', async function() {
+document.addEventListener('DOMContentLoaded', () => {
     const fileInput = document.getElementById('fileInput');
     const statusTxt = document.getElementById('upload-status');
     const progressBar = document.getElementById('progress-bar');
@@ -178,81 +157,87 @@ fileInput.addEventListener('change', async function() {
     let socket;
     let fakeProgressInterval;
     const CHUNK_SIZE = 5 * 1024 * 1024;
-    const file = this.files[0];
 
-    if (!file) return;
+    fileInput.addEventListener('change', async function() {
+        const file = this.files[0];
+        if (!file) return;
 
-    // $totalChunks = \lceil \frac{file.size}{CHUNK\_SIZE} \rceil$
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    const jobId = "job_" + Date.now();
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        const jobId = "job_" + Date.now();
 
-    pContainer.style.display = 'block';
-    mainBtn.disabled = true;
-    placeholder.innerText = "Connecting to server...";
+        pContainer.style.display = 'block';
+        mainBtn.disabled = true;
+        placeholder.innerText = "Initializing Secure WebSocket...";
 
-    socket = io({ query: { jobId } });
+        // Strict transport enforcement to stop 400 errors
+        socket = io({
+            query: { jobId },
+            transports: ['websocket'],
+            upgrade: false,
+            reconnection: true,
+            timeout: 20000
+        });
 
-    // expecting text from -GPU
-    socket.on('new_transcription', (data) => {
-        if (fakeProgressInterval) clearInterval(fakeProgressInterval);
+        socket.on('new_transcription', (data) => {
+            if (fakeProgressInterval) clearInterval(fakeProgressInterval);
+            pContainer.style.display = 'none';
+            statusTxt.innerText = "Processing Live Data";
+            statusTxt.style.color = "#28a745";
 
-        pContainer.style.display = 'none';
-        statusTxt.innerText = "מתמלל בשידור חי...";
-        statusTxt.style.color = "#28a745";
-        document.body.classList.add('active-mode');
-
-        if (document.getElementById('placeholder')) {
-            transcriptWindow.innerHTML = "";
-        }
-
-        transcriptWindow.innerHTML += data.text + " ";
-        transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
-    });
-
-    for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const formData = new FormData();
-
-        // יצירת שם קובץ סידורי עבור S3
-        const s3Filename = `chunk_${String(i).padStart(3, '0')}.bin`;
-
-        formData.append('file', file.slice(start, end), s3Filename);
-        formData.append('jobId', jobId);
-        formData.append('filename', s3Filename); // השדה החסר שגרם לשגיאה!
-
-        try {
-            const response = await fetch('/api/upload_streaming_chunk', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) throw new Error(`צ'אנק ${i} נכשל`);
-
-            // עדכון התקדמות אמיתי עד 90%
-            const realPercent = Math.round(((i + 1) / totalChunks) * 90);
-            progressBar.style.width = realPercent + "%";
-            statusTxt.innerText = `מעלה נתונים: ${realPercent}%`;
-
-            // שלב ההמתנה ל-GPU: טיפוס איטי מ-91% ל-99%
-            if (i === totalChunks - 1) {
-                statusTxt.innerText = "מכין את מנוע ה-AI... (91%)";
-                let currentFake = 91;
-                fakeProgressInterval = setInterval(() => {
-                    if (currentFake < 99) {
-                        currentFake++;
-                        progressBar.style.width = currentFake + "%";
-                        statusTxt.innerText = `מעבד נתונים... (${currentFake}%)`;
-                    }
-                }, 3000); // טיפוס של 1% כל 3 שניות כדי לכסות את זמן עליית ה-GPU
+            if (document.getElementById('placeholder')) {
+                transcriptWindow.innerHTML = "";
             }
-        } catch (e) {
-            statusTxt.innerText = "שגיאת חיבור: " + e.message;
-            statusTxt.style.color = "red";
-            mainBtn.disabled = false;
-            break;
+
+            transcriptWindow.innerHTML += data.text + " ";
+            transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
+        });
+
+        // Error handling for session gaps
+        socket.on('connect_error', () => {
+            console.log("WebSocket gap detected. Re-establishing connection...");
+        });
+
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const formData = new FormData();
+            const s3Filename = `chunk_${String(i).padStart(3, '0')}.bin`;
+
+            formData.append('file', file.slice(start, end), s3Filename);
+            formData.append('jobId', jobId);
+            formData.append('filename', s3Filename);
+
+            try {
+                const response = await fetch('/api/upload_streaming_chunk', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error("Sync failed at segment " + i);
+
+                const realPercent = Math.round(((i + 1) / totalChunks) * 90);
+                progressBar.style.width = realPercent + "%";
+                statusTxt.innerText = `Synchronizing Data: ${realPercent}%`;
+
+                if (i === totalChunks - 1) {
+                    statusTxt.innerText = "Warming AI Engine... (91%)";
+                    let currentFake = 91;
+                    fakeProgressInterval = setInterval(() => {
+                        if (currentFake < 99) {
+                            currentFake++;
+                            progressBar.style.width = currentFake + "%";
+                            statusTxt.innerText = `Optimizing Audio Stream (${currentFake}%)...`;
+                        }
+                    }, 3000);
+                }
+            } catch (e) {
+                statusTxt.innerText = "Connection Error: " + e.message;
+                statusTxt.style.color = "red";
+                mainBtn.disabled = false;
+                break;
+            }
         }
-    }
+    });
 });
 </script>
 {% endblock %}
