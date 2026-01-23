@@ -175,14 +175,15 @@ document.addEventListener('DOMContentLoaded', () => {
             transports: ['websocket'],
             upgrade: false,
             reconnection: true,
-            reconnectionDelay: 2000,
-            reconnectionDelayMax: 5000,
-            timeout: 60000 // 60s timeout to allow for GPU cold starts
+            timeout: 60000
         });
 
         // Only start handling events once the connection is confirmed
         socket.on('connect', () => {
-            console.log("WebSocket connected successfully.");
+            console.log("WebSocket connected. Room ID:", jobId);
+
+            socket.on('job_status_update', (data) => {
+                console.log("GPU Update Received:", data);
 
             socket.on('new_transcription', (data) => {
                 if (fakeProgressInterval) clearInterval(fakeProgressInterval);
