@@ -169,7 +169,6 @@ document.addEventListener('DOMContentLoaded', () => {
         mainBtn.disabled = true;
         placeholder.innerText = "Opening Secure Stream...";
 
-        // Force WebSocket and increase timeout for slower proxies
         socket = io({
             query: { jobId },
             transports: ['websocket'],
@@ -178,34 +177,39 @@ document.addEventListener('DOMContentLoaded', () => {
             timeout: 60000
         });
 
-        // Only start handling events once the connection is confirmed
         socket.on('connect', () => {
             console.log("WebSocket connected. Room ID:", jobId);
-
-            socket.on('job_status_update', (data) => {
-                console.log("GPU Update Received:", data);
-
-            socket.on('new_transcription', (data) => {
-                if (fakeProgressInterval) clearInterval(fakeProgressInterval);
-                pContainer.style.display = 'none';
-                statusTxt.innerText = "Transcribing Live";
-                statusTxt.style.color = "#28a745";
-
-                if (document.getElementById('placeholder')) {
-                    transcriptWindow.innerHTML = "";
-                }
-
-                transcriptWindow.innerHTML += data.text + " ";
-                transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
-            });
         });
 
-        // Log specific errors to the console for easier debugging
+        // FIXED: Listen for the correct event from siteapp.py
+        socket.on('job_status_update', (data) => {
+            console.log("GPU Update Received:", data);
+
+            if (fakeProgressInterval) clearInterval(fakeProgressInterval);
+            pContainer.style.display = 'none';
+            statusTxt.innerText = "Transcription Complete";
+            statusTxt.style.color = "#28a745";
+
+            if (placeholder) placeholder.style.display = "none";
+            transcriptWindow.innerHTML = ""; // Clear for fresh results
+
+            if (data.segments) {
+                data.segments.forEach(seg => {
+                    const speaker = seg.speaker || "Unknown";
+                    transcriptWindow.innerHTML += `<p><strong>[${speaker}]:</strong> ${seg.text}</p>`;
+                });
+            }
+
+            transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
+            mainBtn.disabled = false;
+        });
+
         socket.on('connect_error', (err) => {
             console.error("Connection Gap:", err.message);
             statusTxt.innerText = "Retrying connection...";
         });
 
+        // Binary Chunk Upload
         for (let i = 0; i < totalChunks; i++) {
             const start = i * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, file.size);
