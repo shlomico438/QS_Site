@@ -48,12 +48,11 @@ def upload_streaming_chunk():
     try:
         file = request.files.get('file')
         job_id = request.form.get('jobId')
-        filename = request.form.get('filename')  # e.g., chunk_001.bin
+        filename = request.form.get('filename')
 
         # Strict validation for all required fields
         if not file or not job_id or not filename:
-            missing = [k for k, v in {"file": file, "jobId": job_id, "filename": filename}.items() if not v]
-            return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+            return jsonify({"error": "Missing fields"}), 400
 
         # Upload as a raw binary object under the job_id prefix
         s3_key = f"input/{job_id}/{filename}"
@@ -67,32 +66,37 @@ def upload_streaming_chunk():
         )
 
         print(f"DEBUG: Binary chunk {filename} uploaded for {job_id}")
-        return jsonify({"message": f"Chunk {filename} uploaded", "jobId": job_id}), 200
-
+        return jsonify({"message": "Success", "jobId": job_id}), 200
     except Exception as e:
         print(f"STREAMING ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
 # --- GPU FEEDBACK API ---
 
-@app.route('/api/push_transcription/<job_id>', methods=['POST'])
-def push_transcription(job_id):
-    """
-    Endpoint for the GPU to send back the finished text.
-    """
+@app.route('/api/gpu_callback', methods=['POST'])
+def gpu_callback():
     try:
-        data = request.json  # {"text": "...", "chunkIndex": 0}
-        socketio.emit('new_transcription', data, room=job_id)
-        print(f"DEBUG: Pushed chunk {data.get('chunkIndex')} text to user {job_id}")
+        data = request.json  # Expects {"jobId": "...", "segments": [...], "status": "..."}
+        job_id = data.get('jobId')
+
+        if not job_id:
+            return jsonify({"error": "Missing jobId"}), 400
+
+        # Broadcast the full data to the room named after the jobId
+        # Event name 'job_status_update' must be what your frontend listens for
+        socketio.emit('job_status_update', data, room=job_id)
+
+        print(f"DEBUG: Forwarded GPU results to room: {job_id}")
         return jsonify({"status": "success"}), 200
     except Exception as e:
-        print(f"PUSH ERROR: {e}")
+        print(f"CALLBACK ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
 # --- WEBSOCKET EVENT HANDLERS ---
 
 @socketio.on('connect')
 def handle_connect():
+    # Matches query: { jobId: "..." } in frontend socket connection
     job_id = request.args.get('jobId')
     if job_id:
         join_room(job_id)
