@@ -162,94 +162,42 @@ document.addEventListener('DOMContentLoaded', () => {
         const file = this.files[0];
         if (!file) return;
 
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         const jobId = "job_" + Date.now();
-
         pContainer.style.display = 'block';
         mainBtn.disabled = true;
-        placeholder.innerText = "Opening Secure Stream...";
+        statusTxt.innerText = "Uploading file...";
 
-        socket = io({
-            query: { jobId },
-            transports: ['websocket'],
-            upgrade: false,
-            reconnection: true,
-            timeout: 60000
-        });
+        // חיבור ל-WebSocket
+        socket = io({ query: { jobId }, transports: ['websocket'] });
 
-        socket.on('connect', () => {
-            console.log("WebSocket connected. Room ID:", jobId);
-        });
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('jobId', jobId);
 
-        // FIXED: Listen for the correct event from siteapp.py
-        socket.on('job_status_update', (data) => {
-            console.log("GPU Update Received:", data);
+        // שימוש ב-XMLHttpRequest כדי לראות התקדמות העלאה אמיתית
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload_full_file', true);
 
-            if (fakeProgressInterval) clearInterval(fakeProgressInterval);
-            pContainer.style.display = 'none';
-            statusTxt.innerText = "Transcription Complete";
-            statusTxt.style.color = "#28a745";
-
-            if (placeholder) placeholder.style.display = "none";
-            transcriptWindow.innerHTML = ""; // Clear for fresh results
-
-            if (data.segments) {
-                data.segments.forEach(seg => {
-                    const speaker = seg.speaker || "Unknown";
-                    transcriptWindow.innerHTML += `<p><strong>[${speaker}]:</strong> ${seg.text}</p>`;
-                });
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percent + "%";
+                statusTxt.innerText = `Uploading: ${percent}%`;
             }
+        };
 
-            transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
-            mainBtn.disabled = false;
-        });
-
-        socket.on('connect_error', (err) => {
-            console.error("Connection Gap:", err.message);
-            statusTxt.innerText = "Retrying connection...";
-        });
-
-        // Binary Chunk Upload
-        for (let i = 0; i < totalChunks; i++) {
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, file.size);
-            const formData = new FormData();
-            const s3Filename = `chunk_${String(i).padStart(3, '0')}.bin`;
-
-            formData.append('file', file.slice(start, end), s3Filename);
-            formData.append('jobId', jobId);
-            formData.append('filename', s3Filename);
-
-            try {
-                const response = await fetch('/api/upload_streaming_chunk', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!response.ok) throw new Error("Sync failed at segment " + i);
-
-                const realPercent = Math.round(((i + 1) / totalChunks) * 90);
-                progressBar.style.width = realPercent + "%";
-                statusTxt.innerText = `Synchronizing Data: ${realPercent}%`;
-
-                if (i === totalChunks - 1) {
-                    statusTxt.innerText = "Warming AI Engine... (91%)";
-                    let currentFake = 91;
-                    fakeProgressInterval = setInterval(() => {
-                        if (currentFake < 99) {
-                            currentFake++;
-                            progressBar.style.width = currentFake + "%";
-                            statusTxt.innerText = `Optimizing Audio Stream (${currentFake}%)...`;
-                        }
-                    }, 3000);
-                }
-            } catch (e) {
-                statusTxt.innerText = "Connection Error: " + e.message;
-                statusTxt.style.color = "red";
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                statusTxt.innerText = "File uploaded! AI is starting...";
+                // כאן נכנס הלופ של ה-Fake progress בזמן שה-GPU עובד
+                startFakeProgress();
+            } else {
+                statusTxt.innerText = "Upload failed.";
                 mainBtn.disabled = false;
-                break;
             }
-        }
+        };
+
+        xhr.send(formData);
     });
 });
 </script>
