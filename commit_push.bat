@@ -13,13 +13,29 @@ if "%COMMENT%"=="" (
 )
 
 echo -----------------------------------------
-echo [1/3] Adding changes...
+echo [0/4] Verifying Build (Syntax Check)...
+echo -----------------------------------------
+:: This command checks all .py files in the current directory for syntax errors
+python -m compileall -q .
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Build verification failed! 
+    echo Please fix the syntax errors above before committing.
+    pause
+    exit /b %errorlevel%
+)
+echo [SUCCESS] Syntax check passed.
+
+echo.
+echo -----------------------------------------
+echo [1/4] Adding changes...
 echo -----------------------------------------
 git add .
 
 echo.
 echo -----------------------------------------
-echo [2/3] Committing with message: "%COMMIT_MSG%"
+echo [2/4] Committing with message: "%COMMIT_MSG%"
 echo -----------------------------------------
 git commit -m "%COMMIT_MSG%"
 
@@ -30,7 +46,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo -----------------------------------------
-echo [3/3] Pushing to remote...
+echo [3/4] Pushing to remote...
 echo -----------------------------------------
 git push
 
@@ -43,6 +59,6 @@ if %errorlevel% neq 0 (
 
 echo.
 echo -----------------------------------------
-echo [SUCCESS] Done!
+echo [4/4] [SUCCESS] Build verified and changes live!
 echo -----------------------------------------
 pause
