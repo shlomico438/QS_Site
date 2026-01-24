@@ -199,6 +199,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
         xhr.send(formData);
     });
+    function startFakeProgress() {
+        const progressBar = document.getElementById('progress-bar');
+        const statusTxt = document.getElementById('upload-status');
+        let currentFake = 91;
+
+        // Clear any existing interval
+        if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+
+        window.fakeProgressInterval = setInterval(() => {
+            if (currentFake < 99) {
+                currentFake++;
+                progressBar.style.width = currentFake + "%";
+                statusTxt.innerText = `AI Processing... (${currentFake}%)`;
+            }
+        }, 4000); // Increments every 4 seconds to wait for GPU
+    }
 });
 </script>
 {% endblock %}

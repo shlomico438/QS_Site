@@ -44,8 +44,15 @@ def index():
 def about():
     return render_template('about.html')
 
-# --- UPLOAD & TRIGGER API ---
+@app.route('/blog')
+def blog():
+    return render_template('blog.html')
 
+@app.route('/contact')
+def contact():
+    return render_template('contact.html')
+
+# --- UPLOAD & TRIGGER API ---
 @app.route('/api/upload_full_file', methods=['POST'])
 def upload_full_file():
     try:
