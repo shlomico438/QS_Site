@@ -26,13 +26,9 @@
         margin-bottom: 30px;
     }
 
-    /* Keep the footer at the bottom for short pages */
-    .main-content {
-        min-height: calc(100vh - 160px); /* Adjust based on nav + footer height */
-    }
 </style>
 </head>
-<body>
+<body style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
     <header class="navbar">
         <div class="nav-container">
             <a href="/" class="nav-logo">QuickScribe</a>
@@ -44,11 +40,11 @@
         </div>
     </header>
 
-    <main class="main-content">
+    <main class="main-content" style="flex:1; overflow:hidden;">
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="footer" style="text-align: center; padding: 20px; background: #f1f1f1;">
+    <footer class="footer" style="flex-shrink:0; text-align:center; padding:20px; background:#f1f1f1;">
         <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
     </footer>
 </body>
