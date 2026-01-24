@@ -3,18 +3,37 @@
 {% block content %}
 <style>
     /* =========================
-       GLOBAL & APP SHELL
+       1. GLOBAL LOCK (Critical)
+       This overrides base.html to prevent the WINDOW from scrolling
+    ========================= */
+    html, body {
+        height: 100vh !important;    /* Force exact screen height */
+        max-height: 100vh !important;
+        overflow: hidden !important; /* Kill the main scrollbar */
+    }
+
+    /* =========================
+       2. LAYOUT FIXER
+       This targets the <main> tag from base.html
+    ========================= */
+    .main-content {
+        /* This makes the main container fill the space between Header & Footer */
+        height: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important; /* Prevents internal spillover */
+        padding: 0 !important;       /* Remove any default padding */
+    }
+
+    /* =========================
+       3. APP MODE
+       Now this just fills the parent perfectly
     ========================= */
     .app-mode {
-        /* 100vh (Screen)
-           - 80px (Navbar)
-           - 70px (Footer)
-           = The exact space left for your app
-        */
-        height: calc(100vh - 150px);
+        flex: 1;                     /* Grow to fill the .main-content */
         display: flex;
         flex-direction: column;
-        overflow: hidden; /* Prevents double scrollbars */
+        overflow: hidden;            /* Keep the scrollbar INSIDE the app */
         background-color: #fcfcfc;
     }
 
@@ -24,14 +43,10 @@
     .header-section {
         flex: 0 0 auto;
         text-align: center;
-        padding: 15px 0 5px;
+        padding: 10px 0 5px;
     }
 
-    /* HIDDEN: We hide the inner logo because it is already in the Navbar.
-       This saves 120px of vertical space so the button never falls off. */
-    .header-section img {
-        display: none;
-    }
+    .header-section img { display: none; } /* Hidden to save space */
 
     .header-section h2 {
         font-size: 1.3rem;
