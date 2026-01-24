@@ -7,43 +7,30 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
-    <style>
-        /* Shared Styles for Informational Pages */
-        .content-page {
-            max-width: 800px;
-            margin: 40px auto;
-            padding: 40px;
-            background: white;
-            min-height: 70vh; /* Reduced slightly to fit better with header/footer */
-            border-radius: 8px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-            font-family: 'Inter', sans-serif;
-        }
+<style>
+    /* Generic container for Contact, Blog, About */
+    .content-page {
+        max-width: 850px;
+        margin: 60px auto; /* Centers the box */
+        padding: 40px;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        border: 1px solid #eee;
+    }
 
-        .content-page h1 {
-            border-bottom: 2px solid #5d5dff;
-            padding-bottom: 15px;
-            margin-bottom: 25px;
-            color: #333;
-        }
+    .content-page h1 {
+        color: #4f46e5;
+        border-bottom: 2px solid #eee;
+        padding-bottom: 20px;
+        margin-bottom: 30px;
+    }
 
-        .content-page p {
-            line-height: 1.6;
-            color: #555;
-            margin-bottom: 15px;
-        }
-
-        /* Ensure footer pushes down */
-        body {
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-            margin: 0;
-        }
-        .main-content {
-            flex: 1;
-        }
-    </style>
+    /* Keep the footer at the bottom for short pages */
+    .main-content {
+        min-height: calc(100vh - 160px); /* Adjust based on nav + footer height */
+    }
+</style>
 </head>
 <body>
     <header class="navbar">

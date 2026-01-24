@@ -12,7 +12,7 @@
         background-color: #fcfcfc;
     }
 
-    .app-shell {
+    .app-mode {
         height: calc(100dvh - var(--nav-height, 80px));
         display: flex;
         flex-direction: column;
@@ -114,7 +114,7 @@
     }
 </style>
 
-<div class="app-shell">
+<div class="app-mode">
     <div class="header-section">
         <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo">
         <h2>Live Transcription Dashboard</h2>
@@ -155,8 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const mainBtn = document.getElementById('main-btn');
 
     let socket;
-    let fakeProgressInterval;
-    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+    window.fakeProgressInterval = null;
 
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
@@ -167,14 +166,34 @@ document.addEventListener('DOMContentLoaded', () => {
         mainBtn.disabled = true;
         statusTxt.innerText = "Uploading file...";
 
-        // חיבור ל-WebSocket
         socket = io({ query: { jobId }, transports: ['websocket'] });
+
+        // Listen for the GPU callback
+        socket.on('job_status_update', (data) => {
+            console.log("GPU Update Received:", data);
+            if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+
+            pContainer.style.display = 'none';
+            statusTxt.innerText = "Transcription Complete";
+            statusTxt.style.color = "#28a745";
+
+            if (placeholder) placeholder.style.display = "none";
+            transcriptWindow.innerHTML = "";
+
+            if (data.segments) {
+                data.segments.forEach(seg => {
+                    const speaker = seg.speaker || "Unknown";
+                    transcriptWindow.innerHTML += `<p><strong>[${speaker}]:</strong> ${seg.text}</p>`;
+                });
+            }
+            transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
+            mainBtn.disabled = false;
+        });
 
         const formData = new FormData();
         formData.append('file', file);
         formData.append('jobId', jobId);
 
-        // שימוש ב-XMLHttpRequest כדי לראות התקדמות העלאה אמיתית
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload_full_file', true);
 
@@ -189,22 +208,17 @@ document.addEventListener('DOMContentLoaded', () => {
         xhr.onload = function() {
             if (xhr.status === 200) {
                 statusTxt.innerText = "File uploaded! AI is starting...";
-                // כאן נכנס הלופ של ה-Fake progress בזמן שה-GPU עובד
                 startFakeProgress();
             } else {
                 statusTxt.innerText = "Upload failed.";
                 mainBtn.disabled = false;
             }
         };
-
         xhr.send(formData);
     });
-    function startFakeProgress() {
-        const progressBar = document.getElementById('progress-bar');
-        const statusTxt = document.getElementById('upload-status');
-        let currentFake = 91;
 
-        // Clear any existing interval
+    function startFakeProgress() {
+        let currentFake = 91;
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
         window.fakeProgressInterval = setInterval(() => {

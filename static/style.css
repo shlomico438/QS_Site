@@ -8,11 +8,15 @@
 
 html, body {
     margin: 0;
-    min-height: 100dvh;
-    overflow-x: hidden;
+    min-height: 100vh; /* Changed from 100dvh for better compatibility */
     background: #fcfcfc;
-}
 
+.app-mode {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Keeps the app from scrolling */
+}
 
 /* =========================
    NAVBAR
