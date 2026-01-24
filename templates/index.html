@@ -5,13 +5,6 @@
     /* =========================
        GLOBAL & APP SHELL
     ========================= */
-    html, body {
-        margin: 0;
-        min-height: 100dvh;
-        overflow: hidden; /* Lock the page to prevent scrolling */
-        background-color: #fcfcfc;
-    }
-
     .app-mode {
         /* 100vh (Screen)
            - 80px (Navbar)
@@ -31,70 +24,72 @@
     .header-section {
         flex: 0 0 auto;
         text-align: center;
-        padding: 20px 0 10px;
+        padding: 15px 0 5px;
     }
 
+    /* HIDDEN: We hide the inner logo because it is already in the Navbar.
+       This saves 120px of vertical space so the button never falls off. */
     .header-section img {
-        height: 100px !important; /* Forced larger size */
-        width: auto;
-        display: block;
-        margin: 0 auto 10px;
+        display: none;
     }
 
     .header-section h2 {
-        font-size: 1.4rem;
+        font-size: 1.3rem;
         margin: 0;
-        color: #333;
+        color: #444;
+        font-weight: 600;
     }
 
     /* =========================
-       TRANSCRIPTION AREA
+       MAIN AREA (The Flex Magic)
     ========================= */
     .main-app-container {
-        flex: 1 1 auto;
+        flex: 1; /* This forces the container to fill whatever space is left */
         display: flex;
         flex-direction: column;
-        padding: 10px;
-        min-height: 0; /* Critical for inner scroll stability */
+        padding: 10px 15px;
+        min-height: 0; /* CRITICAL: Allows inner items to shrink if screen is short */
     }
 
     .transcription-area {
-        flex: 1;
-        min-height: 0;
-        width: 95%;
-        max-width: 1000px;
-        margin: 0 auto;
+        flex: 1; /* This is the element that will grow/shrink */
         display: flex;
+        flex-direction: column;
+        min-height: 0; /* Allows the text window to scroll internally */
+        width: 100%;
+        max-width: 900px;
+        margin: 0 auto;
     }
 
     #transcript-window {
-        flex: 1;
-        overflow-y: auto;
+        flex: 1; /* Fills the transcription-area */
+        overflow-y: auto; /* Scroll ONLY inside this box */
         background: #ffffff;
-        padding: 30px;
-        border-radius: 15px;
-        border: 2px solid #eee;
-        font-size: 2rem; /* Optimized for presenters */
-        font-weight: 500;
-        color: #1a1a1a;
-        line-height: 1.6;
-        text-align: left;
+        padding: 25px;
+        border-radius: 12px;
+        border: 2px solid #e5e7eb;
+        font-size: 1.6rem; /* Readable size */
+        line-height: 1.5;
+        color: #1f2937;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.03);
     }
 
     /* =========================
-       UPLOAD CONTROLS
+       BUTTON AREA (Fixed at Bottom)
     ========================= */
     .upload-zone {
-        flex: 0 0 auto;
-        padding: 15px 0 25px;
+        flex: 0 0 auto; /* Never shrink this area */
+        padding-top: 15px;
         text-align: center;
+        background: #fcfcfc;
+        z-index: 10;
     }
 
     .progress-container {
         width: 100%;
         max-width: 350px;
-        margin: 0 auto 12px;
-        height: 10px;
+        margin: 0 auto 10px;
+        height: 8px;
         background: #eee;
         border-radius: 10px;
         display: none;
@@ -109,29 +104,34 @@
     }
 
     .btn-primary {
-        padding: 18px 60px;
-        font-size: 1.3rem;
+        padding: 15px 50px;
+        font-size: 1.2rem;
         font-weight: bold;
         border-radius: 50px;
         background: #5d5dff;
         color: white;
         border: none;
         cursor: pointer;
-        box-shadow: 0 4px 15px rgba(93, 93, 255, 0.3);
+        box-shadow: 0 4px 12px rgba(93, 93, 255, 0.3);
+        transition: transform 0.1s;
+    }
+
+    .btn-primary:active {
+        transform: scale(0.98);
     }
 </style>
 
 <div class="app-mode">
     <div class="header-section">
-        <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe Logo">
+        <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe">
         <h2>Live Transcription Dashboard</h2>
     </div>
 
     <div class="main-app-container">
         <div class="transcription-area">
             <div id="transcript-window">
-                <p id="placeholder" style="color:#ccc;text-align:center;margin-top:15vh;">
-                    System Ready. Upload a file to start transcribing.
+                <p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:15vh;">
+                    System Ready.<br>Upload a file to start transcribing.
                 </p>
             </div>
         </div>
@@ -140,7 +140,8 @@
             <div class="progress-container" id="p-container">
                 <div id="progress-bar"></div>
             </div>
-            <p id="upload-status" style="margin:0 0 15px;font-weight:600;font-size:1rem;color:#555;">Waiting for upload...</p>
+            <p id="upload-status" style="margin:0 0 10px; font-weight:600; font-size:0.95rem; color:#6b7280;">Waiting for upload...</p>
+
             <input type="file" id="fileInput" hidden>
             <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">
                 Start Transcription
@@ -150,7 +151,6 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
-
 <script>
 document.addEventListener('DOMContentLoaded', () => {
     const fileInput = document.getElementById('fileInput');
