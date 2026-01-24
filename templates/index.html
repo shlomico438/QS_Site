@@ -13,16 +13,23 @@
     }
 
     .app-mode {
-        height: calc(100dvh - var(--nav-height, 80px));
+        /* 100vh (Screen)
+           - 80px (Navbar)
+           - 70px (Footer)
+           = The exact space left for your app
+        */
+        height: calc(100vh - 150px);
         display: flex;
         flex-direction: column;
+        overflow: hidden; /* Prevents double scrollbars */
+        background-color: #fcfcfc;
     }
 
     /* =========================
-       HEADER - FORCED LOGO SIZE
+       APP HEADER
     ========================= */
     .header-section {
-        flex: 0 0 auto; /* Do not allow the header to shrink */
+        flex: 0 0 auto;
         text-align: center;
         padding: 20px 0 10px;
     }
@@ -166,30 +173,43 @@ document.addEventListener('DOMContentLoaded', () => {
         mainBtn.disabled = true;
         statusTxt.innerText = "Uploading file...";
 
+        // Initialize Socket
         socket = io({ query: { jobId }, transports: ['websocket'] });
 
-        // Listen for the GPU callback
+        // LISTENER: When GPU finishes, this runs
         socket.on('job_status_update', (data) => {
             console.log("GPU Update Received:", data);
+
+            // 1. Stop fake progress
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
+            // 2. Update UI to "Done"
             pContainer.style.display = 'none';
             statusTxt.innerText = "Transcription Complete";
             statusTxt.style.color = "#28a745";
 
+            // 3. Clear window and placeholder
             if (placeholder) placeholder.style.display = "none";
             transcriptWindow.innerHTML = "";
 
+            // 4. Loop through segments and display them
             if (data.segments) {
                 data.segments.forEach(seg => {
-                    const speaker = seg.speaker || "Unknown";
-                    transcriptWindow.innerHTML += `<p><strong>[${speaker}]:</strong> ${seg.text}</p>`;
+                    const speaker = seg.speaker || "Speaker";
+                    // Clean format: [Speaker]: Text
+                    transcriptWindow.innerHTML += `<div style="margin-bottom:12px;">
+                        <strong style="color:#5d5dff;">[${speaker}]:</strong>
+                        <span style="color:#374151;">${seg.text}</span>
+                    </div>`;
                 });
             }
+
+            // 5. Scroll to bottom and re-enable button
             transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
             mainBtn.disabled = false;
         });
 
+        // Upload Logic
         const formData = new FormData();
         formData.append('file', file);
         formData.append('jobId', jobId);
@@ -207,7 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         xhr.onload = function() {
             if (xhr.status === 200) {
-                statusTxt.innerText = "File uploaded! AI is starting...";
+                statusTxt.innerText = "File uploaded! AI processing...";
                 startFakeProgress();
             } else {
                 statusTxt.innerText = "Upload failed.";
@@ -227,7 +247,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 progressBar.style.width = currentFake + "%";
                 statusTxt.innerText = `AI Processing... (${currentFake}%)`;
             }
-        }, 4000); // Increments every 4 seconds to wait for GPU
+        }, 4000);
     }
 });
 </script>
