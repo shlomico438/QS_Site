@@ -101,6 +101,7 @@ def trigger_gpu_job(job_id, s3_key):
     }
     try:
         # Asynchronous call - we don't wait for the GPU here
+        print(f"GPU TRIGGERing")
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"GPU TRIGGERED: {response.json()}")
     except Exception as e:
