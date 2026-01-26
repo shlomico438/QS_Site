@@ -69,6 +69,12 @@
         justify-content: flex-end;
         font-size: 0.85rem;
     }
+.controls-bar label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+}
 
     /* Transcription Area (The Scrollable Part) */
     .transcription-wrapper {
@@ -182,10 +188,10 @@
 
         <div class="transcription-wrapper">
             <div class="controls-bar">
-                <label style="cursor:pointer;">
+                <label>
                     <input type="checkbox" id="toggle-time" checked> הצג זמן
                 </label>
-                <label style="cursor:pointer;">
+                <label>
                     <input type="checkbox" id="toggle-speaker" checked> הצג דובר
                 </label>
             </div>
@@ -230,11 +236,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Convert "SPEAKER_00" -> "דובר 1"
         // Convert "SPEAKER_01" -> "דובר 2"
         const match = rawSpeaker.match(/SPEAKER_(\d+)/);
-        if (match) {
-            const num = parseInt(match[1], 10) + 1;
-            return `דובר ${num}`;
-        }
-        return rawSpeaker; // Fallback if format is different
+        if (match) return `דובר ${parseInt(match[1],10)+1}`;
+        return rawSpeaker;
     }
 
     // --- RENDER LOGIC ---
@@ -247,8 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderParagraphs(segments) {
         let html = "";
         let currentGroup = null;
-
-        segments.forEach((seg) => {
+        segments.forEach(seg => {
             if (!currentGroup || currentGroup.speaker !== seg.speaker) {
                 if (currentGroup) html += buildParagraphHTML(currentGroup);
                 currentGroup = {
@@ -259,7 +261,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             currentGroup.sentences.push(seg);
         });
-
         if (currentGroup) html += buildParagraphHTML(currentGroup);
         return html;
     }
@@ -268,14 +269,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const sentencesHtml = group.sentences.map(s =>
             `<span class="clickable-sent" onclick="jumpTo(${s.start})" title="קפוץ ל ${formatTime(s.start)}">${s.text} </span>`
         ).join("");
-
-        const prettySpeaker = formatSpeaker(group.speaker);
-
         return `
         <div class="paragraph-row">
             <div class="ts-col">${formatTime(group.startTime)}</div>
             <div class="text-col">
-                <span class="speaker-label">${prettySpeaker}</span>
+                <span class="speaker-label">${formatSpeaker(group.speaker)}</span>
                 <p style="margin:0;">${sentencesHtml}</p>
             </div>
         </div>`;
