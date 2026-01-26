@@ -344,4 +344,58 @@ document.addEventListener('DOMContentLoaded', () => {
 
             pContainer.style.display = 'none';
             statusTxt.innerText = "התמלול הושלם בהצלחה!";
-            statusTxt.style.color = "#28a
+            statusTxt.style.color = "#28a745";
+            if (placeholder) placeholder.style.display = "none";
+
+            if (data.segments) {
+                transcriptWindow.innerHTML = renderParagraphs(data.segments);
+            } else {
+                transcriptWindow.innerHTML = "<p>שגיאה: לא התקבל טקסט.</p>";
+            }
+            mainBtn.disabled = false;
+        });
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('jobId', jobId);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload_full_file', true);
+
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percent + "%";
+                statusTxt.innerText = `מעלה: ${percent}%`;
+            }
+        };
+
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                statusTxt.innerText = "מעבד נתונים (AI)...";
+                startFakeProgress();
+            } else {
+                statusTxt.innerText = "שגיאה בהעלאה.";
+                mainBtn.disabled = false;
+            }
+        };
+        xhr.send(formData);
+    });
+
+    function startFakeProgress() {
+        let currentFake = 0;
+        progressBar.style.width = "0%";
+        pContainer.style.display = "block";
+        if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+
+        window.fakeProgressInterval = setInterval(() => {
+            if (currentFake < 95) {
+                currentFake += 0.5;
+                progressBar.style.width = currentFake + "%";
+                statusTxt.innerText = `מזהה דוברים ותוכן... ${Math.floor(currentFake)}%`;
+            }
+        }, 1000);
+    }
+});
+</script>
+{% endblock %}
