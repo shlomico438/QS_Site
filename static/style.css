@@ -15,9 +15,8 @@ html, body {
     height: 100vh;
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Keeps the app from scrolling */
+    overflow: visible; /* allow scrolling */
 }
-
 /* =========================
    NAVBAR
 ========================= */
@@ -92,12 +91,11 @@ html, body {
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;
+    min-height: 0;       /* critical */
+    overflow-y: auto;    /* scroll inside if needed */
     padding: 10px;
     box-sizing: border-box;
-    min-height: 0; /* critical for flex scrolling */
-    overflow-y: auto; /* allows scrolling inside container */
 }
-
 
 /* =========================
    TRANSCRIPTION
@@ -136,6 +134,7 @@ html, body {
     flex-shrink: 0;
     text-align: center;
     padding: 10px 0;
+    margin-top: auto;    /* push to bottom */
 }
 
 .btn {
