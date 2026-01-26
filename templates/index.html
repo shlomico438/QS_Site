@@ -162,6 +162,10 @@
         background: #5d5dff;
         transition: width 0.3s ease;
     }
+    /* Error State for Bar */
+    .progress-error #progress-bar {
+        background: #ef4444 !important; /* Red */
+    }
 
     .btn-primary {
         padding: 10px 30px;
@@ -191,12 +195,23 @@
 
         <div class="transcription-wrapper">
             <div class="controls-bar">
-                <label>
-                    <input type="checkbox" id="toggle-time" checked> הצג זמן
+
+                <label class="switch-wrapper">
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="toggle-time" checked>
+                        <span class="slider"></span>
+                    </div>
+                    <span>הצג זמן</span>
                 </label>
-                <label>
-                    <input type="checkbox" id="toggle-speaker" checked> הצג דובר
+
+                <label class="switch-wrapper">
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="toggle-speaker" checked>
+                        <span class="slider"></span>
+                    </div>
+                    <span>הצג דובר</span>
                 </label>
+
             </div>
 
             <div id="transcript-window">
@@ -236,10 +251,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- SPEAKER FORMATTER ---
     function formatSpeaker(rawSpeaker) {
         if (!rawSpeaker) return "דובר לא ידוע";
-        // Convert "SPEAKER_00" -> "דובר 1"
-        // Convert "SPEAKER_01" -> "דובר 2"
         const match = rawSpeaker.match(/SPEAKER_(\d+)/);
-        if (match) return `דובר ${parseInt(match[1],10)+1}`;
+        if (match) {
+            const num = parseInt(match[1], 10) + 1;
+            return `דובר ${num}`;
+        }
         return rawSpeaker;
     }
 
@@ -264,6 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             currentGroup.sentences.push(seg);
         });
+
         if (currentGroup) html += buildParagraphHTML(currentGroup);
         return html;
     }
@@ -304,24 +321,60 @@ document.addEventListener('DOMContentLoaded', () => {
     let socket;
     window.fakeProgressInterval = null;
 
+    // Helper to stop everything on error
+    function handleUploadError(msg) {
+        if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+
+        statusTxt.innerText = "שגיאה: " + msg;
+        statusTxt.style.color = "#ef4444"; // Red text
+
+        // Make bar red
+        pContainer.classList.add('progress-error');
+        progressBar.style.width = "100%";
+
+        // Re-enable button
+        mainBtn.disabled = false;
+        mainBtn.innerText = "נסה שוב";
+
+        console.error("Upload Error:", msg);
+    }
+
+    function resetUIForUpload() {
+        pContainer.classList.remove('progress-error');
+        pContainer.style.display = 'block';
+        progressBar.style.width = "0%";
+        statusTxt.style.color = "#666";
+        mainBtn.disabled = true;
+        mainBtn.innerText = "מעבד...";
+    }
+
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
 
+        resetUIForUpload();
         const jobId = "job_" + Date.now();
         pContainer.style.display = 'block';
         mainBtn.disabled = true;
         statusTxt.innerText = "מעלה קובץ...";
 
+        // Set Audio
         const fileURL = URL.createObjectURL(file);
         audioSource.src = fileURL;
         mainAudio.load();
         audioContainer.style.display = 'block';
 
+        // Connect Socket
         socket = io({ query: { jobId }, transports: ['websocket'] });
 
         socket.on('job_status_update', (data) => {
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+
+            if (data.status === "error") {
+                handleUploadError("תקלה בשרת העיבוד");
+                return;
+            }
+
             pContainer.style.display = 'none';
             statusTxt.innerText = "התמלול הושלם!";
             statusTxt.style.color = "#28a745";
@@ -329,6 +382,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (data.segments) transcriptWindow.innerHTML = renderParagraphs(data.segments);
             mainBtn.disabled = false;
+            mainBtn.innerText = "בחר קובץ לתמלול";
         });
 
         const formData = new FormData();
@@ -338,6 +392,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload_full_file', true);
 
+        // --- ERROR HANDLING START ---
+
+        // 1. Network Error (Connection Reset, etc.)
+        xhr.onerror = function() {
+            handleUploadError("שגיאת רשת (החיבור נותק)");
+        };
+
+        // 2. Upload Progress
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
                 const percent = Math.round((e.loaded / e.total) * 100);
@@ -346,15 +408,18 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
+        // 3. Completion Check
         xhr.onload = function() {
             if (xhr.status === 200) {
                 statusTxt.innerText = "מעבד (AI)...";
                 startFakeProgress();
             } else {
-                statusTxt.innerText = "שגיאה.";
-                mainBtn.disabled = false;
+                // Server returned 500/404/etc
+                handleUploadError("שגיאת שרת (" + xhr.status + ")");
             }
         };
+        // --- ERROR HANDLING END ---
+
         xhr.send(formData);
     });
 
@@ -363,10 +428,12 @@ document.addEventListener('DOMContentLoaded', () => {
         progressBar.style.width = "0%";
         pContainer.style.display = "block";
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+
         window.fakeProgressInterval = setInterval(() => {
             if (currentFake < 95) {
                 currentFake += 0.5;
                 progressBar.style.width = currentFake + "%";
+                statusTxt.innerText = `מזהה דוברים ותוכן... ${Math.floor(currentFake)}%`;
             }
         }, 1000);
     }
