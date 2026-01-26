@@ -15,8 +15,8 @@ html, body {
     height: 100vh;
     display: flex;
     flex-direction: column;
-    overflow: visible; /* allow scrolling */
 }
+
 /* =========================
    NAVBAR
 ========================= */
@@ -71,10 +71,9 @@ html, body {
 ========================= */
 
 .header-section {
-    text-align: center;
-    padding: 20px 0 10px;
-    flex-shrink: 0;
+    flex: 0 0 auto;
 }
+
 
 .header-section h2 {
     margin: 5px 0 0;
@@ -88,13 +87,9 @@ html, body {
 ========================= */
 
 .main-app-container {
-    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
-    min-height: 0;       /* critical */
-    overflow-y: auto;    /* scroll inside if needed */
-    padding: 10px;
-    box-sizing: border-box;
+    height: calc(100vh - var(--nav-height)); /* fills screen under navbar */
 }
 
 /* =========================
@@ -102,12 +97,9 @@ html, body {
 ========================= */
 
 .transcription-area {
-    flex: 1 1 auto;
-    min-height: 0;
-    max-width: 900px;
-    width: 95%;
-    margin: 0 auto 10px;
-    display: flex;
+    flex: 1 1 auto;  /* fills available space */
+    min-height: 0;   /* critical for internal scroll in flex */
+    overflow-y: auto;
 }
 
 #transcript-window {
@@ -131,11 +123,11 @@ html, body {
 ========================= */
 
 .upload-zone {
-    flex-shrink: 0;
-    text-align: center;
+    flex: 0 0 auto;  /* never shrink */
     padding: 10px 0;
-    margin-top: auto;    /* push to bottom */
+    text-align: center;
 }
+
 
 .btn {
     padding: 12px 45px;
