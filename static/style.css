@@ -94,6 +94,8 @@ html, body {
     flex-direction: column;
     padding: 10px;
     box-sizing: border-box;
+    min-height: 0; /* critical for flex scrolling */
+    overflow-y: auto; /* allows scrolling inside container */
 }
 
 
