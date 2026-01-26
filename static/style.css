@@ -1,26 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuickScribe - Precision AI Transcription</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+
+<style>
 /* =========================
    ROOT & GLOBAL
 ========================= */
-
 :root {
     --nav-height: 80px;
 }
 
+* {
+    box-sizing: border-box;
+}
+
 html, body {
     margin: 0;
-    min-height: 100vh; /* Changed from 100dvh for better compatibility */
+    padding: 0;
+    height: 100%;
+    font-family: 'Inter', sans-serif;
     background: #fcfcfc;
-
-.app-mode {
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
 }
 
 /* =========================
    NAVBAR
 ========================= */
-
 .navbar {
     position: sticky;
     top: 0;
@@ -28,16 +36,9 @@ html, body {
     background: white;
     border-bottom: 1px solid #eee;
     z-index: 1000;
-}
-
-.nav-container {
-    max-width: 1200px;
-    height: 100%;
-    margin: 0 auto;
-    padding: 0 40px;
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    padding: 0 40px;
 }
 
 .nav-logo {
@@ -47,6 +48,10 @@ html, body {
     text-decoration: none;
 }
 
+.nav-menu {
+    margin-left: auto;
+}
+
 .nav-item {
     margin-left: 30px;
     text-decoration: none;
@@ -54,52 +59,51 @@ html, body {
     font-weight: 600;
 }
 
-
 /* =========================
-   APP SHELL (KEY FIX)
+   APP SHELL
 ========================= */
-
-.app-shell {
-    height: calc(100dvh - var(--nav-height));
+.app-mode {
     display: flex;
     flex-direction: column;
+    height: calc(100vh - var(--nav-height));
 }
-
 
 /* =========================
-   APP HEADER
+   HEADER
 ========================= */
-
 .header-section {
     flex: 0 0 auto;
+    text-align: center;
+    padding: 15px 0;
+    background: #fff;
+    border-bottom: 1px solid #eee;
 }
 
-
 .header-section h2 {
-    margin: 5px 0 0;
+    margin: 0;
     font-size: 1.2rem;
     color: #444;
 }
 
-
 /* =========================
-   MAIN APP CONTAINER
+   MAIN CONTAINER
 ========================= */
-
 .main-app-container {
+    flex: 1 1 auto; /* fills remaining space */
     display: flex;
     flex-direction: column;
-    height: calc(100vh - var(--nav-height)); /* fills screen under navbar */
+    min-height: 0;  /* critical for internal scroll */
+    padding: 10px 20px;
 }
 
 /* =========================
-   TRANSCRIPTION
+   TRANSCRIPTION AREA
 ========================= */
-
 .transcription-area {
-    flex: 1 1 auto;  /* fills available space */
-    min-height: 0;   /* critical for internal scroll in flex */
-    overflow-y: auto;
+    flex: 1 1 auto;      /* fills available space */
+    min-height: 0;       /* important for flex scroll */
+    overflow-y: auto;    /* internal scroll */
+    margin-bottom: 10px;
 }
 
 #transcript-window {
@@ -117,17 +121,14 @@ html, body {
     margin-top: 30%;
 }
 
-
 /* =========================
-   UPLOAD / BUTTON
+   UPLOAD BUTTON
 ========================= */
-
 .upload-zone {
-    flex: 0 0 auto;  /* never shrink */
-    padding: 10px 0;
+    flex: 0 0 auto;       /* never shrink */
     text-align: center;
+    padding: 10px 0;
 }
-
 
 .btn {
     padding: 12px 45px;
@@ -142,3 +143,40 @@ html, body {
     background: #5d5dff;
     color: white;
 }
+
+</style>
+</head>
+<body>
+
+<header class="navbar">
+    <a href="/" class="nav-logo">QuickScribe</a>
+    <div class="nav-menu">
+        <a href="/about" class="nav-item">About Us</a>
+        <a href="/blog" class="nav-item">Blog</a>
+        <a href="/contact" class="nav-item">Contact</a>
+    </div>
+</header>
+
+<div class="app-mode">
+    <div class="header-section">
+        <h2>Quick transcription</h2>
+    </div>
+
+    <div class="main-app-container">
+        <div class="transcription-area">
+            <div id="transcript-window">
+                <p id="placeholder">Upload a file to start transcription</p>
+            </div>
+        </div>
+
+        <div class="upload-zone">
+            <input type="file" id="fileInput" hidden>
+            <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                Choose File to Transcribe
+            </button>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>
