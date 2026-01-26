@@ -84,29 +84,23 @@ def upload_full_file():
 
 
 def trigger_gpu_job(job_id, s3_key):
-    print(f"Entering trigger_gpu_job")
     """Initiates the RunPod Serverless task."""
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
         print("ERROR: RunPod keys not found in environment variables.")
         return
-    print(f"Before URL")
     url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
-    print(f"After URL",url)
     headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type": "application/json"
     }
-    print(f"After headers",url)
     payload = {
         "input": {
             "jobId": job_id,
             "s3Key": s3_key
         }
     }
-    print(f"After Payload",url)
     try:
         # Asynchronous call - we don't wait for the GPU here
-        print(f"GPU TRIGGERing")
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"GPU TRIGGERED: {response.json()}")
     except Exception as e:
