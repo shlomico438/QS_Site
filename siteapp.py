@@ -52,36 +52,69 @@ def blog():
 def contact():
     return render_template('contact.html')
 
+
 # --- UPLOAD & TRIGGER API ---
 @app.route('/api/upload_full_file', methods=['POST'])
 def upload_full_file():
     try:
         file = request.files.get('file')
         job_id = request.form.get('jobId')
+        # קבלת מספר הדוברים (ברירת מחדל 2 אם לא נשלח)
+        num_speakers = request.form.get('speakerCount', 2)
 
         if not file or not job_id:
-            return jsonify({"error": "Missing file or jobId"}), 400
+            return jsonify({"status": "error", "message": "Missing file or jobId"}), 400
 
-        # Save to S3 as full mp3
+        # 1. העלאה ל-S3 (כפי שהיה קודם)
         s3_key = f"input/{job_id}.mp3"
-
         s3_client.upload_fileobj(
             file,
             BUCKET_NAME,
             s3_key,
             ExtraArgs={"ContentType": "audio/mpeg"}
         )
-
         print(f"DEBUG: Full file uploaded to S3: {s3_key}")
 
-        # AUTOMATION: Trigger the GPU worker immediately
-        trigger_gpu_job(job_id, s3_key)
+        # 2. בניית ה-Payload ל-RunPod עם מספר הדוברים
+        payload = {
+            "input": {
+                "jobId": job_id,
+                "s3Key": s3_key,
+                "num_speakers": int(num_speakers)  # המרה למספר שלם
+            }
+        }
 
-        return jsonify({"message": "Upload complete, GPU triggered", "jobId": job_id}), 200
+        # 3. הפעלת ה-GPU ב-RunPod
+        # וודא שהגדרת את RUNPOD_ENDPOINT_URL ו-RUNPOD_API_KEY ב-ENV
+        headers = {
+            "Authorization": f"Bearer {os.environ.get('RUNPOD_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+
+        # שליחת הבקשה ל-RunPod
+        runpod_url = f"https://api.runpod.ai/v2/{os.environ.get('RUNPOD_ENDPOINT_ID')}/run"
+        response = requests.post(runpod_url, json=payload, headers=headers, timeout=15)
+
+        # בדיקה אם ה-RunPod קיבל את העבודה בהצלחה
+        if response.status_code not in [200, 201]:
+            raise Exception(f"RunPod returned status {response.status_code}: {response.text}")
+
+        return jsonify({
+            "status": "success",
+            "message": "File uploaded and GPU triggered",
+            "runpod_job_id": response.json().get("id")
+        })
+
     except Exception as e:
-        print(f"UPLOAD ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+        # כאן נתפסת שגיאת ה-ConnectionResetError או כל תקלה אחרת
+        error_msg = str(e)
+        print(f"FAILED TO TRIGGER GPU: {error_msg}")
 
+        # החזרת JSON עם סטטוס שגיאה - זה מה שיגרום ל-Frontend להפוך לאדום ולעצור
+        return jsonify({
+            "status": "error",
+            "message": f"Server Error: {error_msg}"
+        }), 500
 
 def trigger_gpu_job(job_id, s3_key):
     """Initiates the RunPod Serverless task."""
@@ -105,6 +138,10 @@ def trigger_gpu_job(job_id, s3_key):
         print(f"GPU TRIGGERED: {response.json()}")
     except Exception as e:
         print(f"FAILED TO TRIGGER GPU: {e}")
+        return jsonify({
+                    "status": "error",
+                    "message": e
+                }), 500
 
 # --- GPU FEEDBACK API ---
 

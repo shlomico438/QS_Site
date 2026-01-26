@@ -222,17 +222,16 @@
         </div>
 
         <div class="upload-zone">
+            <div style="margin-bottom: 15px; direction: rtl; display: flex; align-items: center; justify-content: center; gap: 10px;">
+                <label for="speaker-count" style="font-size: 0.9rem; color: #444;">מספר דוברים צפוי:</label>
+                <input type="number" id="speaker-count" value="2" min="1" max="10"
+                       style="width: 50px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; text-align: center;">
+            </div>
+
             <div class="progress-container" id="p-container">
                 <div id="progress-bar"></div>
             </div>
-            <p id="upload-status" style="margin:0 0 8px; font-size:0.9rem; color:#666;">ממתין להעלאה...</p>
-
-            <input type="file" id="fileInput" hidden accept="audio/*,video/*">
-            <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">
-                בחר קובץ לתמלול
-            </button>
         </div>
-    </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
@@ -289,16 +288,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const sentencesHtml = group.sentences.map(s =>
             `<span class="clickable-sent" onclick="jumpTo(${s.start})" title="קפוץ ל ${formatTime(s.start)}">${s.text} </span>`
         ).join("");
+
+        const prettySpeaker = formatSpeaker(group.speaker); // הופך ל"דובר X"
+        const speakerColor = getSpeakerColor(group.speaker); // קובע צבע לפי המזהה המקורי
+
         return `
         <div class="paragraph-row">
             <div class="ts-col">${formatTime(group.startTime)}</div>
             <div class="text-col">
-                <span class="speaker-label">${formatSpeaker(group.speaker)}</span>
+                <span class="speaker-label" style="color: ${speakerColor}; font-weight: bold;">${prettySpeaker}</span>
                 <p style="margin:0;">${sentencesHtml}</p>
             </div>
         </div>`;
     }
-
     // --- PLAYER LOGIC ---
     const mainAudio = document.getElementById('main-audio');
     window.jumpTo = function(time) {
@@ -388,8 +390,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('jobId', jobId);
-
         const xhr = new XMLHttpRequest();
+        const speakerCount = document.getElementById('speaker-count').value;
+        formData.append('speakerCount', speakerCount);
         xhr.open('POST', '/api/upload_full_file', true);
 
         // --- ERROR HANDLING START ---
@@ -409,12 +412,27 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         // 3. Completion Check
+        // 3. Completion Check (UPDATED)
         xhr.onload = function() {
             if (xhr.status === 200) {
+                try {
+                    // נסה לקרוא את התשובה מהשרת
+                    const response = JSON.parse(xhr.responseText);
+
+                    // אם השרת החזיר שגיאה (למרות שהסטטוס הוא 200)
+                    if (response.status === 'error' || response.error) {
+                         handleUploadError(response.message || response.error || "שגיאה בשרת");
+                         return; // עצור כאן!
+                    }
+                } catch (e) {
+                    console.warn("Could not parse server response", e);
+                }
+
+                // אם הכל תקין, התחל את הפרוגרס בר המזויף
                 statusTxt.innerText = "מעבד (AI)...";
                 startFakeProgress();
             } else {
-                // Server returned 500/404/etc
+                // שגיאת שרת אמיתית (500, 404 וכו')
                 handleUploadError("שגיאת שרת (" + xhr.status + ")");
             }
         };
@@ -422,6 +440,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         xhr.send(formData);
     });
+
+    function getSpeakerColor(speakerId) {
+        const colors = [
+            '#5d5dff', '#e11d48', '#059669', '#d97706',
+            '#7c3aed', '#db2777', '#2563eb', '#ca8a04'
+        ];
+        // שולף את המספר מהמחרוזת (עובד גם על SPEAKER_00 וגם על "דובר 1")
+        const match = speakerId.match(/\d+/);
+        const index = match ? parseInt(match[0]) : 0;
+        return colors[index % colors.length];
+    }
 
     function startFakeProgress() {
         let currentFake = 0;
