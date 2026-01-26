@@ -5,8 +5,12 @@
     /* =========================
        1. GLOBAL LOCK (One Pager)
     ========================= */
+    /* Allow flex children to scroll – DO NOT block root scrolling */
     html, body {
-        overflow: hidden;
+        height: 100%;
+        min-height: 0;
+        overflow-x: hidden;   /* keep sideways locked */
+        overflow-y: hidden;   /* keep full-screen experience */
     }
 
     /* =========================
