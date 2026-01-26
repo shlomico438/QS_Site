@@ -4,36 +4,32 @@
 <style>
     /* =========================
        1. GLOBAL LOCK (Critical)
-       This overrides base.html to prevent the WINDOW from scrolling
     ========================= */
     html, body {
-        height: 100vh !important;    /* Force exact screen height */
+        height: 100vh !important;
         max-height: 100vh !important;
-        overflow: hidden !important; /* Kill the main scrollbar */
+        overflow: hidden !important;
     }
 
     /* =========================
        2. LAYOUT FIXER
-       This targets the <main> tag from base.html
     ========================= */
     .main-content {
-        /* This makes the main container fill the space between Header & Footer */
         height: 100% !important;
         display: flex !important;
         flex-direction: column !important;
-        overflow: hidden !important; /* Prevents internal spillover */
-        padding: 0 !important;       /* Remove any default padding */
+        overflow: hidden !important;
+        padding: 0 !important;
     }
 
     /* =========================
        3. APP MODE
-       Now this just fills the parent perfectly
     ========================= */
     .app-mode {
-        flex: 1;                     /* Grow to fill the .main-content */
+        flex: 1;
         display: flex;
         flex-direction: column;
-        overflow: hidden;            /* Keep the scrollbar INSIDE the app */
+        overflow: hidden;
         background-color: #fcfcfc;
     }
 
@@ -45,9 +41,6 @@
         text-align: center;
         padding: 10px 0 5px;
     }
-
-    .header-section img { display: none; } /* Hidden to save space */
-
     .header-section h2 {
         font-size: 1.3rem;
         margin: 0;
@@ -56,44 +49,90 @@
     }
 
     /* =========================
-       MAIN AREA (The Flex Magic)
+       MAIN AREA
     ========================= */
     .main-app-container {
-        flex: 1; /* This forces the container to fill whatever space is left */
+        flex: 1;
         display: flex;
         flex-direction: column;
         padding: 10px 15px;
-        min-height: 0; /* CRITICAL: Allows inner items to shrink if screen is short */
+        min-height: 0;
     }
 
     .transcription-area {
-        flex: 1; /* This is the element that will grow/shrink */
+        flex: 1;
         display: flex;
         flex-direction: column;
-        min-height: 0; /* Allows the text window to scroll internally */
+        min-height: 0;
         width: 100%;
         max-width: 900px;
         margin: 0 auto;
     }
 
+    /* Audio Player Styling */
+    #audio-player-container {
+        width: 100%;
+        margin-bottom: 10px;
+        display: none; /* Hidden until file is ready */
+    }
+
+    audio {
+        width: 100%;
+        border-radius: 8px;
+    }
+
     #transcript-window {
-        flex: 1; /* Fills the transcription-area */
-        overflow-y: auto; /* Scroll ONLY inside this box */
+        flex: 1;
+        overflow-y: auto;
         background: #ffffff;
         padding: 25px;
         border-radius: 12px;
         border: 2px solid #e5e7eb;
-        font-size: 1.6rem; /* Readable size */
-        line-height: 1.5;
+        font-size: 1.1rem; /* Slightly smaller for paragraphs */
+        line-height: 1.6;
         color: #1f2937;
         box-shadow: inset 0 2px 4px rgba(0,0,0,0.03);
     }
 
     /* =========================
-       BUTTON AREA (Fixed at Bottom)
+       TRANSCRIPT STYLING
+    ========================= */
+    .paragraph-row {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 20px;
+    }
+
+    .ts-col {
+        min-width: 60px;
+        color: #6b7280;
+        font-family: monospace;
+        font-size: 0.9rem;
+        padding-top: 4px;
+        user-select: none;
+    }
+
+    .text-col {
+        flex: 1;
+    }
+
+    .clickable-sent {
+        cursor: pointer;
+        padding: 2px 0;
+        border-radius: 3px;
+        transition: background 0.2s, color 0.2s;
+    }
+
+    .clickable-sent:hover {
+        background-color: #fef08a; /* Yellow highlight on hover */
+        color: #000;
+    }
+
+    /* =========================
+       BUTTON AREA
     ========================= */
     .upload-zone {
-        flex: 0 0 auto; /* Never shrink this area */
+        flex: 0 0 auto;
         padding-top: 15px;
         text-align: center;
         background: #fcfcfc;
@@ -138,12 +177,19 @@
 
 <div class="app-mode">
     <div class="header-section">
-        <img src="{{ url_for('static', filename='logo.png') }}" alt="QuickScribe">
         <h2>Live Transcription Dashboard</h2>
     </div>
 
     <div class="main-app-container">
         <div class="transcription-area">
+
+            <div id="audio-player-container">
+                <audio id="main-audio" controls>
+                    <source id="audio-source" src="" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+            </div>
+
             <div id="transcript-window">
                 <p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:15vh;">
                     System Ready.<br>Upload a file to start transcribing.
@@ -157,7 +203,7 @@
             </div>
             <p id="upload-status" style="margin:0 0 10px; font-weight:600; font-size:0.95rem; color:#6b7280;">Waiting for upload...</p>
 
-            <input type="file" id="fileInput" hidden>
+            <input type="file" id="fileInput" hidden accept="audio/*,video/*">
             <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">
                 Start Transcription
             </button>
@@ -176,8 +222,75 @@ document.addEventListener('DOMContentLoaded', () => {
     const placeholder = document.getElementById('placeholder');
     const mainBtn = document.getElementById('main-btn');
 
+    // Audio Player Elements
+    const audioContainer = document.getElementById('audio-player-container');
+    const mainAudio = document.getElementById('main-audio');
+    const audioSource = document.getElementById('audio-source');
+
     let socket;
     window.fakeProgressInterval = null;
+
+    // --- HELPER: Format Seconds to MM:SS ---
+    function formatTime(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    // --- HELPER: Group Segments by Speaker ---
+    function renderParagraphs(segments) {
+        let html = "";
+        let currentGroup = null;
+
+        segments.forEach((seg) => {
+            // New paragraph if speaker changes or first run
+            if (!currentGroup || currentGroup.speaker !== seg.speaker) {
+                // If there was a previous group, close it and add to HTML
+                if (currentGroup) {
+                    html += buildParagraphHTML(currentGroup);
+                }
+                // Start new group
+                currentGroup = {
+                    speaker: seg.speaker || "Unknown",
+                    startTime: seg.start,
+                    sentences: []
+                };
+            }
+            currentGroup.sentences.push(seg);
+        });
+
+        // Add the final group
+        if (currentGroup) {
+            html += buildParagraphHTML(currentGroup);
+        }
+
+        return html;
+    }
+
+    function buildParagraphHTML(group) {
+        // Build the sentences HTML
+        const sentencesHtml = group.sentences.map(s =>
+            `<span class="clickable-sent" onclick="jumpTo(${s.start})" title="Jump to ${formatTime(s.start)}">${s.text} </span>`
+        ).join("");
+
+        return `
+        <div class="paragraph-row">
+            <div class="ts-col">${formatTime(group.startTime)}</div>
+            <div class="text-col">
+                <strong style="color:#5d5dff; display:block; margin-bottom:4px; font-size:0.85em;">${group.speaker}</strong>
+                <p style="margin:0;">${sentencesHtml}</p>
+            </div>
+        </div>`;
+    }
+
+    // --- GLOBAL JUMP FUNCTION (Available to onclick) ---
+    window.jumpTo = function(time) {
+        if (mainAudio) {
+            mainAudio.currentTime = time;
+            mainAudio.play();
+        }
+    };
+
 
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
@@ -188,39 +301,34 @@ document.addEventListener('DOMContentLoaded', () => {
         mainBtn.disabled = true;
         statusTxt.innerText = "Uploading file...";
 
+        // Set the audio player source to the local file immediately so user can verify
+        const fileURL = URL.createObjectURL(file);
+        audioSource.src = fileURL;
+        mainAudio.load();
+        audioContainer.style.display = 'block';
+
         // Initialize Socket
         socket = io({ query: { jobId }, transports: ['websocket'] });
 
-        // LISTENER: When GPU finishes, this runs
+        // LISTENER: When GPU finishes
         socket.on('job_status_update', (data) => {
             console.log("GPU Update Received:", data);
 
-            // 1. Stop fake progress
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
-            // 2. Update UI to "Done"
             pContainer.style.display = 'none';
             statusTxt.innerText = "Transcription Complete";
             statusTxt.style.color = "#28a745";
 
-            // 3. Clear window and placeholder
             if (placeholder) placeholder.style.display = "none";
-            transcriptWindow.innerHTML = "";
 
-            // 4. Loop through segments and display them
+            // RENDER THE NEW PARAGRAPH LAYOUT
             if (data.segments) {
-                data.segments.forEach(seg => {
-                    const speaker = seg.speaker || "Speaker";
-                    // Clean format: [Speaker]: Text
-                    transcriptWindow.innerHTML += `<div style="margin-bottom:12px;">
-                        <strong style="color:#5d5dff;">[${speaker}]:</strong>
-                        <span style="color:#374151;">${seg.text}</span>
-                    </div>`;
-                });
+                transcriptWindow.innerHTML = renderParagraphs(data.segments);
+            } else {
+                transcriptWindow.innerHTML = "<p>Error: No segments returned.</p>";
             }
 
-            // 5. Scroll to bottom and re-enable button
-            transcriptWindow.scrollTop = transcriptWindow.scrollHeight;
             mainBtn.disabled = false;
         });
 
@@ -242,7 +350,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         xhr.onload = function() {
             if (xhr.status === 200) {
-                statusTxt.innerText = "File uploaded! AI processing...";
+                statusTxt.innerText = "Processing AI (Diarizing)...";
                 startFakeProgress();
             } else {
                 statusTxt.innerText = "Upload failed.";
@@ -253,16 +361,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function startFakeProgress() {
-        let currentFake = 91;
+        let currentFake = 0;
+        progressBar.style.width = "0%";
+        pContainer.style.display = "block";
+
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
         window.fakeProgressInterval = setInterval(() => {
-            if (currentFake < 99) {
-                currentFake++;
+            if (currentFake < 95) {
+                currentFake += 0.5; // Slower progress for diarization
                 progressBar.style.width = currentFake + "%";
-                statusTxt.innerText = `AI Processing... (${currentFake}%)`;
+                statusTxt.innerText = `AI Diarizing... ${Math.floor(currentFake)}%`;
             }
-        }, 4000);
+        }, 1000);
     }
 });
 </script>

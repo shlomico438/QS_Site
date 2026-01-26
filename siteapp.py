@@ -82,6 +82,7 @@ def upload_full_file():
         print(f"UPLOAD ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
+
 def trigger_gpu_job(job_id, s3_key):
     print(f"Entering trigger_gpu_job")
     """Initiates the RunPod Serverless task."""
