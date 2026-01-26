@@ -70,14 +70,43 @@
         display: flex;
         gap: 15px;
         justify-content: flex-end;
+        align-items: center;
         font-size: 0.85rem;
     }
 .controls-bar label {
     display: flex;
     align-items: center;
-    gap: 5px;
+        gap: 8px;
+        cursor: pointer;
+    }
+    .toggle-switch {
+        position: relative;
+        display: inline-block;
+        width: 34px;
+        height: 18px;
+    }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+        position: absolute;
     cursor: pointer;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+        border-radius: 34px;
+    }
+    .slider:before {
+        position: absolute;
+        content: "";
+        height: 12px;
+        width: 12px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: .4s;
+        border-radius: 50%;
 }
+    input:checked + .slider { background-color: #5d5dff; }
+    input:checked + .slider:before { transform: translateX(16px); }
 
     /* Transcription Area (The Scrollable Part) */
     .transcription-wrapper {
@@ -222,7 +251,7 @@
         </div>
 
         <div class="upload-zone">
-            <div style="margin-bottom: 15px; direction: rtl; display: flex; align-items: center; justify-content: center; gap: 10px;">
+            <div style="margin-bottom: 10px; direction: rtl; display: flex; align-items: center; justify-content: center; gap: 10px;">
                 <label for="speaker-count" style="font-size: 0.9rem; color: #444;">מספר דוברים צפוי:</label>
                 <input type="number" id="speaker-count" value="2" min="1" max="10"
                        style="width: 50px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; text-align: center;">
@@ -231,6 +260,14 @@
             <div class="progress-container" id="p-container">
                 <div id="progress-bar"></div>
             </div>
+            <p id="upload-status" style="margin:0 0 8px; font-size:0.9rem; color:#666;">Ready</p>
+
+            <input type="file" id="fileInput" hidden>
+            <button class="btn btn-primary" id="main-btn"
+                    onclick="document.getElementById('fileInput').value=''; document.getElementById('fileInput').click()">
+                Start Transcription
+            </button>
+        </div>
         </div>
 </div>
 
@@ -238,6 +275,18 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
+    const fileInput = document.getElementById('fileInput');
+    const statusTxt = document.getElementById('upload-status');
+    const progressBar = document.getElementById('progress-bar');
+    const pContainer = document.getElementById('p-container');
+    const placeholder = document.getElementById('placeholder');
+    const mainBtn = document.getElementById('main-btn');
+    const audioContainer = document.getElementById('audio-player-container');
+    const audioSource = document.getElementById('audio-source');
+    const mainAudio = document.getElementById('main-audio');
+
+    let socket;
+    window.fakeProgressInterval = null;
 
     // --- TOGGLES ---
     document.getElementById('toggle-time').addEventListener('change', (e) => {
@@ -247,13 +296,19 @@ document.addEventListener('DOMContentLoaded', () => {
         transcriptWindow.classList.toggle('hide-speaker', !e.target.checked);
     });
 
-    // --- SPEAKER FORMATTER ---
+    // --- COLOR LOGIC FIX ---
+    function getSpeakerColor(speakerId) {
+        const colors = ['#5d5dff', '#e11d48', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
+        const match = speakerId.match(/\d+/);
+        const index = match ? parseInt(match[0]) : 0;
+        return colors[index % colors.length];
+    }
+
     function formatSpeaker(rawSpeaker) {
         if (!rawSpeaker) return "דובר לא ידוע";
         const match = rawSpeaker.match(/SPEAKER_(\d+)/);
         if (match) {
-            const num = parseInt(match[1], 10) + 1;
-            return `דובר ${num}`;
+            return `דובר ${parseInt(match[1]) + 1}`;
         }
         return rawSpeaker;
     }
@@ -271,11 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
         segments.forEach(seg => {
             if (!currentGroup || currentGroup.speaker !== seg.speaker) {
                 if (currentGroup) html += buildParagraphHTML(currentGroup);
-                currentGroup = {
-                    speaker: seg.speaker, // Keep raw here, format later
-                    startTime: seg.start,
-                    sentences: []
-                };
+                currentGroup = { speaker: seg.speaker, startTime: seg.start, sentences: [] };
             }
             currentGroup.sentences.push(seg);
         });
@@ -288,21 +339,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const sentencesHtml = group.sentences.map(s =>
             `<span class="clickable-sent" onclick="jumpTo(${s.start})" title="קפוץ ל ${formatTime(s.start)}">${s.text} </span>`
         ).join("");
-
-        const prettySpeaker = formatSpeaker(group.speaker); // הופך ל"דובר X"
-        const speakerColor = getSpeakerColor(group.speaker); // קובע צבע לפי המזהה המקורי
-
+        const speakerColor = getSpeakerColor(group.speaker);
         return `
         <div class="paragraph-row">
             <div class="ts-col">${formatTime(group.startTime)}</div>
             <div class="text-col">
-                <span class="speaker-label" style="color: ${speakerColor}; font-weight: bold;">${prettySpeaker}</span>
+                <span class="speaker-label" style="color: ${speakerColor}; font-weight: bold;">${formatSpeaker(group.speaker)}</span>
                 <p style="margin:0;">${sentencesHtml}</p>
             </div>
         </div>`;
     }
-    // --- PLAYER LOGIC ---
-    const mainAudio = document.getElementById('main-audio');
+
     window.jumpTo = function(time) {
         if (mainAudio) {
             mainAudio.currentTime = time;
@@ -310,27 +357,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- UPLOAD LOGIC ---
-    const fileInput = document.getElementById('fileInput');
-    const statusTxt = document.getElementById('upload-status');
-    const progressBar = document.getElementById('progress-bar');
-    const pContainer = document.getElementById('p-container');
-    const placeholder = document.getElementById('placeholder');
-    const mainBtn = document.getElementById('main-btn');
-    const audioContainer = document.getElementById('audio-player-container');
-    const audioSource = document.getElementById('audio-source');
-
-    let socket;
-    window.fakeProgressInterval = null;
-
-    // Helper to stop everything on error
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-
         statusTxt.innerText = "שגיאה: " + msg;
-        statusTxt.style.color = "#ef4444"; // Red text
-
-        // Make bar red
+        statusTxt.style.color = "#ef4444";
         pContainer.classList.add('progress-error');
         progressBar.style.width = "100%";
 
