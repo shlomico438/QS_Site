@@ -28,7 +28,7 @@
 
 </style>
 </head>
-<body style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
+<body style="display:flex; flex-direction:column; height:100vh; min-height:0; overflow:hidden;">
     <header class="navbar">
         <div class="nav-container">
             <a href="/" class="nav-logo">QuickScribe</a>
@@ -40,7 +40,7 @@
         </div>
     </header>
 
-    <main class="main-content" style="flex:1; overflow:hidden;">
+    <main class="main-content" style="flex:1; min-height:0; overflow:hidden;">
         {% block content %}{% endblock %}
     </main>
 
