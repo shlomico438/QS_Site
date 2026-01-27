@@ -97,8 +97,8 @@ def upload_full_file():
         }), 500
 
 
-def trigger_gpu_job(job_id, s3_key, num_speakers):
-    """Initiates the RunPod Serverless task with 3-attempt retry logic."""
+def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
+    """Initiates the RunPod Serverless task with 5 parameters and retry logic."""
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
         error_text = "RunPod keys not found in environment variables."
         print(f"ERROR: {error_text}")
@@ -109,11 +109,15 @@ def trigger_gpu_job(job_id, s3_key, num_speakers):
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
         "Content-Type": "application/json"
     }
+
+    # Payload now includes all 5 parameters to pass to the Worker
     payload = {
         "input": {
             "jobId": job_id,
             "s3Key": s3_key,
-            "num_speakers": int(num_speakers)
+            "num_speakers": int(num_speakers),
+            "language": language,
+            "task": task
         }
     }
 
@@ -123,12 +127,11 @@ def trigger_gpu_job(job_id, s3_key, num_speakers):
     for attempt in range(1, max_retries + 1):
         try:
             print(f"DEBUG: Triggering GPU Attempt {attempt}/{max_retries} for {job_id}...")
-            # Timeout set to 10s to prevent hanging
             response = requests.post(url, json=payload, headers=headers, timeout=10)
 
             if response.status_code in [200, 201]:
                 print(f"GPU TRIGGERED SUCCESSFULLY: {response.json()}")
-                return  # Exit function on success
+                return
             else:
                 last_error = f"Status {response.status_code}: {response.text}"
                 print(f"DEBUG: Attempt {attempt} failed - {last_error}")
@@ -137,11 +140,9 @@ def trigger_gpu_job(job_id, s3_key, num_speakers):
             last_error = str(e)
             print(f"DEBUG: Attempt {attempt} Exception - {last_error}")
 
-        # Wait 1 second before retrying
         if attempt < max_retries:
             time.sleep(1)
 
-    # If we get here, all attempts failed. Raise exception to be caught by upload_full_file
     raise Exception(f"Failed to trigger GPU after {max_retries} attempts. Last error: {last_error}")
 # --- GPU FEEDBACK API ---
 
