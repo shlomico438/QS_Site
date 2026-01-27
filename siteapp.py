@@ -63,6 +63,8 @@ def upload_full_file():
         job_id = request.form.get('jobId')
         # Get speakerCount from form, default to 2
         num_speakers = request.form.get('speakerCount', 2)
+        language = request.form.get('language', 'he')
+        task = request.form.get('task', 'transcribe')
 
         if not file or not job_id:
             return jsonify({"error": "Missing file or jobId"}), 400
@@ -81,7 +83,7 @@ def upload_full_file():
 
         # AUTOMATION: Trigger the GPU worker with retry logic
         # This will now raise an Exception if it fails 3 times
-        trigger_gpu_job(job_id, s3_key, num_speakers)
+        trigger_gpu_job(job_id, s3_key, num_speakers,language, task)
 
         return jsonify({"message": "Upload complete, GPU triggered", "jobId": job_id}), 200
 

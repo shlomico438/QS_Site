@@ -20,8 +20,8 @@
         display: flex;
         flex-direction: column;
         height: 100%;
-        min-height: 0;       /* CRITICAL FIX */
-        overflow: hidden;    /* IMPORTANT */
+        min-height: 0;
+        overflow: hidden;
         background-color: #f8f9fa;
     }
 
@@ -59,7 +59,6 @@
     }
     audio { width: 100%; height: 35px; }
 
-    /* Controls Bar */
     .controls-bar {
         flex: 0 0 auto;
         padding: 6px 10px;
@@ -124,8 +123,6 @@
         background: #fff;
         border: 1px solid #e5e7eb;
         border-radius: 0 0 8px 8px;
-
-        /* RTL */
         direction: rtl;
         text-align: right;
         font-size: 1.1rem;
@@ -140,7 +137,23 @@
         background: #f8f9fa;
     }
 
-    /* --- PARAGRAPH STYLING --- */
+    /* Advanced Settings Styling */
+    .advanced-settings {
+        margin-bottom: 10px;
+        font-size: 0.85rem;
+        color: #666;
+    }
+    .advanced-content {
+        margin-top: 8px;
+        padding: 10px;
+        background: #fff;
+        border: 1px solid #eee;
+        border-radius: 8px;
+        display: inline-block;
+        text-align: left;
+    }
+    .setting-item { margin-bottom: 5px; display: flex; gap: 10px; align-items: center; }
+
     .paragraph-row {
         display: flex;
         gap: 15px;
@@ -191,10 +204,7 @@
         background: #5d5dff;
         transition: width 0.3s ease;
     }
-    /* Error State for Bar */
-    .progress-error #progress-bar {
-        background: #ef4444 !important; /* Red */
-    }
+    .progress-error #progress-bar { background: #ef4444 !important; }
 
     .btn-primary {
         padding: 10px 30px;
@@ -230,32 +240,51 @@
                         <input type="checkbox" id="toggle-time" checked>
                         <span class="slider"></span>
                     </div>
-                    <span>הצג זמן</span>
+                    <span>Show Time</span>
                 </label>
-
                 <label class="switch-wrapper">
                     <div class="toggle-switch">
                         <input type="checkbox" id="toggle-speaker" checked>
                         <span class="slider"></span>
                     </div>
-                    <span>הצג דובר</span>
+                    <span>Show Speaker</span>
                 </label>
-
             </div>
 
             <div id="transcript-window">
                 <p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:80px;">
-                    העלה קובץ כדי להתחיל
+                    Upload a file to start
                 </p>
             </div>
         </div>
 
         <div class="upload-zone">
             <div style="margin-bottom: 10px; direction: rtl; display: flex; align-items: center; justify-content: center; gap: 10px;">
-                <label for="speaker-count" style="font-size: 0.9rem; color: #444;">מספר דוברים צפוי:</label>
+                <label for="speaker-count" style="font-size: 0.9rem; color: #444;">Speakers:</label>
                 <input type="number" id="speaker-count" value="2" min="1" max="10"
                        style="width: 50px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; text-align: center;">
             </div>
+
+            <details class="advanced-settings">
+                <summary style="cursor: pointer;">Advanced Settings</summary>
+                <div class="advanced-content">
+                    <div class="setting-item">
+                        <label>Language:</label>
+                        <select id="audio-lang">
+                            <option value="he" selected>Hebrew</option>
+                            <option value="en">English</option>
+                            <option value="auto">Auto-Detect</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>Task:</label>
+                        <select id="task-mode">
+                            <option value="transcribe" selected>Transcribe</option>
+                            <option value="translate">Translate (to EN)</option>
+                        </select>
+                    </div>
+                </div>
+            </details>
 
             <div class="progress-container" id="p-container">
                 <div id="progress-bar"></div>
@@ -296,7 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
         transcriptWindow.classList.toggle('hide-speaker', !e.target.checked);
     });
 
-    // --- COLOR LOGIC FIX ---
+    // --- COLOR LOGIC ---
     function getSpeakerColor(speakerId) {
         const colors = ['#5d5dff', '#e11d48', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
         const match = speakerId.match(/\d+/);
@@ -305,10 +334,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function formatSpeaker(rawSpeaker) {
-        if (!rawSpeaker) return "דובר לא ידוע";
+        if (!rawSpeaker) return "Unknown Speaker";
         const match = rawSpeaker.match(/SPEAKER_(\d+)/);
         if (match) {
-            return `דובר ${parseInt(match[1]) + 1}`;
+            return `Speaker ${parseInt(match[1]) + 1}`;
         }
         return rawSpeaker;
     }
@@ -337,7 +366,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function buildParagraphHTML(group) {
         const sentencesHtml = group.sentences.map(s =>
-            `<span class="clickable-sent" onclick="jumpTo(${s.start})" title="קפוץ ל ${formatTime(s.start)}">${s.text} </span>`
+            `<span class="clickable-sent" onclick="jumpTo(${s.start})" title="Jump to ${formatTime(s.start)}">${s.text} </span>`
         ).join("");
         const speakerColor = getSpeakerColor(group.speaker);
         return `
@@ -359,15 +388,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-        statusTxt.innerText = "שגיאה: " + msg;
+        statusTxt.innerText = "Error: " + msg;
         statusTxt.style.color = "#ef4444";
         pContainer.classList.add('progress-error');
         progressBar.style.width = "100%";
-
-        // Re-enable button
         mainBtn.disabled = false;
-        mainBtn.innerText = "נסה שוב";
-
+        mainBtn.innerText = "Try Again";
         console.error("Upload Error:", msg);
     }
 
@@ -377,7 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
         progressBar.style.width = "0%";
         statusTxt.style.color = "#666";
         mainBtn.disabled = true;
-        mainBtn.innerText = "מעבד...";
+        mainBtn.innerText = "Processing...";
     }
 
     fileInput.addEventListener('change', async function() {
@@ -386,11 +412,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         resetUIForUpload();
         const jobId = "job_" + Date.now();
-        pContainer.style.display = 'block';
-        mainBtn.disabled = true;
-        statusTxt.innerText = "מעלה קובץ...";
+        statusTxt.innerText = "Uploading file...";
 
-        // Set Audio
         const fileURL = URL.createObjectURL(file);
         audioSource.src = fileURL;
         mainAudio.load();
@@ -403,33 +426,35 @@ document.addEventListener('DOMContentLoaded', () => {
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
             if (data.status === "error") {
-                handleUploadError("תקלה בשרת העיבוד");
+                handleUploadError("Processing server error");
                 return;
             }
 
             pContainer.style.display = 'none';
-            statusTxt.innerText = "התמלול הושלם!";
+            statusTxt.innerText = "Transcription complete!";
             statusTxt.style.color = "#28a745";
             if (placeholder) placeholder.style.display = "none";
 
             if (data.segments) transcriptWindow.innerHTML = renderParagraphs(data.segments);
             mainBtn.disabled = false;
-            mainBtn.innerText = "בחר קובץ לתמלול";
+            mainBtn.innerText = "Select file for transcription";
         });
 
         const formData = new FormData();
         formData.append('file', file);
         formData.append('jobId', jobId);
+        formData.append('speakerCount', document.getElementById('speaker-count').value);
+        formData.append('language', document.getElementById('audio-lang').value);
+        formData.append('task', document.getElementById('task-mode').value);
+
         const xhr = new XMLHttpRequest();
-        const speakerCount = document.getElementById('speaker-count').value;
-        formData.append('speakerCount', speakerCount);
         xhr.open('POST', '/api/upload_full_file', true);
 
         // --- ERROR HANDLING START ---
 
         // 1. Network Error (Connection Reset, etc.)
         xhr.onerror = function() {
-            handleUploadError("שגיאת רשת (החיבור נותק)");
+            handleUploadError("Network error (connection reset)");
         };
 
         // 2. Upload Progress
@@ -437,36 +462,27 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e.lengthComputable) {
                 const percent = Math.round((e.loaded / e.total) * 100);
                 progressBar.style.width = percent + "%";
-                statusTxt.innerText = `מעלה: ${percent}%`;
+                statusTxt.innerText = `Uploading: ${percent}%`;
             }
         };
 
-        // 3. Completion Check
-        // 3. Completion Check (UPDATED)
         xhr.onload = function() {
             if (xhr.status === 200) {
                 try {
-                    // נסה לקרוא את התשובה מהשרת
                     const response = JSON.parse(xhr.responseText);
-
-                    // אם השרת החזיר שגיאה (למרות שהסטטוס הוא 200)
                     if (response.status === 'error' || response.error) {
-                         handleUploadError(response.message || response.error || "שגיאה בשרת");
-                         return; // עצור כאן!
+                         handleUploadError(response.message || response.error || "Server error");
+                         return;
                     }
                 } catch (e) {
                     console.warn("Could not parse server response", e);
                 }
-
-                // אם הכל תקין, התחל את הפרוגרס בר המזויף
-                statusTxt.innerText = "מעבד (AI)...";
+                statusTxt.innerText = "Processing (AI)...";
                 startFakeProgress();
             } else {
-                // שגיאת שרת אמיתית (500, 404 וכו')
-                handleUploadError("שגיאת שרת (" + xhr.status + ")");
+                handleUploadError("Server error (" + xhr.status + ")");
             }
         };
-        // --- ERROR HANDLING END ---
 
         xhr.send(formData);
     });
@@ -476,7 +492,7 @@ document.addEventListener('DOMContentLoaded', () => {
             '#5d5dff', '#e11d48', '#059669', '#d97706',
             '#7c3aed', '#db2777', '#2563eb', '#ca8a04'
         ];
-        // שולף את המספר מהמחרוזת (עובד גם על SPEAKER_00 וגם על "דובר 1")
+	    // Extracts the number from the string (works for both SPEAKER_00 and Speaker 1)
         const match = speakerId.match(/\d+/);
         const index = match ? parseInt(match[0]) : 0;
         return colors[index % colors.length];
@@ -492,7 +508,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (currentFake < 95) {
                 currentFake += 0.5;
                 progressBar.style.width = currentFake + "%";
-                statusTxt.innerText = `מזהה דוברים ותוכן... ${Math.floor(currentFake)}%`;
+                statusTxt.innerText = `Identifying speakers and content... ${Math.floor(currentFake)}%`;
             }
         }, 1000);
     }
