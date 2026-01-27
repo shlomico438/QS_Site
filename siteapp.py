@@ -6,7 +6,7 @@ import os
 import boto3
 import json
 import requests  # Added for RunPod API calls
-
+import time
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
@@ -52,21 +52,25 @@ def blog():
 def contact():
     return render_template('contact.html')
 
-
 # --- UPLOAD & TRIGGER API ---
+import time  # Ensure time is imported at the top of your file
+
+
 @app.route('/api/upload_full_file', methods=['POST'])
 def upload_full_file():
     try:
         file = request.files.get('file')
         job_id = request.form.get('jobId')
-        # קבלת מספר הדוברים (ברירת מחדל 2 אם לא נשלח)
+        # Get speakerCount from form, default to 2
         num_speakers = request.form.get('speakerCount', 2)
 
         if not file or not job_id:
-            return jsonify({"status": "error", "message": "Missing file or jobId"}), 400
+            return jsonify({"error": "Missing file or jobId"}), 400
 
-        # 1. העלאה ל-S3 (כפי שהיה קודם)
+        # Save to S3 as full mp3
         s3_key = f"input/{job_id}.mp3"
+
+        print(f"DEBUG: Starting S3 upload for {job_id}...")
         s3_client.upload_fileobj(
             file,
             BUCKET_NAME,
@@ -75,52 +79,29 @@ def upload_full_file():
         )
         print(f"DEBUG: Full file uploaded to S3: {s3_key}")
 
-        # 2. בניית ה-Payload ל-RunPod עם מספר הדוברים
-        payload = {
-            "input": {
-                "jobId": job_id,
-                "s3Key": s3_key,
-                "num_speakers": int(num_speakers)  # המרה למספר שלם
-            }
-        }
+        # AUTOMATION: Trigger the GPU worker with retry logic
+        # This will now raise an Exception if it fails 3 times
+        trigger_gpu_job(job_id, s3_key, num_speakers)
 
-        # 3. הפעלת ה-GPU ב-RunPod
-        # וודא שהגדרת את RUNPOD_ENDPOINT_URL ו-RUNPOD_API_KEY ב-ENV
-        headers = {
-            "Authorization": f"Bearer {os.environ.get('RUNPOD_API_KEY')}",
-            "Content-Type": "application/json"
-        }
-
-        # שליחת הבקשה ל-RunPod
-        runpod_url = f"https://api.runpod.ai/v2/{os.environ.get('RUNPOD_ENDPOINT_ID')}/run"
-        response = requests.post(runpod_url, json=payload, headers=headers, timeout=15)
-
-        # בדיקה אם ה-RunPod קיבל את העבודה בהצלחה
-        if response.status_code not in [200, 201]:
-            raise Exception(f"RunPod returned status {response.status_code}: {response.text}")
-
-        return jsonify({
-            "status": "success",
-            "message": "File uploaded and GPU triggered",
-            "runpod_job_id": response.json().get("id")
-        })
+        return jsonify({"message": "Upload complete, GPU triggered", "jobId": job_id}), 200
 
     except Exception as e:
-        # כאן נתפסת שגיאת ה-ConnectionResetError או כל תקלה אחרת
         error_msg = str(e)
-        print(f"FAILED TO TRIGGER GPU: {error_msg}")
-
-        # החזרת JSON עם סטטוס שגיאה - זה מה שיגרום ל-Frontend להפוך לאדום ולעצור
+        print(f"UPLOAD/TRIGGER ERROR: {error_msg}")
+        # Returning 500 here is what triggers the Red Bar in your index.html
         return jsonify({
             "status": "error",
-            "message": f"Server Error: {error_msg}"
+            "message": error_msg
         }), 500
 
-def trigger_gpu_job(job_id, s3_key):
-    """Initiates the RunPod Serverless task."""
+
+def trigger_gpu_job(job_id, s3_key, num_speakers):
+    """Initiates the RunPod Serverless task with 3-attempt retry logic."""
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
-        print("ERROR: RunPod keys not found in environment variables.")
-        return
+        error_text = "RunPod keys not found in environment variables."
+        print(f"ERROR: {error_text}")
+        raise Exception(error_text)
+
     url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
     headers = {
         "Authorization": f"Bearer {RUNPOD_API_KEY}",
@@ -129,20 +110,37 @@ def trigger_gpu_job(job_id, s3_key):
     payload = {
         "input": {
             "jobId": job_id,
-            "s3Key": s3_key
+            "s3Key": s3_key,
+            "num_speakers": int(num_speakers)
         }
     }
-    try:
-        # Asynchronous call - we don't wait for the GPU here
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        print(f"GPU TRIGGERED: {response.json()}")
-    except Exception as e:
-        print(f"FAILED TO TRIGGER GPU: {e}")
-        return jsonify({
-                    "status": "error",
-                    "message": e
-                }), 500
 
+    max_retries = 3
+    last_error = ""
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"DEBUG: Triggering GPU Attempt {attempt}/{max_retries} for {job_id}...")
+            # Timeout set to 10s to prevent hanging
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+
+            if response.status_code in [200, 201]:
+                print(f"GPU TRIGGERED SUCCESSFULLY: {response.json()}")
+                return  # Exit function on success
+            else:
+                last_error = f"Status {response.status_code}: {response.text}"
+                print(f"DEBUG: Attempt {attempt} failed - {last_error}")
+
+        except Exception as e:
+            last_error = str(e)
+            print(f"DEBUG: Attempt {attempt} Exception - {last_error}")
+
+        # Wait 1 second before retrying
+        if attempt < max_retries:
+            time.sleep(1)
+
+    # If we get here, all attempts failed. Raise exception to be caught by upload_full_file
+    raise Exception(f"Failed to trigger GPU after {max_retries} attempts. Last error: {last_error}")
 # --- GPU FEEDBACK API ---
 
 @app.route('/api/gpu_callback', methods=['POST'])
