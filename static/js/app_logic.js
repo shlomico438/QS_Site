@@ -1,278 +1,192 @@
 document.addEventListener('DOMContentLoaded', () => {
-    const transcriptWindow = document.getElementById('transcript-window');
-    const fileInput = document.getElementById('fileInput');
-    const statusTxt = document.getElementById('upload-status');
-    const progressBar = document.getElementById('progress-bar');
-    const pContainer = document.getElementById('p-container');
-    const placeholder = document.getElementById('placeholder');
-    const mainBtn = document.getElementById('main-btn');
-    const audioContainer = document.getElementById('audio-player-container');
-    const audioSource = document.getElementById('audio-source');
-    const mainAudio = document.getElementById('main-audio');
-    const controlsBar = document.querySelector('.controls-bar');
+    // UI Elements
+    const elements = {
+        transcriptWindow: document.getElementById('transcript-window'),
+        fileInput: document.getElementById('fileInput'),
+        statusTxt: document.getElementById('upload-status'),
+        progressBar: document.getElementById('progress-bar'),
+        pContainer: document.getElementById('p-container'),
+        mainBtn: document.getElementById('main-btn'),
+        audioSource: document.getElementById('audio-source'),
+        mainAudio: document.getElementById('main-audio'),
+        controlsBar: document.querySelector('.controls-bar'),
+        btnDownload: document.getElementById('btn-download'),
+        downloadMenu: document.getElementById('download-menu'),
+        btnEdit: document.getElementById('btn-edit'),
+        btnCopy: document.getElementById('btn-copy'),
+        editActions: document.getElementById('edit-actions'),
+        toggleTime: document.getElementById('toggle-time'),
+        toggleSpeaker: document.getElementById('toggle-speaker')
+    };
 
-    const btnDownload = document.getElementById('btn-download');
-    const downloadMenu = document.getElementById('download-menu');
-    const btnEdit = document.getElementById('btn-edit');
-    const btnCopy = document.getElementById('btn-copy');
-    const editActions = document.getElementById('edit-actions');
-
-    let socket;
-    window.fakeProgressInterval = null;
-    window.serverTimeout = null;
+    let socket, isEditMode = false;
     window.currentSegments = [];
-    let isEditMode = false;
+    window.originalFileName = "transcript";
 
-    // --- GLOBAL ERROR CATCHERS ---
-    // Catches general JavaScript crashes
-    window.onerror = function(message) {
-        handleUploadError("System Error: " + message);
-        return true;
-    };
-
-    // Catches failed async promises
-    window.onunhandledrejection = function(event) {
-        handleUploadError("Communication Error: " + event.reason);
-    };
-
-    // --- TOOLBAR LOGIC ---
-    btnDownload.addEventListener('click', (e) => {
+    // --- TOOLBAR & DROPDOWN ---
+    elements.btnDownload.addEventListener('click', (e) => {
         e.stopPropagation();
-        downloadMenu.classList.toggle('show');
+        elements.downloadMenu.classList.toggle('show');
     });
 
     document.addEventListener('click', (e) => {
-        if (!btnDownload.contains(e.target) && !downloadMenu.contains(e.target)) {
-            downloadMenu.classList.remove('show');
-        }
+        if (!elements.btnDownload.contains(e.target)) elements.downloadMenu.classList.remove('show');
     });
 
-    window.toggleEditMode = function() {
+    // --- EDIT MODE ---
+    window.toggleEditMode = () => {
         isEditMode = true;
-        transcriptWindow.classList.add('is-editing');
-        btnEdit.style.display = 'none';
-        btnCopy.style.display = 'none';
-        btnDownload.style.display = 'none';
-        editActions.style.display = 'flex';
-
-        const spans = transcriptWindow.querySelectorAll('.clickable-sent');
-        spans.forEach(span => span.contentEditable = "true");
+        elements.transcriptWindow.classList.add('is-editing');
+        elements.btnEdit.style.display = elements.btnCopy.style.display = elements.btnDownload.style.display = 'none';
+        elements.editActions.style.display = 'flex';
+        elements.transcriptWindow.querySelectorAll('.clickable-sent').forEach(s => s.contentEditable = "true");
     };
 
-    window.saveEdits = function() {
-        const spans = transcriptWindow.querySelectorAll('.clickable-sent');
-        spans.forEach((span, index) => {
-            if (window.currentSegments[index]) {
-                window.currentSegments[index].text = span.innerText.trim();
-            }
+    window.saveEdits = () => {
+        elements.transcriptWindow.querySelectorAll('.clickable-sent').forEach((span, i) => {
+            if (window.currentSegments[i]) window.currentSegments[i].text = span.innerText.trim();
         });
         exitEditMode();
-        transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
     };
 
-    window.cancelEdits = function() {
-        exitEditMode();
-        transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-    };
+    window.cancelEdits = exitEditMode;
 
     function exitEditMode() {
         isEditMode = false;
-        transcriptWindow.classList.remove('is-editing');
-        btnEdit.style.display = 'flex';
-        btnCopy.style.display = 'flex';
-        btnDownload.style.display = 'flex';
-        editActions.style.display = 'none';
+        elements.transcriptWindow.classList.remove('is-editing');
+        elements.btnEdit.style.display = elements.btnCopy.style.display = elements.btnDownload.style.display = 'flex';
+        elements.editActions.style.display = 'none';
+        elements.transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
     }
 
-    window.copyTranscript = function() {
-        const text = window.currentSegments.map(s => s.text).join(" ");
-        navigator.clipboard.writeText(text).then(() => alert("Transcript copied to clipboard!"));
+    // --- HELPERS & FORMATTING ---
+    const formatTime = (s) => `${Math.floor(s/60).toString().padStart(2,'0')}:${Math.floor(s%60).toString().padStart(2,'0')}`;
+    const formatSpeaker = (raw) => {
+        if (!raw) return "דובר לא ידוע";
+        const m = raw.match(/SPEAKER_(\d+)/);
+        return m ? `דובר ${parseInt(m[1]) + 1}` : raw;
     };
 
-    // --- TOGGLES ---
-    document.getElementById('toggle-time').addEventListener('change', (e) => {
-        transcriptWindow.classList.toggle('hide-time', !e.target.checked);
-    });
-    document.getElementById('toggle-speaker').addEventListener('change', (e) => {
-        transcriptWindow.classList.toggle('hide-speaker', !e.target.checked);
-    });
-
-    // --- HELPERS ---
-    function getSpeakerColor(speakerId) {
-        const colors = ['#5d5dff', '#e11d48', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
-        const match = speakerId.match(/\d+/);
-        const index = match ? parseInt(match[0]) : 0;
-        return colors[index % colors.length];
-    }
-
-    function formatSpeaker(rawSpeaker) {
-        if (!rawSpeaker) return "דובר לא ידוע";
-        const match = rawSpeaker.match(/SPEAKER_(\d+)/);
-        return match ? `דובר ${parseInt(match[1]) + 1}` : rawSpeaker;
-    }
-
-    function formatTime(seconds) {
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    // --- EXPORT ---
+    // --- EXPORT LOGIC ---
     window.downloadFile = function(type) {
-        if (!window.currentSegments.length) return alert("No transcript available to export.");
-        downloadMenu.classList.remove('show');
+        if (!window.currentSegments.length) return alert("No data to export.");
+        elements.downloadMenu.classList.remove('show');
 
-        let content = "";
-        let filename = "transcript." + type;
+        const showTime = elements.toggleTime.checked;
+        const showSpeaker = elements.toggleSpeaker.checked;
+        const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
 
         if (type === 'srt' || type === 'vtt') {
-            const formatTS = (s) => {
-                const d = new Date(0); d.setMilliseconds(s * 1000);
-                let ts = d.toISOString().substr(11, 12);
-                return type === 'srt' ? ts.replace('.', ',') : ts;
-            };
-            if (type === 'vtt') content += "WEBVTT\n\n";
+            let content = type === 'vtt' ? "WEBVTT\n\n" : "";
             window.currentSegments.forEach((seg, i) => {
+                const ts = (s) => {
+                    let t = new Date(0); t.setMilliseconds(s * 1000);
+                    let iso = t.toISOString().substr(11, 12);
+                    return type === 'srt' ? iso.replace('.', ',') : iso;
+                };
                 if (type === 'srt') content += `${i + 1}\n`;
-                content += `${formatTS(seg.start)} --> ${formatTS(seg.end)}\n`;
-                content += type === 'srt' ? `[${formatSpeaker(seg.speaker)}] ${seg.text}\n\n` : `<v ${formatSpeaker(seg.speaker)}>${seg.text}</v>\n\n`;
+                content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text}\n\n`;
             });
-            saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), filename);
+            saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`);
+
         } else if (type === 'docx') {
-            const { Document, Packer, Paragraph, TextRun } = docx;
-            let children = []; let current = null;
+            const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
+            let children = [];
+            let currentGroup = null;
+
             window.currentSegments.forEach(seg => {
-                if (!current || current.speaker !== seg.speaker) {
-                    if (current) children.push(new Paragraph({ children: [new TextRun({ text: `[${formatTime(current.start)}] ${formatSpeaker(current.speaker)}: `, bold: true, color: "5d5dff" }), new TextRun({ text: current.text, rightToLeft: true })], spacing: { after: 200 }, bidirectional: true }));
-                    current = { speaker: seg.speaker, text: "", start: seg.start };
+                if (!currentGroup || currentGroup.speaker !== seg.speaker) {
+                    if (currentGroup) children.push(createDocxParagraph(currentGroup, showTime, showSpeaker));
+                    currentGroup = { speaker: seg.speaker, start: seg.start, text: "" };
                 }
-                current.text += seg.text + " ";
+                currentGroup.text += seg.text + " ";
             });
+            if (currentGroup) children.push(createDocxParagraph(currentGroup, showTime, showSpeaker));
+
             const doc = new Document({ sections: [{ children }] });
-            Packer.toBlob(doc).then(blob => saveAs(blob, "transcript.docx"));
+            Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
         }
     };
 
-    // --- RENDER ---
+    function createDocxParagraph(group, showTime, showSpeaker) {
+        const { Paragraph, TextRun, AlignmentType } = docx;
+        const pChildren = [];
+
+        // Label line (Speaker + Time) - Line above text
+        if (showSpeaker || showTime) {
+            let label = "";
+            if (showTime) label += `[${formatTime(group.start)}] `;
+            if (showSpeaker) label += formatSpeaker(group.speaker);
+
+            pChildren.push(new TextRun({ text: label, bold: true, color: "5d5dff", size: 18 }));
+            pChildren.push(new TextRun({ break: 1 })); // Hard line break
+        }
+
+        pChildren.push(new TextRun({ text: group.text, rightToLeft: true, size: 22 }));
+
+        return new Paragraph({
+            children: pChildren,
+            spacing: { after: 300 },
+            bidirectional: true,
+            alignment: AlignmentType.RIGHT
+        });
+    }
+
+    // --- CORE RENDERING ---
     function renderParagraphs(segments) {
-        let html = ""; let group = null;
+        let html = "", group = null;
         segments.forEach(seg => {
             if (!group || group.speaker !== seg.speaker) {
-                if (group) html += buildGroupHTML(group);
+                if (group) html += buildHTML(group);
                 group = { speaker: seg.speaker, start: seg.start, sentences: [] };
             }
             group.sentences.push(seg);
         });
-        if (group) html += buildGroupHTML(group);
+        if (group) html += buildHTML(group);
         return html;
     }
 
-    function buildGroupHTML(group) {
-        const text = group.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
-        return `<div class="paragraph-row"><div class="ts-col">${formatTime(group.start)}</div><div class="text-col"><span class="speaker-label" style="color: ${getSpeakerColor(group.speaker)}">${formatSpeaker(group.speaker)}</span><p style="margin:0;">${text}</p></div></div>`;
+    function buildHTML(g) {
+        const text = g.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
+        return `<div class="paragraph-row"><div class="ts-col">${formatTime(g.start)}</div><div class="text-col"><span class="speaker-label">${formatSpeaker(g.speaker)}</span><p style="margin:0;">${text}</p></div></div>`;
     }
 
-    window.jumpTo = function(time) { if (!isEditMode && mainAudio) { mainAudio.currentTime = time; mainAudio.play(); } };
+    window.jumpTo = (t) => { if (!isEditMode && elements.mainAudio) { elements.mainAudio.currentTime = t; elements.mainAudio.play(); }};
 
-    // --- UPLOAD & ERROR HANDLING ---
-    function handleUploadError(msg) {
-        if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-        if (window.serverTimeout) clearTimeout(window.serverTimeout);
-        statusTxt.innerText = "Error: " + msg;
-        statusTxt.style.color = "#ef4444";
-        pContainer.classList.add('progress-error');
-        progressBar.style.width = "100%";
-        mainBtn.disabled = false;
-        mainBtn.innerText = "Try Again";
-    }
-
-    function resetUI() {
-        pContainer.classList.remove('progress-error');
-        pContainer.style.display = 'block';
-        progressBar.style.width = "0%";
-        statusTxt.style.color = "#666";
-        mainBtn.disabled = true;
-        mainBtn.innerText = "Processing...";
-        controlsBar.style.display = 'none';
-        transcriptWindow.innerHTML = `<p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:80px;">Upload a file to start</p>`;
-        if (isEditMode) cancelEdits();
-    }
-
-    fileInput.addEventListener('change', async function() {
+    // --- UPLOAD LOGIC ---
+    elements.fileInput.addEventListener('change', function() {
         const file = this.files[0]; if (!file) return;
-        resetUI();
+        window.originalFileName = file.name;
+
+        // Reset UI
+        elements.pContainer.style.display = 'block';
+        elements.progressBar.style.width = "0%";
+        elements.statusTxt.innerText = "Uploading...";
+        elements.controlsBar.style.display = 'none';
+        elements.transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Processing...</p>`;
+
         const jobId = "job_" + Date.now();
-        audioSource.src = URL.createObjectURL(file);
-        mainAudio.load();
-        audioContainer.style.display = 'block';
-
-        // Initialize Socket
         socket = io({ query: { jobId }, transports: ['websocket'] });
-
-        socket.on('connect_error', () => {
-            handleUploadError("Unable to connect to the update server.");
-        });
-
         socket.on('job_status_update', (data) => {
-            if (window.serverTimeout) clearTimeout(window.serverTimeout);
-            if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-
-            if (data.status === "error") {
-                return handleUploadError(data.message || "GPU processing failed.");
-            }
-
-            pContainer.style.display = 'none';
-            statusTxt.innerText = "Transcription complete!";
-            statusTxt.style.color = "#28a745";
-            if (data.segments) {
+            if (data.status === "completed") {
                 window.currentSegments = data.segments;
-                transcriptWindow.innerHTML = renderParagraphs(data.segments);
-                controlsBar.style.display = 'flex';
+                elements.transcriptWindow.innerHTML = renderParagraphs(data.segments);
+                elements.controlsBar.style.display = 'flex';
+                elements.statusTxt.innerText = "Complete!";
+                elements.pContainer.style.display = 'none';
             }
-            mainBtn.disabled = false;
-            mainBtn.innerText = "Select file";
         });
 
         const fd = new FormData();
-        fd.append('file', file);
-        fd.append('jobId', jobId);
+        fd.append('file', file); fd.append('jobId', jobId);
         fd.append('speakerCount', document.getElementById('speaker-count').value);
         fd.append('language', document.getElementById('audio-lang').value);
         fd.append('task', document.getElementById('task-mode').value);
 
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload_full_file', true);
-
-        xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-                const percent = Math.round((e.loaded / e.total) * 100);
-                progressBar.style.width = percent + "%";
-                statusTxt.innerText = `Uploading: ${percent}%`;
-            }
-        };
-
-        xhr.onload = () => {
-            try {
-                const response = JSON.parse(xhr.responseText);
-                if (xhr.status === 200) {
-                    statusTxt.innerText = "Processing (AI)...";
-                    // Start 5-minute timeout for "Zombie" servers
-                    window.serverTimeout = setTimeout(() => {
-                        handleUploadError("Server is busy (timeout). Please try again later.");
-                    }, 300000);
-                } else {
-                    // Handles 413 (File Too Large) and general 500 errors from backend
-                    handleUploadError(response.message || "Error processing file.");
-                }
-            } catch (e) {
-                handleUploadError("Invalid server response.");
-            }
-        };
-
-        xhr.onerror = () => {
-            handleUploadError("Network Error: Could not upload file. Check your connection.");
-        };
-
+        xhr.upload.onprogress = (e) => { elements.progressBar.style.width = Math.round((e.loaded/e.total)*100) + "%"; };
+        xhr.onload = () => { elements.statusTxt.innerText = "Processing AI..."; };
         xhr.send(fd);
     });
 });
