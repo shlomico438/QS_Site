@@ -2,29 +2,33 @@
 
 {% block content %}
 <style>
-    /* =========================
-       1. GLOBAL LAYOUT FIXES
-    ========================= */
-    /* Force the body to be a column so the Base Header + App Stack correctly */
-    body {
-        display: flex;
-        flex-direction: column;
-        height: 100vh; /* Full viewport height */
-        margin: 0;
-        overflow: hidden; /* Prevent body scroll, handle it inside components */
+    /* =========================================================
+       CRITICAL LAYOUT OVERRIDES (Fixes "Half Screen" Issue)
+    ========================================================= */
+
+    /* 1. Force the parent <main> from base.html to stop scrolling */
+    main.main-content {
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important; /* Disable outer scroll */
+        height: 100% !important;
+        padding: 0 !important;
     }
 
-    /* =========================
-       2. APP MODE (The Main Content)
-    ========================= */
+    /* 2. Make the App Mode fill that space exactly */
     .app-mode {
-        flex: 1; /* Grow to fill space BELOW the base.html header */
+        flex: 1; /* Grow to fill the main container */
         display: flex;
         flex-direction: column;
-        min-height: 0; /* Critical for scrolling inside flex items */
+        height: 100%; /* Force full height */
+        min-height: 0; /* Allow shrinking */
         background-color: #f8f9fa;
-        overflow: hidden;
+        overflow: hidden; /* Lock overflow so internal elements scroll instead */
     }
+
+    /* =========================================================
+       APP COMPONENTS
+    ========================================================= */
 
     /* Main Container */
     .main-app-container {
@@ -46,7 +50,7 @@
     }
     audio { width: 100%; height: 35px; }
 
-    /* Controls Bar (Switches) */
+    /* Controls Bar */
     .controls-bar {
         flex: 0 0 auto;
         padding: 6px 10px;
@@ -67,7 +71,7 @@
         cursor: pointer;
     }
 
-    /* Toggle Switch Styling */
+    /* Toggle Switches */
     .toggle-switch {
         position: relative;
         display: inline-block;
@@ -97,7 +101,7 @@
     input:checked + .slider { background-color: #5d5dff; }
     input:checked + .slider:before { transform: translateX(16px); }
 
-    /* Transcription Area */
+    /* Transcription Area (Scrolls Independently) */
     .transcription-wrapper {
         flex: 1;
         display: flex;
@@ -108,7 +112,7 @@
 
     #transcript-window {
         flex: 1;
-        overflow-y: auto;
+        overflow-y: auto; /* Internal Scroll */
         padding: 20px;
         background: #fff;
         border: 1px solid #e5e7eb;
@@ -144,7 +148,7 @@
     }
     .setting-item { margin-bottom: 5px; display: flex; gap: 10px; align-items: center; }
 
-    /* Paragraphs & Text */
+    /* Paragraph Styling */
     .paragraph-row {
         display: flex;
         gap: 15px;
@@ -435,10 +439,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload_full_file', true);
 
+        // --- ERROR HANDLING START ---
+
+        // 1. Network Error (Connection Reset, etc.)
         xhr.onerror = function() {
             handleUploadError("Network error (connection reset)");
         };
 
+        // 2. Upload Progress
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
                 const percent = Math.round((e.loaded / e.total) * 100);
