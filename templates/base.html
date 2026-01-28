@@ -26,12 +26,49 @@
         margin-bottom: 30px;
     }
 
+    /* Ensure the nav container uses Flexbox to align Logo + Links */
+    .nav-container {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 20px;
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+
+    /* Remove text styles from the logo link wrapper */
+    .nav-logo {
+        text-decoration: none;
+        display: flex; /* Fixes random spacing below image */
+        align-items: center;
+    }
+
+    /* Navigation Links Styling */
+    .nav-menu {
+        display: flex;
+        gap: 25px;
+    }
+
+    .nav-item {
+        text-decoration: none;
+        color: #333;
+        font-weight: 600;
+        font-size: 1rem;
+    }
+
+    .nav-item:hover {
+        color: #4f46e5;
+    }
+
 </style>
 </head>
 <body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
-    <header class="navbar">
+    <header class="navbar" style="background: #fff; border-bottom: 1px solid #eee;">
         <div class="nav-container">
-            <a href="/" class="nav-logo">QuickScribe</a>
+            <a href="/" class="nav-logo">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 40px; width: auto;">
+            </a>
+
             <div class="nav-menu">
                 <a href="/about" class="nav-item">About Us</a>
                 <a href="/blog" class="nav-item">Blog</a>

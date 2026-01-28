@@ -3,76 +3,39 @@
 {% block content %}
 <style>
     /* =========================
-       1. GLOBAL LOCK (One Pager)
+       1. GLOBAL LAYOUT FIXES
     ========================= */
-    /* Allow flex children to scroll – DO NOT block root scrolling */
-    html, body {
-        height: 100%;
-        min-height: 0;
-        overflow-x: hidden;   /* keep sideways locked */
-        overflow-y: hidden;   /* keep full-screen experience */
+    /* Force the body to be a column so the Base Header + App Stack correctly */
+    body {
+        display: flex;
+        flex-direction: column;
+        height: 100vh; /* Full viewport height */
+        margin: 0;
+        overflow: hidden; /* Prevent body scroll, handle it inside components */
     }
 
     /* =========================
-       2. APP LAYOUT STRUCTURE
+       2. APP MODE (The Main Content)
     ========================= */
     .app-mode {
+        flex: 1; /* Grow to fill space BELOW the base.html header */
         display: flex;
         flex-direction: column;
-        height: 100%;
-        min-height: 0;
-        overflow: hidden;
+        min-height: 0; /* Critical for scrolling inside flex items */
         background-color: #f8f9fa;
+        overflow: hidden;
     }
 
-    /* --- NEW HEADER STYLING --- */
-    .header-section {
-        flex: 0 0 auto;
-        display: flex;
-        align-items: center;
-        /* Distributes space: Logo on Left, Links on Right (or remove 'justify-content' to keep them close) */
-        /* justify-content: space-between; <--- Uncomment this if you want links on the far right */
-        justify-content: flex-start;
-        gap: 40px; /* Space between logo and links */
-        padding: 10px 30px;
-        background: #fff;
-        border-bottom: 1px solid #eee;
-    }
-
-    .logo-container img {
-        height: 40px; /* Adjust height to fit your navbar */
-        width: auto;
-        display: block;
-    }
-
-    .nav-links {
-        display: flex;
-        gap: 25px; /* Space between links */
-    }
-
-    .nav-links a {
-        text-decoration: none;
-        color: #333; /* Dark Grey text */
-        font-weight: 600; /* Boldish font like the image */
-        font-size: 1rem;
-        transition: color 0.2s;
-    }
-
-    .nav-links a:hover {
-        color: #5d5dff; /* Purple on hover */
-    }
-    /* -------------------------- */
-
-    /* Main Container - Fills remaining space */
+    /* Main Container */
     .main-app-container {
-        flex: 1; /* Grows to fill space between header and footer */
+        flex: 1;
         display: flex;
         flex-direction: column;
         padding: 10px 15px;
-        min-height: 0; /* Critical for scroll inside flex */
         max-width: 1000px;
         margin: 0 auto;
         width: 100%;
+        box-sizing: border-box;
     }
 
     /* Audio Player */
@@ -83,6 +46,7 @@
     }
     audio { width: 100%; height: 35px; }
 
+    /* Controls Bar (Switches) */
     .controls-bar {
         flex: 0 0 auto;
         padding: 6px 10px;
@@ -102,6 +66,8 @@
         gap: 8px;
         cursor: pointer;
     }
+
+    /* Toggle Switch Styling */
     .toggle-switch {
         position: relative;
         display: inline-block;
@@ -131,12 +97,12 @@
     input:checked + .slider { background-color: #5d5dff; }
     input:checked + .slider:before { transform: translateX(16px); }
 
-    /* Transcription Area (The Scrollable Part) */
+    /* Transcription Area */
     .transcription-wrapper {
-        flex: 1; /* This part grows/shrinks */
+        flex: 1;
         display: flex;
         flex-direction: column;
-        min-height: 0; /* Allows internal scroll */
+        min-height: 0;
         position: relative;
     }
 
@@ -153,15 +119,15 @@
         line-height: 1.6;
     }
 
-    /* Footer / Upload Zone - Always visible at bottom */
+    /* Footer / Upload Zone */
     .upload-zone {
-        flex: 0 0 auto; /* Never shrink */
+        flex: 0 0 auto;
         padding-top: 10px;
         text-align: center;
         background: #f8f9fa;
     }
 
-    /* Advanced Settings Styling */
+    /* Advanced Settings */
     .advanced-settings {
         margin-bottom: 10px;
         font-size: 0.85rem;
@@ -178,6 +144,7 @@
     }
     .setting-item { margin-bottom: 5px; display: flex; gap: 10px; align-items: center; }
 
+    /* Paragraphs & Text */
     .paragraph-row {
         display: flex;
         gap: 15px;
@@ -208,7 +175,6 @@
     }
     .clickable-sent:hover { background-color: #fef9c3; }
 
-    /* Hiding Elements via Checkbox */
     .hide-time .ts-col { display: none !important; }
     .hide-speaker .speaker-label { display: none !important; }
 
@@ -244,17 +210,6 @@
 </style>
 
 <div class="app-mode">
-    <div class="header-section">
-        <div class="logo-container">
-            <img src="/static/images/logo.png" alt="QuickScribe Logo">
-        </div>
-        <nav class="nav-links">
-            <a href="/about">About Us</a>
-            <a href="/blog">Blog</a>
-            <a href="/contact">Contact</a>
-        </nav>
-    </div>
-
     <div class="main-app-container">
 
         <div id="audio-player-container">
@@ -265,7 +220,6 @@
 
         <div class="transcription-wrapper">
             <div class="controls-bar">
-
                 <label class="switch-wrapper">
                     <div class="toggle-switch">
                         <input type="checkbox" id="toggle-time" checked>
@@ -328,7 +282,7 @@
                 Start Transcription
             </button>
         </div>
-        </div>
+    </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
@@ -481,14 +435,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload_full_file', true);
 
-        // --- ERROR HANDLING START ---
-
-        // 1. Network Error (Connection Reset, etc.)
         xhr.onerror = function() {
             handleUploadError("Network error (connection reset)");
         };
 
-        // 2. Upload Progress
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
                 const percent = Math.round((e.loaded / e.total) * 100);
