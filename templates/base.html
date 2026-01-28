@@ -31,16 +31,18 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 10px 20px;
+        padding: 5px 20px; /* Reduced vertical padding slightly since logo provides height */
         max-width: 1200px;
         margin: 0 auto;
+        height: 100%; /* Ensure container fills header */
     }
 
     /* Remove text styles from the logo link wrapper */
     .nav-logo {
         text-decoration: none;
-        display: flex; /* Fixes random spacing below image */
+        display: flex;
         align-items: center;
+        height: 100%;
     }
 
     /* Navigation Links Styling */
@@ -53,7 +55,7 @@
         text-decoration: none;
         color: #333;
         font-weight: 600;
-        font-size: 1rem;
+        font-size: 1.1rem; /* Slightly larger text to match bigger logo */
     }
 
     .nav-item:hover {
@@ -63,10 +65,10 @@
 </style>
 </head>
 <body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
-    <header class="navbar" style="background: #fff; border-bottom: 1px solid #eee;">
+    <header class="navbar" style="background: #fff; border-bottom: 1px solid #eee; flex-shrink: 0;">
         <div class="nav-container">
             <a href="/" class="nav-logo">
-                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 40px; width: auto;">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 85px; width: auto; max-width: 100%;">
             </a>
 
             <div class="nav-menu">
