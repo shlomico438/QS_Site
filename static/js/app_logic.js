@@ -123,41 +123,35 @@ function createDocxParagraphs(group, showTime, showSpeaker) {
         if (showSpeaker) label += formatSpeaker(group.speaker);
 
         const labelParagraph = new Paragraph({
+            bidirectional: true,              // ✅ RTL paragraph
+            alignment: AlignmentType.RIGHT,
             children: [
                 new TextRun({
                     text: label,
                     bold: true,
                     color: "5d5dff",
                     size: 20,
-                    rightToLeft: true
-                })
+                    rightToLeft: true,        // ✅ RTL text
+                }),
             ],
-            alignment: AlignmentType.RIGHT
         });
-
-        // 🔥 FORCE RTL AT XML LEVEL
-        const pPr = labelParagraph._element.getOrAddProperties();
-        pPr.push(new docx.XmlComponent("w:bidi"));
 
         paragraphs.push(labelParagraph);
     }
 
     // --- TRANSCRIPTION PARAGRAPH ---
     const textParagraph = new Paragraph({
+        bidirectional: true,                  // ✅ RTL paragraph
+        alignment: AlignmentType.RIGHT,
         children: [
             new TextRun({
                 text: group.text.trim(),
                 size: 24,
-                language: { id: "he-IL" },
-                rightToLeft: true
-            })
+                language: "he-IL",             // ✅ correct form
+                rightToLeft: true,
+            }),
         ],
-        alignment: AlignmentType.RIGHT
     });
-
-    // 🔥 FORCE RTL AT XML LEVEL
-    const pPr2 = textParagraph._element.getOrAddProperties();
-    pPr2.push(new docx.XmlComponent("w:bidi"));
 
     paragraphs.push(textParagraph);
 
