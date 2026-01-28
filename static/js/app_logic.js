@@ -112,50 +112,54 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
-    function createDocxParagraphs(group, showTime, showSpeaker) {
-        const { Paragraph, TextRun, AlignmentType } = docx;
-        const paragraphs = [];
+function createDocxParagraphs(group, showTime, showSpeaker) {
+    const { Paragraph, TextRun, AlignmentType } = docx;
+    const paragraphs = [];
 
-        // 1️⃣ Label paragraph (time + speaker)
-        if (showSpeaker || showTime) {
-            let label = "";
-            if (showTime) label += `[${formatTime(group.start)}] `;
-            if (showSpeaker) label += formatSpeaker(group.speaker);
+    // --- LABEL PARAGRAPH ---
+    if (showSpeaker || showTime) {
+        let label = "";
+        if (showTime) label += `[${formatTime(group.start)}] `;
+        if (showSpeaker) label += formatSpeaker(group.speaker);
 
-            paragraphs.push(
-                forceRTL(
-                    new Paragraph({
-                        children: [
-                            new TextRun({
-                                text: label,
-                                bold: true,
-                                color: "5d5dff",
-                                size: 20,
-                                language: { id: "he-IL" }
-                            })
-                        ],
-                        alignment: AlignmentType.RIGHT
-                    })
-                )
-            );
-        }
-
-        // 2️⃣ Transcription text paragraph (REAL RTL)
-        paragraphs.push(
-            forceRTL(
-                new Paragraph({
-                    children: [
-                        new TextRun({
-                            text: group.text.trim(),
-                            size: 24,
-                            language: { id: "he-IL" } // fixes red underline
-                        })
-                    ],
-                    alignment: AlignmentType.RIGHT,
-                    spacing: { after: 300 }
+        const labelParagraph = new Paragraph({
+            children: [
+                new TextRun({
+                    text: label,
+                    bold: true,
+                    color: "5d5dff",
+                    size: 20,
+                    rightToLeft: true
                 })
-            )
-        );
+            ],
+            alignment: AlignmentType.RIGHT
+        });
+
+        // 🔥 FORCE RTL AT XML LEVEL
+        const pPr = labelParagraph._element.getOrAddProperties();
+        pPr.push(new docx.XmlComponent("w:bidi"));
+
+        paragraphs.push(labelParagraph);
+    }
+
+    // --- TRANSCRIPTION PARAGRAPH ---
+    const textParagraph = new Paragraph({
+        children: [
+            new TextRun({
+                text: group.text.trim(),
+                size: 24,
+                language: { id: "he-IL" },
+                rightToLeft: true
+            })
+        ],
+        alignment: AlignmentType.RIGHT
+    });
+
+    // 🔥 FORCE RTL AT XML LEVEL
+    const pPr2 = textParagraph._element.getOrAddProperties();
+    pPr2.push(new docx.XmlComponent("w:bidi"));
+
+    paragraphs.push(textParagraph);
 
     return paragraphs;
 }
