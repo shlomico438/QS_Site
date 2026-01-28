@@ -59,10 +59,10 @@
 
         display: none; /* Hidden by default */
 
-        justify-content: space-between; /* Spread items apart */
+        justify-content: space-between;
         align-items: center;
         font-size: 0.85rem;
-        flex-wrap: wrap; /* Allow wrapping on small screens */
+        flex-wrap: wrap;
         gap: 10px;
     }
 
@@ -72,36 +72,104 @@
         align-items: center;
     }
 
-    /* EXPORT BUTTONS STYLING */
-    .export-group {
+    /* --- NEW TOOLBAR STYLING --- */
+    .toolbar-group {
         display: flex;
         gap: 8px;
+        align-items: center;
+        position: relative; /* For dropdown positioning */
     }
 
-    .btn-export {
+    /* Icon Buttons */
+    .btn-icon {
         background: #fff;
         border: 1px solid #ccc;
-        padding: 4px 12px;
-        border-radius: 4px;
+        border-radius: 8px; /* Rounded squares like your image */
+        width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         cursor: pointer;
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: #333;
         transition: all 0.2s;
+        color: #333;
     }
-    .btn-export:hover {
-        background: #5d5dff;
-        color: white;
-        border-color: #5d5dff;
+    .btn-icon:hover {
+        background: #f0f0f0;
+        border-color: #bbb;
+        color: #000;
+    }
+    .btn-icon svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
     }
 
+    /* Save/Cancel Action Buttons */
+    .action-buttons {
+        display: none; /* Hidden unless editing */
+        gap: 8px;
+    }
+    .btn-save { color: #059669; border-color: #059669; }
+    .btn-save:hover { background: #ecfdf5; }
+    .btn-cancel { color: #dc2626; border-color: #dc2626; }
+    .btn-cancel:hover { background: #fef2f2; }
+
+    /* Dropdown Menu */
+    .dropdown-menu {
+        position: absolute;
+        top: 110%; /* Below the button */
+        right: 0;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        display: none; /* Hidden by default */
+        flex-direction: column;
+        min-width: 120px;
+        z-index: 100;
+        overflow: hidden;
+    }
+    .dropdown-menu.show {
+        display: flex;
+    }
+    .dropdown-item {
+        padding: 10px 15px;
+        cursor: pointer;
+        font-size: 0.9rem;
+        color: #333;
+        transition: background 0.1s;
+        text-align: left;
+        background: none;
+        border: none;
+        width: 100%;
+    }
+    .dropdown-item:hover {
+        background: #f3f4f6;
+        color: #5d5dff;
+    }
+
+    /* Edit Mode Styling */
+    .is-editing .clickable-sent {
+        cursor: text;
+        border-bottom: 1px dashed #ccc;
+        background: #fff;
+    }
+    .is-editing .clickable-sent:hover {
+        background: #fff; /* Remove yellow hover in edit mode */
+    }
+
+    /* Standard Toggle Switch */
     .controls-bar label {
         display: flex;
         align-items: center;
         gap: 8px;
         cursor: pointer;
     }
-
     .toggle-switch {
         position: relative;
         display: inline-block;
@@ -202,6 +270,8 @@
     .clickable-sent {
         cursor: pointer;
         transition: background 0.15s;
+        padding: 2px 0;
+        border-radius: 2px;
     }
     .clickable-sent:hover { background-color: #fef9c3; }
 
@@ -266,10 +336,36 @@
                     </label>
                 </div>
 
-                <div class="export-group">
-                    <button class="btn-export" onclick="downloadFile('docx')">DOCX</button>
-                    <button class="btn-export" onclick="downloadFile('srt')">SRT</button>
-                    <button class="btn-export" onclick="downloadFile('vtt')">VTT</button>
+                <div class="toolbar-group">
+
+                    <div style="position: relative;">
+                        <button class="btn-icon" id="btn-download" title="Download">
+                            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                        </button>
+                        <div class="dropdown-menu" id="download-menu">
+                            <button class="dropdown-item" onclick="downloadFile('docx')">Word (.docx)</button>
+                            <button class="dropdown-item" onclick="downloadFile('srt')">Subtitles (.srt)</button>
+                            <button class="dropdown-item" onclick="downloadFile('vtt')">Web VTT (.vtt)</button>
+                        </div>
+                    </div>
+
+                    <button class="btn-icon" id="btn-copy" onclick="copyTranscript()" title="Copy to Clipboard">
+                        <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+
+                    <button class="btn-icon" id="btn-edit" onclick="toggleEditMode()" title="Edit Text">
+                        <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                    </button>
+
+                    <div class="action-buttons" id="edit-actions">
+                        <button class="btn-icon btn-save" onclick="saveEdits()" title="Save Changes">
+                            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </button>
+                        <button class="btn-icon btn-cancel" onclick="cancelEdits()" title="Cancel">
+                            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        </button>
+                    </div>
+
                 </div>
             </div>
 
@@ -337,9 +433,91 @@ document.addEventListener('DOMContentLoaded', () => {
     const mainAudio = document.getElementById('main-audio');
     const controlsBar = document.querySelector('.controls-bar');
 
+    // Toolbar Elements
+    const btnDownload = document.getElementById('btn-download');
+    const downloadMenu = document.getElementById('download-menu');
+    const btnEdit = document.getElementById('btn-edit');
+    const btnCopy = document.getElementById('btn-copy');
+    const editActions = document.getElementById('edit-actions');
+
     let socket;
     window.fakeProgressInterval = null;
-    window.currentSegments = []; // Store for export
+    window.currentSegments = [];
+    let isEditMode = false;
+
+    // --- TOOLBAR LOGIC ---
+
+    // Toggle Dropdown
+    btnDownload.addEventListener('click', (e) => {
+        e.stopPropagation();
+        downloadMenu.classList.toggle('show');
+    });
+
+    // Close Dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!btnDownload.contains(e.target) && !downloadMenu.contains(e.target)) {
+            downloadMenu.classList.remove('show');
+        }
+    });
+
+    // Toggle Edit Mode
+    window.toggleEditMode = function() {
+        isEditMode = true;
+        transcriptWindow.classList.add('is-editing');
+
+        // Hide Main Buttons, Show Save/Cancel
+        btnEdit.style.display = 'none';
+        btnCopy.style.display = 'none';
+        btnDownload.style.display = 'none'; // Optional: hide download while editing
+        editActions.style.display = 'flex';
+
+        // Make text editable
+        const spans = transcriptWindow.querySelectorAll('.clickable-sent');
+        spans.forEach(span => {
+            span.contentEditable = "true";
+            // Remove click listener logic by setting flag (handled in jumpTo)
+        });
+    };
+
+    window.saveEdits = function() {
+        // Read new text back into window.currentSegments
+        // Note: This relies on DOM order matching Array order (which it should)
+        const spans = transcriptWindow.querySelectorAll('.clickable-sent');
+        spans.forEach((span, index) => {
+            if (window.currentSegments[index]) {
+                window.currentSegments[index].text = span.innerText.trim();
+            }
+        });
+
+        exitEditMode();
+        // Re-render to clean up any weird HTML inserted by contentEditable
+        transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
+    };
+
+    window.cancelEdits = function() {
+        exitEditMode();
+        // Revert by simply re-rendering original data
+        transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
+    };
+
+    function exitEditMode() {
+        isEditMode = false;
+        transcriptWindow.classList.remove('is-editing');
+
+        // Restore Buttons
+        btnEdit.style.display = 'flex';
+        btnCopy.style.display = 'flex';
+        btnDownload.style.display = 'flex'; // Optional: hide download while editing
+        editActions.style.display = 'none';
+    }
+
+    // Copy to Clipboard
+    window.copyTranscript = function() {
+        const text = window.currentSegments.map(s => s.text).join(" ");
+        navigator.clipboard.writeText(text).then(() => {
+            alert("Transcript copied to clipboard!");
+        });
+    };
 
     // --- TOGGLES ---
     document.getElementById('toggle-time').addEventListener('change', (e) => {
@@ -390,6 +568,7 @@ document.addEventListener('DOMContentLoaded', () => {
             alert("No transcript available to export.");
             return;
         }
+        downloadMenu.classList.remove('show'); // Hide menu
 
         let content = "";
         let filename = "transcript." + type;
@@ -414,10 +593,7 @@ document.addEventListener('DOMContentLoaded', () => {
             saveAs(blob, filename);
 
         } else if (type === 'docx') {
-            // Using docx library
             const { Document, Packer, Paragraph, TextRun } = docx;
-
-            // Group by speaker for cleaner doc
             let docChildren = [];
             let currentGroup = null;
 
@@ -496,6 +672,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     window.jumpTo = function(time) {
+        // DISABLE JUMP IF EDITING
+        if (isEditMode) return;
+
         if (mainAudio) {
             mainAudio.currentTime = time;
             mainAudio.play();
@@ -523,6 +702,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         controlsBar.style.display = 'none'; // Hide controls
         window.currentSegments = []; // Clear previous data
+
+        // Reset Edit Mode if active
+        if (isEditMode) cancelEdits();
     }
 
     fileInput.addEventListener('change', async function() {
@@ -554,11 +736,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (placeholder) placeholder.style.display = "none";
 
             if (data.segments) {
-                // STORE DATA FOR EXPORT
                 window.currentSegments = data.segments;
-
                 transcriptWindow.innerHTML = renderParagraphs(data.segments);
-                // Show controls (now includes exports)
                 controlsBar.style.display = 'flex';
             }
             mainBtn.disabled = false;
