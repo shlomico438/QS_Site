@@ -113,7 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 function createDocxParagraphs(group, showTime, showSpeaker) {
-    const { Paragraph, TextRun, AlignmentType } = docx;
+    const { Paragraph, TextRun, AlignmentType, ParagraphProperties } = docx;
     const paragraphs = [];
 
     // --- LABEL PARAGRAPH ---
@@ -122,41 +122,44 @@ function createDocxParagraphs(group, showTime, showSpeaker) {
         if (showTime) label += `[${formatTime(group.start)}] `;
         if (showSpeaker) label += formatSpeaker(group.speaker);
 
-        const labelParagraph = new Paragraph({
-            bidirectional: true,              // ✅ RTL paragraph
-            alignment: AlignmentType.RIGHT,
-            children: [
-                new TextRun({
-                    text: label,
-                    bold: true,
-                    color: "5d5dff",
-                    size: 20,
-                    rightToLeft: true,        // ✅ RTL text
+        paragraphs.push(
+            new Paragraph({
+                paragraphProperties: new ParagraphProperties({
+                    bidirectional: true,            // 🔥 REAL RTL
+                    alignment: AlignmentType.RIGHT
                 }),
-            ],
-        });
-
-        paragraphs.push(labelParagraph);
+                children: [
+                    new TextRun({
+                        text: label,
+                        bold: true,
+                        color: "5d5dff",
+                        size: 20
+                    })
+                ]
+            })
+        );
     }
 
-    // --- TRANSCRIPTION PARAGRAPH ---
-    const textParagraph = new Paragraph({
-        bidirectional: true,                  // ✅ RTL paragraph
-        alignment: AlignmentType.RIGHT,
-        children: [
-            new TextRun({
-                text: group.text.trim(),
-                size: 24,
-                language: "he-IL",             // ✅ correct form
-                rightToLeft: true,
+    // --- TEXT PARAGRAPH ---
+    paragraphs.push(
+        new Paragraph({
+            paragraphProperties: new ParagraphProperties({
+                bidirectional: true,                // 🔥 REAL RTL
+                alignment: AlignmentType.RIGHT
             }),
-        ],
-    });
-
-    paragraphs.push(textParagraph);
+            children: [
+                new TextRun({
+                    text: group.text.trim(),
+                    size: 24,
+                    language: "he-IL"
+                })
+            ]
+        })
+    );
 
     return paragraphs;
 }
+
 
     // --- UI ACTIONS ---
     window.toggleEditMode = () => {
