@@ -7,9 +7,11 @@ import boto3
 import json
 import requests  # Added for RunPod API calls
 import time
+import logging
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
 # Configuration for automation
 RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
@@ -34,6 +36,32 @@ s3_client = boto3.client(
     region_name='eu-north-1'
 )
 
+
+# Configure logging to see errors in Koyeb logs
+logging.basicConfig(level=logging.INFO)
+
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    # Specific error for files exceeding MAX_CONTENT_LENGTH
+    return jsonify({
+        "status": "error",
+        "message": "File too large. Maximum limit is 500MB."
+    }), 413
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Pass through existing HTTP errors (like 404)
+    if hasattr(e, 'code'):
+        return jsonify({"status": "error", "message": str(e.description)}), e.code
+
+    # Catch-all for unexpected Python crashes (500)
+    logging.error(f"Unexpected Server Error: {str(e)}")
+    return jsonify({
+        "status": "error",
+        "message": "Internal server error. Please try again later."
+    }), 500
 # --- WEB ROUTES ---
 
 @app.route('/')

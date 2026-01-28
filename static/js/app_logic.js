@@ -23,6 +23,18 @@ document.addEventListener('DOMContentLoaded', () => {
     window.currentSegments = [];
     let isEditMode = false;
 
+    // --- GLOBAL ERROR CATCHERS ---
+    // Catches general JavaScript crashes
+    window.onerror = function(message) {
+        handleUploadError("System Error: " + message);
+        return true;
+    };
+
+    // Catches failed async promises
+    window.onunhandledrejection = function(event) {
+        handleUploadError("Communication Error: " + event.reason);
+    };
+
     // --- TOOLBAR LOGIC ---
     btnDownload.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -74,7 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.copyTranscript = function() {
         const text = window.currentSegments.map(s => s.text).join(" ");
-        navigator.clipboard.writeText(text).then(() => alert("הטקסט הועתק!"));
+        navigator.clipboard.writeText(text).then(() => alert("Transcript copied to clipboard!"));
     };
 
     // --- TOGGLES ---
@@ -107,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- EXPORT ---
     window.downloadFile = function(type) {
-        if (!window.currentSegments.length) return alert("אין נתונים לייצוא.");
+        if (!window.currentSegments.length) return alert("No transcript available to export.");
         downloadMenu.classList.remove('show');
 
         let content = "";
@@ -162,7 +174,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.jumpTo = function(time) { if (!isEditMode && mainAudio) { mainAudio.currentTime = time; mainAudio.play(); } };
 
-    // --- UPLOAD ---
+    // --- UPLOAD & ERROR HANDLING ---
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         if (window.serverTimeout) clearTimeout(window.serverTimeout);
@@ -194,11 +206,21 @@ document.addEventListener('DOMContentLoaded', () => {
         mainAudio.load();
         audioContainer.style.display = 'block';
 
+        // Initialize Socket
         socket = io({ query: { jobId }, transports: ['websocket'] });
+
+        socket.on('connect_error', () => {
+            handleUploadError("Unable to connect to the update server.");
+        });
+
         socket.on('job_status_update', (data) => {
             if (window.serverTimeout) clearTimeout(window.serverTimeout);
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-            if (data.status === "error") return handleUploadError("Processing server error");
+
+            if (data.status === "error") {
+                return handleUploadError(data.message || "GPU processing failed.");
+            }
+
             pContainer.style.display = 'none';
             statusTxt.innerText = "Transcription complete!";
             statusTxt.style.color = "#28a745";
@@ -212,21 +234,45 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const fd = new FormData();
-        fd.append('file', file); fd.append('jobId', jobId);
+        fd.append('file', file);
+        fd.append('jobId', jobId);
         fd.append('speakerCount', document.getElementById('speaker-count').value);
         fd.append('language', document.getElementById('audio-lang').value);
         fd.append('task', document.getElementById('task-mode').value);
 
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload_full_file', true);
-        xhr.upload.onprogress = (e) => { if (e.lengthComputable) progressBar.style.width = Math.round((e.loaded / e.total) * 100) + "%"; };
-        xhr.onload = () => {
-            if (xhr.status === 200) {
-                statusTxt.innerText = "Processing (AI)...";
-                window.fakeProgressInterval = setInterval(() => { /* logic here */ }, 1000);
-                window.serverTimeout = setTimeout(() => handleUploadError("Server is busy (timeout)"), 300000);
-            } else { handleUploadError("Server error"); }
+
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percent + "%";
+                statusTxt.innerText = `Uploading: ${percent}%`;
+            }
         };
+
+        xhr.onload = () => {
+            try {
+                const response = JSON.parse(xhr.responseText);
+                if (xhr.status === 200) {
+                    statusTxt.innerText = "Processing (AI)...";
+                    // Start 5-minute timeout for "Zombie" servers
+                    window.serverTimeout = setTimeout(() => {
+                        handleUploadError("Server is busy (timeout). Please try again later.");
+                    }, 300000);
+                } else {
+                    // Handles 413 (File Too Large) and general 500 errors from backend
+                    handleUploadError(response.message || "Error processing file.");
+                }
+            } catch (e) {
+                handleUploadError("Invalid server response.");
+            }
+        };
+
+        xhr.onerror = () => {
+            handleUploadError("Network Error: Could not upload file. Check your connection.");
+        };
+
         xhr.send(fd);
     });
 });
