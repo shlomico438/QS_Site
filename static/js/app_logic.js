@@ -102,49 +102,63 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    function forceRTL(paragraph) {
+        const p = paragraph._element;
+        const pPr = p.getOrAddProperties();
+        pPr.addChildElement(
+            new docx.oxml.OxmlElement("w:bidi")
+        );
+        return paragraph;
+    }
+
+
     function createDocxParagraphs(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
 
-        // 1. Label Paragraph (Colored and RTL)
+        // 1️⃣ Label paragraph (time + speaker)
         if (showSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
             if (showSpeaker) label += formatSpeaker(group.speaker);
 
-            paragraphs.push(new Paragraph({
-                children: [
-                    new TextRun({
-                        text: label,
-                        bold: true,
-                        color: "5d5dff",
-                        size: 20,
-                        rightToLeft: true
+            paragraphs.push(
+                forceRTL(
+                    new Paragraph({
+                        children: [
+                            new TextRun({
+                                text: label,
+                                bold: true,
+                                color: "5d5dff",
+                                size: 20,
+                                language: { id: "he-IL" }
+                            })
+                        ],
+                        alignment: AlignmentType.RIGHT
                     })
-                ],
-                alignment: AlignmentType.RIGHT,
-                bidirectional: true,
-                spacing: { after: 0 }
-            }));
+                )
+            );
         }
 
-        // 2. Transcription Text Paragraph (RTL & Spelling Fix)
-        paragraphs.push(new Paragraph({
-            children: [
-                new TextRun({
-                    text: group.text.trim(),
-                    size: 24,
-                    language: { id: "he-IL" }, // Removes red spelling lines
-                    rightToLeft: true          // Fixes punctuation/character order
+        // 2️⃣ Transcription text paragraph (REAL RTL)
+        paragraphs.push(
+            forceRTL(
+                new Paragraph({
+                    children: [
+                        new TextRun({
+                            text: group.text.trim(),
+                            size: 24,
+                            language: { id: "he-IL" } // fixes red underline
+                        })
+                    ],
+                    alignment: AlignmentType.RIGHT,
+                    spacing: { after: 300 }
                 })
-            ],
-            alignment: AlignmentType.RIGHT,
-            bidirectional: true,
-            spacing: { after: 300 }
-        }));
+            )
+        );
 
-        return paragraphs;
-    }
+    return paragraphs;
+}
 
     // --- UI ACTIONS ---
     window.toggleEditMode = () => {
