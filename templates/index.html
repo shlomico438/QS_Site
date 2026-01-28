@@ -28,16 +28,40 @@
     /* Header Compact */
     .header-section {
         flex: 0 0 auto;
-        text-align: center;
-        padding: 10px 0;
+        display: flex;
+        align-items: center;
+        /* Distributes space: Logo on Left, Links on Right (or remove 'justify-content' to keep them close) */
+        /* justify-content: space-between; <--- Uncomment this if you want links on the far right */
+        justify-content: flex-start;
+        gap: 40px; /* Space between logo and links */
+        padding: 10px 30px;
         background: #fff;
         border-bottom: 1px solid #eee;
     }
-    .header-section h2 {
-        font-size: 1.2rem;
-        margin: 0;
-        color: #333;
+
+    .logo-container img {
+        height: 40px; /* Adjust height to fit your navbar */
+        width: auto;
+        display: block;
     }
+
+    .nav-links {
+        display: flex;
+        gap: 25px; /* Space between links */
+    }
+
+    .nav-links a {
+        text-decoration: none;
+        color: #333; /* Dark Grey text */
+        font-weight: 600; /* Boldish font like the image */
+        font-size: 1rem;
+        transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+        color: #5d5dff; /* Purple on hover */
+    }
+    /* -------------------------- */
 
     /* Main Container - Fills remaining space */
     .main-app-container {
@@ -221,7 +245,8 @@
 
 <div class="app-mode">
     <div class="header-section">
-        <h2>Quick transcription</h2>
+        <div class="logo-container">
+            <img src="/static
     </div>
 
     <div class="main-app-container">
