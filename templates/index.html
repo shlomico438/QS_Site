@@ -40,15 +40,20 @@
         </div>
 
         <div class="upload-zone">
-            <div style="margin-bottom: 10px; direction: rtl; display: flex; align-items: center; justify-content: center; gap: 10px;">
-                <label>Speakers:</label><input type="number" id="speaker-count" value="2" min="1" max="10" style="width: 50px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; text-align: center;">
+            <div style="margin-bottom: 15px; direction: rtl; display: flex; align-items: center; justify-content: center; gap: 15px;">
+                <label>Speakers:</label>
+                <input type="number" id="speaker-count" value="2" min="1" max="10" style="width: 50px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; text-align: center;">
                 <select id="audio-lang" style="padding: 5px; border-radius: 5px;"><option value="he" selected>Hebrew</option><option value="en">English</option></select>
                 <select id="task-mode" style="padding: 5px; border-radius: 5px;"><option value="transcribe" selected>Transcribe</option><option value="translate">Translate</option></select>
             </div>
-            <div class="progress-container" id="p-container" style="display:none;"><div id="progress-bar"></div></div>
-            <p id="upload-status" style="font-size:0.9rem; color:#666;">Ready</p>
+
+            <div class="progress-container" id="p-container" style="display:none; margin: 10px auto; width: 80%; max-width: 500px;">
+                <div id="progress-bar"></div>
+            </div>
+
+            <p id="upload-status" style="font-size:0.9rem; color:#666; margin-bottom: 10px;">Ready</p>
             <input type="file" id="fileInput" hidden>
-            <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">Start Transcription</button>
+            <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">Upload and Process</button>
         </div>
     </div>
 </div>

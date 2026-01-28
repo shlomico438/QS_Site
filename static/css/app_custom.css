@@ -125,3 +125,35 @@ input:checked + .slider:before { transform: translateX(16px); }
 /* --- UPLOAD ZONE --- */
 .upload-zone { flex: 0 0 auto; padding: 15px; text-align: center; background: #f8f9fa; border-top: 1px solid #eee; }
 .btn-primary { padding: 10px 40px; background: #5d5dff; color: #fff; border: none; border-radius: 25px; font-weight: 600; cursor: pointer; }
+
+/* RESTORED PROGRESS BAR */
+.progress-container {
+    height: 8px;
+    background: #e5e7eb;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+#progress-bar {
+    height: 100%;
+    width: 0%;
+    background: #5d5dff;
+    transition: width 0.3s ease;
+}
+
+/* SHADED DISABLED BUTTON */
+.btn-primary:disabled {
+    background: #9ca3af !important;
+    cursor: not-allowed;
+    opacity: 0.7;
+    box-shadow: none;
+}
+
+/* SPEAKER COLOR IN UI */
+.speaker-label {
+    display: block;
+    color: #5d5dff; /* Solid primary purple */
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 4px;
+}
