@@ -5,32 +5,28 @@
     /* =========================================================
        CRITICAL LAYOUT OVERRIDES (Fixes "Half Screen" Issue)
     ========================================================= */
-
-    /* 1. Force the parent <main> from base.html to stop scrolling */
     main.main-content {
         display: flex !important;
         flex-direction: column !important;
-        overflow: hidden !important; /* Disable outer scroll */
+        overflow: hidden !important;
         height: 100% !important;
         padding: 0 !important;
     }
 
-    /* 2. Make the App Mode fill that space exactly */
     .app-mode {
-        flex: 1; /* Grow to fill the main container */
+        flex: 1;
         display: flex;
         flex-direction: column;
-        height: 100%; /* Force full height */
-        min-height: 0; /* Allow shrinking */
+        height: 100%;
+        min-height: 0;
         background-color: #f8f9fa;
-        overflow: hidden; /* Lock overflow so internal elements scroll instead */
+        overflow: hidden;
     }
 
     /* =========================================================
        APP COMPONENTS
     ========================================================= */
 
-    /* Main Container */
     .main-app-container {
         flex: 1;
         display: flex;
@@ -42,7 +38,6 @@
         box-sizing: border-box;
     }
 
-    /* Audio Player */
     #audio-player-container {
         flex: 0 0 auto;
         margin-bottom: 8px;
@@ -50,7 +45,7 @@
     }
     audio { width: 100%; height: 35px; }
 
-    /* Controls Bar */
+    /* --- UPDATED CONTROLS BAR: HIDDEN BY DEFAULT --- */
     .controls-bar {
         flex: 0 0 auto;
         padding: 6px 10px;
@@ -58,12 +53,16 @@
         border: 1px solid #e5e7eb;
         border-bottom: none;
         border-radius: 8px 8px 0 0;
-        display: flex;
+
+        /* CHANGED: Hidden initially */
+        display: none;
+
         gap: 15px;
         justify-content: flex-end;
         align-items: center;
         font-size: 0.85rem;
     }
+
     .controls-bar label {
         display: flex;
         align-items: center;
@@ -71,7 +70,6 @@
         cursor: pointer;
     }
 
-    /* Toggle Switches */
     .toggle-switch {
         position: relative;
         display: inline-block;
@@ -101,7 +99,6 @@
     input:checked + .slider { background-color: #5d5dff; }
     input:checked + .slider:before { transform: translateX(16px); }
 
-    /* Transcription Area (Scrolls Independently) */
     .transcription-wrapper {
         flex: 1;
         display: flex;
@@ -112,7 +109,7 @@
 
     #transcript-window {
         flex: 1;
-        overflow-y: auto; /* Internal Scroll */
+        overflow-y: auto;
         padding: 20px;
         background: #fff;
         border: 1px solid #e5e7eb;
@@ -123,7 +120,6 @@
         line-height: 1.6;
     }
 
-    /* Footer / Upload Zone */
     .upload-zone {
         flex: 0 0 auto;
         padding-top: 10px;
@@ -131,7 +127,6 @@
         background: #f8f9fa;
     }
 
-    /* Advanced Settings */
     .advanced-settings {
         margin-bottom: 10px;
         font-size: 0.85rem;
@@ -148,7 +143,6 @@
     }
     .setting-item { margin-bottom: 5px; display: flex; gap: 10px; align-items: center; }
 
-    /* Paragraph Styling */
     .paragraph-row {
         display: flex;
         gap: 15px;
@@ -182,7 +176,6 @@
     .hide-time .ts-col { display: none !important; }
     .hide-speaker .speaker-label { display: none !important; }
 
-    /* Progress Bar */
     .progress-container {
         width: 100%;
         max-width: 400px;
@@ -302,6 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const audioContainer = document.getElementById('audio-player-container');
     const audioSource = document.getElementById('audio-source');
     const mainAudio = document.getElementById('main-audio');
+    const controlsBar = document.querySelector('.controls-bar'); // Reference to the bar
 
     let socket;
     window.fakeProgressInterval = null;
@@ -393,6 +387,9 @@ document.addEventListener('DOMContentLoaded', () => {
         statusTxt.style.color = "#666";
         mainBtn.disabled = true;
         mainBtn.innerText = "Processing...";
+
+        // HIDE CONTROLS ON NEW UPLOAD
+        controlsBar.style.display = 'none';
     }
 
     fileInput.addEventListener('change', async function() {
@@ -424,7 +421,11 @@ document.addEventListener('DOMContentLoaded', () => {
             statusTxt.style.color = "#28a745";
             if (placeholder) placeholder.style.display = "none";
 
-            if (data.segments) transcriptWindow.innerHTML = renderParagraphs(data.segments);
+            if (data.segments) {
+                transcriptWindow.innerHTML = renderParagraphs(data.segments);
+                // SHOW CONTROLS NOW
+                controlsBar.style.display = 'flex';
+            }
             mainBtn.disabled = false;
             mainBtn.innerText = "Select file for transcription";
         });
@@ -441,12 +442,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- ERROR HANDLING START ---
 
-        // 1. Network Error (Connection Reset, etc.)
         xhr.onerror = function() {
             handleUploadError("Network error (connection reset)");
         };
 
-        // 2. Upload Progress
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
                 const percent = Math.round((e.loaded / e.total) * 100);
