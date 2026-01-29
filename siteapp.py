@@ -242,71 +242,51 @@ def sign_s3():
 def trigger_processing():
     try:
         data = request.json
+        # .strip() removes any accidental spaces or hidden newlines from Koyeb
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
+        clean_id = str(RUNPOD_ENDPOINT_ID).strip()
+        clean_token = str(RUNPOD_API_KEY).strip()
 
-        print(f"🚀 Triggering Job {job_id} with Key: {s3_key}")
+        # Using the exact .ai domain that worked in your CURL
+        target_url = f"https://api.runpod.ai/v2/{clean_id}/run"
+
+        print(f"🚀 Triggering {job_id} at URL: {target_url}")
 
         payload = {
             "input": {
-                "jobId": job_id,
                 "s3Key": s3_key,
-                "num_speakers": int(data.get('speakerCount', 2)),
+                "jobId": job_id,
+                "bucket": S3_BUCKET,
                 "language": data.get('language'),
                 "task": data.get('task'),
+                "num_speakers": int(data.get('speakerCount', 2))
             }
         }
 
-        # --- RETRY LOGIC (3 Attempts) ---
+        # Explicit headers to mimic the successful CURL exactly
+        headers = {
+            "Authorization": f"Bearer {clean_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "curl/7.68.0"  # Mimic curl to avoid potential blocks
+        }
+
         for attempt in range(3):
             try:
-                print(f"➡️ RunPod Trigger Attempt {attempt + 1}/3...")
+                response = requests.post(target_url, headers=headers, json=payload, timeout=15)
+                print(f"RunPod Status: {response.status_code} | Response: {response.text}")
 
-                # --- DEBUG: REVEAL THE HIDDEN URL ---
-                # We put brackets [] around the ID to see if there are hidden spaces like " id "
-                print(f"DEBUG CHECK: ID is [{RUNPOD_ENDPOINT_ID}]")
-
-                #target_url = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run"
-                # Updated to use .ai as per your successful CURL
-                target_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
-                print(f"DEBUG CHECK: Hitting URL [{target_url}]")
-                # ------------------------------------
-
-                #response = requests.post(url, json=payload, headers=headers, timeout=10)
-
-                response = requests.post(
-                    f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {RUNPOD_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    timeout=10
-                )
-
-                print(f"RunPod Status: {response.status_code}")
-
-                # If successful, return immediately
                 if response.status_code == 200:
-                    print(f"✅ Success: {response.json()}")
                     return jsonify(response.json())
 
-                # If error, log it and wait before retrying
-                print(f"⚠️ Failed: {response.text}")
+                time.sleep(1)
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {str(e)}")
                 time.sleep(1)
 
-            except requests.exceptions.RequestException as e:
-                print(f"❌ Network Error (Attempt {attempt + 1}): {str(e)}")
-                time.sleep(1)
-
-        # If we reach here, all 3 attempts failed
-        return jsonify({
-            "status": "error",
-            "message": "Failed to contact GPU server after 3 attempts."
-        }), 502
+        return jsonify({"status": "error", "message": "Failed after 3 attempts"}), 502
 
     except Exception as e:
-        print(f"❌ SYSTEM ERROR: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- WEBSOCKET EVENT HANDLERS ---
