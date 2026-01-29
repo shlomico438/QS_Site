@@ -263,6 +263,14 @@ def trigger_processing():
             try:
                 print(f"➡️ RunPod Trigger Attempt {attempt + 1}/3...")
 
+                # --- DEBUG: REVEAL THE HIDDEN URL ---
+                # We put brackets [] around the ID to see if there are hidden spaces like " id "
+                print(f"DEBUG CHECK: ID is [{RUNPOD_ENDPOINT_ID}]")
+
+                target_url = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run"
+                print(f"DEBUG CHECK: Hitting URL [{target_url}]")
+                # ------------------------------------
+
                 response = requests.post(
                     f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
                     headers={
