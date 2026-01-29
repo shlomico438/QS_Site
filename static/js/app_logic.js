@@ -69,12 +69,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             window.currentSegments.forEach(seg => {
                 if (!current || current.speaker !== seg.speaker) {
-                    if (current) children.push(createDocxParagraph(current, showTime, showSpeaker));
+                    if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
                     current = { speaker: seg.speaker, text: "", start: seg.start };
                 }
                 current.text += seg.text + " ";
             });
-            if (current) children.push(createDocxParagraph(current, showTime, showSpeaker));
+            if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
 
             const doc = new Document({
                 sections: [{ properties: {}, children: children }]
@@ -90,43 +90,48 @@ document.addEventListener('DOMContentLoaded', () => {
                     return type === 'srt' ? iso.replace('.', ',') : iso;
                 };
                 if (type === 'srt') content += `${i + 1}\n`;
-                content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text}\n\n`;
+                content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text.trim()}\n\n`;
             });
             saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`);
         }
     };
 
-    function createDocxParagraph(group, showTime, showSpeaker) {
+    function createDocxParagraphs(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
-        const runs = [];
+        const paragraphs = [];
 
         if (showSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
             if (showSpeaker) label += formatSpeaker(group.speaker);
 
-            runs.push(new TextRun({
-                text: label,
-                bold: true,
-                color: "5d5dff",
-                size: 20,
-                rightToLeft: true
-            }), new TextRun({ break: 1 }));
+            paragraphs.push(new Paragraph({
+                children: [new TextRun({
+                    text: label,
+                    bold: true,
+                    color: "5d5dff",
+                    size: 20,
+                    rightToLeft: true
+                })],
+                alignment: AlignmentType.RIGHT,
+                bidirectional: true,
+                spacing: { after: 0 }
+            }));
         }
 
-        runs.push(new TextRun({
-            text: group.text.trim(),
-            size: 24,
-            language: { id: "he-IL" },
-            rightToLeft: true
-        }));
-
-        return new Paragraph({
-            children: runs,
+        paragraphs.push(new Paragraph({
+            children: [new TextRun({
+                text: group.text.trim(),
+                size: 24,
+                language: { id: "he-IL" },
+                rightToLeft: true
+            })],
             alignment: AlignmentType.RIGHT,
             bidirectional: true,
             spacing: { after: 300 }
-        });
+        }));
+
+        return paragraphs;
     }
 
     // --- ACTIONS ---
@@ -218,7 +223,7 @@ document.addEventListener('DOMContentLoaded', () => {
         fd.append('speakerCount', document.getElementById('speaker-count').value);
         fd.append('language', document.getElementById('audio-lang').value);
 
-        // --- NEW TASK LOGIC (Switch Check) ---
+        // --- CHECK SWITCH STATE (Unchecked = Transcribe) ---
         const isTranslate = document.getElementById('task-switch').checked;
         fd.append('task', isTranslate ? 'translate' : 'transcribe');
 
