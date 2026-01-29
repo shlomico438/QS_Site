@@ -250,11 +250,11 @@ def trigger_processing():
         data = request.json
         print(f"📩 Received Trigger Request: {data}")  # Debug log
 
-        # 1. Extract Data (New Format)
+        # 1. Extract Data
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
 
-        # Get 'task' directly (It will be "transcribe" or "translate")
+        # Get 'task' (defaults to "transcribe" if missing)
         task = data.get('task', 'transcribe')
 
         # Get Source Language
@@ -266,27 +266,23 @@ def trigger_processing():
         except (ValueError, TypeError):
             speaker_count = 2
 
-        # 2. Store the Mapping (So we know which room to send results to)
-        # Assuming you have a global dictionary 'job_mappings' or similar
-        job_mappings[job_id] = job_id
+        # --- DELETED THE CRASHING LINE HERE (job_mappings) ---
 
-        # 3. Build RunPod Payload
-        # IMPORTANT: This structure depends on your AI Worker.
-        # Most Whisper workers expect "task" to be "transcribe" or "translate".
+        # 2. Build RunPod Payload
         payload = {
             "input": {
                 "s3Key": s3_key,
                 "jobId": job_id,  # Pass ID so worker returns it
-                "task": task,  # <--- SEND THE TASK STRING
-                "language": language,  # Source Audio Language
+                "task": task,  # Sends "translate" or "transcribe"
+                "language": language,
                 "num_speakers": speaker_count
             }
         }
 
         print(f"🚀 Sending to RunPod: {payload}")
 
-        # 4. Trigger RunPod
-        # Replace 'YOUR_ENDPOINT_ID' and 'YOUR_API_KEY' with your actual values if not using env vars
+        # 3. Trigger RunPod
+        # Ensure you use your actual Endpoint ID and API Key here
         endpoint_url = f"https://api.runpod.ai/v2/{os.environ.get('RUNPOD_ENDPOINT_ID')}/run"
         headers = {
             "Authorization": f"Bearer {os.environ.get('RUNPOD_API_KEY')}",
@@ -295,7 +291,6 @@ def trigger_processing():
 
         response = requests.post(endpoint_url, json=payload, headers=headers)
 
-        # Check if RunPod accepted it
         if response.status_code != 200:
             print(f"❌ RunPod Error: {response.text}")
             return jsonify({"status": "error", "message": "RunPod declined job"}), 500
@@ -305,9 +300,8 @@ def trigger_processing():
     except Exception as e:
         print(f"❌ Server Crash: {str(e)}")
         import traceback
-        traceback.print_exc()  # Print full error to terminal
+        traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
-
 # --- WEBSOCKET EVENT HANDLERS ---
 @socketio.on('connect')
 def handle_connect():
