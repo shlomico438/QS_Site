@@ -49,16 +49,20 @@
                         <option value="en">English</option>
                     </select>
                 </div>
+                <div style="display:flex; align-items:center; gap:15px; background:#fff; padding:5px 15px; border-radius:20px; border:1px solid #eee;">
 
-                <div style="display:flex; align-items:center; gap:8px; background:#fff; padding:5px 10px; border-radius:20px; border:1px solid #eee;">
-                    <span id="label-transcribe" style="font-size:0.9rem; color:#333; font-weight:bold;">Transcribe</span>
-
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="task-switch">
-                        <span class="slider"></span>
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="task" value="translate">
+                        <span style="font-size:0.9rem; color:#333;">Translate (EN)</span>
                     </label>
 
-                    <span id="label-translate" style="font-size:0.9rem; color:#777; font-weight:normal;">Translate (EN)</span>
+                    <div style="width:1px; height:20px; background:#ddd;"></div>
+
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:5px;">
+                        <input type="radio" name="task" value="transcribe" checked>
+                        <span style="font-size:0.9rem; color:#333;">Transcribe</span>
+                    </label>
+
                 </div>
                 <div style="display:flex; align-items:center; gap:8px;">
                     <label>Speakers:</label>
