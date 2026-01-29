@@ -19,8 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.currentSegments = [];
     window.originalFileName = "transcript";
 
-    // --- 1. SOCKET INITIALIZATION (MOVED INSIDE) ---
-    // Initialize socket with auto-reconnection
+    // --- 1. SOCKET INITIALIZATION ---
     socket = io({
         transports: ['websocket'],
         reconnection: true,
@@ -42,10 +41,10 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('job_status_update', (data) => {
         console.log("📩 Message received:", data);
 
-        // 1. THIS IS THE MAGIC FIX: Convert whatever arrives to lowercase
+        // 1. Normalize status to lowercase
         const currentStatus = data.status ? data.status.toLowerCase() : "";
 
-        // 2. Now we check for lowercase "completed" (and it will match!)
+        // 2. Case 1: Success
         if (currentStatus === "completed" || currentStatus === "success") {
 
             localStorage.removeItem('activeJobId');
@@ -56,15 +55,29 @@ document.addEventListener('DOMContentLoaded', () => {
             mainBtn.disabled = false;
             controlsBar.style.display = 'flex';
 
-            // Render the result
-            if (data.result && data.result.segments) {
-                window.currentSegments = data.result.segments;
+            // --- THE FIX STARTS HERE ---
+            // If result comes as a string (JSON text), parse it into an object
+            let output = data.result;
+
+            if (typeof output === "string") {
+                try {
+                    output = JSON.parse(output);
+                } catch (e) {
+                    console.error("Error parsing JSON:", e);
+                }
+            }
+
+            // RENDER THE RESULT using the parsed 'output'
+            if (output && output.segments) {
+                window.currentSegments = output.segments;
                 transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
             } else if (data.transcription) {
                  transcriptWindow.innerText = data.transcription;
             } else {
-                transcriptWindow.innerText = JSON.stringify(data.result || data, null, 2);
+                // Fallback: show raw data if structure is unknown
+                transcriptWindow.innerText = JSON.stringify(output || data, null, 2);
             }
+            // --- FIX ENDS HERE ---
         }
         // Case 2: Failure
         else if (data.status === "failed" || data.status === "error") {
@@ -78,16 +91,20 @@ document.addEventListener('DOMContentLoaded', () => {
     window.onunhandledrejection = (ev) => handleUploadError("Network Error: " + ev.reason);
 
     // --- TOOLBAR & DROPDOWN ---
-    document.getElementById('btn-download').addEventListener('click', (e) => {
-        e.stopPropagation();
-        downloadMenu.classList.toggle('show');
-    });
+    if (document.getElementById('btn-download')) {
+        document.getElementById('btn-download').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if(downloadMenu) downloadMenu.classList.toggle('show');
+        });
+    }
 
     document.addEventListener('click', () => {
-        if (downloadMenu.classList.contains('show')) downloadMenu.classList.remove('show');
+        if (downloadMenu && downloadMenu.classList.contains('show')) {
+             downloadMenu.classList.remove('show');
+        }
     });
 
-    // --- HELPERS (Now accessible to everyone) ---
+    // --- HELPERS ---
     const formatTime = (s) => {
         const mins = Math.floor(s / 60);
         const secs = Math.floor(s % 60);
@@ -287,10 +304,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2. Setup Job ID for recovery
         const jobId = "job_" + Date.now();
         localStorage.setItem('activeJobId', jobId);
-        // 3. Join Room (ADD THIS LOG TO SEE IT HAPPEN)
-        console.log("🚀 Switching to NEW Room:", jobId);
 
         // 3. Join Room
+        console.log("🚀 Switching to NEW Room:", jobId);
         socket.emit('join', { room: jobId });
 
         try {
@@ -322,8 +338,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     // STEP C: Trigger GPU
                     statusTxt.innerText = "Starting AI Processing...";
 
-                    // FIXED: Correct ID reference for the switch
-                    // Ensure your HTML toggle switch has id="task-switch"
                     const switchEl = document.getElementById('task-switch');
                     const isTranslate = switchEl ? switchEl.checked : false;
 
