@@ -3,11 +3,29 @@ monkey.patch_all()
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, join_room
 import os
-import boto3
 import json
 import requests  # Added for RunPod API calls
 import time
 import logging
+import os
+import boto3
+
+# --- CONFIGURATION ---
+S3_BUCKET = os.environ.get("S3_BUCKET")
+AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID")
+AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY")
+RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID")
+
+# Initialize S3 Client (Global)
+s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=AWS_ACCESS_KEY,
+    aws_secret_access_key=AWS_SECRET_KEY,
+    region_name=AWS_REGION
+)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
