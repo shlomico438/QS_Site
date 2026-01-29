@@ -1,3 +1,48 @@
+// A. Initialize socket with auto-reconnection settings
+const socket = io({
+    transports: ['websocket'],
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000
+});
+
+// B. Automatic Re-join Logic
+socket.on('connect', () => {
+    console.log("Connected to server with ID:", socket.id);
+    const savedJobId = localStorage.getItem('activeJobId');
+    if (savedJobId) {
+        console.log("Re-joining room for job:", savedJobId);
+        socket.emit('join', { room: savedJobId });
+    }
+});
+
+// C. Listen for the result (This stays active even if the page flickers)
+socket.on('job_status_update', (data) => {
+    if (data.status === "completed") {
+        localStorage.removeItem('activeJobId'); // Job done, clear the ID
+
+        // --- YOUR ORIGINAL UI LOGIC ---
+        const pContainer = document.getElementById('progress-container');
+        const statusTxt = document.getElementById('status-text');
+
+        pContainer.style.display = 'none';
+        statusTxt.innerText = "Transcription complete!";
+
+        // Update your transcript area with data.text here
+        console.log("Transcription Result:", data.result);
+    }
+});
+
+// C. Final Result Listener
+socket.on('job_status_update', (data) => {
+    console.log("Status Update Received:", data);
+    if (data.status === "completed") {
+        localStorage.removeItem('activeJobId'); // Clean up on success
+        // Your logic to display the result (e.g., updating the UI)
+        statusTxt.innerText = "Processing Complete!";
+    }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI ELEMENTS ---
     const transcriptWindow = document.getElementById('transcript-window');
@@ -186,87 +231,80 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 fileInput.addEventListener('change', async function() {
-        const file = this.files[0];
-        if (!file) return;
+    const file = this.files[0];
+    if (!file) return;
 
-        window.originalFileName = file.name;
-        resetUI();
+    window.originalFileName = file.name;
+    resetUI();
 
-        // 1. Audio Player Setup
-        audioSource.src = URL.createObjectURL(file);
-        mainAudio.load();
-        audioContainer.style.display = 'block';
+    // 1. Audio Player Setup
+    audioSource.src = URL.createObjectURL(file);
+    mainAudio.load();
+    audioContainer.style.display = 'block';
 
-        const jobId = "job_" + Date.now();
-        socket = io({ query: { jobId }, transports: ['websocket'] });
+    // Generate and SAVE the jobId so we can recover it if needed
+    const jobId = "job_" + Date.now();
+    localStorage.setItem('activeJobId', jobId);
 
-        // ... (Keep your socket.on listener code here) ...
-        socket.on('job_status_update', (data) => {
-             // ... paste your existing socket logic ...
-             if (data.status === "completed") {
-                 pContainer.style.display = 'none';
-                 statusTxt.innerText = "Transcription complete!";
-                 // ... rest of logic
-             }
+    // Join the room for this specific upload
+    socket.emit('join', { room: jobId });
+
+    try {
+        // STEP A: Get Signed URL
+        statusTxt.innerText = "Preparing secure upload...";
+        const signRes = await fetch('/api/sign-s3', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: file.name, filetype: file.type })
         });
+        const signData = await signRes.json();
+        const { url, key } = signData;
 
-        try {
-            // STEP A: Get Signed URL (The VIP Pass)
-            statusTxt.innerText = "Preparing secure upload...";
-            const signRes = await fetch('/api/sign-s3', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: file.name, filetype: file.type })
-            });
-            const signData = await signRes.json();
-            const { url, key } = signData;
+        // STEP B: Upload Directly to S3 (XHR for Progress Bar)
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url, true);
+        xhr.setRequestHeader('Content-Type', file.type);
 
-            // STEP B: Upload Directly to S3 (Using XHR for Progress Bar)
-            const xhr = new XMLHttpRequest();
-            xhr.open('PUT', url, true);
-            xhr.setRequestHeader('Content-Type', file.type);
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percent + "%";
+                statusTxt.innerText = `Uploading to Storage: ${percent}%`;
+            }
+        };
 
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    const percent = Math.round((e.loaded / e.total) * 100);
-                    progressBar.style.width = percent + "%";
-                    statusTxt.innerText = `Uploading to Storage: ${percent}%`;
-                }
-            };
+        xhr.onload = async () => {
+            if (xhr.status === 200) {
+                // STEP C: Trigger GPU
+                statusTxt.innerText = "Starting AI Processing...";
 
-            xhr.onload = async () => {
-                if (xhr.status === 200) {
-                    // STEP C: Trigger GPU
-                    statusTxt.innerText = "Starting AI Processing...";
+                const isTranslate = document.getElementById('task-switch').checked;
 
-                    const isTranslate = document.getElementById('task-switch').checked;
+                await fetch('/api/trigger_processing', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        s3Key: key,
+                        jobId: jobId,
+                        speakerCount: document.getElementById('speaker-count').value,
+                        language: document.getElementById('audio-lang').value,
+                        task: isTranslate ? 'translate' : 'transcribe'
+                    })
+                });
 
-                    await fetch('/api/trigger_processing', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            s3Key: key,
-                            jobId: jobId,
-                            speakerCount: document.getElementById('speaker-count').value,
-                            language: document.getElementById('audio-lang').value,
-                            task: isTranslate ? 'translate' : 'transcribe'
-                        })
-                    });
+                startFakeProgress(); // Start your fake progress animation
+            } else {
+                handleUploadError("Storage Upload Failed");
+            }
+        };
 
-                    startFakeProgress(); // Start your fake progress animation
-                } else {
-                    handleUploadError("Storage Upload Failed");
-                }
-            };
+        xhr.onerror = () => handleUploadError("Network Error during Upload");
+        xhr.send(file);
 
-            xhr.onerror = () => handleUploadError("Network Error during Upload");
-            xhr.send(file); // Sending file directly to S3 URL
-
-        } catch (err) {
-            handleUploadError("Initialization Failed: " + err.message);
-        }
-    });
-
+    } catch (err) {
+        handleUploadError("Initialization Failed: " + err.message);
+    }
+});
     function startFakeProgress() {
         let current = 0;
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
