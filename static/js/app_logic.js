@@ -67,12 +67,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         // Case 2: Failure
-        else if (currentStatus === "failed" || currentStatus === "error") {
-            handleUploadError(data.error || "Unknown error occurred");
-            localStorage.removeItem('activeJobId');
-        }
-    });
-        // Case 2: Failure
         else if (data.status === "failed" || data.status === "error") {
             handleUploadError(data.error || "Unknown error occurred");
             localStorage.removeItem('activeJobId');
