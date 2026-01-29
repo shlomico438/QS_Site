@@ -39,33 +39,33 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // B. Listen for ANY update
-        socket.on('job_status_update', (data) => {
-            console.log("📩 Message received:", data);
+    socket.on('job_status_update', (data) => {
+        console.log("📩 Message received:", data);
 
-            // 1. THIS IS THE MAGIC FIX: Convert whatever arrives to lowercase
-            const currentStatus = data.status ? data.status.toLowerCase() : "";
+        // 1. THIS IS THE MAGIC FIX: Convert whatever arrives to lowercase
+        const currentStatus = data.status ? data.status.toLowerCase() : "";
 
-            // 2. Now we check for lowercase "completed" (and it will match!)
-            if (currentStatus === "completed" || currentStatus === "success") {
+        // 2. Now we check for lowercase "completed" (and it will match!)
+        if (currentStatus === "completed" || currentStatus === "success") {
 
-                localStorage.removeItem('activeJobId');
-                if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-                pContainer.style.display = 'none';
-                statusTxt.innerText = "Transcription complete!";
-                mainBtn.innerText = "Process Another File";
-                mainBtn.disabled = false;
-                controlsBar.style.display = 'flex';
+            localStorage.removeItem('activeJobId');
+            if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+            pContainer.style.display = 'none';
+            statusTxt.innerText = "Transcription complete!";
+            mainBtn.innerText = "Process Another File";
+            mainBtn.disabled = false;
+            controlsBar.style.display = 'flex';
 
-                // Render the result
-                if (data.result && data.result.segments) {
-                    window.currentSegments = data.result.segments;
-                    transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-                } else if (data.transcription) {
-                     transcriptWindow.innerText = data.transcription;
-                } else {
-                    transcriptWindow.innerText = JSON.stringify(data.result || data, null, 2);
-                }
+            // Render the result
+            if (data.result && data.result.segments) {
+                window.currentSegments = data.result.segments;
+                transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
+            } else if (data.transcription) {
+                 transcriptWindow.innerText = data.transcription;
+            } else {
+                transcriptWindow.innerText = JSON.stringify(data.result || data, null, 2);
             }
+        }
         // Case 2: Failure
         else if (currentStatus === "failed" || currentStatus === "error") {
             handleUploadError(data.error || "Unknown error occurred");
