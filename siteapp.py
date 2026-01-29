@@ -238,123 +238,74 @@ def sign_s3():
     })
 
 
-def trigger_processing(job_id, s3_key, num_speakers, language, task):
-    """Initiates the RunPod Serverless task with 5 parameters and retry logic."""
-    if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
-        error_text = "RunPod keys not found in environment variables."
-        print(f"ERROR: {error_text}")
-        raise Exception(error_text)
+@app.route('/api/trigger_processing', methods=['POST'])
+def trigger_processing():
+    try:
+        data = request.json
+        s3_key = data.get('s3Key')
+        job_id = data.get('jobId')
 
-    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
-    headers = {
-        "Authorization": f"Bearer {RUNPOD_API_KEY}",
-        "Content-Type": "application/json"
-    }
+        print(f"🚀 Triggering Job {job_id} with Key: {s3_key}")
 
-    # Payload now includes all 5 parameters to pass to the Worker
-    payload = {
-        "input": {
-            "jobId": job_id,
-            "s3Key": s3_key,
-            "num_speakers": int(num_speakers),
-            "language": language,
-            "task": task
+        payload = {
+            "input": {
+                "jobId": job_id,
+                "s3Key": s3_key,
+                "num_speakers": int(data.get('speakerCount', 2)),
+                "language": data.get('language'),
+                "task": data.get('task'),
+            }
         }
-    }
 
-    max_retries = 3
-    last_error = ""
+        # --- RETRY LOGIC (3 Attempts) ---
+        for attempt in range(3):
+            try:
+                print(f"➡️ RunPod Trigger Attempt {attempt + 1}/3...")
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f"DEBUG: Triggering GPU Attempt {attempt}/{max_retries} for {job_id}...")
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
+                # --- DEBUG: REVEAL THE HIDDEN URL ---
+                # We put brackets [] around the ID to see if there are hidden spaces like " id "
+                print(f"DEBUG CHECK: ID is [{RUNPOD_ENDPOINT_ID}]")
 
-            if response.status_code in [200, 201]:
-                print(f"GPU TRIGGERED SUCCESSFULLY: {response.json()}")
-                return
-            else:
-                last_error = f"Status {response.status_code}: {response.text}"
-                print(f"DEBUG: Attempt {attempt} failed - {last_error}")
+                target_url = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run"
+                print(f"DEBUG CHECK: Hitting URL [{target_url}]")
+                # ------------------------------------
 
-        except Exception as e:
-            last_error = str(e)
-            print(f"DEBUG: Attempt {attempt} Exception - {last_error}")
+                #response = requests.post(url, json=payload, headers=headers, timeout=10)
 
-        if attempt < max_retries:
-            time.sleep(1)
+                response = requests.post(
+                    f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {RUNPOD_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    timeout=10
+                )
 
-    raise Exception(f"Failed to trigger GPU after {max_retries} attempts. Last error: {last_error}")
-# --- GPU FEEDBACK API ---
+                print(f"RunPod Status: {response.status_code}")
 
-# @app.route('/api/trigger_processing', methods=['POST'])
-# def trigger_processing():
-#     try:
-#         data = request.json
-#         s3_key = data.get('s3Key')
-#         job_id = data.get('jobId')
-#
-#         print(f"🚀 Triggering Job {job_id} with Key: {s3_key}")
-#
-#         payload = {
-#             "input": {
-#                 "jobId": job_id,
-#                 "s3Key": s3_key,
-#                 "num_speakers": int(data.get('speakerCount', 2)),
-#                 "language": data.get('language'),
-#                 "task": data.get('task'),
-#             }
-#         }
-#
-#         # --- RETRY LOGIC (3 Attempts) ---
-#         for attempt in range(3):
-#             try:
-#                 print(f"➡️ RunPod Trigger Attempt {attempt + 1}/3...")
-#
-#                 # --- DEBUG: REVEAL THE HIDDEN URL ---
-#                 # We put brackets [] around the ID to see if there are hidden spaces like " id "
-#                 print(f"DEBUG CHECK: ID is [{RUNPOD_ENDPOINT_ID}]")
-#
-#                 target_url = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run"
-#                 print(f"DEBUG CHECK: Hitting URL [{target_url}]")
-#                 # ------------------------------------
-#
-#                 #response = requests.post(url, json=payload, headers=headers, timeout=10)
-#
-#                 response = requests.post(
-#                     f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
-#                     json=payload,
-#                     headers={
-#                         "Authorization": f"Bearer {RUNPOD_API_KEY}",
-#                         "Content-Type": "application/json"
-#                     },
-#                     timeout=10
-#                 )
-#
-#                 print(f"RunPod Status: {response.status_code}")
-#
-#                 # If successful, return immediately
-#                 if response.status_code == 200:
-#                     print(f"✅ Success: {response.json()}")
-#                     return jsonify(response.json())
-#
-#                 # If error, log it and wait before retrying
-#                 print(f"⚠️ Failed: {response.text}")
-#                 time.sleep(1)
-#
-#             except requests.exceptions.RequestException as e:
-#                 print(f"❌ Network Error (Attempt {attempt + 1}): {str(e)}")
-#                 time.sleep(1)
-#
-#         # If we reach here, all 3 attempts failed
-#         return jsonify({
-#             "status": "error",
-#             "message": "Failed to contact GPU server after 3 attempts."
-#         }), 502
-#
-#     except Exception as e:
-#         print(f"❌ SYSTEM ERROR: {str(e)}")
-#         return jsonify({"status": "error", "message": str(e)}), 500
+                # If successful, return immediately
+                if response.status_code == 200:
+                    print(f"✅ Success: {response.json()}")
+                    return jsonify(response.json())
+
+                # If error, log it and wait before retrying
+                print(f"⚠️ Failed: {response.text}")
+                time.sleep(1)
+
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Network Error (Attempt {attempt + 1}): {str(e)}")
+                time.sleep(1)
+
+        # If we reach here, all 3 attempts failed
+        return jsonify({
+            "status": "error",
+            "message": "Failed to contact GPU server after 3 attempts."
+        }), 502
+
+    except Exception as e:
+        print(f"❌ SYSTEM ERROR: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- WEBSOCKET EVENT HANDLERS ---
 @socketio.on('connect')
