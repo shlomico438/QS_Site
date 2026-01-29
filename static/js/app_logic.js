@@ -185,13 +185,14 @@ document.addEventListener('DOMContentLoaded', () => {
         transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
     }
 
-    fileInput.addEventListener('change', function() {
+fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
 
         window.originalFileName = file.name;
         resetUI();
 
+        // 1. Audio Player Setup
         audioSource.src = URL.createObjectURL(file);
         mainAudio.load();
         audioContainer.style.display = 'block';
@@ -199,47 +200,71 @@ document.addEventListener('DOMContentLoaded', () => {
         const jobId = "job_" + Date.now();
         socket = io({ query: { jobId }, transports: ['websocket'] });
 
+        // ... (Keep your socket.on listener code here) ...
         socket.on('job_status_update', (data) => {
-            if (window.serverTimeout) clearTimeout(window.serverTimeout);
-            if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-
-            if (data.status === "completed") {
-                pContainer.style.display = 'none';
-                statusTxt.innerText = "Transcription complete!";
-                statusTxt.style.color = "#28a745";
-                window.currentSegments = data.segments;
-                transcriptWindow.innerHTML = renderParagraphs(data.segments);
-                controlsBar.style.display = 'flex';
-                mainBtn.disabled = false;
-                mainBtn.innerText = "Upload and Process";
-            } else if (data.status === "error") {
-                handleUploadError(data.message);
-            }
+             // ... paste your existing socket logic ...
+             if (data.status === "completed") {
+                 pContainer.style.display = 'none';
+                 statusTxt.innerText = "Transcription complete!";
+                 // ... rest of logic
+             }
         });
 
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('jobId', jobId);
-        fd.append('speakerCount', document.getElementById('speaker-count').value);
-        fd.append('language', document.getElementById('audio-lang').value);
+        try {
+            // STEP A: Get Signed URL (The VIP Pass)
+            statusTxt.innerText = "Preparing secure upload...";
+            const signRes = await fetch('/api/sign-s3', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: file.name, filetype: file.type })
+            });
+            const signData = await signRes.json();
+            const { url, key } = signData;
 
-        // --- CHECK SWITCH STATE (Unchecked = Transcribe) ---
-        const isTranslate = document.getElementById('task-switch').checked;
-        fd.append('task', isTranslate ? 'translate' : 'transcribe');
+            // STEP B: Upload Directly to S3 (Using XHR for Progress Bar)
+            const xhr = new XMLHttpRequest();
+            xhr.open('PUT', url, true);
+            xhr.setRequestHeader('Content-Type', file.type);
 
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/upload_full_file', true);
-        xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) progressBar.style.width = Math.round((e.loaded / e.total) * 100) + "%";
-        };
-        xhr.onload = () => {
-            statusTxt.innerText = "AI Processing...";
-            startFakeProgress();
-            window.serverTimeout = setTimeout(() => {
-                handleUploadError("Server timeout.");
-            }, 300000);
-        };
-        xhr.send(fd);
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    progressBar.style.width = percent + "%";
+                    statusTxt.innerText = `Uploading to Storage: ${percent}%`;
+                }
+            };
+
+            xhr.onload = async () => {
+                if (xhr.status === 200) {
+                    // STEP C: Trigger GPU
+                    statusTxt.innerText = "Starting AI Processing...";
+
+                    const isTranslate = document.getElementById('task-switch').checked;
+
+                    await fetch('/api/trigger_processing', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            s3Key: key,
+                            jobId: jobId,
+                            speakerCount: document.getElementById('speaker-count').value,
+                            language: document.getElementById('audio-lang').value,
+                            task: isTranslate ? 'translate' : 'transcribe'
+                        })
+                    });
+
+                    startFakeProgress(); // Start your fake progress animation
+                } else {
+                    handleUploadError("Storage Upload Failed");
+                }
+            };
+
+            xhr.onerror = () => handleUploadError("Network Error during Upload");
+            xhr.send(file); // Sending file directly to S3 URL
+
+        } catch (err) {
+            handleUploadError("Initialization Failed: " + err.message);
+        }
     });
 
     function startFakeProgress() {

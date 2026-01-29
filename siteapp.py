@@ -172,8 +172,8 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
             time.sleep(1)
 
     raise Exception(f"Failed to trigger GPU after {max_retries} attempts. Last error: {last_error}")
-# --- GPU FEEDBACK API ---
 
+# --- GPU FEEDBACK API ---
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
     try:
@@ -192,8 +192,72 @@ def gpu_callback():
         print(f"CALLBACK ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- WEBSOCKET EVENT HANDLERS ---
 
+# --- NEW: Get Permission to Upload Direct to S3 ---
+@app.route('/api/sign-s3', methods=['POST'])
+def sign_s3():
+    data = request.json
+    filename = data.get('filename')
+    file_type = data.get('filetype')
+
+    # Generate a unique S3 key
+    s3_key = f"uploads/{int(time.time())}_{filename}"
+
+    # Generate the "Presigned URL" (The VIP Pass)
+    presigned_url = s3_client.generate_presigned_url(
+        'put_object',
+        Params={
+            'Bucket': S3_BUCKET,
+            'Key': s3_key,
+            'ContentType': file_type
+        },
+        ExpiresIn=3600  # Valid for 1 hour
+    )
+
+    return jsonify({
+        'url': presigned_url,
+        'key': s3_key
+    })
+
+
+# --- UPDATED: Start GPU (No File Upload Here) ---
+@app.route('/api/trigger_processing', methods=['POST'])
+def trigger_processing():
+    try:
+        # We receive JSON now, not a file!
+        data = request.json
+        s3_key = data.get('s3Key')
+        job_id = data.get('jobId')
+
+        # ... (Keep your existing GPU Trigger logic here) ...
+        # ... (Replace the 'upload_file' part with just sending the s3_key) ...
+
+        # Example Payload to RunPod:
+        payload = {
+            "input": {
+                "s3Key": s3_key,
+                "jobId": job_id,
+                "bucket": S3_BUCKET,
+                "language": data.get('language'),
+                "task": data.get('task'),
+                "num_speakers": int(data.get('speakerCount', 2))
+            }
+        }
+
+        # Trigger RunPod
+        requests.post(
+            f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
+            headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"},
+            json=payload,
+            timeout=10
+        )
+
+        return jsonify({"status": "processing", "jobId": job_id})
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# --- WEBSOCKET EVENT HANDLERS ---
 @socketio.on('connect')
 def handle_connect():
     job_id = request.args.get('jobId')
