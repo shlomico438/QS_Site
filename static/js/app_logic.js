@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
 
-    // --- EXPORT LOGIC (Word RTL & Structure Fix) ---
+    // --- EXPORT LOGIC ---
     window.downloadFile = function(type) {
         if (!window.currentSegments.length) return alert("No transcript available to export.");
         const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
@@ -63,23 +63,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const showSpeaker = document.getElementById('toggle-speaker').checked;
 
         if (type === 'docx') {
-            const { Document, Packer } = docx;
+            const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
             let children = [];
             let current = null;
 
             window.currentSegments.forEach(seg => {
                 if (!current || current.speaker !== seg.speaker) {
-                    if (current) {
-                        // Spread the array of paragraphs into children
-                        children.push(...createDocxParagraphs(current, showTime, showSpeaker));
-                    }
+                    if (current) children.push(createDocxParagraph(current, showTime, showSpeaker));
                     current = { speaker: seg.speaker, text: "", start: seg.start };
                 }
                 current.text += seg.text + " ";
             });
-            if (current) {
-                children.push(...createDocxParagraphs(current, showTime, showSpeaker));
-            }
+            if (current) children.push(createDocxParagraph(current, showTime, showSpeaker));
 
             const doc = new Document({
                 sections: [{ properties: {}, children: children }]
@@ -87,7 +82,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
         } else {
-            // SRT/VTT - No speakers as requested
             let content = type === 'vtt' ? "WEBVTT\n\n" : "";
             window.currentSegments.forEach((seg, i) => {
                 const ts = (s) => {
@@ -96,62 +90,50 @@ document.addEventListener('DOMContentLoaded', () => {
                     return type === 'srt' ? iso.replace('.', ',') : iso;
                 };
                 if (type === 'srt') content += `${i + 1}\n`;
-                content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text.trim()}\n\n`;
+                content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text}\n\n`;
             });
             saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`);
         }
     };
 
-    function createDocxParagraphs(group, showTime, showSpeaker) {
+    function createDocxParagraph(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
-        const paragraphs = [];
+        const runs = [];
 
-        // 1. Label Paragraph (Colored and RTL)
         if (showSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
             if (showSpeaker) label += formatSpeaker(group.speaker);
 
-            paragraphs.push(new Paragraph({
-                children: [
-                    new TextRun({
-                        text: label,
-                        bold: true,
-                        color: "5d5dff",
-                        size: 20,
-                        rightToLeft: true
-                    })
-                ],
-                alignment: AlignmentType.RIGHT,
-                bidirectional: true,
-                spacing: { after: 0 }
-            }));
+            runs.push(new TextRun({
+                text: label,
+                bold: true,
+                color: "5d5dff",
+                size: 20,
+                rightToLeft: true
+            }), new TextRun({ break: 1 }));
         }
 
-        // 2. Transcription Text Paragraph (RTL & Spelling Fix)
-        paragraphs.push(new Paragraph({
-            children: [
-                new TextRun({
-                    text: group.text.trim(),
-                    size: 24,
-                    language: { id: "he-IL" }, // Removes red spelling lines
-                    rightToLeft: true          // Fixes punctuation/character order
-                })
-            ],
+        runs.push(new TextRun({
+            text: group.text.trim(),
+            size: 24,
+            language: { id: "he-IL" },
+            rightToLeft: true
+        }));
+
+        return new Paragraph({
+            children: runs,
             alignment: AlignmentType.RIGHT,
             bidirectional: true,
             spacing: { after: 300 }
-        }));
-
-        return paragraphs;
+        });
     }
 
-    // --- UI ACTIONS ---
+    // --- ACTIONS ---
     window.toggleEditMode = () => {
         isEditMode = true;
         transcriptWindow.classList.add('is-editing');
-        document.getElementById('btn-edit').style.display = 'none';
-        editActions.style.display = 'flex';
+        document.getElementById('edit-actions').style.display = 'flex';
         transcriptWindow.querySelectorAll('.clickable-sent').forEach(s => s.contentEditable = "true");
     };
 
@@ -162,13 +144,12 @@ document.addEventListener('DOMContentLoaded', () => {
         isEditMode = false;
         transcriptWindow.classList.remove('is-editing');
         transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-        document.getElementById('btn-edit').style.display = 'flex';
-        editActions.style.display = 'none';
+        document.getElementById('edit-actions').style.display = 'none';
     };
 
     window.copyTranscript = () => {
         const text = window.currentSegments.map(s => s.text).join(" ");
-        navigator.clipboard.writeText(text).then(() => alert("Transcript copied to clipboard!"));
+        navigator.clipboard.writeText(text).then(() => alert("Transcript Copied!"));
     };
 
     window.jumpTo = (time) => {
@@ -178,7 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- UPLOAD & PROCESSING ---
+    // --- UPLOAD PROCESS ---
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         if (window.serverTimeout) clearTimeout(window.serverTimeout);
@@ -236,7 +217,10 @@ document.addEventListener('DOMContentLoaded', () => {
         fd.append('jobId', jobId);
         fd.append('speakerCount', document.getElementById('speaker-count').value);
         fd.append('language', document.getElementById('audio-lang').value);
-        fd.append('task', document.getElementById('task-mode').value);
+
+        // --- NEW TASK LOGIC (Switch Check) ---
+        const isTranslate = document.getElementById('task-switch').checked;
+        fd.append('task', isTranslate ? 'translate' : 'transcribe');
 
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload_full_file', true);
