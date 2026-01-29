@@ -38,31 +38,40 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // B. Listen for ANY update (Success OR Failure)
-    socket.on('job_status_update', (data) => {
-        console.log("📩 Message received:", data);
+    // B. Listen for ANY update
+        socket.on('job_status_update', (data) => {
+            console.log("📩 Message received:", data);
 
-        // Case 1: Success
-        if (data.status === "completed") {
-            localStorage.removeItem('activeJobId'); // Job done, clear memory
+            // 1. THIS IS THE MAGIC FIX: Convert whatever arrives to lowercase
+            const currentStatus = data.status ? data.status.toLowerCase() : "";
 
-            // Stop spinners
-            if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-            pContainer.style.display = 'none';
-            statusTxt.innerText = "Transcription complete!";
-            mainBtn.innerText = "Process Another File";
-            mainBtn.disabled = false;
-            controlsBar.style.display = 'flex';
+            // 2. Now we check for lowercase "completed" (and it will match!)
+            if (currentStatus === "completed" || currentStatus === "success") {
 
-            // RENDER THE RESULT
-            if (data.result && data.result.segments) {
-                window.currentSegments = data.result.segments; // Save for export
-                transcriptWindow.innerHTML = renderParagraphs(window.currentSegments); // Render beautiful HTML
-            } else {
-                // Fallback if structure is different
-                transcriptWindow.innerText = JSON.stringify(data.result || data, null, 2);
+                localStorage.removeItem('activeJobId');
+                if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+                pContainer.style.display = 'none';
+                statusTxt.innerText = "Transcription complete!";
+                mainBtn.innerText = "Process Another File";
+                mainBtn.disabled = false;
+                controlsBar.style.display = 'flex';
+
+                // Render the result
+                if (data.result && data.result.segments) {
+                    window.currentSegments = data.result.segments;
+                    transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
+                } else if (data.transcription) {
+                     transcriptWindow.innerText = data.transcription;
+                } else {
+                    transcriptWindow.innerText = JSON.stringify(data.result || data, null, 2);
+                }
             }
+        // Case 2: Failure
+        else if (currentStatus === "failed" || currentStatus === "error") {
+            handleUploadError(data.error || "Unknown error occurred");
+            localStorage.removeItem('activeJobId');
         }
+    });
         // Case 2: Failure
         else if (data.status === "failed" || data.status === "error") {
             handleUploadError(data.error || "Unknown error occurred");
