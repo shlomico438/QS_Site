@@ -41,10 +41,9 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('job_status_update', (data) => {
         console.log("📩 Message received:", data);
 
-        // 1. Normalize status to lowercase
         const currentStatus = data.status ? data.status.toLowerCase() : "";
 
-        // 2. Case 1: Success
+        // Case 1: Success
         if (currentStatus === "completed" || currentStatus === "success") {
 
             localStorage.removeItem('activeJobId');
@@ -55,32 +54,38 @@ document.addEventListener('DOMContentLoaded', () => {
             mainBtn.disabled = false;
             controlsBar.style.display = 'flex';
 
-            // --- THE FIX STARTS HERE ---
-            // If result comes as a string (JSON text), parse it into an object
-            let output = data.result;
+            // --- SMART DATA PARSING (The Fix) ---
+            let finalSegments = null;
 
-            if (typeof output === "string") {
-                try {
-                    output = JSON.parse(output);
-                } catch (e) {
-                    console.error("Error parsing JSON:", e);
+            // 1. Try to find segments in data.result (Nested)
+            if (data.result) {
+                let resultObj = data.result;
+                // If it's a string, parse it
+                if (typeof resultObj === "string") {
+                    try { resultObj = JSON.parse(resultObj); } catch(e) {}
                 }
+                if (resultObj.segments) finalSegments = resultObj.segments;
             }
 
-            // RENDER THE RESULT using the parsed 'output'
-            if (output && output.segments) {
-                window.currentSegments = output.segments;
+            // 2. If not found, look in data directly (Flat) -> THIS IS YOUR CASE
+            if (!finalSegments && data.segments) {
+                finalSegments = data.segments;
+            }
+
+            // RENDER
+            if (finalSegments) {
+                window.currentSegments = finalSegments;
                 transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
             } else if (data.transcription) {
                  transcriptWindow.innerText = data.transcription;
             } else {
-                // Fallback: show raw data if structure is unknown
-                transcriptWindow.innerText = JSON.stringify(output || data, null, 2);
+                // Fallback: Show raw JSON if we truly can't find segments
+                transcriptWindow.innerText = JSON.stringify(data, null, 2);
             }
-            // --- FIX ENDS HERE ---
+            // --- END FIX ---
         }
         // Case 2: Failure
-        else if (data.status === "failed" || data.status === "error") {
+        else if (currentStatus === "failed" || currentStatus === "error") {
             handleUploadError(data.error || "Unknown error occurred");
             localStorage.removeItem('activeJobId');
         }
