@@ -249,12 +249,11 @@ def trigger_processing():
 
         payload = {
             "input": {
-                "s3Key": s3_key,
                 "jobId": job_id,
-                "bucket": S3_BUCKET,
+                "s3Key": s3_key,
+                "num_speakers": int(data.get('speakerCount', 2)),
                 "language": data.get('language'),
                 "task": data.get('task'),
-                "num_speakers": int(data.get('speakerCount', 2))
             }
         }
 
@@ -271,13 +270,15 @@ def trigger_processing():
                 print(f"DEBUG CHECK: Hitting URL [{target_url}]")
                 # ------------------------------------
 
+                #response = requests.post(url, json=payload, headers=headers, timeout=10)
+
                 response = requests.post(
                     f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
+                    json=payload,
                     headers={
                         "Authorization": f"Bearer {RUNPOD_API_KEY}",
                         "Content-Type": "application/json"
                     },
-                    json=payload,
                     timeout=10
                 )
 
