@@ -78,30 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.onerror = (msg) => handleUploadError("System Error: " + msg);
     window.onunhandledrejection = (ev) => handleUploadError("Network Error: " + ev.reason);
 
-    // --- 3. TOGGLE SWITCH LOGIC (Visual Feedback) ---
-    const taskSwitch = document.getElementById('task-switch');
-    const labelTranscribe = document.getElementById('label-transcribe');
-    const labelTranslate = document.getElementById('label-translate');
-
-    if (taskSwitch && labelTranscribe && labelTranslate) {
-        taskSwitch.addEventListener('change', function() {
-            if (this.checked) {
-                // Right side: Translate
-                labelTranscribe.style.fontWeight = 'normal';
-                labelTranscribe.style.color = '#777';
-                labelTranslate.style.fontWeight = 'bold';
-                labelTranslate.style.color = '#333';
-            } else {
-                // Left side: Transcribe
-                labelTranscribe.style.fontWeight = 'bold';
-                labelTranscribe.style.color = '#333';
-                labelTranslate.style.fontWeight = 'normal';
-                labelTranslate.style.color = '#777';
-            }
-        });
-    }
-
-    // --- 4. TOOLBAR & DROPDOWN ---
+    // --- 3. TOOLBAR & DROPDOWN ---
     if (document.getElementById('btn-download')) {
         document.getElementById('btn-download').addEventListener('click', (e) => {
             e.stopPropagation();
@@ -114,52 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // --- 5. HELPERS ---
-    const formatTime = (s) => {
-        const mins = Math.floor(s / 60);
-        const secs = Math.floor(s % 60);
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    };
-
-    const getSpeakerColor = (speakerId) => {
-        const colors = ['#5d5dff', '#e11d48', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
-        const match = speakerId ? speakerId.match(/\d+/) : null;
-        const index = match ? parseInt(match[0]) : 0;
-        return colors[index % colors.length];
-    };
-
-    const formatSpeaker = (raw) => {
-        if (!raw) return "דובר לא ידוע";
-        const match = raw.match(/SPEAKER_(\d+)/);
-        return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
-    };
-
-    function renderParagraphs(segments) {
-        let html = "", group = null;
-        segments.forEach(seg => {
-            if (!group || group.speaker !== seg.speaker) {
-                if (group) html += buildGroupHTML(group);
-                group = { speaker: seg.speaker, start: seg.start, sentences: [] };
-            }
-            group.sentences.push(seg);
-        });
-        if (group) html += buildGroupHTML(group);
-        return html;
-    }
-
-    function buildGroupHTML(g) {
-        const text = g.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
-        return `
-            <div class="paragraph-row">
-                <div class="ts-col">${formatTime(g.start)}</div>
-                <div class="text-col">
-                    <span class="speaker-label" style="color: ${getSpeakerColor(g.speaker)}">${formatSpeaker(g.speaker)}</span>
-                    <p style="margin:0;">${text}</p>
-                </div>
-            </div>`;
-    }
-
-    // --- 6. EXPORT & ACTIONS ---
+    // --- 4. EXPORT & ACTIONS ---
     window.downloadFile = function(type) {
         if (!window.currentSegments.length) return alert("No transcript available to export.");
         const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
@@ -196,25 +128,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    function createDocxParagraphs(group, showTime, showSpeaker) {
-        const { Paragraph, TextRun, AlignmentType } = docx;
-        const paragraphs = [];
-        if (showSpeaker || showTime) {
-            let label = "";
-            if (showTime) label += `[${formatTime(group.start)}] `;
-            if (showSpeaker) label += formatSpeaker(group.speaker);
-            paragraphs.push(new Paragraph({
-                children: [new TextRun({ text: label, bold: true, color: "5d5dff", size: 20, rightToLeft: true })],
-                alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 0 }
-            }));
-        }
-        paragraphs.push(new Paragraph({
-            children: [new TextRun({ text: group.text.trim(), size: 24, language: { id: "he-IL" }, rightToLeft: true })],
-            alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 300 }
-        }));
-        return paragraphs;
-    }
-
     window.toggleEditMode = () => {
         transcriptWindow.classList.add('is-editing');
         document.getElementById('edit-actions').style.display = 'flex';
@@ -239,7 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (mainAudio) { mainAudio.currentTime = time; mainAudio.play(); }
     };
 
-    // --- 7. UPLOAD PROCESS & ERROR HANDLING ---
+    // --- 5. UPLOAD PROCESS & ERROR HANDLING ---
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         statusTxt.innerText = "Error: " + msg;
@@ -271,7 +184,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1000);
     }
 
-    // --- 8. MAIN EVENT LISTENER ---
+    // --- 6. MAIN EVENT LISTENER ---
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
@@ -338,31 +251,97 @@ document.addEventListener('DOMContentLoaded', () => {
             handleUploadError("Initialization Failed: " + err.message);
         }
     });
-    // --- GLOBAL HELPER FOR HTML TOGGLE ---
-    window.updateLabels = function(element) {
-        const labelTranscribe = document.getElementById('label-transcribe');
-        const labelTranslate = document.getElementById('label-translate');
+}); // <--- END OF DOMCONTENTLOADED
 
-        if (element.checked) {
-            // Right side: Translate
-            if(labelTranscribe) {
-                labelTranscribe.style.fontWeight = 'normal';
-                labelTranscribe.style.color = '#777';
-            }
-            if(labelTranslate) {
-                labelTranslate.style.fontWeight = 'bold';
-                labelTranslate.style.color = '#333';
-            }
-        } else {
-            // Left side: Transcribe
-            if(labelTranscribe) {
-                labelTranscribe.style.fontWeight = 'bold';
-                labelTranscribe.style.color = '#333';
-            }
-            if(labelTranslate) {
-                labelTranslate.style.fontWeight = 'normal';
-                labelTranslate.style.color = '#777';
-            }
+// --- 7. GLOBAL HELPER FUNCTIONS (MUST BE OUTSIDE) ---
+
+// Helper for HTML toggle switch (onchange="updateLabels(this)")
+window.updateLabels = function(element) {
+    const labelTranscribe = document.getElementById('label-transcribe');
+    const labelTranslate = document.getElementById('label-translate');
+
+    if (element.checked) {
+        // Right side: Translate
+        if(labelTranscribe) {
+            labelTranscribe.style.fontWeight = 'normal';
+            labelTranscribe.style.color = '#777';
         }
+        if(labelTranslate) {
+            labelTranslate.style.fontWeight = 'bold';
+            labelTranslate.style.color = '#333';
+        }
+    } else {
+        // Left side: Transcribe
+        if(labelTranscribe) {
+            labelTranscribe.style.fontWeight = 'bold';
+            labelTranscribe.style.color = '#333';
+        }
+        if(labelTranslate) {
+            labelTranslate.style.fontWeight = 'normal';
+            labelTranslate.style.color = '#777';
+        }
+    }
+};
+
+function createDocxParagraphs(group, showTime, showSpeaker) {
+    const { Paragraph, TextRun, AlignmentType } = docx;
+    const paragraphs = [];
+    if (showSpeaker || showTime) {
+        let label = "";
+        if (showTime) label += `[${formatTime(group.start)}] `;
+        if (showSpeaker) label += formatSpeaker(group.speaker);
+        paragraphs.push(new Paragraph({
+            children: [new TextRun({ text: label, bold: true, color: "5d5dff", size: 20, rightToLeft: true })],
+            alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 0 }
+        }));
+    }
+    paragraphs.push(new Paragraph({
+        children: [new TextRun({ text: group.text.trim(), size: 24, language: { id: "he-IL" }, rightToLeft: true })],
+        alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 300 }
+    }));
+    return paragraphs;
+}
+
+const formatTime = (s) => {
+    const mins = Math.floor(s / 60);
+    const secs = Math.floor(s % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
+const getSpeakerColor = (speakerId) => {
+    const colors = ['#5d5dff', '#e11d48', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
+    const match = speakerId ? speakerId.match(/\d+/) : null;
+    const index = match ? parseInt(match[0]) : 0;
+    return colors[index % colors.length];
+};
+
+const formatSpeaker = (raw) => {
+    if (!raw) return "דובר לא ידוע";
+    const match = raw.match(/SPEAKER_(\d+)/);
+    return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
-});
+
+function renderParagraphs(segments) {
+    let html = "", group = null;
+    segments.forEach(seg => {
+        if (!group || group.speaker !== seg.speaker) {
+            if (group) html += buildGroupHTML(group);
+            group = { speaker: seg.speaker, start: seg.start, sentences: [] };
+        }
+        group.sentences.push(seg);
+    });
+    if (group) html += buildGroupHTML(group);
+    return html;
+}
+
+function buildGroupHTML(g) {
+    const text = g.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
+    return `
+        <div class="paragraph-row">
+            <div class="ts-col">${formatTime(g.start)}</div>
+            <div class="text-col">
+                <span class="speaker-label" style="color: ${getSpeakerColor(g.speaker)}">${formatSpeaker(g.speaker)}</span>
+                <p style="margin:0;">${text}</p>
+            </div>
+        </div>`;
+}
