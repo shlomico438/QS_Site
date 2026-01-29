@@ -248,51 +248,64 @@ def sign_s3():
 def trigger_processing():
     try:
         data = request.json
-        # .strip() removes any accidental spaces or hidden newlines from Koyeb
+        print(f"📩 Received Trigger Request: {data}")  # Debug log
+
+        # 1. Extract Data (New Format)
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
-        clean_id = str(RUNPOD_ENDPOINT_ID).strip()
-        clean_token = str(RUNPOD_API_KEY).strip()
 
-        # Using the exact .ai domain that worked in your CURL
-        target_url = f"https://api.runpod.ai/v2/{clean_id}/run"
+        # Get 'task' directly (It will be "transcribe" or "translate")
+        task = data.get('task', 'transcribe')
 
-        print(f"🚀 Triggering {job_id} at URL: {target_url}")
+        # Get Source Language
+        language = data.get('language', 'he')
 
+        # Safely convert speakers to Integer
+        try:
+            speaker_count = int(data.get('speakerCount', 2))
+        except (ValueError, TypeError):
+            speaker_count = 2
+
+        # 2. Store the Mapping (So we know which room to send results to)
+        # Assuming you have a global dictionary 'job_mappings' or similar
+        job_mappings[job_id] = job_id
+
+        # 3. Build RunPod Payload
+        # IMPORTANT: This structure depends on your AI Worker.
+        # Most Whisper workers expect "task" to be "transcribe" or "translate".
         payload = {
             "input": {
                 "s3Key": s3_key,
-                "jobId": job_id,
-                "bucket": S3_BUCKET,
-                "language": data.get('language'),
-                "task": data.get('task'),
-                "num_speakers": int(data.get('speakerCount', 2))
+                "jobId": job_id,  # Pass ID so worker returns it
+                "task": task,  # <--- SEND THE TASK STRING
+                "language": language,  # Source Audio Language
+                "num_speakers": speaker_count
             }
         }
 
-        # Explicit headers to mimic the successful CURL exactly
+        print(f"🚀 Sending to RunPod: {payload}")
+
+        # 4. Trigger RunPod
+        # Replace 'YOUR_ENDPOINT_ID' and 'YOUR_API_KEY' with your actual values if not using env vars
+        endpoint_url = f"https://api.runpod.ai/v2/{os.environ.get('RUNPOD_ENDPOINT_ID')}/run"
         headers = {
-            "Authorization": f"Bearer {clean_token}",
-            "Content-Type": "application/json",
-            "User-Agent": "curl/7.68.0"  # Mimic curl to avoid potential blocks
+            "Authorization": f"Bearer {os.environ.get('RUNPOD_API_KEY')}",
+            "Content-Type": "application/json"
         }
 
-        for attempt in range(3):
-            try:
-                response = requests.post(target_url, headers=headers, json=payload, timeout=15)
-                print(f"RunPod Status: {response.status_code} | Response: {response.text}")
+        response = requests.post(endpoint_url, json=payload, headers=headers)
 
-                if response.status_code == 200:
-                    return jsonify(response.json())
+        # Check if RunPod accepted it
+        if response.status_code != 200:
+            print(f"❌ RunPod Error: {response.text}")
+            return jsonify({"status": "error", "message": "RunPod declined job"}), 500
 
-                time.sleep(1)
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {str(e)}")
-                time.sleep(1)
-
-        return jsonify({"status": "error", "message": "Failed after 3 attempts"}), 502
+        return jsonify({"status": "started", "runpod_id": response.json().get('id')})
 
     except Exception as e:
+        print(f"❌ Server Crash: {str(e)}")
+        import traceback
+        traceback.print_exc()  # Print full error to terminal
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- WEBSOCKET EVENT HANDLERS ---
