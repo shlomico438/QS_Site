@@ -99,7 +99,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const getSpeakerColor = (speakerId) => {
-        const colors = ['#5d5dff', '#e11d48', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
+        // COLORS: Index 1 is now Purple (#9333ea)
+        const colors = ['#5d5dff', '#9333ea', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
         const match = speakerId ? speakerId.match(/\d+/) : null;
         const index = match ? parseInt(match[0]) : 0;
         return colors[index % colors.length];
@@ -181,7 +182,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (showTime) label += `[${formatTime(group.start)}] `;
             if (showSpeaker) label += formatSpeaker(group.speaker);
             paragraphs.push(new Paragraph({
-                children: [new TextRun({ text: label, bold: true, color: "5d5dff", size: 20, rightToLeft: true })],
+                children: [new TextRun({ text: label, bold: true, color: getSpeakerColor(group.speaker), size: 20, rightToLeft: true })],
                 alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 0 }
             }));
         }
@@ -223,6 +224,8 @@ document.addEventListener('DOMContentLoaded', () => {
         statusTxt.style.color = "#ef4444";
         mainBtn.disabled = false;
         mainBtn.innerText = "Upload and Process";
+
+        fileInput.value = ''; // Reset input on error
     }
 
     function resetUI() {
@@ -252,6 +255,8 @@ document.addEventListener('DOMContentLoaded', () => {
     fileInput.addEventListener('change', async function() {
         const file = this.files[0];
         if (!file) return;
+
+        this.value = ''; // RESET FILE INPUT to allow re-selection
 
         window.originalFileName = file.name;
         resetUI();
@@ -290,8 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (xhr.status === 200) {
                     statusTxt.innerText = "Starting AI Processing...";
 
-                    // --- NEW RADIO BUTTON LOGIC ---
-                    // Selects whichever radio button is currently checked
+                    // Get the selected Radio button value ("translate" or "transcribe")
                     const selectedTask = document.querySelector('input[name="task"]:checked').value;
 
                     await fetch('/api/trigger_processing', {
@@ -302,7 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             jobId: jobId,
                             speakerCount: document.getElementById('speaker-count').value,
                             language: document.getElementById('audio-lang').value,
-                            task: selectedTask // Values are now simply "transcribe" or "translate"
+                            task: selectedTask
                         })
                     });
                     startFakeProgress();

@@ -8,6 +8,7 @@
 
 <div class="app-mode">
     <div class="main-app-container">
+
         <div id="audio-player-container">
             <audio id="main-audio" controls><source id="audio-source" src="" type="audio/mpeg"></audio>
         </div>
@@ -74,7 +75,10 @@
                 <div id="progress-bar"></div>
             </div>
 
-            <p id="upload-status">Ready</p>
+            <p id="upload-status" style="margin-bottom:10px; font-size:0.9rem; color:#666;">Ready</p>
             <input type="file" id="fileInput" hidden>
             <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">Upload and Process</button>
         </div>
+    </div>
+</div>
+{% endblock %}
