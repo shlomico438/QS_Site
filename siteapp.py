@@ -59,6 +59,12 @@ s3_client = boto3.client(
 logging.basicConfig(level=logging.INFO)
 
 
+@socketio.on('join')
+def on_join(data):
+    room = data['room']
+    join_room(room)
+    print(f"Client joined room: {room}") # Optional: Helps with debugging
+
 @app.errorhandler(413)
 def request_entity_too_large(error):
     # Specific error for files exceeding MAX_CONTENT_LENGTH
