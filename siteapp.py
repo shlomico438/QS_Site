@@ -266,7 +266,9 @@ def trigger_processing():
                 # We put brackets [] around the ID to see if there are hidden spaces like " id "
                 print(f"DEBUG CHECK: ID is [{RUNPOD_ENDPOINT_ID}]")
 
-                target_url = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run"
+                #target_url = f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run"
+                # Updated to use .ai as per your successful CURL
+                target_url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
                 print(f"DEBUG CHECK: Hitting URL [{target_url}]")
                 # ------------------------------------
 
