@@ -243,65 +243,75 @@ def sign_s3():
         'key': s3_key
     })
 
-
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
         data = request.json
-        print(f"📩 Received Trigger Request: {data}")  # Debug log
+        print(f"📩 Received Trigger Request: {data}")
 
-        # 1. Extract Data
+        # --- 1. GET CREDENTIALS & CHECK THEM ---
+        endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
+        api_key = os.environ.get('RUNPOD_API_KEY')
+
+        # DEBUG: Print status of keys (Don't print the actual key for security)
+        print(f"🔑 checking keys... Endpoint ID exists? {bool(endpoint_id)} | API Key exists? {bool(api_key)}")
+
+        if not endpoint_id or not api_key:
+            print("❌ CRITICAL ERROR: RUNPOD Environment Variables are missing!")
+            return jsonify({"status": "error", "message": "Server Env Vars missing"}), 500
+
+        # --- 2. PREPARE DATA ---
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
-
-        # Get 'task' (defaults to "transcribe" if missing)
         task = data.get('task', 'transcribe')
-
-        # Get Source Language
         language = data.get('language', 'he')
 
-        # Safely convert speakers to Integer
         try:
             speaker_count = int(data.get('speakerCount', 2))
-        except (ValueError, TypeError):
+        except:
             speaker_count = 2
 
-        # --- DELETED THE CRASHING LINE HERE (job_mappings) ---
-
-        # 2. Build RunPod Payload
+        # --- 3. BUILD PAYLOAD ---
         payload = {
             "input": {
                 "s3Key": s3_key,
-                "jobId": job_id,  # Pass ID so worker returns it
-                "task": task,  # Sends "translate" or "transcribe"
+                "jobId": job_id,
+                "task": task,
                 "language": language,
                 "num_speakers": speaker_count
             }
         }
 
-        print(f"🚀 Sending to RunPod: {payload}")
+        # --- 4. SEND REQUEST WITH TIMEOUT & CLEAN URL ---
+        # Strip any accidental spaces/newlines from the ID
+        clean_id = endpoint_id.strip()
+        endpoint_url = f"https://api.runpod.ai/v2/{clean_id}/run"
 
-        # 3. Trigger RunPod
-        # Ensure you use your actual Endpoint ID and API Key here
-        endpoint_url = f"https://api.runpod.ai/v2/{os.environ.get('RUNPOD_ENDPOINT_ID')}/run"
         headers = {
-            "Authorization": f"Bearer {os.environ.get('RUNPOD_API_KEY')}",
+            "Authorization": f"Bearer {api_key.strip()}",
             "Content-Type": "application/json"
         }
 
-        response = requests.post(endpoint_url, json=payload, headers=headers)
+        print(f"🚀 Connecting to RunPod URL: {endpoint_url}")
+
+        # Added 'timeout=10' to prevent hanging
+        response = requests.post(endpoint_url, json=payload, headers=headers, timeout=10)
 
         if response.status_code != 200:
-            print(f"❌ RunPod Error: {response.text}")
-            return jsonify({"status": "error", "message": "RunPod declined job"}), 500
+            print(f"❌ RunPod Error ({response.status_code}): {response.text}")
+            return jsonify({"status": "error", "message": f"RunPod Error: {response.text}"}), 500
 
         return jsonify({"status": "started", "runpod_id": response.json().get('id')})
 
+    except requests.exceptions.ConnectionError as ce:
+        print(f"❌ Network Connection Error: {ce}")
+        return jsonify({"status": "error", "message": "Could not connect to RunPod API"}), 500
     except Exception as e:
         print(f"❌ Server Crash: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+
 # --- WEBSOCKET EVENT HANDLERS ---
 @socketio.on('connect')
 def handle_connect():
