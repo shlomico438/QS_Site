@@ -51,14 +51,15 @@
                 </div>
 
                 <div style="display:flex; align-items:center; gap:8px; background:#fff; padding:5px 10px; border-radius:20px; border:1px solid #eee;">
-                    <span id="label-transcribe" style="font-size:0.9rem; color:#555; font-weight:bold;">Transcribe</span>
+                    <span id="label-transcribe" style="font-size:0.9rem; color:#333; font-weight:bold;">Transcribe</span>
+
                     <label class="toggle-switch">
-                        <input type="checkbox" id="task-switch" onchange="updateLabels(this)">
+                        <input type="checkbox" id="task-switch">
                         <span class="slider"></span>
                     </label>
-                    <span id="label-translate" style="font-size:0.9rem; color:#555;">Translate (EN)</span>
-                </div>
 
+                    <span id="label-translate" style="font-size:0.9rem; color:#777; font-weight:normal;">Translate (EN)</span>
+                </div>
                 <div style="display:flex; align-items:center; gap:8px;">
                     <label>Speakers:</label>
                     <input type="number" id="speaker-count" value="2" min="1" max="10" style="width: 40px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; text-align: center;">
