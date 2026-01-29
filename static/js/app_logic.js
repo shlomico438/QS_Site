@@ -338,4 +338,31 @@ document.addEventListener('DOMContentLoaded', () => {
             handleUploadError("Initialization Failed: " + err.message);
         }
     });
+    // --- GLOBAL HELPER FOR HTML TOGGLE ---
+    window.updateLabels = function(element) {
+        const labelTranscribe = document.getElementById('label-transcribe');
+        const labelTranslate = document.getElementById('label-translate');
+
+        if (element.checked) {
+            // Right side: Translate
+            if(labelTranscribe) {
+                labelTranscribe.style.fontWeight = 'normal';
+                labelTranscribe.style.color = '#777';
+            }
+            if(labelTranslate) {
+                labelTranslate.style.fontWeight = 'bold';
+                labelTranslate.style.color = '#333';
+            }
+        } else {
+            // Left side: Transcribe
+            if(labelTranscribe) {
+                labelTranscribe.style.fontWeight = 'bold';
+                labelTranscribe.style.color = '#333';
+            }
+            if(labelTranslate) {
+                labelTranslate.style.fontWeight = 'normal';
+                labelTranslate.style.color = '#777';
+            }
+        }
+    };
 });
