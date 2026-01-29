@@ -238,19 +238,15 @@ def sign_s3():
     })
 
 
-# --- UPDATED: Start GPU (No File Upload Here) ---
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
-        # We receive JSON now, not a file!
         data = request.json
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
 
-        # ... (Keep your existing GPU Trigger logic here) ...
-        # ... (Replace the 'upload_file' part with just sending the s3_key) ...
+        print(f"🚀 Triggering Job {job_id} with Key: {s3_key}")
 
-        # Example Payload to RunPod:
         payload = {
             "input": {
                 "s3Key": s3_key,
@@ -262,17 +258,44 @@ def trigger_processing():
             }
         }
 
-        # Trigger RunPod
-        requests.post(
-            f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
-            headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"},
-            json=payload,
-            timeout=10
-        )
+        # --- RETRY LOGIC (3 Attempts) ---
+        for attempt in range(3):
+            try:
+                print(f"➡️ RunPod Trigger Attempt {attempt + 1}/3...")
 
-        return jsonify({"status": "processing", "jobId": job_id})
+                response = requests.post(
+                    f"https://api.runpod.io/v2/{RUNPOD_ENDPOINT_ID}/run",
+                    headers={
+                        "Authorization": f"Bearer {RUNPOD_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload,
+                    timeout=10
+                )
+
+                print(f"RunPod Status: {response.status_code}")
+
+                # If successful, return immediately
+                if response.status_code == 200:
+                    print(f"✅ Success: {response.json()}")
+                    return jsonify(response.json())
+
+                # If error, log it and wait before retrying
+                print(f"⚠️ Failed: {response.text}")
+                time.sleep(1)
+
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Network Error (Attempt {attempt + 1}): {str(e)}")
+                time.sleep(1)
+
+        # If we reach here, all 3 attempts failed
+        return jsonify({
+            "status": "error",
+            "message": "Failed to contact GPU server after 3 attempts."
+        }), 502
 
     except Exception as e:
+        print(f"❌ SYSTEM ERROR: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- WEBSOCKET EVENT HANDLERS ---
