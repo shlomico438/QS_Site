@@ -287,6 +287,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2. Setup Job ID for recovery
         const jobId = "job_" + Date.now();
         localStorage.setItem('activeJobId', jobId);
+        // 3. Join Room (ADD THIS LOG TO SEE IT HAPPEN)
+        console.log("🚀 Switching to NEW Room:", jobId);
 
         // 3. Join Room
         socket.emit('join', { room: jobId });
