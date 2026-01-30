@@ -376,15 +376,66 @@ input:checked + .slider:before { transform: translateX(16px); }
         display: none !important;
     }
 }
-/* --- HIDE FOOTER ON MOBILE --- */
+/* --- MOBILE "APP MODE" (One Page Layout) --- */
 @media screen and (max-width: 768px) {
+    /* 1. LOCK THE VIEWPORT */
+    html, body {
+        height: 100% !important;
+        margin: 0 !important;
+        overflow: hidden !important; /* Prevents the whole page from scrolling */
+        position: fixed; /* Stops iOS "bounce" scroll */
+        width: 100%;
+    }
+
+    /* 2. FLEX CONTAINER FOR THE WHOLE PAGE */
+    .app-mode {
+        height: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+        padding: 0 !important;
+    }
+
+    /* 3. MAIN CONTAINER STACK */
+    .main-app-container {
+        flex: 1;                /* Take all vertical space */
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important; /* No spillover */
+        padding: 10px !important;
+    }
+
+    /* 4. THE TRANSCRIPT WINDOW (The only thing that scrolls) */
+    .transcription-wrapper {
+        flex: 1 !important;        /* Grow to fill ALL empty space */
+        overflow-y: auto !important; /* Scroll INSIDE this box */
+        min-height: 0 !important;  /* Critical Fix for Flexbox scrolling */
+        margin-bottom: 10px !important;
+        border: 1px solid #eee;    /* Optional: helps see the boundary */
+    }
+
+    /* Ensure the transcript content doesn't force width issues */
+    #transcript-window {
+        height: auto !important;
+        max-height: none !important; /* Let the wrapper handle the height */
+    }
+
+    /* 5. FIXED BOTTOM CONTROLS (Upload Zone) */
+    .upload-zone {
+        flex-shrink: 0 !important; /* Never shrink this section */
+        background: #fff;
+        z-index: 100;
+        padding-bottom: 20px !important; /* Safety for iPhone Home Bar */
+        box-shadow: 0 -4px 12px rgba(0,0,0,0.05); /* Visual separation */
+    }
+
+    /* 6. HIDE EXTRAS */
     footer, .footer, .copyright-text {
         display: none !important;
     }
 
-    /* Optional: Remove extra padding from the bottom of the page */
-    body, .main-app-container {
-        padding-bottom: 0 !important;
-        margin-bottom: 0 !important;
+    /* Optional: Compact the header to save more space */
+    .navbar {
+        padding: 0.5rem 1rem !important;
+        min-height: auto !important;
     }
 }
