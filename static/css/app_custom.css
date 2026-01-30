@@ -370,12 +370,6 @@ input:checked + .slider:before { transform: translateX(16px); }
         margin-bottom: 10px;
     }
 }
-/* --- MOBILE LOGO HIDE --- */
-@media (max-width: 768px) {
-    img[src*="logo"] {
-        display: none !important;
-    }
-}
 /* --- MOBILE "APP MODE" (One Page Layout) --- */
 @media screen and (max-width: 768px) {
     /* 1. LOCK THE VIEWPORT */
