@@ -179,7 +179,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
 
-        // 1. Speaker/Time Header (Standard Left-to-Right)
+        // 1. Header (Speaker/Time) - Right Aligned & RTL
         if (showSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
@@ -189,22 +189,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 children: [new TextRun({
                     text: label,
                     bold: true,
-                    color: getSpeakerColor(group.speaker).replace('#', ''), // docx needs hex without #
-                    size: 20
+                    color: getSpeakerColor(group.speaker).replace('#', ''),
+                    size: 20,
+                    rightToLeft: true // Crucial for Hebrew
                 })],
-                alignment: AlignmentType.RIGHT, // Changed from RIGHT to LEFT
+                alignment: AlignmentType.RIGHT, // Right Align
                 bidirectional: true,            // RTL Flow
                 spacing: { after: 0 }
             }));
         }
 
-        // 2. The Transcript Text (Standard Left-to-Right)
+        // 2. Transcript Text - Right Aligned & RTL
         paragraphs.push(new Paragraph({
             children: [new TextRun({
                 text: group.text.trim(),
-                size: 24
+                size: 24,
+                rightToLeft: true // Crucial for Hebrew characters
             })],
-            alignment: AlignmentType.LEFT, // Changed from RIGHT to LEFT
+            alignment: AlignmentType.RIGHT, // Right Align
+            bidirectional: true,            // RTL Flow
             spacing: { after: 300 }
         }));
         return paragraphs;
@@ -241,8 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
         statusTxt.style.color = "#ef4444";
         mainBtn.disabled = false;
         mainBtn.innerText = "Upload and Process";
-
-        fileInput.value = ''; // Reset input on error
+        fileInput.value = '';
     }
 
     function resetUI() {
@@ -273,8 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const file = this.files[0];
         if (!file) return;
 
-        this.value = ''; // RESET FILE INPUT to allow re-selection
-
+        this.value = '';
         window.originalFileName = file.name;
         resetUI();
 
@@ -320,7 +321,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             jobId: jobId,
                             speakerCount: document.getElementById('speaker-count').value,
                             language: document.getElementById('audio-lang').value,
-                            task: 'transcribe' // <--- HARDCODED TO TRANSCRIBE
+                            task: 'transcribe'
                         })
                     });
                     startFakeProgress();
