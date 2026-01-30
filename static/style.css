@@ -38,8 +38,8 @@ html, body {
     z-index: 1000;
     display: flex;
     align-items: center;
+    justify-content: space-between; /* Pushes Logo left, Menu right */
     padding: 0 40px;
-    justify-content: space-between; /* Ensures Logo Left, Menu Right */
 }
 
 .nav-logo {
@@ -47,7 +47,7 @@ html, body {
     font-weight: 800;
     color: #4f46e5;
     text-decoration: none;
-    z-index: 1001; /* Keeps logo above menu */
+    z-index: 1001;
 }
 
 .nav-menu {
@@ -62,7 +62,7 @@ html, body {
     font-weight: 600;
 }
 
-/* Hamburger Icon - Hidden on Desktop */
+/* Hide Hamburger on Desktop */
 .hamburger-menu {
     display: none;
 }
@@ -76,9 +76,6 @@ html, body {
     height: calc(100vh - var(--nav-height));
 }
 
-/* =========================
-   HEADER
-========================= */
 .header-section {
     flex: 0 0 auto;
     text-align: center;
@@ -93,14 +90,11 @@ html, body {
     color: #444;
 }
 
-/* =========================
-   MAIN CONTAINER
-========================= */
 .main-app-container {
-    flex: 1 1 auto; /* fills remaining space */
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
-    min-height: 0;  /* critical for internal scroll */
+    min-height: 0;
     padding: 10px 20px;
 }
 
@@ -153,15 +147,23 @@ html, body {
 }
 
 /* =========================
-   MOBILE RESPONSIVENESS (NEW)
+   MOBILE RESPONSIVENESS
 ========================= */
 @media screen and (max-width: 768px) {
+
     .navbar {
         padding: 0 20px;
-        justify-content: center; /* Center the Logo */
+        justify-content: center; /* Helper to center logo */
     }
 
-    /* 1. Hamburger Icon */
+    /* 1. Force Logo Center */
+    .nav-logo {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+
+    /* 2. Show Hamburger (Right side) */
     .hamburger-menu {
         display: flex;
         flex-direction: column;
@@ -170,7 +172,7 @@ html, body {
         height: 21px;
         cursor: pointer;
         position: absolute;
-        right: 20px; /* Force Right */
+        right: 20px;
         z-index: 1002;
     }
 
@@ -190,7 +192,7 @@ html, body {
 
     /* 2. Dropdown Menu */
     .nav-menu {
-        display: none; /* Hidden by default */
+        display: none; /* Crucial: Hides 'Blog', 'Contact' etc. */
         position: absolute;
         top: var(--nav-height);
         left: 0;
@@ -201,8 +203,9 @@ html, body {
         box-shadow: 0 4px 10px rgba(0,0,0,0.1);
     }
 
+    /* Show links when active */
     .nav-menu.active {
-        display: flex; /* Show when active */
+        display: flex;
     }
 
     .nav-item {
