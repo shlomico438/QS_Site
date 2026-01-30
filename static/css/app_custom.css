@@ -1,84 +1,131 @@
 /* =========================================
-   NAVBAR & LAYOUT STYLES
+   1. GLOBAL RESET & FONTS
    ========================================= */
+* {
+    box-sizing: border-box;
+}
 
-/* --- DESKTOP DEFAULTS --- */
+html, body {
+    height: 100%;       /* Critical for One Page App */
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;   /* Prevents double scrollbars */
+    display: flex;
+    flex-direction: column;
+    background-color: #f9fafb;
+}
+
+/* =========================================
+   2. LAYOUT STRUCTURE (The "One Page" Logic)
+   ========================================= */
+.navbar {
+    flex-shrink: 0;     /* Never shrink the header */
+    height: 80px;       /* Fixed height for stability */
+    background: white;
+    border-bottom: 1px solid #e5e7eb;
+    z-index: 1000;
+}
+
+.main-content {
+    flex: 1;            /* Fills all remaining space */
+    overflow-y: auto;   /* Scroll INSIDE this area */
+    padding: 20px;
+    position: relative;
+}
+
+.footer {
+    flex-shrink: 0;     /* Never shrink the footer */
+    background: #f3f4f6;
+    text-align: center;
+    padding: 15px;
+    font-size: 0.85rem;
+    color: #6b7280;
+    border-top: 1px solid #e5e7eb;
+}
+
+/* =========================================
+   3. NAVIGATION BAR STYLES
+   ========================================= */
 .nav-container {
+    max-width: 1200px;
+    height: 100%;
+    margin: 0 auto;
+    padding: 0 20px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 5px 20px;
-    max-width: 1200px;
-    margin: 0 auto;
-    height: 100%;
     position: relative;
 }
 
 .nav-logo {
-    text-decoration: none;
+    height: 100%;
     display: flex;
     align-items: center;
-    height: 100%;
-    z-index: 1001; 
+    text-decoration: none;
 }
 
-/* Default Logo Size (Desktop) */
 .logo-img {
-    height: 85px; 
-    width: auto; 
-    max-width: 100%;
+    height: 60px;       /* Safe height that won't distort */
+    width: auto;
 }
 
+/* Desktop Menu Links */
 .nav-menu {
     display: flex;
-    gap: 25px;
+    gap: 30px;
 }
 
 .nav-item {
     text-decoration: none;
-    color: #333;
+    color: #374151;
     font-weight: 600;
-    font-size: 1.1rem;
+    font-size: 1rem;
+    transition: color 0.2s;
 }
 
 .nav-item:hover {
     color: #4f46e5;
 }
 
-/* Hide Hamburger on Desktop */
+/* Hamburger Icon (Hidden on Desktop) */
 .hamburger-menu {
     display: none;
 }
 
-/* --- MOBILE STYLES (Max Width 768px) --- */
+/* =========================================
+   4. MOBILE SPECIFIC STYLES (Max Width 768px)
+   ========================================= */
 @media screen and (max-width: 768px) {
-    
-    /* 1. Center the Logo */
+
+    /* A. Hide Footer on Mobile to save space */
+    .footer {
+        display: none !important;
+    }
+
+    /* B. Mobile Header Layout */
     .nav-container {
-        justify-content: center;
+        justify-content: center; /* Center the Logo */
     }
 
     .nav-logo {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
+        /* Logo is naturally centered by justify-content: center */
     }
 
-    /* Shrink Logo for Mobile */
     .logo-img {
-        height: 50px !important; /* Smaller size for phones */
+        height: 50px; /* Slightly smaller on mobile */
     }
 
-    /* 2. Hamburger Icon */
+    /* C. Hamburger Icon (Positioned Absolute Right) */
     .hamburger-menu {
-        display: flex; /* Show it! */
+        display: flex;
         flex-direction: column;
         justify-content: space-between;
-        width: 30px;
-        height: 21px;
+        width: 28px;
+        height: 20px;
         cursor: pointer;
         position: absolute;
-        right: 20px; 
+        right: 20px; /* Anchored to the right */
         top: 50%;
         transform: translateY(-50%);
         z-index: 1002;
@@ -86,10 +133,10 @@
 
     .hamburger-menu span {
         display: block;
-        height: 3px;
         width: 100%;
-        background: #333;
-        border-radius: 3px;
+        height: 2px;
+        background: #374151;
+        border-radius: 2px;
         transition: 0.3s;
     }
 
@@ -98,36 +145,30 @@
     .hamburger-menu.open span:nth-child(2) { opacity: 0; }
     .hamburger-menu.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -6px); }
 
-    /* 3. Dropdown Menu (Hidden by default) */
+    /* D. Mobile Dropdown Menu */
     .nav-menu {
-        display: none;
+        display: none; /* Hidden by default */
         position: absolute;
-        top: 100%;
+        top: 80px; /* Height of the header */
         left: 0;
         width: 100%;
-        background: #fff;
+        background: white;
         flex-direction: column;
-        text-align: center;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        padding: 0;
-        z-index: 1000;
-        border-top: 1px solid #eee;
+        gap: 0;
+        border-bottom: 1px solid #e5e7eb;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        z-index: 999;
     }
 
-    /* Show when Javascript adds 'active' class */
     .nav-menu.active {
-        display: flex; 
+        display: flex; /* Show when toggled */
     }
 
     .nav-item {
         padding: 20px;
-        border-bottom: 1px solid #f0f0f0;
+        text-align: center;
+        border-top: 1px solid #f3f4f6;
         width: 100%;
         display: block;
-    }
-
-    /* 4. Hide Footer on Mobile */
-    footer, .footer {
-        display: none !important;
     }
 }

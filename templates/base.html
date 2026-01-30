@@ -9,13 +9,10 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 </head>
 
-<body style="display:flex; flex-direction:column; height:100vh; min-height:0; margin:0;">
+<body>
 
-    <header class="navbar" style="background: #fff; border-bottom: 1px solid #eee; flex-shrink: 0;">
+    <header class="navbar">
         <div class="nav-container">
-            <a href="/" class="nav-logo brand-logo">
-                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="logo-img">
-            </a>
 
             <div class="hamburger-menu" onclick="toggleMenu()">
                 <span></span>
@@ -23,26 +20,35 @@
                 <span></span>
             </div>
 
+            <a href="/" class="nav-logo">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="logo-img">
+            </a>
+
             <div class="nav-menu" id="nav-menu">
                 <a href="/about" class="nav-item">About Us</a>
                 <a href="/blog" class="nav-item">Blog</a>
                 <a href="/contact" class="nav-item">Contact</a>
             </div>
+
         </div>
     </header>
 
-    <main class="main-content" style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;">
+    <main class="main-content">
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="footer" style="flex-shrink:0; text-align:center; padding:20px; background:#f1f1f1;">
+    <footer class="footer">
         <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
     </footer>
 
     <script>
         function toggleMenu() {
-            document.getElementById('nav-menu').classList.toggle('active');
-            document.querySelector('.hamburger-menu').classList.toggle('open');
+            // Toggle the menu visibility
+            const menu = document.getElementById('nav-menu');
+            const icon = document.querySelector('.hamburger-menu');
+
+            menu.classList.toggle('active');
+            icon.classList.toggle('open');
         }
     </script>
 </body>
