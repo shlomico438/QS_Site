@@ -376,3 +376,15 @@ input:checked + .slider:before { transform: translateX(16px); }
         display: none !important;
     }
 }
+/* --- HIDE FOOTER ON MOBILE --- */
+@media screen and (max-width: 768px) {
+    footer, .footer, .copyright-text {
+        display: none !important;
+    }
+
+    /* Optional: Remove extra padding from the bottom of the page */
+    body, .main-app-container {
+        padding-bottom: 0 !important;
+        margin-bottom: 0 !important;
+    }
+}
