@@ -4,76 +4,28 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QuickScribe - Precision AI Transcription</title>
+
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-
-<style>
-    /* Generic container for Contact, Blog, About */
-    .content-page {
-        max-width: 850px;
-        margin: 60px auto; /* Centers the box */
-        padding: 40px;
-        background: white;
-        border-radius: 12px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-        border: 1px solid #eee;
-    }
-
-    .content-page h1 {
-        color: #4f46e5;
-        border-bottom: 2px solid #eee;
-        padding-bottom: 20px;
-        margin-bottom: 30px;
-    }
-
-    /* Ensure the nav container uses Flexbox to align Logo + Links */
-    .nav-container {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px 20px;
-        max-width: 1200px;
-        margin: 0 auto;
-    }
-
-    /* Remove text styles from the logo link wrapper */
-    .nav-logo {
-        text-decoration: none;
-        display: flex; /* Fixes random spacing below image */
-        align-items: center;
-    }
-
-    /* Navigation Links Styling */
-    .nav-menu {
-        display: flex;
-        gap: 25px;
-    }
-
-    .nav-item {
-        text-decoration: none;
-        color: #333;
-        font-weight: 600;
-        font-size: 1rem;
-    }
-
-    .nav-item:hover {
-        color: #4f46e5;
-    }
-
-</style>
 </head>
-<body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
-    <header class="navbar" style="background: #fff; border-bottom: 1px solid #eee;">
-        <div class="nav-container">
-            <a href="/" class="nav-logo">
-                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 60px; width: auto;">
-            </a>
 
-            <div class="nav-menu">
-                <a href="/about" class="nav-item">About Us</a>
-                <a href="/blog" class="nav-item">Blog</a>
-                <a href="/contact" class="nav-item">Contact</a>
-            </div>
+<body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
+
+    <header class="navbar">
+        <div class="hamburger-menu" onclick="toggleMenu()">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+
+        <a href="/" class="nav-logo">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 60px; width: auto;">
+        </a>
+
+        <div class="nav-menu" id="nav-menu">
+            <a href="/about" class="nav-item">About Us</a>
+            <a href="/blog" class="nav-item">Blog</a>
+            <a href="/contact" class="nav-item">Contact</a>
         </div>
     </header>
 
@@ -81,8 +33,15 @@
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="footer" style="flex-shrink:0; text-align:center; padding:20px; background:#f1f1f1;">
+    <footer class="footer">
         <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
     </footer>
+
+    <script>
+        function toggleMenu() {
+            document.getElementById('nav-menu').classList.toggle('active');
+            document.querySelector('.hamburger-menu').classList.toggle('open');
+        }
+    </script>
 </body>
 </html>

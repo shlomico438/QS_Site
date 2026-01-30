@@ -1,12 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QuickScribe - Precision AI Transcription</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-
-<style>
 /* =========================
    ROOT & GLOBAL
 ========================= */
@@ -38,7 +29,7 @@ html, body {
     z-index: 1000;
     display: flex;
     align-items: center;
-    justify-content: space-between; /* Pushes Logo left, Menu right */
+    justify-content: space-between;
     padding: 0 40px;
 }
 
@@ -47,19 +38,26 @@ html, body {
     font-weight: 800;
     color: #4f46e5;
     text-decoration: none;
-    z-index: 1001;
+    z-index: 1001; /* Ensure logo stays above mobile menu */
+    display: flex;
+    align-items: center;
 }
 
 .nav-menu {
     display: flex;
     align-items: center;
+    gap: 25px;
 }
 
 .nav-item {
-    margin-left: 30px;
     text-decoration: none;
     color: #374151;
     font-weight: 600;
+    font-size: 1rem;
+}
+
+.nav-item:hover {
+    color: #4f46e5;
 }
 
 /* Hide Hamburger on Desktop */
@@ -68,89 +66,40 @@ html, body {
 }
 
 /* =========================
-   APP SHELL
+   CONTENT PAGES (About, Blog, etc)
 ========================= */
-.app-mode {
-    display: flex;
-    flex-direction: column;
-    height: calc(100vh - var(--nav-height));
-}
-
-.header-section {
-    flex: 0 0 auto;
-    text-align: center;
-    padding: 15px 0;
-    background: #fff;
-    border-bottom: 1px solid #eee;
-}
-
-.header-section h2 {
-    margin: 0;
-    font-size: 1.2rem;
-    color: #444;
-}
-
-.main-app-container {
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    padding: 10px 20px;
-}
-
-/* =========================
-   TRANSCRIPTION AREA
-========================= */
-.transcription-area {
-    flex: 1 1 auto;      /* fills available space */
-    min-height: 0;       /* important for flex scroll */
-    overflow-y: auto;    /* internal scroll */
-    margin-bottom: 10px;
-}
-
-#transcript-window {
-    flex: 1;
-    border: 2px solid #eee;
+.content-page {
+    max-width: 850px;
+    margin: 60px auto;
+    padding: 40px;
+    background: white;
     border-radius: 12px;
-    padding: 20px;
-    overflow-y: auto;
-    font-size: 1.6rem;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    border: 1px solid #eee;
 }
 
-#placeholder {
-    color: #ccc;
-    text-align: center;
-    margin-top: 30%;
+.content-page h1 {
+    color: #4f46e5;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 20px;
+    margin-bottom: 30px;
 }
 
 /* =========================
-   UPLOAD BUTTON
+   FOOTER
 ========================= */
-.upload-zone {
-    flex: 0 0 auto;       /* never shrink */
+.footer {
+    flex-shrink: 0;
     text-align: center;
-    padding: 10px 0;
-}
-
-.btn {
-    padding: 12px 45px;
-    font-size: 1.1rem;
-    font-weight: bold;
-    border-radius: 50px;
-    border: none;
-    cursor: pointer;
-}
-
-.btn-primary {
-    background: #5d5dff;
-    color: white;
+    padding: 20px;
+    background: #f1f1f1;
 }
 
 /* =========================
    MOBILE RESPONSIVENESS
 ========================= */
 @media screen and (max-width: 768px) {
-
+    
     .navbar {
         padding: 0 20px;
         justify-content: center; /* Helper to center logo */
@@ -190,9 +139,9 @@ html, body {
     .hamburger-menu.open span:nth-child(2) { opacity: 0; }
     .hamburger-menu.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -6px); }
 
-    /* 2. Dropdown Menu */
+    /* 3. Hide Menu Links by Default */
     .nav-menu {
-        display: none; /* Crucial: Hides 'Blog', 'Contact' etc. */
+        display: none; /* Hides 'Blog', 'Contact' etc. */
         position: absolute;
         top: var(--nav-height);
         left: 0;
@@ -201,9 +150,10 @@ html, body {
         flex-direction: column;
         border-bottom: 1px solid #eee;
         box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        padding: 0;
     }
 
-    /* Show links when active */
+    /* Show links when Javascript adds 'active' class */
     .nav-menu.active {
         display: flex;
     }
@@ -215,54 +165,9 @@ html, body {
         text-align: center;
         border-top: 1px solid #f9f9f9;
     }
-}
-</style>
-</head>
-<body>
 
-<header class="navbar">
-    <div class="hamburger-menu" onclick="toggleMenu()">
-        <span></span>
-        <span></span>
-        <span></span>
-    </div>
-
-    <a href="/" class="nav-logo">QuickScribe</a>
-
-    <div class="nav-menu" id="nav-menu">
-        <a href="/about" class="nav-item">About Us</a>
-        <a href="/blog" class="nav-item">Blog</a>
-        <a href="/contact" class="nav-item">Contact</a>
-    </div>
-</header>
-
-<div class="app-mode">
-    <div class="header-section">
-        <h2>Quick transcription</h2>
-    </div>
-
-    <div class="main-app-container">
-        <div class="transcription-area">
-            <div id="transcript-window">
-                <p id="placeholder">Upload a file to start transcription</p>
-            </div>
-        </div>
-
-        <div class="upload-zone">
-            <input type="file" id="fileInput" hidden>
-            <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
-                Choose File to Transcribe
-            </button>
-        </div>
-    </div>
-</div>
-
-<script>
-    function toggleMenu() {
-        document.getElementById('nav-menu').classList.toggle('active');
-        document.querySelector('.hamburger-menu').classList.toggle('open');
+    /* 4. Hide Footer on Mobile */
+    .footer {
+        display: none !important;
     }
-</script>
-
-</body>
-</html>
+}
