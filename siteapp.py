@@ -162,14 +162,24 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
         "Content-Type": "application/json"
     }
 
-    # Payload now includes all 5 parameters to pass to the Worker
+    # --- SMART PROMPT LOGIC ---
+    # "Primes" the AI to stick to the correct output language
+    if task == "translate":
+        # Force it to think in English
+        prompt = "Here is the complete English translation of the Hebrew interview."
+    else:
+        # Force it to stay in Hebrew (helps with technical terms)
+        prompt = "הנה תמלול מלא של השיחה בעברית, כולל פיסוק מדויק."
+
+    # 3. Build RunPod Payload
     payload = {
         "input": {
             "jobId": job_id,
             "s3Key": s3_key,
             "num_speakers": int(num_speakers),
             "language": language,
-            "task": task
+            "task": task,
+            "initial_prompt": prompt  # <--- NEW FIELD
         }
     }
 
