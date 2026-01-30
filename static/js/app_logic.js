@@ -191,10 +191,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     bold: true,
                     color: getSpeakerColor(group.speaker).replace('#', ''),
                     size: 20,
-                    rightToLeft: true // Crucial for Hebrew
+                    rightToLeft: true,
+                    language: { value: "he-IL" } // Fixes red "spelling error" lines
                 })],
-                alignment: AlignmentType.RIGHT, // Right Align
-                bidirectional: true,            // RTL Flow
+                alignment: AlignmentType.RIGHT,
+                bidirectional: true,
                 spacing: { after: 0 }
             }));
         }
@@ -204,10 +205,11 @@ document.addEventListener('DOMContentLoaded', () => {
             children: [new TextRun({
                 text: group.text.trim(),
                 size: 24,
-                rightToLeft: true // Crucial for Hebrew characters
+                rightToLeft: true,
+                language: { value: "he-IL" } // Fixes red "spelling error" lines
             })],
-            alignment: AlignmentType.RIGHT, // Right Align
-            bidirectional: true,            // RTL Flow
+            alignment: AlignmentType.RIGHT,
+            bidirectional: true,
             spacing: { after: 300 }
         }));
         return paragraphs;
