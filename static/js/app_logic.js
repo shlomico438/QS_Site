@@ -193,6 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     size: 20
                 })],
                 alignment: AlignmentType.RIGHT, // Changed from RIGHT to LEFT
+                bidirectional: true,            // RTL Flow
                 spacing: { after: 0 }
             }));
         }
