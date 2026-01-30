@@ -174,21 +174,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // --- UPDATED DOCX FUNCTION: STANDARD ENGLISH ALIGNMENT (LTR) ---
     function createDocxParagraphs(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
+
+        // 1. Speaker/Time Header (Standard Left-to-Right)
         if (showSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
             if (showSpeaker) label += formatSpeaker(group.speaker);
+
             paragraphs.push(new Paragraph({
-                children: [new TextRun({ text: label, bold: true, color: getSpeakerColor(group.speaker), size: 20, rightToLeft: true })],
-                alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 0 }
+                children: [new TextRun({
+                    text: label,
+                    bold: true,
+                    color: getSpeakerColor(group.speaker).replace('#', ''), // docx needs hex without #
+                    size: 20
+                })],
+                alignment: AlignmentType.LEFT, // Changed from RIGHT to LEFT
+                spacing: { after: 0 }
             }));
         }
+
+        // 2. The Transcript Text (Standard Left-to-Right)
         paragraphs.push(new Paragraph({
-            children: [new TextRun({ text: group.text.trim(), size: 24, language: { id: "he-IL" }, rightToLeft: true })],
-            alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 300 }
+            children: [new TextRun({
+                text: group.text.trim(),
+                size: 24
+            })],
+            alignment: AlignmentType.LEFT, // Changed from RIGHT to LEFT
+            spacing: { after: 300 }
         }));
         return paragraphs;
     }
@@ -295,9 +311,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (xhr.status === 200) {
                     statusTxt.innerText = "Starting AI Processing...";
 
-                    // Get the selected Radio button value ("translate" or "transcribe")
-                    const selectedTask = document.querySelector('input[name="task"]:checked').value;
-
                     await fetch('/api/trigger_processing', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -306,7 +319,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             jobId: jobId,
                             speakerCount: document.getElementById('speaker-count').value,
                             language: document.getElementById('audio-lang').value,
-                            task: selectedTask
+                            task: 'transcribe' // <--- HARDCODED TO TRANSCRIBE
                         })
                     });
                     startFakeProgress();
