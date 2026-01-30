@@ -192,7 +192,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     color: getSpeakerColor(group.speaker).replace('#', ''), // docx needs hex without #
                     size: 20
                 })],
-                alignment: AlignmentType.LEFT, // Changed from RIGHT to LEFT
+                alignment: AlignmentType.RIGHT, // Changed from RIGHT to LEFT
                 spacing: { after: 0 }
             }));
         }
