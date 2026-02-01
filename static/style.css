@@ -34,13 +34,14 @@ html, body {
 }
 
 .nav-logo {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
     font-size: 1.6rem;
     font-weight: 800;
     color: #4f46e5;
     text-decoration: none;
-    z-index: 1001; /* Ensure logo stays above mobile menu */
-    display: flex;
-    align-items: center;
+    z-index: 1001;
 }
 
 .nav-menu {
