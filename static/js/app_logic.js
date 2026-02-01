@@ -13,43 +13,44 @@ document.addEventListener('DOMContentLoaded', () => {
     const downloadMenu = document.getElementById('download-menu');
 
     // --- GLOBAL STATE ---
-    let socket;
     window.fakeProgressInterval = null;
-    window.serverTimeout = null;
     window.currentSegments = [];
     window.originalFileName = "transcript";
 
-    // --- 1. SOCKET INITIALIZATION ---
-    socket = io({
-        transports: ['websocket'],
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000
-    });
+    // --- 1. SOCKET LOGIC ---
+    // Socket is initialized in base.html, we just use it here
+    if (typeof socket !== 'undefined') {
+        socket.on('connect', () => {
+            console.log("Connected with ID:", socket.id);
+            const savedJobId = localStorage.getItem('activeJobId');
+            if (savedJobId) {
+                console.log("🔄 Re-joining room:", savedJobId);
+                socket.emit('join', { room: savedJobId });
+            }
+        });
 
-    socket.on('connect', () => {
-        console.log("Connected with ID:", socket.id);
-        const savedJobId = localStorage.getItem('activeJobId');
-        if (savedJobId) {
-            console.log("🔄 Re-joining room:", savedJobId);
-            socket.emit('join', { room: savedJobId });
-        }
-    });
+        socket.on('job_status_update', (data) => {
+            console.log("📩 Message received:", data);
+            handleJobUpdate(data);
+        });
+    }
 
-    socket.on('job_status_update', (data) => {
-        console.log("📩 Message received:", data);
+    function handleJobUpdate(data) {
         const currentStatus = data.status ? data.status.toLowerCase() : "";
 
         if (currentStatus === "completed" || currentStatus === "success") {
             localStorage.removeItem('activeJobId');
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-            pContainer.style.display = 'none';
-            statusTxt.innerText = "Transcription complete!";
-            mainBtn.innerText = "Process Another File";
-            mainBtn.disabled = false;
-            controlsBar.style.display = 'flex';
 
-            // --- SMART DATA PARSING ---
+            if (pContainer) pContainer.style.display = 'none';
+            if (statusTxt) statusTxt.innerText = "Transcription complete!";
+            if (mainBtn) {
+                mainBtn.innerText = "Process Another File";
+                mainBtn.disabled = false;
+            }
+            if (controlsBar) controlsBar.style.display = 'flex';
+
+            // Parse Data
             let finalSegments = null;
             if (data.result) {
                 let resultObj = data.result;
@@ -60,27 +61,25 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (!finalSegments && data.segments) finalSegments = data.segments;
 
-            if (finalSegments) {
+            if (finalSegments && transcriptWindow) {
                 window.currentSegments = finalSegments;
                 transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-            } else if (data.transcription) {
+            } else if (data.transcription && transcriptWindow) {
                  transcriptWindow.innerText = data.transcription;
-            } else {
-                transcriptWindow.innerText = JSON.stringify(data, null, 2);
             }
         } else if (currentStatus === "failed" || currentStatus === "error") {
             handleUploadError(data.error || "Unknown error occurred");
             localStorage.removeItem('activeJobId');
         }
-    });
+    }
 
     // --- 2. ERROR HANDLING ---
-    window.onerror = (msg) => handleUploadError("System Error: " + msg);
-    window.onunhandledrejection = (ev) => handleUploadError("Network Error: " + ev.reason);
+    window.onerror = (msg) => console.error("System Error: " + msg);
 
     // --- 3. TOOLBAR & DROPDOWN ---
-    if (document.getElementById('btn-download')) {
-        document.getElementById('btn-download').addEventListener('click', (e) => {
+    const btnDownload = document.getElementById('btn-download');
+    if (btnDownload) {
+        btnDownload.addEventListener('click', (e) => {
             e.stopPropagation();
             if(downloadMenu) downloadMenu.classList.toggle('show');
         });
@@ -99,7 +98,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const getSpeakerColor = (speakerId) => {
-        // COLORS: Index 1 is now Purple (#9333ea)
         const colors = ['#5d5dff', '#9333ea', '#059669', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#ca8a04'];
         const match = speakerId ? speakerId.match(/\d+/) : null;
         const index = match ? parseInt(match[0]) : 0;
@@ -112,102 +110,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
 
-    async function uploadAndProcess() {
-        const fileInput = document.getElementById('fileInput');
-        const file = fileInput.files[0];
-
-        if (!file) return;
-
-        // 1. GET ALL UI ELEMENTS
-        const statusText = document.getElementById('upload-status');
-        const progressBar = document.getElementById('progress-bar');
-        const progressContainer = document.getElementById('p-container');
-        const uploadBtn = document.getElementById('main-btn');
-
-        // Get values from your new inputs
-        const lang = document.getElementById('audio-lang').value;
-        const speakers = document.getElementById('speaker-count').value;
-
-        try {
-            // UI RESET
-            uploadBtn.disabled = true;
-            progressContainer.style.display = 'block'; // Show bar
-            progressBar.style.width = '0%';
-            statusText.innerText = "Preparing secure upload...";
-            statusText.style.color = "#4f46e5";
-
-            // 2. GET PERMISSION (Sign S3)
-            const signResponse = await fetch('/api/sign-s3', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    filename: file.name,
-                    filetype: file.type
-                })
-            });
-
-            if (!signResponse.ok) throw new Error("Could not sign upload");
-            const signData = await signResponse.json();
-            const { signedRequest, s3Key, jobId } = signData.data;
-
-            // 3. UPLOAD DIRECTLY TO S3 (With Progress Bar)
-            await new Promise((resolve, reject) => {
-                const xhr = new XMLHttpRequest();
-                xhr.open('PUT', signedRequest);
-                xhr.setRequestHeader('Content-Type', file.type);
-
-                // Update the blue bar
-                xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable) {
-                        const percent = Math.round((e.loaded / e.total) * 100);
-                        progressBar.style.width = percent + '%';
-                        statusText.innerText = `Uploading: ${percent}%`;
-                    }
-                };
-
-                xhr.onload = () => {
-                    if (xhr.status === 200) resolve();
-                    else reject(new Error('S3 Upload failed'));
-                };
-
-                xhr.onerror = () => reject(new Error('Network error'));
-                xhr.send(file);
-            });
-
-            // 4. TRIGGER GPU PROCESSING (Sending your custom inputs)
-            statusText.innerText = "Starting transcription engine...";
-            progressBar.style.width = '100%'; // Full bar
-
-            const triggerResponse = await fetch('/api/trigger_processing', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    jobId: jobId,
-                    s3Key: s3Key,
-                    speakerCount: speakers,  // <--- Using your input
-                    language: lang,          // <--- Using your input
-                    task: 'transcribe'
-                })
-            });
-
-            if (!triggerResponse.ok) throw new Error("Failed to start GPU job");
-
-            // 5. CONNECT SOCKET
-            if (typeof socket !== 'undefined') {
-                socket.emit('join', { room: jobId });
-            }
-
-            statusText.innerText = "Transcribing... (Please wait)";
-            statusText.style.color = "#28a745"; // Green
-
-        } catch (error) {
-            console.error(error);
-            statusText.innerText = "Error: " + error.message;
-            statusText.style.color = "red";
-            progressContainer.style.display = 'none'; // Hide bar on error
-            uploadBtn.disabled = false;
-        }
-    }
     function renderParagraphs(segments) {
         let html = "", group = null;
         segments.forEach(seg => {
@@ -234,11 +136,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- 5. EXPORT & ACTIONS ---
+    // Make these global so onclick attributes work if needed
     window.downloadFile = function(type) {
         if (!window.currentSegments.length) return alert("No transcript available to export.");
         const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
-        const showTime = document.getElementById('toggle-time').checked;
-        const showSpeaker = document.getElementById('toggle-speaker').checked;
+        const showTime = document.getElementById('toggle-time')?.checked;
+        const showSpeaker = document.getElementById('toggle-speaker')?.checked;
+
+        // Ensure libraries are loaded
+        if (type === 'docx' && typeof docx === 'undefined') return alert("Error: DOCX library not loaded.");
+        if (typeof saveAs === 'undefined') return alert("Error: FileSaver library not loaded.");
 
         if (type === 'docx') {
             const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
@@ -270,12 +177,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- UPDATED DOCX FUNCTION: STANDARD ENGLISH ALIGNMENT (LTR) ---
     function createDocxParagraphs(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
-
-        // 1. Header (Speaker/Time) - Right Aligned & RTL
         if (showSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
@@ -288,21 +192,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     color: getSpeakerColor(group.speaker).replace('#', ''),
                     size: 20,
                     rightToLeft: true,
-                    language: { value: "he-IL" } // Fixes red "spelling error" lines
                 })],
                 alignment: AlignmentType.RIGHT,
-                bidirectional: true,
-                spacing: { after: 0 }
+                bidirectional: true
             }));
         }
-
-        // 2. Transcript Text - Right Aligned & RTL
         paragraphs.push(new Paragraph({
             children: [new TextRun({
                 text: group.text.trim(),
                 size: 24,
                 rightToLeft: true,
-                language: { value: "he-IL" } // Fixes red "spelling error" lines
             })],
             alignment: AlignmentType.RIGHT,
             bidirectional: true,
@@ -313,7 +212,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.toggleEditMode = () => {
         transcriptWindow.classList.add('is-editing');
-        document.getElementById('edit-actions').style.display = 'flex';
+        const actions = document.getElementById('edit-actions');
+        if (actions) actions.style.display = 'flex';
         transcriptWindow.querySelectorAll('.clickable-sent').forEach(s => s.contentEditable = "true");
     };
 
@@ -323,37 +223,41 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         transcriptWindow.classList.remove('is-editing');
         transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-        document.getElementById('edit-actions').style.display = 'none';
-    };
-
-    window.copyTranscript = () => {
-        const text = window.currentSegments.map(s => s.text).join(" ");
-        navigator.clipboard.writeText(text).then(() => alert("Transcript Copied!"));
+        const actions = document.getElementById('edit-actions');
+        if (actions) actions.style.display = 'none';
     };
 
     window.jumpTo = (time) => {
         if (mainAudio) { mainAudio.currentTime = time; mainAudio.play(); }
     };
 
-    // --- 6. UPLOAD PROCESS ---
+    // --- 6. UPLOAD & UI HELPERS ---
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-        statusTxt.innerText = "Error: " + msg;
-        statusTxt.style.color = "#ef4444";
-        mainBtn.disabled = false;
-        mainBtn.innerText = "Upload and Process";
-        fileInput.value = '';
+        if (statusTxt) {
+            statusTxt.innerText = "Error: " + msg;
+            statusTxt.style.color = "#ef4444";
+        }
+        if (mainBtn) {
+            mainBtn.disabled = false;
+            mainBtn.innerText = "Upload and Process";
+        }
+        if (fileInput) fileInput.value = '';
     }
 
     function resetUI() {
-        pContainer.style.display = 'block';
-        progressBar.style.width = "0%";
-        statusTxt.style.color = "#666";
-        statusTxt.innerText = "Uploading...";
-        mainBtn.disabled = true;
-        mainBtn.innerText = "Processing...";
-        controlsBar.style.display = 'none';
-        transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
+        if (pContainer) pContainer.style.display = 'block';
+        if (progressBar) progressBar.style.width = "0%";
+        if (statusTxt) {
+            statusTxt.style.color = "#666";
+            statusTxt.innerText = "Uploading...";
+        }
+        if (mainBtn) {
+            mainBtn.disabled = true;
+            mainBtn.innerText = "Processing...";
+        }
+        if (controlsBar) controlsBar.style.display = 'none';
+        if (transcriptWindow) transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
     }
 
     function startFakeProgress() {
@@ -362,75 +266,98 @@ document.addEventListener('DOMContentLoaded', () => {
         window.fakeProgressInterval = setInterval(() => {
             if (current < 95) {
                 current += 0.5;
-                progressBar.style.width = current + "%";
-                statusTxt.innerText = `Analyzing content... ${Math.floor(current)}%`;
+                if (progressBar) progressBar.style.width = current + "%";
+                if (statusTxt) statusTxt.innerText = `Analyzing content... ${Math.floor(current)}%`;
             }
         }, 1000);
     }
 
-    // --- 7. MAIN EVENT LISTENER ---
-    fileInput.addEventListener('change', async function() {
-        const file = this.files[0];
-        if (!file) return;
+    // --- 7. MAIN EVENT LISTENER (The one and only) ---
+    if (fileInput) {
+        fileInput.addEventListener('change', async function() {
+            const file = this.files[0];
+            if (!file) return;
 
-        this.value = '';
-        window.originalFileName = file.name;
-        resetUI();
+            // Reset inputs
+            this.value = '';
+            window.originalFileName = file.name;
+            resetUI();
 
-        audioSource.src = URL.createObjectURL(file);
-        mainAudio.load();
-        audioContainer.style.display = 'block';
+            // Setup Audio Player (Only if elements exist)
+            if (audioSource && mainAudio && audioContainer) {
+                audioSource.src = URL.createObjectURL(file);
+                mainAudio.load();
+                audioContainer.style.display = 'block';
+            }
 
-        const jobId = "job_" + Date.now();
-        localStorage.setItem('activeJobId', jobId);
+            const jobId = "job_" + Date.now();
+            localStorage.setItem('activeJobId', jobId);
 
-        console.log("🚀 Switching to NEW Room:", jobId);
-        socket.emit('join', { room: jobId });
+            console.log("🚀 Switching to NEW Room:", jobId);
+            if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
 
-        try {
-            statusTxt.innerText = "Preparing secure upload...";
-            const signRes = await fetch('/api/sign-s3', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: file.name, filetype: file.type })
-            });
-            const signData = await signRes.json();
-            const { url, key } = signData;
+            try {
+                if (statusTxt) statusTxt.innerText = "Preparing secure upload...";
 
-            const xhr = new XMLHttpRequest();
-            xhr.open('PUT', url, true);
-            xhr.setRequestHeader('Content-Type', file.type);
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    const percent = Math.round((e.loaded / e.total) * 100);
-                    progressBar.style.width = percent + "%";
-                    statusTxt.innerText = `Uploading to Storage: ${percent}%`;
-                }
-            };
-            xhr.onload = async () => {
-                if (xhr.status === 200) {
-                    statusTxt.innerText = "Starting AI Processing...";
+                // 1. Sign S3
+                const signRes = await fetch('/api/sign-s3', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: file.name, filetype: file.type })
+                });
 
-                    await fetch('/api/trigger_processing', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            s3Key: key,
-                            jobId: jobId,
-                            speakerCount: document.getElementById('speaker-count').value,
-                            language: document.getElementById('audio-lang').value,
-                            task: 'transcribe'
-                        })
-                    });
-                    startFakeProgress();
-                } else {
-                    handleUploadError("Storage Upload Failed");
-                }
-            };
-            xhr.onerror = () => handleUploadError("Network Error during Upload");
-            xhr.send(file);
-        } catch (err) {
-            handleUploadError("Initialization Failed: " + err.message);
-        }
-    });
+                if (!signRes.ok) throw new Error("Sign Failed");
+                const signData = await signRes.json();
+                const { data } = signData; // Based on your python structure
+                const url = data.signedRequest || signData.url; // Fallback
+                const key = data.s3Key || signData.key;
+
+                // 2. Upload to S3
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', url, true);
+                xhr.setRequestHeader('Content-Type', file.type);
+
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable && progressBar && statusTxt) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        progressBar.style.width = percent + "%";
+                        statusTxt.innerText = `Uploading to Storage: ${percent}%`;
+                    }
+                };
+
+                xhr.onload = async () => {
+                    if (xhr.status === 200) {
+                        if (statusTxt) statusTxt.innerText = "Starting AI Processing...";
+
+                        // Get inputs safely
+                        const speakerEl = document.getElementById('speaker-count');
+                        const langEl = document.getElementById('audio-lang');
+                        const speakers = speakerEl ? speakerEl.value : 2;
+                        const lang = langEl ? langEl.value : 'he';
+
+                        // 3. Trigger GPU
+                        await fetch('/api/trigger_processing', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                s3Key: key,
+                                jobId: jobId,
+                                speakerCount: speakers,
+                                language: lang,
+                                task: 'transcribe'
+                            })
+                        });
+                        startFakeProgress();
+                    } else {
+                        handleUploadError("Storage Upload Failed");
+                    }
+                };
+                xhr.onerror = () => handleUploadError("Network Error during Upload");
+                xhr.send(file);
+            } catch (err) {
+                console.error(err);
+                handleUploadError("Initialization Failed: " + err.message);
+            }
+        });
+    }
 });

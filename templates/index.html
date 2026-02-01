@@ -1,10 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}">
-<script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
-<script src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
 
 <div class="app-mode">
     <div class="main-app-container">
@@ -62,7 +58,7 @@
 
             <p id="upload-status" style="margin-bottom:10px; font-size:0.9rem; color:#666;">Ready</p>
 
-            <input type="file" id="fileInput" hidden onchange="uploadAndProcess()">
+            <input type="file" id="fileInput" hidden>
 
             <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">
                 Upload and Process
