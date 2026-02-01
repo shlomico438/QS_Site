@@ -4,27 +4,13 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, join_room
 import json
 import requests  # Added for RunPod API calls
+import time
 import logging
 import os
 
 # --- CONFIGURATION ---
 S3_BUCKET = os.environ.get("S3_BUCKET")
-AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID")
-AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-
-RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY")
-RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID")
-
-
-# # Initialize S3 Client (Global)
-# s3_client = boto3.client(
-#     "s3",
-#     aws_access_key_id=AWS_ACCESS_KEY,
-#     aws_secret_access_key=AWS_SECRET_KEY,
-#     region_name=AWS_REGION
-# )
-print("--- STEP 10: Init S3 ---")
+# Note: We don't need the keys here, we need them inside the function
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
@@ -35,7 +21,7 @@ RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.environ.get('RUNPOD_ENDPOINT_ID')
 BUCKET_NAME = "quickscribe-v2-12345"
 
-# Strict settings to keep connections alive during long GPU gaps
+# Strict settings to keep connections alive
 socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
@@ -46,62 +32,37 @@ socketio = SocketIO(app,
 )
 print("--- STEP 11: socket io ---")
 
-# Initialize S3 Client
-# s3_client = boto3.client(
-#     's3',
-#     aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
-#     aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-#     region_name='eu-north-1'
-# )
+# --- GLOBAL CACHE ---
+job_results_cache = {}
 
-
-# Configure logging to see errors in Koyeb logs
 logging.basicConfig(level=logging.INFO)
-
-# Add this block anywhere in your app.py, for example after defining 'app'
 
 @app.after_request
 def add_security_headers(resp):
-    # These headers are REQUIRED for SharedArrayBuffer (which ffmpeg.wasm uses)
     resp.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
     resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     return resp
 
-
 @app.errorhandler(413)
 def request_entity_too_large(error):
-    # Specific error for files exceeding MAX_CONTENT_LENGTH
-    return jsonify({
-        "status": "error",
-        "message": "File too large. Maximum limit is 500MB."
-    }), 413
-
+    return jsonify({"status": "error", "message": "File too large. Max 500MB."}), 413
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    # Pass through existing HTTP errors (like 404)
     if hasattr(e, 'code'):
         return jsonify({"status": "error", "message": str(e.description)}), e.code
-
-    # Catch-all for unexpected Python crashes (500)
     logging.error(f"Unexpected Server Error: {str(e)}")
-    return jsonify({
-        "status": "error",
-        "message": "Internal server error. Please try again later."
-    }), 500
-# --- WEB ROUTES ---
+    return jsonify({"status": "error", "message": "Internal server error."}), 500
 
+# --- WEB ROUTES ---
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
 
 @app.route('/about')
-def about():
-    return render_template('about.html')
+def about(): return render_template('about.html')
 
 @app.route('/blog')
-def blog():
-    return render_template('blog.html')
+def blog(): return render_template('blog.html')
 
 @app.route('/contact')
 def contact():
