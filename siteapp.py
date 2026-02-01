@@ -193,7 +193,7 @@ def sign_s3():
         "s3",
         aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-        region_name=os.environ.get("AWS_REGION", "uu-north-1")
+        region_name=os.environ.get("AWS_REGION", "eu-north-1")
     )
     # 1. Create a clean Job ID
     # We use this ID for the room name, the file name, and the database if you add one later.
