@@ -42,7 +42,7 @@ socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
     transports=['websocket'],
-    ping_timeout=120,
+    ping_timeout=600,
     ping_interval=20,
     manage_session=False
 )
