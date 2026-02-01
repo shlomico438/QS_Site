@@ -188,12 +188,28 @@ def sign_s3():
     filename = data.get('filename')
     file_type = data.get('filetype')
 
+    # --- DEBUG: PRINT CREDENTIAL STATUS ---
+    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION")
+
+    print(f"DEBUG CHECK:")
+    print(f"1. Key ID Present? {bool(key_id)} (Length: {len(key_id) if key_id else 0})")
+    print(f"2. Secret Present? {bool(secret)} (Length: {len(secret) if secret else 0})")
+    print(f"3. Region: '{region}'")
+
     # Initialize S3 Client ONLY when the user actually asks for it
+    # s3_client = boto3.client(
+    #     "s3",
+    #     aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+    #     aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+    #     region_name=os.environ.get("AWS_REGION", "eu-north-1")
+    # )
     s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-        region_name=os.environ.get("AWS_REGION", "eu-north-1")
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
+        region_name='eu-north-1'
     )
     # 1. Create a clean Job ID
     # We use this ID for the room name, the file name, and the database if you add one later.
