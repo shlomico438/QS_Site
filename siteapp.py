@@ -171,10 +171,22 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
 
     raise Exception(f"Failed to trigger GPU after {max_retries} attempts. Last error: {last_error}")
 
+
+# --- Add this to app.py ---
+
+@app.route('/api/check_status/<job_id>', methods=['GET'])
+def check_job_status(job_id):
+    # Check the global cache we created earlier
+    if job_id in job_results_cache:
+        print(f"🔎 Client checked status for {job_id} -> Found completed result!")
+        return jsonify(job_results_cache[job_id])
+
+    # If not in cache, it's still processing (or lost, but let's assume processing)
+    return jsonify({"status": "processing"}), 202
+
 # --- GPU FEEDBACK API ---
 # --- 1. Add Global Cache at the top ---
 job_results_cache = {}
-
 
 # --- 2. Update GPU Callback to SAVE the data ---
 @app.route('/api/gpu_callback', methods=['POST'])

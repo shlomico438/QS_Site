@@ -122,6 +122,31 @@ document.addEventListener('DOMContentLoaded', () => {
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
 
+// --- HTTP FALLBACK POLLING ---
+// This ensures you get the result even if the Socket dies completely.
+
+setInterval(() => {
+    const activeJobId = localStorage.getItem('activeJobId');
+
+    // Only poll if we are actually waiting for a job
+    if (activeJobId) {
+        console.log("🚑 Safety Check: Asking server via HTTP...");
+
+        fetch(`/api/check_status/${activeJobId}`)
+            .then(response => response.json())
+            .then(data => {
+                // If the server says "completed", update the UI immediately
+                if (data.status === 'completed' || data.status === 'success') {
+                    console.log("✅ HTTP Poll found the result!", data);
+                    if (window.handleJobUpdate) {
+                        window.handleJobUpdate(data);
+                    }
+                }
+            })
+            .catch(err => console.warn("Poll failed (ignoring):", err));
+    }
+}, 5000); // Check every 5 seconds
+
     function renderParagraphs(segments) {
         let html = "", group = null;
         segments.forEach(seg => {
