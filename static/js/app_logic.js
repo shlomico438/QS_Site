@@ -4,19 +4,24 @@ if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
         // 1. Check if we are actually waiting for a job
         const savedJobId = localStorage.getItem('activeJobId');
-
         if (savedJobId) {
             // CASE A: User is waiting -> Show the status!
             console.log("🔄 Re-joining room:", savedJobId);
             socket.emit('join', { room: savedJobId });
 
+            // +++ NEW: Check immediately upon reconnection (don't wait 5s) +++
+            fetch(`/api/check_status/${savedJobId}`)
+                .then(res => res.json())
+                .then(data => {
+                     if (data.status === 'completed' || data.status === 'success') {
+                         window.handleJobUpdate(data);
+                     }
+                }).catch(() => {});
+            // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
             // Optional: Update UI only if a job exists
             const statusTxt = document.getElementById('upload-status');
             if (statusTxt) statusTxt.innerText = "♻️ Connection Restored. Checking status...";
-        } else {
-            // CASE B: User is just visiting -> STAY SILENT
-            // Do NOT update statusTxt here.
-            console.log("✅ Connected silently (Ready for new job)");
         }
     });
     socket.on('disconnect', (reason) => {
