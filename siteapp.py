@@ -35,6 +35,7 @@ s3_client = boto3.client(
     aws_secret_access_key=AWS_SECRET_KEY,
     region_name=AWS_REGION
 )
+print("--- STEP 10: Init S3 ---")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
@@ -54,14 +55,15 @@ socketio = SocketIO(app,
     ping_interval=20,
     manage_session=False
 )
+print("--- STEP 11: socket io ---")
 
 # Initialize S3 Client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
-    aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-    region_name='eu-north-1'
-)
+# s3_client = boto3.client(
+#     's3',
+#     aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
+#     aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
+#     region_name='eu-north-1'
+# )
 
 
 # Configure logging to see errors in Koyeb logs
