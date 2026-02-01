@@ -305,6 +305,11 @@ def handle_connect():
 def handle_disconnect():
     print("CLIENT DISCONNECTED")
 
+# --- HEALTH CHECK ROUTE ---
+@app.route('/health')
+def health_check():
+    return "OK", 200
+
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))
     socketio.run(app, host='0.0.0.0', port=port)
