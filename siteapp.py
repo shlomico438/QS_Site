@@ -1,14 +1,22 @@
+print("--- STEP 1: Imports started ---")
 from gevent import monkey
+print("--- STEP 2: monkey Imported ---")
 monkey.patch_all()
+print("--- STEP 3: monkey patch ---")
 from flask import Flask, render_template, request, jsonify
+print("--- STEP 4: Flask Imported ---")
 from flask_socketio import SocketIO, join_room
-import os
+print("--- STEP 5: socketio Imported ---")
 import json
 import requests  # Added for RunPod API calls
+print("--- STEP 6: requests Imported ---")
 import time
 import logging
+print("--- STEP 7: logging Imported ---")
 import os
+print("--- STEP 8: os Imported ---")
 import boto3
+print("--- STEP 9: boto Imported ---")
 
 # --- CONFIGURATION ---
 S3_BUCKET = os.environ.get("S3_BUCKET")
