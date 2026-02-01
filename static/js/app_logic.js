@@ -2,14 +2,23 @@
 // We define listeners here (outside DOMContentLoaded) so we never miss a message
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
-        console.log("✅ Connected to Server. ID:", socket.id);
+        // 1. Check if we are actually waiting for a job
         const savedJobId = localStorage.getItem('activeJobId');
+
         if (savedJobId) {
-            console.log("🔄 Re-joining active room:", savedJobId);
+            // CASE A: User is waiting -> Show the status!
+            console.log("🔄 Re-joining room:", savedJobId);
             socket.emit('join', { room: savedJobId });
+
+            // Optional: Update UI only if a job exists
+            const statusTxt = document.getElementById('upload-status');
+            if (statusTxt) statusTxt.innerText = "♻️ Connection Restored. Checking status...";
+        } else {
+            // CASE B: User is just visiting -> STAY SILENT
+            // Do NOT update statusTxt here.
+            console.log("✅ Connected silently (Ready for new job)");
         }
     });
-
     socket.on('disconnect', (reason) => {
         console.warn("⚠️ Socket Lost Connection:", reason);
         // If Koyeb kills the connection, try to kickstart it
