@@ -1,22 +1,11 @@
-print("--- STEP 1: Imports started ---")
 from gevent import monkey
-print("--- STEP 2: monkey Imported ---")
 monkey.patch_all()
-print("--- STEP 3: monkey patch ---")
 from flask import Flask, render_template, request, jsonify
-print("--- STEP 4: Flask Imported ---")
 from flask_socketio import SocketIO, join_room
-print("--- STEP 5: socketio Imported ---")
 import json
 import requests  # Added for RunPod API calls
-print("--- STEP 6: requests Imported ---")
-import time
 import logging
-print("--- STEP 7: logging Imported ---")
 import os
-print("--- STEP 8: os Imported ---")
-import boto3
-print("--- STEP 9: boto Imported ---")
 
 # --- CONFIGURATION ---
 S3_BUCKET = os.environ.get("S3_BUCKET")
@@ -28,13 +17,13 @@ RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY")
 RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID")
 
 
-# Initialize S3 Client (Global)
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-)
+# # Initialize S3 Client (Global)
+# s3_client = boto3.client(
+#     "s3",
+#     aws_access_key_id=AWS_ACCESS_KEY,
+#     aws_secret_access_key=AWS_SECRET_KEY,
+#     region_name=AWS_REGION
+# )
 print("--- STEP 10: Init S3 ---")
 
 app = Flask(__name__)
@@ -232,10 +221,19 @@ def on_join(data):
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
     import time
+    import boto3
+
     data = request.json
     filename = data.get('filename')
     file_type = data.get('filetype')
 
+    # Initialize S3 Client ONLY when the user actually asks for it
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.environ.get("AWS_REGION", "uu-north-1")
+    )
     # 1. Create a clean Job ID
     # We use this ID for the room name, the file name, and the database if you add one later.
     job_id = f"job_{int(time.time())}_{filename}"
