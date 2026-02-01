@@ -42,7 +42,6 @@
 
         <div class="upload-zone">
             <div class="controls-row">
-
                 <div class="control-item">
                     <label class="control-label">Source:</label>
                     <select id="audio-lang" class="styled-select">
@@ -57,13 +56,17 @@
                 </div>
             </div>
 
-            <div class="progress-container" id="p-container" style="display:none;">
-                <div id="progress-bar"></div>
+            <div class="progress-container" id="p-container" style="display:none; margin: 10px 0;">
+                <div id="progress-bar" style="height:10px; width:0%; background:#4f46e5; transition:width 0.2s;"></div>
             </div>
 
             <p id="upload-status" style="margin-bottom:10px; font-size:0.9rem; color:#666;">Ready</p>
-            <input type="file" id="fileInput" hidden>
-            <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">Upload and Process</button>
+
+            <input type="file" id="fileInput" hidden onchange="uploadAndProcess()">
+
+            <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()">
+                Upload and Process
+            </button>
         </div>
     </div>
 </div>

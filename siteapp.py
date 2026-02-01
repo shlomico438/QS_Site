@@ -19,6 +19,7 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY")
 RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID")
 
+
 # Initialize S3 Client (Global)
 s3_client = boto3.client(
     "s3",
@@ -58,6 +59,14 @@ s3_client = boto3.client(
 # Configure logging to see errors in Koyeb logs
 logging.basicConfig(level=logging.INFO)
 
+# Add this block anywhere in your app.py, for example after defining 'app'
+
+@app.after_request
+def add_security_headers(resp):
+    # These headers are REQUIRED for SharedArrayBuffer (which ffmpeg.wasm uses)
+    resp.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
+    resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+    return resp
 
 @socketio.on('join')
 def on_join(data):
@@ -107,46 +116,6 @@ def contact():
 # --- UPLOAD & TRIGGER API ---
 import time  # Ensure time is imported at the top of your file
 
-
-@app.route('/api/upload_full_file', methods=['POST'])
-def upload_full_file():
-    try:
-        file = request.files.get('file')
-        job_id = request.form.get('jobId')
-        # Get speakerCount from form, default to 2
-        num_speakers = request.form.get('speakerCount', 2)
-        language = request.form.get('language', 'he')
-        task = request.form.get('task', 'transcribe')
-
-        if not file or not job_id:
-            return jsonify({"error": "Missing file or jobId"}), 400
-
-        # Save to S3 as full mp3
-        s3_key = f"input/{job_id}.mp3"
-
-        print(f"DEBUG: Starting S3 upload for {job_id}...")
-        s3_client.upload_fileobj(
-            file,
-            BUCKET_NAME,
-            s3_key,
-            ExtraArgs={"ContentType": "audio/mpeg"}
-        )
-        print(f"DEBUG: Full file uploaded to S3: {s3_key}")
-
-        # AUTOMATION: Trigger the GPU worker with retry logic
-        # This will now raise an Exception if it fails 3 times
-        trigger_gpu_job(job_id, s3_key, num_speakers,language, task)
-
-        return jsonify({"message": "Upload complete, GPU triggered", "jobId": job_id}), 200
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"UPLOAD/TRIGGER ERROR: {error_msg}")
-        # Returning 500 here is what triggers the Red Bar in your index.html
-        return jsonify({
-            "status": "error",
-            "message": error_msg
-        }), 500
 
 
 def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
@@ -227,17 +196,22 @@ def gpu_callback():
         return jsonify({"error": str(e)}), 500
 
 
-# --- NEW: Get Permission to Upload Direct to S3 ---
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
+    import time
     data = request.json
     filename = data.get('filename')
     file_type = data.get('filetype')
 
-    # Generate a unique S3 key
-    s3_key = f"uploads/{int(time.time())}_{filename}"
+    # 1. Create a clean Job ID
+    # We use this ID for the room name, the file name, and the database if you add one later.
+    job_id = f"job_{int(time.time())}_{filename}"
 
-    # Generate the "Presigned URL" (The VIP Pass)
+    # 2. Set the S3 Key
+    # Note: We put it in an 'input/' folder to keep things organized
+    s3_key = f"input/{job_id}"
+
+    # 3. Generate the "VIP Pass" (Presigned URL)
     presigned_url = s3_client.generate_presigned_url(
         'put_object',
         Params={
@@ -245,12 +219,17 @@ def sign_s3():
             'Key': s3_key,
             'ContentType': file_type
         },
-        ExpiresIn=3600  # Valid for 1 hour
+        ExpiresIn=3600
     )
 
+    # 4. Return the specific structure the JavaScript expects
     return jsonify({
-        'url': presigned_url,
-        'key': s3_key
+        'data': {
+            'signedRequest': presigned_url,
+            'url': f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
+            'jobId': job_id,
+            's3Key': s3_key
+        }
     })
 
 @app.route('/api/trigger_processing', methods=['POST'])

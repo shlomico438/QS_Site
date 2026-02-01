@@ -112,6 +112,102 @@ document.addEventListener('DOMContentLoaded', () => {
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
 
+    async function uploadAndProcess() {
+        const fileInput = document.getElementById('fileInput');
+        const file = fileInput.files[0];
+
+        if (!file) return;
+
+        // 1. GET ALL UI ELEMENTS
+        const statusText = document.getElementById('upload-status');
+        const progressBar = document.getElementById('progress-bar');
+        const progressContainer = document.getElementById('p-container');
+        const uploadBtn = document.getElementById('main-btn');
+
+        // Get values from your new inputs
+        const lang = document.getElementById('audio-lang').value;
+        const speakers = document.getElementById('speaker-count').value;
+
+        try {
+            // UI RESET
+            uploadBtn.disabled = true;
+            progressContainer.style.display = 'block'; // Show bar
+            progressBar.style.width = '0%';
+            statusText.innerText = "Preparing secure upload...";
+            statusText.style.color = "#4f46e5";
+
+            // 2. GET PERMISSION (Sign S3)
+            const signResponse = await fetch('/api/sign-s3', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filename: file.name,
+                    filetype: file.type
+                })
+            });
+
+            if (!signResponse.ok) throw new Error("Could not sign upload");
+            const signData = await signResponse.json();
+            const { signedRequest, s3Key, jobId } = signData.data;
+
+            // 3. UPLOAD DIRECTLY TO S3 (With Progress Bar)
+            await new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', signedRequest);
+                xhr.setRequestHeader('Content-Type', file.type);
+
+                // Update the blue bar
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        progressBar.style.width = percent + '%';
+                        statusText.innerText = `Uploading: ${percent}%`;
+                    }
+                };
+
+                xhr.onload = () => {
+                    if (xhr.status === 200) resolve();
+                    else reject(new Error('S3 Upload failed'));
+                };
+
+                xhr.onerror = () => reject(new Error('Network error'));
+                xhr.send(file);
+            });
+
+            // 4. TRIGGER GPU PROCESSING (Sending your custom inputs)
+            statusText.innerText = "Starting transcription engine...";
+            progressBar.style.width = '100%'; // Full bar
+
+            const triggerResponse = await fetch('/api/trigger_processing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    jobId: jobId,
+                    s3Key: s3Key,
+                    speakerCount: speakers,  // <--- Using your input
+                    language: lang,          // <--- Using your input
+                    task: 'transcribe'
+                })
+            });
+
+            if (!triggerResponse.ok) throw new Error("Failed to start GPU job");
+
+            // 5. CONNECT SOCKET
+            if (typeof socket !== 'undefined') {
+                socket.emit('join', { room: jobId });
+            }
+
+            statusText.innerText = "Transcribing... (Please wait)";
+            statusText.style.color = "#28a745"; // Green
+
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "Error: " + error.message;
+            statusText.style.color = "red";
+            progressContainer.style.display = 'none'; // Hide bar on error
+            uploadBtn.disabled = false;
+        }
+    }
     function renderParagraphs(segments) {
         let html = "", group = null;
         segments.forEach(seg => {
