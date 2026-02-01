@@ -1,3 +1,32 @@
+// --- 1. GLOBAL SOCKET INITIALIZATION ---
+// We define listeners here (outside DOMContentLoaded) so we never miss a message
+if (typeof socket !== 'undefined') {
+    socket.on('connect', () => {
+        console.log("✅ Connected to Server. ID:", socket.id);
+        const savedJobId = localStorage.getItem('activeJobId');
+        if (savedJobId) {
+            console.log("🔄 Re-joining active room:", savedJobId);
+            socket.emit('join', { room: savedJobId });
+        }
+    });
+
+    socket.on('disconnect', (reason) => {
+        console.warn("⚠️ Socket Lost Connection:", reason);
+        // If Koyeb kills the connection, try to kickstart it
+        if (reason === "io server disconnect") {
+            socket.connect();
+        }
+    });
+
+    socket.on('job_status_update', (data) => {
+        console.log("📩 AI Results Received:", data);
+        // We call the handler that lives inside the DOM block
+        if (window.handleJobUpdate) {
+            window.handleJobUpdate(data);
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI ELEMENTS ---
     const transcriptWindow = document.getElementById('transcript-window');
@@ -17,25 +46,8 @@ document.addEventListener('DOMContentLoaded', () => {
     window.currentSegments = [];
     window.originalFileName = "transcript";
 
-    // --- 1. SOCKET LOGIC ---
-    // Socket is initialized in base.html, we just use it here
-    if (typeof socket !== 'undefined') {
-        socket.on('connect', () => {
-            console.log("Connected with ID:", socket.id);
-            const savedJobId = localStorage.getItem('activeJobId');
-            if (savedJobId) {
-                console.log("🔄 Re-joining room:", savedJobId);
-                socket.emit('join', { room: savedJobId });
-            }
-        });
-
-        socket.on('job_status_update', (data) => {
-            console.log("📩 Message received:", data);
-            handleJobUpdate(data);
-        });
-    }
-
-    function handleJobUpdate(data) {
+    // --- 2. THE HANDLER (Attached to window so global socket can see it) ---
+    window.handleJobUpdate = function(data) {
         const currentStatus = data.status ? data.status.toLowerCase() : "";
 
         if (currentStatus === "completed" || currentStatus === "success") {
@@ -71,12 +83,12 @@ document.addEventListener('DOMContentLoaded', () => {
             handleUploadError(data.error || "Unknown error occurred");
             localStorage.removeItem('activeJobId');
         }
-    }
+    };
 
-    // --- 2. ERROR HANDLING ---
+    // --- 3. ERROR HANDLING ---
     window.onerror = (msg) => console.error("System Error: " + msg);
 
-    // --- 3. TOOLBAR & DROPDOWN ---
+    // --- 4. TOOLBAR & DROPDOWN ---
     const btnDownload = document.getElementById('btn-download');
     if (btnDownload) {
         btnDownload.addEventListener('click', (e) => {
@@ -90,7 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // --- 4. HELPERS ---
+    // --- 5. HELPERS (Time, Color, Formatting) ---
     const formatTime = (s) => {
         const mins = Math.floor(s / 60);
         const secs = Math.floor(s % 60);
@@ -135,15 +147,13 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>`;
     }
 
-    // --- 5. EXPORT & ACTIONS ---
-    // Make these global so onclick attributes work if needed
+    // --- 6. EXPORT ACTIONS ---
     window.downloadFile = function(type) {
         if (!window.currentSegments.length) return alert("No transcript available to export.");
         const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
         const showTime = document.getElementById('toggle-time')?.checked;
         const showSpeaker = document.getElementById('toggle-speaker')?.checked;
 
-        // Ensure libraries are loaded
         if (type === 'docx' && typeof docx === 'undefined') return alert("Error: DOCX library not loaded.");
         if (typeof saveAs === 'undefined') return alert("Error: FileSaver library not loaded.");
 
@@ -227,11 +237,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (actions) actions.style.display = 'none';
     };
 
+    window.copyTranscript = () => {
+        const text = window.currentSegments.map(s => s.text).join(" ");
+        navigator.clipboard.writeText(text).then(() => alert("Transcript Copied!"));
+    };
+
     window.jumpTo = (time) => {
         if (mainAudio) { mainAudio.currentTime = time; mainAudio.play(); }
     };
 
-    // --- 6. UPLOAD & UI HELPERS ---
+    // --- 7. UPLOAD & UI HELPERS ---
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         if (statusTxt) {
@@ -272,18 +287,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1000);
     }
 
-    // --- 7. MAIN EVENT LISTENER (The one and only) ---
+    // --- 8. MAIN UPLOAD LISTENER ---
     if (fileInput) {
         fileInput.addEventListener('change', async function() {
             const file = this.files[0];
             if (!file) return;
 
-            // Reset inputs
             this.value = '';
             window.originalFileName = file.name;
             resetUI();
 
-            // Setup Audio Player (Only if elements exist)
             if (audioSource && mainAudio && audioContainer) {
                 audioSource.src = URL.createObjectURL(file);
                 mainAudio.load();
@@ -293,13 +306,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const jobId = "job_" + Date.now();
             localStorage.setItem('activeJobId', jobId);
 
-            console.log("🚀 Switching to NEW Room:", jobId);
+            // Emit join immediately
             if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
 
             try {
-                if (statusTxt) statusTxt.innerText = "Preparing secure upload...";
+                statusTxt.innerText = "Preparing secure upload...";
 
-                // 1. Sign S3
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -308,17 +320,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (!signRes.ok) throw new Error("Sign Failed");
                 const signData = await signRes.json();
-                const { data } = signData; // Based on your python structure
-                const url = data.signedRequest || signData.url; // Fallback
+                const { data } = signData;
+                const url = data.signedRequest || signData.url;
                 const key = data.s3Key || signData.key;
 
-                // 2. Upload to S3
                 const xhr = new XMLHttpRequest();
                 xhr.open('PUT', url, true);
                 xhr.setRequestHeader('Content-Type', file.type);
 
                 xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable && progressBar && statusTxt) {
+                    if (e.lengthComputable) {
                         const percent = Math.round((e.loaded / e.total) * 100);
                         progressBar.style.width = percent + "%";
                         statusTxt.innerText = `Uploading to Storage: ${percent}%`;
@@ -327,23 +338,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 xhr.onload = async () => {
                     if (xhr.status === 200) {
-                        if (statusTxt) statusTxt.innerText = "Starting AI Processing...";
+                        statusTxt.innerText = "Starting AI Processing...";
 
-                        // Get inputs safely
                         const speakerEl = document.getElementById('speaker-count');
                         const langEl = document.getElementById('audio-lang');
-                        const speakers = speakerEl ? speakerEl.value : 2;
-                        const lang = langEl ? langEl.value : 'he';
 
-                        // 3. Trigger GPU
                         await fetch('/api/trigger_processing', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 s3Key: key,
                                 jobId: jobId,
-                                speakerCount: speakers,
-                                language: lang,
+                                speakerCount: speakerEl ? speakerEl.value : 2,
+                                language: langEl ? langEl.value : 'he',
                                 task: 'transcribe'
                             })
                         });
@@ -355,7 +362,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 xhr.onerror = () => handleUploadError("Network Error during Upload");
                 xhr.send(file);
             } catch (err) {
-                console.error(err);
                 handleUploadError("Initialization Failed: " + err.message);
             }
         });
