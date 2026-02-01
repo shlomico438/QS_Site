@@ -44,13 +44,15 @@
         <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
     </footer>
 
-    const socket = io({
-        transports: ['websocket'], // Forces the browser to start with WebSockets
-        upgrade: false,             // Prevents it from trying polling first
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000
-    });
+    <script>
+        const socket = io({
+            transports: ['websocket'],
+            upgrade: false,
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000
+        });
+    </script>
     <script>
         function toggleMenu() {
             document.getElementById('nav-menu').classList.toggle('active');
