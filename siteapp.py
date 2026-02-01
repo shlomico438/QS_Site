@@ -68,11 +68,6 @@ def add_security_headers(resp):
     resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     return resp
 
-@socketio.on('join')
-def on_join(data):
-    room = data['room']
-    join_room(room)
-    print(f"Client joined room: {room}") # Optional: Helps with debugging
 
 @app.errorhandler(413)
 def request_entity_too_large(error):
@@ -177,24 +172,40 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
     raise Exception(f"Failed to trigger GPU after {max_retries} attempts. Last error: {last_error}")
 
 # --- GPU FEEDBACK API ---
+# --- 1. Add Global Cache at the top ---
+job_results_cache = {}
+
+
+# --- 2. Update GPU Callback to SAVE the data ---
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
-    try:
-        data = request.json  # Expects {"jobId": "...", "segments": [...], "status": "..."}
-        job_id = data.get('jobId')
+    data = request.json
+    job_id = data.get('jobId')
 
-        if not job_id:
-            return jsonify({"error": "Missing jobId"}), 400
+    print(f"DEBUG: Received callback for {job_id}")
 
-        # Broadcast results to the specific job room
-        socketio.emit('job_status_update', data, room=job_id)
+    # SAVE IT! (The Mailbox)
+    job_results_cache[job_id] = data
 
-        print(f"DEBUG: Forwarded GPU results to room: {job_id}")
-        return jsonify({"status": "success"}), 200
-    except Exception as e:
-        print(f"CALLBACK ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+    # Try to send it live (in case you are lucky and connected)
+    socketio.emit('job_status_update', data, room=job_id)
 
+    return jsonify({"status": "ok"}), 200
+
+
+# --- 3. Update Join Logic to CHECK the Cache ---
+@socketio.on('join')
+def on_join(data):
+    room = data.get('room')
+    if room:
+        join_room(room)
+        print(f"🔌 Client joined room: {room}")
+
+        # CHECK MAILBOX: Is the result already waiting?
+        if room in job_results_cache:
+            print(f"📦 Found cached result for {room}, sending now!")
+            # Send it to this specific user who just reconnected
+            socketio.emit('job_status_update', job_results_cache[room], room=request.sid)
 
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
