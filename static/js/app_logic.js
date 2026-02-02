@@ -74,7 +74,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 mainBtn.innerText = "Process Another File";
                 mainBtn.disabled = false;
             }
-            if (controlsBar) controlsBar.style.display = 'flex';
+            const allControlBars = document.querySelectorAll('.controls-bar');
+            allControlBars.forEach(bar => {
+                bar.style.display = 'flex';
+            });
 
             // Parse Data
             let finalSegments = null;
