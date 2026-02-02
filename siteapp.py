@@ -7,8 +7,8 @@ import requests  # Added for RunPod API calls
 import time
 import logging
 import os
-
 # --- CONFIGURATION ---
+SIMULATION_MODE = True  # <--- Set to False when deploying to Koyeb
 S3_BUCKET = os.environ.get("S3_BUCKET")
 # Note: We don't need the keys here, we need them inside the function
 
@@ -36,6 +36,12 @@ print("--- STEP 11: socket io ---")
 job_results_cache = {}
 
 logging.basicConfig(level=logging.INFO)
+
+# --- MOCK ROUTE FOR LOCAL DEBUGGING ---
+@app.route('/api/mock-upload', methods=['PUT'])
+def mock_upload():
+    print("🔮 SIMULATION: Fake file upload received!")
+    return "", 200
 
 @app.after_request
 def add_security_headers(resp):
@@ -136,6 +142,20 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
 
 @app.route('/api/check_status/<job_id>', methods=['GET'])
 def check_job_status(job_id):
+    if SIMULATION_MODE:
+        # Return a fake completed response immediately
+        return jsonify({
+            "status": "completed",
+            "result": {
+                "segments": [
+                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
+                     "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"}
+                ]
+            }
+        })
     # Check the global cache we created earlier
     if job_id in job_results_cache:
         print(f"🔎 Client checked status for {job_id} -> Found completed result!")
@@ -184,65 +204,82 @@ def sign_s3():
     import time
     import boto3
 
-    data = request.json
-    filename = data.get('filename')
-    file_type = data.get('filetype')
+    if SIMULATION_MODE:
+        import time
+        print("🔮 SIMULATION: Skipping AWS S3 Signing")
+        # Return a URL that points to our own server instead of S3
+        return jsonify({
+            'data': {
+                'signedRequest': 'http://localhost:8000/api/mock-upload',
+                'url': 'http://localhost:8000/api/mock-upload',
+                'jobId': f"job_sim_{int(time.time())}",
+                's3Key': 'simulation_key'
+            }
+        })
+    else:
+        data = request.json
+        filename = data.get('filename')
+        file_type = data.get('filetype')
 
-    # --- DEBUG: PRINT CREDENTIAL STATUS ---
-    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("AWS_REGION")
+        # --- DEBUG: PRINT CREDENTIAL STATUS ---
+        key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+        secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        region = os.environ.get("AWS_REGION")
 
-    print(f"DEBUG CHECK:")
-    print(f"1. Key ID Present? {bool(key_id)} (Length: {len(key_id) if key_id else 0})")
-    print(f"2. Secret Present? {bool(secret)} (Length: {len(secret) if secret else 0})")
-    print(f"3. Region: '{region}'")
+        print(f"DEBUG CHECK:")
+        print(f"1. Key ID Present? {bool(key_id)} (Length: {len(key_id) if key_id else 0})")
+        print(f"2. Secret Present? {bool(secret)} (Length: {len(secret) if secret else 0})")
+        print(f"3. Region: '{region}'")
 
-    # Initialize S3 Client ONLY when the user actually asks for it
-    # s3_client = boto3.client(
-    #     "s3",
-    #     aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-    #     aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-    #     region_name=os.environ.get("AWS_REGION", "eu-north-1")
-    # )
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-        region_name = os.environ.get('AWS_REGION')
-    )
-    # 1. Create a clean Job ID
-    # We use this ID for the room name, the file name, and the database if you add one later.
-    job_id = f"job_{int(time.time())}_{filename}"
+        # Initialize S3 Client ONLY when the user actually asks for it
+        # s3_client = boto3.client(
+        #     "s3",
+        #     aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        #     aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        #     region_name=os.environ.get("AWS_REGION", "eu-north-1")
+        # )
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
+            region_name = os.environ.get('AWS_REGION')
+        )
+        # 1. Create a clean Job ID
+        # We use this ID for the room name, the file name, and the database if you add one later.
+        job_id = f"job_{int(time.time())}_{filename}"
 
-    # 2. Set the S3 Key
-    # Note: We put it in an 'input/' folder to keep things organized
-    s3_key = f"input/{job_id}"
+        # 2. Set the S3 Key
+        # Note: We put it in an 'input/' folder to keep things organized
+        s3_key = f"input/{job_id}"
 
-    # 3. Generate the "VIP Pass" (Presigned URL)
-    presigned_url = s3_client.generate_presigned_url(
-        'put_object',
-        Params={
-            'Bucket': S3_BUCKET,
-            'Key': s3_key,
-            'ContentType': file_type
-        },
-        ExpiresIn=3600
-    )
+        # 3. Generate the "VIP Pass" (Presigned URL)
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': S3_BUCKET,
+                'Key': s3_key,
+                'ContentType': file_type
+            },
+            ExpiresIn=3600
+        )
 
-    # 4. Return the specific structure the JavaScript expects
-    return jsonify({
-        'data': {
-            'signedRequest': presigned_url,
-            'url': f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
-            'jobId': job_id,
-            's3Key': s3_key
-        }
+        # 4. Return the specific structure the JavaScript expects
+        return jsonify({
+            'data': {
+                'signedRequest': presigned_url,
+                'url': f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
+                'jobId': job_id,
+                's3Key': s3_key
+            }
     })
 
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
+        if SIMULATION_MODE:
+            print("🔮 SIMULATION: Skipping RunPod Trigger")
+            return jsonify({"status": "started", "runpod_id": "sim_id_123"})
+
         data = request.json
         print(f"📩 Received Trigger Request: {data}")
 
