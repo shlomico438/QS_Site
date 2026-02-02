@@ -33,12 +33,12 @@ main.main-content {
 }
 
 /* --- AUDIO PLAYER --- */
-#audio-player-container {
-    flex: 0 0 auto;
-    margin-bottom: 12px;
-    display: none;
-    width: 100%;
+#audio-player-container,
+.controls-bar,
+.upload-zone {
+    flex-shrink: 0;
 }
+
 
 audio {
     width: 100%;
@@ -47,18 +47,8 @@ audio {
 
 /* --- HORIZONTAL CONTROLS BAR --- */
 .controls-bar {
-    margin-top: auto;
-    padding: 15px;
-    background: white;
-    border-top: 1px solid #eee;
-    z-index: 10;
-
-    /* --- CHANGE THIS ONE LINE --- */
-    display: none;   /* CHANGE FROM 'flex' TO 'none' */
-    /* ---------------------------- */
-
-    gap: 15px;       /* Keep this if you have it */
-    align-items: center;
+    flex-shrink: 0;
+    display: none;
 }
 
 .toggles-group, .toolbar-group, .action-buttons {
@@ -360,9 +350,11 @@ input:checked + .slider:before { transform: translateX(16px); }
     }
 
     /* 3. Adjust Transcript Window Padding */
-    .main-app-container {
-        padding: 10px;
-        width: 95%;
+   .main-app-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     }
 
     /* 4. Allow Toolbar to wrap */
