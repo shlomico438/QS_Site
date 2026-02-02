@@ -45,8 +45,15 @@ audio {
 
 /* --- HORIZONTAL CONTROLS BAR --- */
 .controls-bar {
-    flex-shrink: 0;
-    display: none;
+    flex: 0 0 auto;
+    padding: 8px 15px;
+    background: #f1f3f5;
+    border: 1px solid #e5e7eb;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    display: none; /* Shown by logic after transcription */
+    justify-content: space-between;
+    align-items: center;
 }
 
 .toggles-group, .toolbar-group, .action-buttons {
