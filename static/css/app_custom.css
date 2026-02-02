@@ -279,12 +279,16 @@ input:checked + .slider:before { transform: translateX(16px); }
 /* =========================================
    7. UPLOAD ZONE & PROGRESS BAR
    ========================================= */
-.upload-zone {
-    flex: 0 0 auto; /* Never shrink */
+..upload-zone {
+    flex-shrink: 0 !important; /* Never let it be squished */
+    background: #fff;
+    z-index: 999;              /* Force it on top of everything */
+    position: relative;        /* Ensure z-index works */
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.05);
+
+    /* iPhone Home Bar Safety Spacing */
     padding: 15px;
-    text-align: center;
-    background: #f8f9fa;
-    border-top: 1px solid #eee;
+    padding-bottom: env(safe-area-inset-bottom, 20px) !important;
 }
 
 .progress-container {
@@ -457,11 +461,20 @@ input:checked + .slider:before { transform: translateX(16px); }
     .task-group { width: 100%; justify-content: space-around; box-sizing: border-box; }
 
     /* Allow Toolbar Wrap */
+   /* New (Correct) */
     .controls-bar {
-        flex-wrap: wrap;
-        gap: 10px;
-        justify-content: center;
-        padding-bottom: 20px; /* Safe area */
+        margin-top: auto;
+        padding: 15px;
+        background: white;
+        border-top: 1px solid #eee;
+        z-index: 10;
+
+        /* FIX 1: Hide by default. JS will switch this to 'flex' later */
+        display: none;
+
+        gap: 15px;
+        align-items: center;
+        flex-shrink: 0;
     }
 
     .toggles-group { width: 100%; justify-content: center; margin-bottom: 5px; }
