@@ -411,25 +411,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     }
 
     /* Ensure the transcript content doesn't force width issues */
- /* Find this inside the @media (max-width: 768px) block */
     #transcript-window {
-        /* --- DELETE OR COMMENT OUT THIS LINE --- */
-        /* height: 60vh; */
-
-        /* --- ADD THESE LINES INSTEAD --- */
-        flex: 1;                /* Grow/Shrink to fit exactly */
         height: auto !important;
-        max-height: none !important;
-        overflow-y: auto !important;
-        /* ------------------------------- */
-
-        /* Keep your existing visual styles below */
-        background: #f9fafb;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 0px;
-        display: block;
+        max-height: none !important; /* Let the wrapper handle the height */
     }
 
     /* 5. FIXED BOTTOM CONTROLS (Upload Zone) */
