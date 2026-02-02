@@ -1,13 +1,10 @@
-html, body {
-    height: 100%;
-    margin: 0;
-}
 /* --- APP LAYOUT --- */
-main.main-content,
-.app-mode,
-.main-app-container,
-.transcription-wrapper {
-    min-height: 0;
+main.main-content {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    overflow: hidden !important;
+    padding: 0 !important;
 }
 
 .app-mode {
@@ -31,12 +28,12 @@ main.main-content,
 }
 
 /* --- AUDIO PLAYER --- */
-#audio-player-container,
-.controls-bar,
-.upload-zone {
-    flex-shrink: 0;
+#audio-player-container {
+    flex: 0 0 auto;
+    margin-bottom: 12px;
+    display: none;
+    width: 100%;
 }
-
 
 audio {
     width: 100%;
@@ -196,9 +193,8 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 /* --- DROPDOWN --- */
 .dropdown-menu {
-    position: absolute; /* or fixed if you want it relative to viewport */
-    top: 100%;  /* show below the button */
-    right: 0;
+    position: absolute;
+    top: 110%; right: 0;
     background: white;
     border: 1px solid #ddd;
     border-radius: 8px;
@@ -206,7 +202,7 @@ input:checked + .slider:before { transform: translateX(16px); }
     display: none;
     flex-direction: column;
     min-width: 140px;
-    z-index: 9999; /* bring above everything */
+    z-index: 100;
 }
 
 .dropdown-menu.show { display: flex; }
@@ -357,10 +353,8 @@ input:checked + .slider:before { transform: translateX(16px); }
 
     /* 3. Adjust Transcript Window Padding */
    .main-app-container {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+        padding: 10px;
+        width: 95%;
     }
 
     /* 4. Allow Toolbar to wrap */
@@ -414,25 +408,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     }
 
     /* Ensure the transcript content doesn't force width issues */
- /* Find this inside the @media (max-width: 768px) block */
     #transcript-window {
-        /* --- DELETE OR COMMENT OUT THIS LINE --- */
-        /* height: 60vh; */
-
-        /* --- ADD THESE LINES INSTEAD --- */
-        flex: 1;                /* Grow/Shrink to fit exactly */
         height: auto !important;
-        max-height: none !important;
-        overflow-y: auto !important;
-        /* ------------------------------- */
-
-        /* Keep your existing visual styles below */
-        background: #f9fafb;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 0px;
-        display: block;
+        max-height: none !important; /* Let the wrapper handle the height */
     }
 
     /* 5. FIXED BOTTOM CONTROLS (Upload Zone) */
@@ -454,7 +432,31 @@ input:checked + .slider:before { transform: translateX(16px); }
         padding: 0.5rem 1rem !important;
         min-height: auto !important;
     }
+    /* --- BASE NAVBAR STYLES (Desktop) --- */
+.navbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    background: #fff;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        position: relative;
+    z-index: 1000;
+}
 
+.brand-logo {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #333;
+    text-decoration: none;
+    }
+
+.nav-links a {
+    margin-left: 20px;
+    text-decoration: none;
+    color: #555;
+    font-weight: 500;
+}
 
 /* Hide Hamburger on Desktop */
 .hamburger-menu {
