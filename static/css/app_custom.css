@@ -190,7 +190,7 @@ input:checked + .slider:before { transform: translateX(16px); }
 /* --- DROPDOWN --- */
 .dropdown-menu {
     position: absolute;
-    top: 110%; right: 0;
+    bottom: 110%; right: 0;
     background: white;
     border: 1px solid #ddd;
     border-radius: 8px;
