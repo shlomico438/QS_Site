@@ -244,13 +244,17 @@ def sign_s3():
             aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
             region_name = os.environ.get('AWS_REGION')
         )
-        # 1. Create a clean Job ID
-        # We use this ID for the room name, the file name, and the database if you add one later.
-        job_id = f"job_{int(time.time())}_{filename}"
+        # 1. Split filename to get extension
+        base_name, extension = os.path.splitext(filename)
 
-        # 2. Set the S3 Key
-        # Note: We put it in an 'input/' folder to keep things organized
-        s3_key = f"input/{job_id}"
+        # 2. Create a clean Job ID (WITHOUT extension)
+        # This prevents the output JSON from being named ".mp4"
+        job_id = f"job_{int(time.time())}_{base_name}"
+
+        # 3. Set the S3 Key (WITH extension)
+        # The file on S3 must have the extension to be valid
+        s3_key = f"input/{job_id}{extension}"
+
 
         # 3. Generate the "VIP Pass" (Presigned URL)
         presigned_url = s3_client.generate_presigned_url(
