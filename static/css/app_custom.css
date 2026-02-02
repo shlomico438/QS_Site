@@ -1,13 +1,10 @@
-html, body {
-    height: 100%;
-    margin: 0;
-}
 /* --- APP LAYOUT --- */
-main.main-content,
-.app-mode,
-.main-app-container,
-.transcription-wrapper {
-    min-height: 0;
+main.main-content {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    overflow: hidden !important;
+    padding: 0 !important;
 }
 
 .app-mode {
@@ -31,10 +28,11 @@ main.main-content,
 }
 
 /* --- AUDIO PLAYER --- */
-#audio-player-container,
-.controls-bar,
-.upload-zone {
-    flex-shrink: 0;
+#audio-player-container {
+    flex: 0 0 auto;
+    margin-bottom: 12px;
+    display: none;
+    width: 100%;
 }
 
 
