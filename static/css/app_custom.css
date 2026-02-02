@@ -1,10 +1,14 @@
-/* --- APP LAYOUT --- */
-main.main-content {
-    display: flex !important;
-    flex-direction: column !important;
-    height: 100% !important;
+html, body {
     overflow: hidden !important;
-    padding: 0 !important;
+    position: fixed;
+}
+
+/* --- APP LAYOUT --- */
+main.main-content,
+.app-mode,
+.main-app-container,
+.transcription-wrapper {
+    min-height: 0;
 }
 
 .app-mode {
@@ -28,12 +32,12 @@ main.main-content {
 }
 
 /* --- AUDIO PLAYER --- */
-#audio-player-container {
-    flex: 0 0 auto;
-    margin-bottom: 12px;
-    display: none;
-    width: 100%;
+#audio-player-container,
+.controls-bar,
+.upload-zone {
+    flex-shrink: 0;
 }
+
 
 audio {
     width: 100%;
@@ -57,6 +61,7 @@ audio {
     display: flex;
     gap: 15px;
     align-items: center;
+    position: relative; /* Anchors the menu to the button */
 }
 
 /* --- TOGGLE SWITCH STYLING --- */
@@ -191,10 +196,13 @@ input:checked + .slider:before { transform: translateX(16px); }
     display: none !important;
 }
 
+
 /* --- DROPDOWN --- */
 .dropdown-menu {
     position: absolute;
-    top: 110%; right: 0;
+    top: 100%;
+    right: 0;
+
     background: white;
     border: 1px solid #ddd;
     border-radius: 8px;
@@ -202,9 +210,8 @@ input:checked + .slider:before { transform: translateX(16px); }
     display: none;
     flex-direction: column;
     min-width: 140px;
-    z-index: 100;
+    z-index: 9999; /* Keep this high! */
 }
-
 .dropdown-menu.show { display: flex; }
 
 .dropdown-item {
@@ -352,9 +359,11 @@ input:checked + .slider:before { transform: translateX(16px); }
     }
 
     /* 3. Adjust Transcript Window Padding */
-    .main-app-container {
-        padding: 10px;
-        width: 95%;
+   .main-app-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     }
 
     /* 4. Allow Toolbar to wrap */
@@ -408,9 +417,25 @@ input:checked + .slider:before { transform: translateX(16px); }
     }
 
     /* Ensure the transcript content doesn't force width issues */
+ /* Find this inside the @media (max-width: 768px) block */
     #transcript-window {
+        /* --- DELETE OR COMMENT OUT THIS LINE --- */
+        /* height: 60vh; */
+
+        /* --- ADD THESE LINES INSTEAD --- */
+        flex: 1;                /* Grow/Shrink to fit exactly */
         height: auto !important;
-        max-height: none !important; /* Let the wrapper handle the height */
+        max-height: none !important;
+        overflow-y: auto !important;
+        /* ------------------------------- */
+
+        /* Keep your existing visual styles below */
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 0px;
+        display: block;
     }
 
     /* 5. FIXED BOTTOM CONTROLS (Upload Zone) */
@@ -429,34 +454,13 @@ input:checked + .slider:before { transform: translateX(16px); }
 
     /* Optional: Compact the header to save more space */
     .navbar {
+        display: flex;
+        justify-content: space-between;
         padding: 0.5rem 1rem !important;
         min-height: auto !important;
+        position: relative;
+        padding: 1rem;
     }
-    /* --- BASE NAVBAR STYLES (Desktop) --- */
-.navbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1rem 2rem;
-    background: #fff;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-    position: relative;
-    z-index: 1000;
-}
-
-.brand-logo {
-    font-size: 1.5rem;
-    font-weight: bold;
-    color: #333;
-    text-decoration: none;
-}
-
-.nav-links a {
-    margin-left: 20px;
-    text-decoration: none;
-    color: #555;
-    font-weight: 500;
-}
 
 /* Hide Hamburger on Desktop */
 .hamburger-menu {
@@ -474,9 +478,8 @@ input:checked + .slider:before { transform: translateX(16px); }
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
-        width: auto;
+        z-index: 2;
     }
-
     /* 2. Show the Hamburger Icon (3 Lines) */
     .hamburger-menu {
         display: flex;
