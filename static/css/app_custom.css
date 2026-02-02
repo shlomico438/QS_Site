@@ -1,79 +1,43 @@
 /* =========================================
-   1. GLOBAL LAYOUT & CONTAINER FIXES
+   1. GLOBAL LAYOUT (The "Skeleton" Fix)
    ========================================= */
-
-/* Critical: Stop the whole page from scrolling */
 html, body {
-    height: 100%;
+    height: 100%;         /* Lock the height */
     margin: 0;
-    overflow: hidden;
+    overflow: hidden;     /* Stop the whole page from scrolling */
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
-/* The Skeleton: Forces the app to fill the screen exactly */
-.container, .app-mode {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;        /* Occupy full viewport height */
-    max-height: 100vh;    /* Never exceed screen size */
-    overflow: hidden;     /* No internal spillover */
-    background-color: #f8f9fa;
-}
-
+/* --- APP LAYOUT --- */
 main.main-content {
     display: flex !important;
     flex-direction: column !important;
-    flex: 1;
+    height: 100% !important;
     overflow: hidden !important;
     padding: 0 !important;
 }
 
-.main-app-container {
-    flex: 1;                /* Take all vertical space */
-    display: flex;
+.app-mode {
+    display: flex;        /* Make it a Flexbox */
     flex-direction: column;
+    height: 100vh;        /* Fill exactly 100% of the viewport */
+    background-color: #f8f9fa;
+    overflow: hidden;     /* No internal scrolling */
+}
+
+.main-app-container {
+    flex: 1;              /* Grow to fill all available space */
+    display: flex;
+    flex-direction: column; /* Stack children vertically */
     padding: 10px 15px;
     max-width: 1000px;
     margin: 0 auto;
     width: 100%;
     box-sizing: border-box;
-    overflow: hidden;       /* Essential for internal scrolling */
+    overflow: hidden;     /* Critical: stops content from pushing page out */
 }
 
-/* =========================================
-   2. NAVBAR STYLES
-   ========================================= */
-.navbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1rem 2rem;
-    background: #fff;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-    position: relative;
-    z-index: 1000;
-    flex-shrink: 0; /* Prevent navbar from squishing */
-}
-
-.brand-logo {
-    font-size: 1.5rem;
-    font-weight: bold;
-    color: #333;
-    text-decoration: none;
-}
-
-.nav-links a {
-    margin-left: 20px;
-    text-decoration: none;
-    color: #555;
-    font-weight: 500;
-}
-
-.hamburger-menu { display: none; }
-
-/* =========================================
-   3. AUDIO PLAYER
-   ========================================= */
+/* --- AUDIO PLAYER --- */
 #audio-player-container {
     flex: 0 0 auto;
     margin-bottom: 12px;
@@ -86,86 +50,18 @@ audio {
     height: 40px;
 }
 
-/* =========================================
-   4. TRANSCRIPT WINDOW (The Scrollable Area)
-   ========================================= */
-.transcription-wrapper {
-    flex: 1;                /* Grow to fill empty space */
-    display: flex;
-    flex-direction: column;
-    min-height: 0;          /* CRITICAL: Allows Flex child to scroll */
-    position: relative;
-    margin-bottom: 10px;
-}
-
-#transcript-window {
-    flex: 1;                /* Fill the wrapper */
-    overflow-y: auto;       /* Scroll INSIDE this box */
-    padding: 20px;
-    background: #fff;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    direction: rtl;
-    text-align: right;
-    font-size: 1.1rem;
-    line-height: 1.6;
-}
-
-/* Paragraph Rows */
-.paragraph-row {
-    display: flex;
-    gap: 15px;
-    margin-bottom: 20px;
-    direction: rtl;
-}
-
-.ts-col {
-    min-width: 55px;
-    color: #9ca3af;
-    font-family: monospace;
-    font-size: 0.85rem;
-    text-align: left;
-    flex-shrink: 0;
-}
-
-.speaker-label {
-    display: block;
-    color: #4f46e5;
-    font-weight: 700;
-    font-size: 0.95rem;
-    margin-bottom: 4px;
-}
-
-.clickable-sent {
-    cursor: pointer;
-    transition: background 0.15s;
-    padding: 2px 0;
-}
-
-.clickable-sent:hover { background-color: #fef9c3; }
-
-.is-editing .clickable-sent {
-    cursor: text;
-    border-bottom: 1px dashed #ccc;
-}
-
-.hide-time .ts-col, .hide-speaker .speaker-label {
-    display: none !important;
-}
-
-/* =========================================
-   5. CONTROLS BAR (Bottom Buttons)
-   ========================================= */
+/* --- HORIZONTAL CONTROLS BAR (Ghost Button Fix) --- */
 .controls-bar {
     margin-top: auto;
     padding: 15px;
     background: white;
     border-top: 1px solid #eee;
     z-index: 10;
-    display: flex;
-    gap: 15px;
+
+    display: none;       /* FIX: Hide by default until JS shows it */
+
+    gap: 15px;           /* Added gap for spacing */
     align-items: center;
-    flex-shrink: 0; /* Never shrink */
 }
 
 .toggles-group, .toolbar-group, .action-buttons {
@@ -174,7 +70,7 @@ audio {
     align-items: center;
 }
 
-/* Toggle Switch Styling */
+/* --- TOGGLE SWITCH STYLING --- */
 .controls-bar label {
     display: flex;
     align-items: center;
@@ -216,7 +112,7 @@ audio {
 input:checked + .slider { background-color: #5d5dff; }
 input:checked + .slider:before { transform: translateX(16px); }
 
-/* Toolbar Buttons */
+/* --- TOOLBAR BUTTONS --- */
 .btn-icon {
     background: #fff;
     border: 1px solid #ccc;
@@ -244,12 +140,72 @@ input:checked + .slider:before { transform: translateX(16px); }
     stroke-width: 2;
 }
 
-/* =========================================
-   6. DROPDOWN MENU
-   ========================================= */
+/* --- TRANSCRIPTION WINDOW & SPEAKER COLOR --- */
+.transcription-wrapper {
+    flex: 1;              /* Grow to fill empty space */
+    display: flex;
+    flex-direction: column;
+    min-height: 0;        /* Critical for scrolling */
+    position: relative;
+}
+
+#transcript-window {
+    flex: 1;              /* Fill the wrapper */
+    overflow-y: auto;     /* Scroll INSIDE this box */
+    padding: 20px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0 0 8px 8px;
+    direction: rtl;
+    text-align: right;
+    font-size: 1.1rem;
+    line-height: 1.6;
+}
+
+.paragraph-row {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 20px;
+    direction: rtl;
+}
+
+.ts-col {
+    min-width: 55px;
+    color: #9ca3af;
+    font-family: monospace;
+    font-size: 0.85rem;
+    text-align: left;
+}
+
+.speaker-label {
+    display: block;
+    color: #4f46e5;
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 4px;
+}
+
+.clickable-sent {
+    cursor: pointer;
+    transition: background 0.15s;
+    padding: 2px 0;
+}
+
+.clickable-sent:hover { background-color: #fef9c3; }
+
+.is-editing .clickable-sent {
+    cursor: text;
+    border-bottom: 1px dashed #ccc;
+}
+
+.hide-time .ts-col, .hide-speaker .speaker-label {
+    display: none !important;
+}
+
+/* --- DROPDOWN --- */
 .dropdown-menu {
     position: absolute;
-    bottom: 110%; right: 0; /* Pop upwards */
+    bottom: 110%; right: 0; /* Changed to bottom to pop UP */
     background: white;
     border: 1px solid #ddd;
     border-radius: 8px;
@@ -276,27 +232,13 @@ input:checked + .slider:before { transform: translateX(16px); }
     color: #5d5dff;
 }
 
-/* =========================================
-   7. UPLOAD ZONE & PROGRESS BAR
-   ========================================= */
-..upload-zone {
-    flex-shrink: 0 !important; /* Never let it be squished */
-    background: #fff;
-    z-index: 999;              /* Force it on top of everything */
-    position: relative;        /* Ensure z-index works */
-    box-shadow: 0 -4px 12px rgba(0,0,0,0.05);
-
-    /* iPhone Home Bar Safety Spacing */
-    padding: 15px;
-    padding-bottom: env(safe-area-inset-bottom, 20px) !important;
-}
-
+/* --- PROGRESS BAR --- */
 .progress-container {
     height: 10px;
     background: #e5e7eb;
     border-radius: 10px;
     overflow: hidden;
-    margin-bottom: 15px;
+    margin-bottom: 10px; /* Added spacing */
 }
 
 #progress-bar {
@@ -304,6 +246,16 @@ input:checked + .slider:before { transform: translateX(16px); }
     width: 0%;
     background: #5d5dff;
     transition: width 0.3s ease;
+}
+
+/* --- UPLOAD ZONE --- */
+.upload-zone {
+    flex: 0 0 auto;       /* Never shrink */
+    padding: 15px;
+    text-align: center;
+    background: #f8f9fa;
+    border-top: 1px solid #eee;
+    z-index: 100;         /* Keep on top */
 }
 
 .btn-primary {
@@ -327,9 +279,7 @@ input:checked + .slider:before { transform: translateX(16px); }
     box-shadow: none;
 }
 
-/* =========================================
-   8. INPUT CONTROLS (Speakers/Task)
-   ========================================= */
+/* --- CONTROLS ROW (Task/Speakers) --- */
 .controls-row {
     display: flex;
     align-items: center;
@@ -363,6 +313,8 @@ input:checked + .slider:before { transform: translateX(16px); }
 .separator { width: 1px; height: 20px; background: #ddd; }
 
 .control-item { display: flex; align-items: center; gap: 8px; }
+.control-label { font-weight: bold; color: #555; margin: 0; }
+
 .styled-select, .styled-input {
     padding: 6px 10px;
     border-radius: 8px;
@@ -372,22 +324,59 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 .styled-input { width: 50px; text-align: center; }
 
+
 /* =========================================
-   9. MOBILE RESPONSIVENESS (The Critical Fixes)
+   MOBILE RESPONSIVENESS (The Button Fix)
    ========================================= */
 @media screen and (max-width: 768px) {
 
-    .navbar { padding: 1rem; }
-
-    /* Centered Logo */
-    .brand-logo {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        width: auto;
+    /* 1. Force the Main Container to be a vertical stack */
+    .main-app-container {
+        flex: 1;                 /* Grow to fill screen */
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important;
+        padding: 10px !important;
+        min-height: 0;           /* Allow children to shrink */
     }
 
-    /* Hamburger Menu */
+    /* 2. Make the Transcription Area shrink correctly */
+    .transcription-wrapper {
+        flex: 1 1 auto !important; /* Grow and Shrink */
+        min-height: 0 !important;
+        margin-bottom: 10px !important;
+    }
+
+    #transcript-window {
+        height: auto !important;   /* Remove the fixed 60vh */
+        max-height: none !important;
+        flex: 1;                   /* Fill whatever space is left */
+        overflow-y: auto !important;
+    }
+
+    /* 3. Force the Upload Button to Stick to Bottom */
+    .upload-zone {
+        flex-shrink: 0 !important; /* Never disappear */
+        position: relative;
+        z-index: 999;
+        background: #fff;
+        padding-bottom: 20px;      /* Safety for iPhone Home Bar */
+        box-shadow: 0 -4px 10px rgba(0,0,0,0.05);
+    }
+
+    /* 4. Layout Adjustments */
+    .controls-row { flex-direction: column; gap: 10px; }
+    .task-group { width: 100%; justify-content: space-around; box-sizing: border-box; }
+    .controls-bar { flex-wrap: wrap; justify-content: center; }
+
+    /* 5. Hide Extras */
+    footer, .footer, .copyright-text { display: none !important; }
+
+    /* 6. Navbar Tweaks */
+    .navbar { padding: 0.5rem 1rem !important; }
+    .brand-logo { position: absolute; left: 50%; transform: translateX(-50%); width: auto; }
+
+    /* Hamburger Menu Logic */
     .hamburger-menu {
         display: flex;
         flex-direction: column;
@@ -400,7 +389,6 @@ input:checked + .slider:before { transform: translateX(16px); }
         top: 50%;
         transform: translateY(-50%);
     }
-
     .hamburger-menu span {
         display: block;
         height: 3px;
@@ -409,76 +397,22 @@ input:checked + .slider:before { transform: translateX(16px); }
         border-radius: 3px;
         transition: 0.3s;
     }
+    .hamburger-menu.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 6px); }
+    .hamburger-menu.open span:nth-child(2) { opacity: 0; }
+    .hamburger-menu.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -6px); }
 
-    /* Mobile Dropdown Nav */
     .nav-links {
         display: none;
         position: absolute;
-        top: 100%;
-        left: 0;
-        width: 100%;
+        top: 100%; left: 0; width: 100%;
         background: #fff;
         flex-direction: column;
         text-align: center;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         padding: 10px 0;
     }
-
     .nav-links.active { display: flex; }
-
-    /* Main Container Stack */
-    .main-app-container {
-        flex: 1;                 /* Grow to fill space */
-        display: flex !important;
-        flex-direction: column !important;
-        overflow: hidden !important;
-        padding: 10px !important;
-        min-height: 0;           /* Allows children to shrink */
+    .nav-links a {
+        margin: 0; padding: 15px; display: block; border-bottom: 1px solid #f0f0f0;
     }
-
-    /* Transcription Area Resizing */
-    .transcription-wrapper {
-        flex: 1 1 auto !important;   /* Grow/Shrink automatically */
-        display: flex !important;
-        flex-direction: column !important;
-        min-height: 0 !important;
-        margin-bottom: 10px;
-    }
-
-    #transcript-window {
-        flex: 1;
-        height: auto !important;
-        max-height: none !important;
-        overflow-y: auto !important;
-    }
-
-    /* Stack Controls Vertically */
-    .controls-row {
-        flex-direction: column;
-        gap: 10px;
-    }
-
-    .task-group { width: 100%; justify-content: space-around; box-sizing: border-box; }
-
-    /* Allow Toolbar Wrap */
-   /* New (Correct) */
-    .controls-bar {
-        margin-top: auto;
-        padding: 15px;
-        background: white;
-        border-top: 1px solid #eee;
-        z-index: 10;
-
-        /* FIX 1: Hide by default. JS will switch this to 'flex' later */
-        display: none;
-
-        gap: 15px;
-        align-items: center;
-        flex-shrink: 0;
-    }
-
-    .toggles-group { width: 100%; justify-content: center; margin-bottom: 5px; }
-
-    /* Hide Footer */
-    footer, .footer, .copyright-text { display: none !important; }
 }
