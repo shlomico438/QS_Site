@@ -313,7 +313,11 @@ setInterval(() => {
             mainBtn.disabled = true;
             mainBtn.innerText = "Processing...";
         }
-        if (controlsBar) controlsBar.style.display = 'none';
+        // --- FIX: Hide ALL control bars, not just the first one ---
+        const allControlBars = document.querySelectorAll('.controls-bar');
+        allControlBars.forEach(bar => {
+            bar.style.display = 'none';
+        });
         if (transcriptWindow) transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
     }
 
