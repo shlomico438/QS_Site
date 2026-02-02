@@ -1,15 +1,13 @@
 html, body {
     height: 100%;
     margin: 0;
-    overflow: hidden; /* Stops the whole page from scrolling */
 }
 /* --- APP LAYOUT --- */
-main.main-content {
-    display: flex !important;
-    flex-direction: column !important;
-    height: 100% !important;
-    overflow: hidden !important;
-    padding: 0 !important;
+main.main-content,
+.app-mode,
+.main-app-container,
+.transcription-wrapper {
+    min-height: 0;
 }
 
 .app-mode {
