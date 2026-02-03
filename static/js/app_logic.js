@@ -1,4 +1,4 @@
-// --- 1. GLOBAL SOCKET INITIALIZATION ---
+   // --- 1. GLOBAL SOCKET INITIALIZATION ---
 // We define listeners here (outside DOMContentLoaded) so we never miss a message
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
@@ -9,7 +9,7 @@ if (typeof socket !== 'undefined') {
             console.log("🔄 Re-joining room:", savedJobId);
             socket.emit('join', { room: savedJobId });
 
-            // +++ NEW: Check immediately upon reconnection (don't wait 5s) +++
+            // Check immediately upon reconnection
             fetch(`/api/check_status/${savedJobId}`)
                 .then(res => res.json())
                 .then(data => {
@@ -17,13 +17,13 @@ if (typeof socket !== 'undefined') {
                          window.handleJobUpdate(data);
                      }
                 }).catch(() => {});
-            // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
             // Optional: Update UI only if a job exists
             const statusTxt = document.getElementById('upload-status');
             if (statusTxt) statusTxt.innerText = "♻️ Connection Restored. Checking status...";
         }
     });
+
     socket.on('disconnect', (reason) => {
         console.warn("⚠️ Socket Lost Connection:", reason);
         // If Koyeb kills the connection, try to kickstart it
@@ -34,7 +34,6 @@ if (typeof socket !== 'undefined') {
 
     socket.on('job_status_update', (data) => {
         console.log("📩 AI Results Received:", data);
-        // We call the handler that lives inside the DOM block
         if (window.handleJobUpdate) {
             window.handleJobUpdate(data);
         }
@@ -79,12 +78,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 bar.style.display = 'flex';
             });
 
+            // Parse Data
+            let finalSegments = null;
+            if (data.result) {
+                let resultObj = data.result;
+                if (typeof resultObj === "string") {
+                    try { resultObj = JSON.parse(resultObj); } catch(e) {}
+                }
+                if (resultObj.segments) finalSegments = resultObj.segments;
+            }
+            if (!finalSegments && data.segments) finalSegments = data.segments;
+
+            if (finalSegments && transcriptWindow) {
+                window.currentSegments = finalSegments;
+                transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
+            } else if (data.transcription && transcriptWindow) {
+                 transcriptWindow.innerText = data.transcription;
+            }
+
             // === NEW: DISABLE SPEAKER TOGGLES IF FAST MODE ===
-            // Check if the first segment is the "Dummy" speaker
             let isFastMode = false;
             let firstSeg = null;
 
-            // Safe extraction of the first segment
             if (data.result && data.result.segments) firstSeg = data.result.segments[0];
             else if (data.segments) firstSeg = data.segments[0];
 
@@ -92,52 +107,49 @@ document.addEventListener('DOMContentLoaded', () => {
                 isFastMode = true;
             }
 
-            // Find the switches in the toolbar (toggle-speaker)
-            const speakerSwitches = document.querySelectorAll('#toggle-speaker, input[id$="speaker"]'); // Broad selector to catch it
+            const speakerSwitches = document.querySelectorAll('#toggle-speaker, input[id$="speaker"]');
 
-            speakerSwitches.forEach(sw => {
+                speakerSwitches.forEach(sw => {
                 if (isFastMode) {
-                    sw.checked = false;          // Turn it off
-                    sw.disabled = true;          // Disable clicking
+                    sw.checked = false;
+                    sw.disabled = true;
                     sw.parentElement.title = "Speaker detection was disabled for this file.";
                     sw.parentElement.style.opacity = "0.5";
                 } else {
                     sw.disabled = false;
                     sw.parentElement.style.opacity = "1";
+                }
+            });
+
+        } else if (currentStatus === "failed" || currentStatus === "error") {
+            handleUploadError(data.error || "Unknown error occurred");
+            localStorage.removeItem('activeJobId');
         }
     };
 
     // --- 3. ERROR HANDLING ---
     window.onerror = (msg) => console.error("System Error: " + msg);
 
-
-// --- 4. TOOLBAR & DROPDOWN (Final Fix) ---
+    // --- 4. TOOLBAR & DROPDOWN ---
     const downloadBtns = document.querySelectorAll('#btn-download');
-    // FIX: Select ALL menus (Mobile + PC) to ensure we get the right one
     const allDownloadMenus = document.querySelectorAll('#download-menu');
 
     if (downloadBtns.length > 0) {
         downloadBtns.forEach(btn => {
-            // Remove old listeners to prevent "Double Click" stack
             const newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
 
             newBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                console.log("🚑 Button Clicked! (Opening Menu)");
-
                 // Toggle ALL menus found
                 allDownloadMenus.forEach(menu => {
-                    // Simple Toggle
                     menu.classList.toggle('show');
                 });
             });
         });
     }
 
-    // Close menu when clicking anywhere else
     document.addEventListener('click', (e) => {
-        // Only close if we didn't click inside the menu itself
         allDownloadMenus.forEach(menu => {
             if (!menu.contains(e.target) && menu.classList.contains('show')) {
                 menu.classList.remove('show');
@@ -145,15 +157,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-
-    // Close menu when clicking anywhere else on the document
     document.addEventListener('click', () => {
         if (downloadMenu && downloadMenu.classList.contains('show')) {
              downloadMenu.classList.remove('show');
         }
     });
 
-    // --- 5. HELPERS (Time, Color, Formatting) ---
+    // --- 5. HELPERS ---
     const formatTime = (s) => {
         const mins = Math.floor(s / 60);
         const secs = Math.floor(s % 60);
@@ -170,35 +180,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const formatSpeaker = (raw) => {
         if (!raw) return "דובר לא ידוע";
         if (raw === "SPEAKER_00") return "";
-
         const match = raw.match(/SPEAKER_(\d+)/);
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
 
 // --- HTTP FALLBACK POLLING ---
-// This ensures you get the result even if the Socket dies completely.
-
 setInterval(() => {
     const activeJobId = localStorage.getItem('activeJobId');
-
-    // Only poll if we are actually waiting for a job
     if (activeJobId) {
         console.log("🚑 Safety Check: Asking server via HTTP...");
-
         fetch(`/api/check_status/${activeJobId}`)
             .then(response => response.json())
             .then(data => {
-                // If the server says "completed", update the UI immediately
                 if (data.status === 'completed' || data.status === 'success') {
-                    console.log("✅ HTTP Poll found the result!", data);
                     if (window.handleJobUpdate) {
                         window.handleJobUpdate(data);
                     }
                 }
             })
-            .catch(err => console.warn("Poll failed (ignoring):", err));
+                .catch(err => console.warn("Poll failed:", err));
     }
-}, 5000); // Check every 5 seconds
+    }, 5000);
 
     function renderParagraphs(segments) {
         let html = "", group = null;
@@ -214,14 +216,10 @@ setInterval(() => {
     }
 
     function buildGroupHTML(g) {
-        // --- 1. DETECT DUMMY SPEAKER (FAST MODE) ---
         const isDummy = (g.speaker === "SPEAKER_00");
-
-        // --- 2. HIDE LABEL IF DUMMY ---
         const speakerStyle = isDummy ? 'style="display:none"' : `style="color: ${getSpeakerColor(g.speaker)}"`;
         const speakerText = isDummy ? '' : formatSpeaker(g.speaker);
         const rowClass = isDummy ? 'paragraph-row no-speaker' : 'paragraph-row';
-        // -----------------------------------------------------
 
         const text = g.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
 
@@ -279,10 +277,8 @@ setInterval(() => {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
 
-        // --- FIX DOCX: Don't show SPEAKER_00 in Word Docs ---
         const isDummy = (group.speaker === "SPEAKER_00");
         const effectiveShowSpeaker = showSpeaker && !isDummy;
-        // -----------------------------------------------------
 
         if (effectiveShowSpeaker || showTime) {
             let label = "";
@@ -365,14 +361,12 @@ setInterval(() => {
         mainBtn.disabled = true;
         mainBtn.innerText = "Processing...";
         }
-        // --- FIX: Hide ALL control bars, not just the first one ---
         const allControlBars = document.querySelectorAll('.controls-bar');
         allControlBars.forEach(bar => {
             bar.style.display = 'none';
         });
         if (transcriptWindow) transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
 
-        // --- NEW: Clear Cached Speaker Data ---
         localStorage.removeItem('speakerMap');
     }
 
@@ -388,8 +382,7 @@ setInterval(() => {
         }, 1000);
     }
 
-
-// --- 8. MAIN UPLOAD LISTENER (FIXED) ---
+    // --- 8. MAIN UPLOAD LISTENER ---
     if (fileInput) {
         fileInput.addEventListener('change', async function() {
             const file = this.files[0];
@@ -408,7 +401,7 @@ setInterval(() => {
             try {
                 statusTxt.innerText = "Preparing secure upload...";
 
-                // 1. Get the Signed URL AND the Correct Job ID from Server
+                // 1. Get Signed URL
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -421,12 +414,8 @@ setInterval(() => {
                 const { data } = signData;
                 const url = data.signedRequest || signData.url;
                 const key = data.s3Key || signData.key;
-
-                // --- FIX IS HERE: Use the Server's ID, not a random one ---
                 const jobId = data.jobId;
-                // ----------------------------------------------------------
 
-                // Now we can save it and join the room
                 localStorage.setItem('activeJobId', jobId);
                 if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
 
@@ -448,6 +437,7 @@ setInterval(() => {
 
                         const speakerEl = document.getElementById('speaker-count');
                         const langEl = document.getElementById('audio-lang');
+                        const diarizationToggle = document.getElementById('diarization-toggle');
 
                         await fetch('/api/trigger_processing', {
                             method: 'POST',
@@ -458,9 +448,7 @@ setInterval(() => {
                                 speakerCount: speakerEl ? speakerEl.value : 2,
                                 language: langEl ? langEl.value : 'he',
                                 task: 'transcribe',
-
-                                // NEW: Send the toggle state (true/false)
-                                diarization: document.getElementById('diarization-toggle').checked
+                                diarization: diarizationToggle ? diarizationToggle.checked : false
                             })
                         });
                         startFakeProgress();
