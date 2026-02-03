@@ -8,7 +8,7 @@ import time
 import logging
 import os
 # --- CONFIGURATION ---
-SIMULATION_MODE = True  # <--- Set to False when deploying to Koyeb
+SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
 S3_BUCKET = os.environ.get("S3_BUCKET")
 # Note: We don't need the keys here, we need them inside the function
 
