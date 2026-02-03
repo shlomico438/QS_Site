@@ -104,12 +104,12 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
     # 3. Build RunPod Payload
     payload = {
         "input": {
-            "jobId": job_id,
-            "s3Key": s3_key,
-            "num_speakers": int(num_speakers),
-            "language": language,
-            "task": task,
-            "initial_prompt": prompt  # <--- NEW FIELD
+            "jobId": data.get('jobId'),  # Match 'job_id = job_input.get("jobId")'
+            "s3Key": data.get('s3Key'),  # Match 's3_key = job_input.get("s3Key")'
+            "task": data.get('task', 'transcribe'),
+            "language": data.get('language', 'he'),
+            "num_speakers": int(data.get('speakerCount', 2)),
+            "diarization": data.get('diarization', False)
         }
     }
 
