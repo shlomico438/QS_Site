@@ -188,18 +188,18 @@ def check_job_status(job_id):
 job_results_cache = {}
 
 # --- 2. Update GPU Callback to SAVE the data ---
+# Inside siteapp.py -> gpu_callback
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
     data = request.json
     job_id = data.get('jobId')
 
-    print(f"DEBUG: Received callback for {job_id}")
-
-    # SAVE IT! (The Mailbox)
+    # Store in cache for persistence
     job_results_cache[job_id] = data
 
-    # Try to send it live (in case you are lucky and connected)
+    # EMIT: 'job_status_update' must match the listener in app_logic.js
     socketio.emit('job_status_update', data, room=job_id)
+    print(f"DEBUG: Emitted result to room {job_id}")
 
     return jsonify({"status": "ok"}), 200
 

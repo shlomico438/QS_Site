@@ -1,3 +1,6 @@
+// Add this to your GLOBAL STATE section
+window.isTriggering = false;
+
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
@@ -8,8 +11,9 @@ if (typeof socket !== 'undefined') {
         }
     });
 
-    socket.on('job_finished', (data) => {
-        console.log("📩 AI Results Received:", data);
+    // CHANGE: Listen for 'job_status_update' instead of 'job_finished'
+    socket.on('job_status_update', (data) => {
+        console.log("📩 AI Results Received via Socket:", data);
         if (typeof window.handleJobUpdate === 'function') {
             window.handleJobUpdate(data);
         }
@@ -126,59 +130,68 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- 5. UPLOAD LOGIC (FIXED 403) ---
-    if (fileInput) {
-        fileInput.addEventListener('change', async function() {
-            const file = this.files[0];
-            if (!file) return;
+    // Replace your existing fileInput listener with this
+if (fileInput) {
+    fileInput.addEventListener('change', async function() {
+        if (window.isTriggering) return; // Prevent triple triggers if multiple events fire
 
-            // RESET UI
-            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = "Processing..."; }
-            if (statusTxt) statusTxt.innerText = "Uploading...";
-            if (transcriptWindow) transcriptWindow.innerHTML = `<p id="preparing-screen" style="text-align:center; margin-top:80px;">Preparing file...</p>`;
+        const file = this.files[0];
+        if (!file) return;
 
-            try {
-                const signRes = await fetch('/api/sign-s3', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename: file.name, filetype: file.type })
-                });
+        // RESET UI
+        if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = "Processing..."; }
+        if (statusTxt) statusTxt.innerText = "Uploading...";
+        if (transcriptWindow) transcriptWindow.innerHTML = `<p id="preparing-screen" style="text-align:center; margin-top:80px;">Preparing file...</p>`;
 
-                const signData = await signRes.json();
-                const { url, s3Key, jobId } = signData.data || signData;
+        try {
+            const signRes = await fetch('/api/sign-s3', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: file.name, filetype: file.type })
+            });
 
-                localStorage.setItem('activeJobId', jobId);
+            const signData = await signRes.json();
+            // Extraction using s3Key to match backend sign_s3 return
+            const { url, s3Key, jobId } = signData.data || signData;
 
-                const xhr = new XMLHttpRequest();
-                xhr.open('PUT', url, true);
-                // CRITICAL: The header MUST exactly match what the backend signed
-                xhr.setRequestHeader('Content-Type', file.type);
+            localStorage.setItem('activeJobId', jobId);
+            socket.emit('join', { room: jobId }); // Join room immediately
 
-                xhr.onload = async () => {
-                    if (xhr.status === 200) {
-                        await fetch('/api/trigger_processing', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                s3Key: s3Key, jobId: jobId,
-                                diarization: document.getElementById('diarization-toggle')?.checked || false
-                            })
-                        });
-                        // Start fake progress
-                        let current = 0;
-                        window.fakeProgressInterval = setInterval(() => {
-                            if (current < 95) {
-                                current += 0.5;
-                                if (progressBar) progressBar.style.width = current + "%";
-                                if (statusTxt) statusTxt.innerText = `Transcribing... ${Math.floor(current)}%`;
-                            }
-                        }, 1000);
-                    } else {
-                        alert("Upload Failed (403). Check S3 Policy.");
-                        if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = "Upload and Process"; }
-                    }
-                };
-                xhr.send(file);
-            } catch (err) { console.error(err); }
-        });
-    }
+            const xhr = new XMLHttpRequest();
+            xhr.open('PUT', url, true);
+            xhr.setRequestHeader('Content-Type', file.type);
+
+            xhr.onload = async () => {
+                // Ensure we only trigger ONCE even if the browser sends multiple onload events
+                if (xhr.status === 200 && !window.isTriggering) {
+                    window.isTriggering = true; // Lock engaged
+
+                    await fetch('/api/trigger_processing', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            s3Key: s3Key,
+                            jobId: jobId,
+                            diarization: document.getElementById('diarization-toggle')?.checked || false
+                        })
+                    });
+
+                    // Start progress bar
+                    let current = 0;
+                    window.fakeProgressInterval = setInterval(() => {
+                        if (current < 95) {
+                            current += 0.5;
+                            if (progressBar) progressBar.style.width = current + "%";
+                            if (statusTxt) statusTxt.innerText = `Transcribing... ${Math.floor(current)}%`;
+                        }
+                    }, 1000);
+                }
+            };
+            xhr.send(file);
+        } catch (err) {
+            console.error(err);
+            window.isTriggering = false; // Release lock if error occurs
+        }
+    });
+}
 });
