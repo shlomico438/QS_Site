@@ -51,10 +51,22 @@
                     </select>
                 </div>
 
-                <div class="control-item">
-                    <label class="control-label">Speakers:</label>
-                    <input type="number" id="speaker-count" value="2" min="1" max="10" class="styled-input">
+                <div class="control-item" style="display:flex; align-items:center; gap:10px;">
+                    <label class="toggle-switch" style="width:40px; height:22px;">
+                        <input type="checkbox" id="diarization-toggle" onchange="toggleSpeakerInput()">
+                        <span class="slider"></span>
+                    </label>
+
+                    <span class="control-label">Detect Speakers</span>
+
+                    <input type="number" id="speaker-count" value="2" min="1" max="10" class="styled-input" style="display:none; width:50px; margin-left:5px;">
                 </div>
+                <script>
+                    function toggleSpeakerInput() {
+                        const isChecked = document.getElementById('diarization-toggle').checked;
+                        document.getElementById('speaker-count').style.display = isChecked ? 'block' : 'none';
+                    }
+                </script>
             </div>
 
             <div class="progress-container" id="p-container" style="display:none;">

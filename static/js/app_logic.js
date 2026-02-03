@@ -428,10 +428,13 @@ setInterval(() => {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 s3Key: key,
-                                jobId: jobId, // Sending the CORRECT ID (no extension)
+                                jobId: jobId,
                                 speakerCount: speakerEl ? speakerEl.value : 2,
                                 language: langEl ? langEl.value : 'he',
-                                task: 'transcribe'
+                                task: 'transcribe',
+
+                                // NEW: Send the toggle state (true/false)
+                                diarization: document.getElementById('diarization-toggle').checked
                             })
                         });
                         startFakeProgress();

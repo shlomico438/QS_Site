@@ -8,7 +8,7 @@ import time
 import logging
 import os
 # --- CONFIGURATION ---
-SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
+SIMULATION_MODE = True  # <--- Set to False when deploying to Koyeb
 S3_BUCKET = os.environ.get("S3_BUCKET")
 # Note: We don't need the keys here, we need them inside the function
 
@@ -148,36 +148,30 @@ def check_job_status(job_id):
             "status": "completed",
             "result": {
                 "segments": [
-                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
-                     "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
-                     "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
-                     "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
-                     "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
-                     "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
-                     "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"}
+                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
+                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
+                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
+                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
+                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
+                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"}
                 ]
             }
         })
@@ -328,7 +322,7 @@ def trigger_processing():
         job_id = data.get('jobId')
         task = data.get('task', 'transcribe')
         language = data.get('language', 'he')
-
+        diarization = data.get('diarization', False)
         try:
             speaker_count = int(data.get('speakerCount', 2))
         except:
@@ -341,7 +335,8 @@ def trigger_processing():
                 "jobId": job_id,
                 "task": task,
                 "language": language,
-                "num_speakers": speaker_count
+                "num_speakers": speaker_count,
+                "diarization": diarization
             }
         }
 
