@@ -274,39 +274,40 @@ def sign_s3():
                 'jobId': job_id
             }
         })
+
+
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
         if SIMULATION_MODE:
-            print("馃敭 SIMULATION: Skipping RunPod Trigger")
+            print("🔮 SIMULATION: Skipping RunPod Trigger")
             return jsonify({"status": "started", "runpod_id": "sim_id_123"})
 
         data = request.json
-        print(f"馃摡 Received Trigger Request: {data}")
+        print(f"📩 Received Trigger Request: {data}")
 
         # --- 1. GET CREDENTIALS & CHECK THEM ---
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
         api_key = os.environ.get('RUNPOD_API_KEY')
 
-        # DEBUG: Print status of keys (Don't print the actual key for security)
-        print(f"馃攽 checking keys... Endpoint ID exists? {bool(endpoint_id)} | API Key exists? {bool(api_key)}")
+        print(f"🔑 checking keys... Endpoint ID exists? {bool(endpoint_id)} | API Key exists? {bool(api_key)}")
 
         if not endpoint_id or not api_key:
-            print("鉂?CRITICAL ERROR: RUNPOD Environment Variables are missing!")
-            return jsonify({"status": "error", "message": "Server Env Vars missing"}), 500
+            return jsonify({"status": "error", "message": "RunPod Env Vars missing on server"}), 500
 
-        # --- 2. PREPARE DATA ---
+        # --- PREPARE DATA ---
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
         task = data.get('task', 'transcribe')
         language = data.get('language', 'he')
         diarization = data.get('diarization', False)
+
         try:
             speaker_count = int(data.get('speakerCount', 2))
         except:
             speaker_count = 2
 
-        # --- 3. BUILD PAYLOAD ---
+        # --- BUILD PAYLOAD ---
         payload = {
             "input": {
                 "s3Key": s3_key,
@@ -318,9 +319,8 @@ def trigger_processing():
             }
         }
 
-        # --- 4. SEND REQUEST WITH TIMEOUT & CLEAN URL ---
-        # Strip any accidental spaces/newlines from the ID
-        clean_id = endpoint_id.strip()
+        # Clean the ID to prevent URL errors
+        clean_id = str(endpoint_id).strip()
         endpoint_url = f"https://api.runpod.ai/v2/{clean_id}/run"
 
         headers = {
@@ -328,24 +328,21 @@ def trigger_processing():
             "Content-Type": "application/json"
         }
 
-        print(f"馃殌 Connecting to RunPod URL: {endpoint_url}")
+        print(f"🚀 Connecting to RunPod URL: {endpoint_url}")
 
-        # Added 'timeout=10' to prevent hanging
-        response = requests.post(endpoint_url, json=payload, headers=headers, timeout=10)
+        # Timeout added to prevent the 500 error from a hanging connection
+        response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
 
         if response.status_code != 200:
-            print(f"鉂?RunPod Error ({response.status_code}): {response.text}")
-            return jsonify({"status": "error", "message": f"RunPod Error: {response.text}"}), 500
+            print(f"❌ RunPod API Error ({response.status_code}): {response.text}")
+            return jsonify({"status": "error", "message": f"RunPod API Rejected Request: {response.status_code}"}), 500
 
         return jsonify({"status": "started", "runpod_id": response.json().get('id')})
 
-    except requests.exceptions.ConnectionError as ce:
-        print(f"鉂?Network Connection Error: {ce}")
-        return jsonify({"status": "error", "message": "Could not connect to RunPod API"}), 500
     except Exception as e:
-        print(f"鉂?Server Crash: {str(e)}")
+        print(f"❌ trigger_processing CRASHED: {str(e)}")
         import traceback
-        traceback.print_exc()
+        traceback.print_exc()  # This will show the exact line of the crash in Koyeb logs
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- WEBSOCKET EVENT HANDLERS ---
