@@ -8,7 +8,7 @@ import time
 import logging
 import os
 # --- CONFIGURATION ---
-SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
+SIMULATION_MODE = True  # <--- Set to False when deploying to Koyeb
 S3_BUCKET = os.environ.get("S3_BUCKET")
 # Note: We don't need the keys here, we need them inside the function
 
@@ -148,30 +148,11 @@ def check_job_status(job_id):
             "status": "completed",
             "result": {
                 "segments": [
-                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "שלום חביבתי. אז זאת הספרייה שלך? כן. מה שלומך? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "מתוסכלת, אני לא מוצאת את הספר שנתת לי המנצח, איך זה נקרא? סוד הסיפור המנצח? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "כן, לא חשוב, אני אמצא אותו, אני אמצא אותו. לא, אני אביא לך, יש לי מלא. אבל כבר נתתי, אבל כבר נתתי ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "לכמה את הספר שלך יוצאות מגדרן, ושמחה רבה. איזה כיף, אני אביא לך, יש לי המון בספרייה", "speaker": "SPEAKER_01"}
+                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
+                     "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"}
                 ]
             }
         })
@@ -218,61 +199,83 @@ def on_join(data):
             # Send it to this specific user who just reconnected
             socketio.emit('job_status_update', job_results_cache[room], room=request.sid)
 
-
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
-    import boto3
-    import os
     import time
+    import boto3
 
     if SIMULATION_MODE:
-        return jsonify({'data': {'url': 'http://localhost:8000/api/mock-upload', 'jobId': 'sim', 's3Key': 'sim'}})
+        import time
+        print("🔮 SIMULATION: Skipping AWS S3 Signing")
+        # Return a URL that points to our own server instead of S3
+        return jsonify({
+            'data': {
+                'signedRequest': 'http://localhost:8000/api/mock-upload',
+                'url': 'http://localhost:8000/api/mock-upload',
+                'jobId': f"job_sim_{int(time.time())}",
+                's3Key': 'simulation_key'
+            }
+        })
+    else:
+        data = request.json
+        filename = data.get('filename')
+        file_type = data.get('filetype')
 
-    data = request.json
-    filename = data.get('filename')
-    file_type = data.get('filetype')
+        # --- DEBUG: PRINT CREDENTIAL STATUS ---
+        key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+        secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        region = os.environ.get("AWS_REGION")
 
-    # --- THE FIX: Standardize names to match Koyeb/RunPod ---
-    # We pull from the environment first
-    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("AWS_REGION", "eu-north-1")
-    bucket = os.environ.get("S3_BUCKET") or "quickscribe-v2-12345"
+        print(f"DEBUG CHECK:")
+        print(f"1. Key ID Present? {bool(key_id)} (Length: {len(key_id) if key_id else 0})")
+        print(f"2. Secret Present? {bool(secret)} (Length: {len(secret) if secret else 0})")
+        print(f"3. Region: '{region}'")
 
-    # SAFETY CHECK: If keys are missing, don't try to sign (prevents 500 error)
-    if not key_id or not secret_key:
-        print(f"❌ ERROR: AWS Credentials missing. ID: {bool(key_id)}, Secret: {bool(secret_key)}")
-        return jsonify({"status": "error", "message": "Backend AWS credentials not configured"}), 500
-
-    try:
+        # Initialize S3 Client ONLY when the user actually asks for it
+        # s3_client = boto3.client(
+        #     "s3",
+        #     aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        #     aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        #     region_name=os.environ.get("AWS_REGION", "eu-north-1")
+        # )
         s3_client = boto3.client(
             's3',
-            aws_access_key_id=key_id,
-            aws_secret_access_key=secret_key,
-            region_name=region
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
+            region_name = os.environ.get('AWS_REGION')
         )
-
+        # 1. Split filename to get extension
         base_name, extension = os.path.splitext(filename)
+
+        # 2. Create a clean Job ID (WITHOUT extension)
+        # This prevents the output JSON from being named ".mp4"
         job_id = f"job_{int(time.time())}_{base_name}"
+
+        # 3. Set the S3 Key (WITH extension)
+        # The file on S3 must have the extension to be valid
         s3_key = f"input/{job_id}{extension}"
 
+
+        # 3. Generate the "VIP Pass" (Presigned URL)
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
-            Params={'Bucket': bucket, 'Key': s3_key, 'ContentType': file_type},
+            Params={
+                'Bucket': S3_BUCKET,
+                'Key': s3_key,
+                'ContentType': file_type
+            },
             ExpiresIn=3600
         )
 
-        # Return exactly what the frontend expects to avoid 'undefined' errors
+        # 4. Return the specific structure the JavaScript expects
         return jsonify({
             'data': {
-                'url': presigned_url,
-                's3Key': s3_key,
-                'jobId': job_id
+                'signedRequest': presigned_url,
+                'url': f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
+                'jobId': job_id,
+                's3Key': s3_key
             }
-        })
-    except Exception as e:
-        print(f"❌ S3 Signing Crash: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    })
 
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
@@ -300,7 +303,7 @@ def trigger_processing():
         job_id = data.get('jobId')
         task = data.get('task', 'transcribe')
         language = data.get('language', 'he')
-        diarization = data.get('diarization', False)
+
         try:
             speaker_count = int(data.get('speakerCount', 2))
         except:
@@ -313,8 +316,7 @@ def trigger_processing():
                 "jobId": job_id,
                 "task": task,
                 "language": language,
-                "num_speakers": speaker_count,
-                "diarization": diarization
+                "num_speakers": speaker_count
             }
         }
 
