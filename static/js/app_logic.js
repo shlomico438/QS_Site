@@ -35,9 +35,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
     window.handleJobUpdate = function(rawResult) {
+        // 1. Immediately hide the "Preparing" overlay
         const preparingScreen = document.getElementById('preparing-screen');
         if (preparingScreen) preparingScreen.style.display = 'none';
 
+        // 2. Release the trigger lock for the next file upload
+        window.isTriggering = false;
+
+        // 3. Reset Button
         const mainBtn = document.getElementById('main-btn');
         if (mainBtn) {
             mainBtn.disabled = false;
