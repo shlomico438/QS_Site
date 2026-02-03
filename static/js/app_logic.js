@@ -164,6 +164,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const formatSpeaker = (raw) => {
         if (!raw) return "דובר לא ידוע";
+        if (raw === "SPEAKER_00") return "";
+
         const match = raw.match(/SPEAKER_(\d+)/);
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
@@ -207,12 +209,22 @@ setInterval(() => {
     }
 
     function buildGroupHTML(g) {
+        // --- 1. DETECT DUMMY SPEAKER (FAST MODE) ---
+        const isDummy = (g.speaker === "SPEAKER_00");
+
+        // --- 2. HIDE LABEL IF DUMMY ---
+        const speakerStyle = isDummy ? 'style="display:none"' : `style="color: ${getSpeakerColor(g.speaker)}"`;
+        const speakerText = isDummy ? '' : formatSpeaker(g.speaker);
+        const rowClass = isDummy ? 'paragraph-row no-speaker' : 'paragraph-row';
+        // -----------------------------------------------------
+
         const text = g.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
+
         return `
-            <div class="paragraph-row">
+            <div class="${rowClass}">
                 <div class="ts-col">${formatTime(g.start)}</div>
                 <div class="text-col">
-                    <span class="speaker-label" style="color: ${getSpeakerColor(g.speaker)}">${formatSpeaker(g.speaker)}</span>
+                    <span class="speaker-label" ${speakerStyle}>${speakerText}</span>
                     <p style="margin:0;">${text}</p>
                 </div>
             </div>`;
@@ -261,10 +273,16 @@ setInterval(() => {
     function createDocxParagraphs(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
-        if (showSpeaker || showTime) {
+
+        // --- FIX DOCX: Don't show SPEAKER_00 in Word Docs ---
+        const isDummy = (group.speaker === "SPEAKER_00");
+        const effectiveShowSpeaker = showSpeaker && !isDummy;
+        // -----------------------------------------------------
+
+        if (effectiveShowSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
-            if (showSpeaker) label += formatSpeaker(group.speaker);
+            if (effectiveShowSpeaker) label += formatSpeaker(group.speaker);
 
             paragraphs.push(new Paragraph({
                 children: [new TextRun({
@@ -348,6 +366,9 @@ setInterval(() => {
             bar.style.display = 'none';
         });
         if (transcriptWindow) transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
+
+        // --- NEW: Clear Cached Speaker Data ---
+        localStorage.removeItem('speakerMap');
     }
 
     function startFakeProgress() {
@@ -374,9 +395,9 @@ setInterval(() => {
             resetUI();
 
             if (audioSource && mainAudio && audioContainer) {
-                audioSource.src = URL.createObjectURL(file);
-                mainAudio.load();
-                audioContainer.style.display = 'block';
+            audioSource.src = URL.createObjectURL(file);
+            mainAudio.load();
+            audioContainer.style.display = 'block';
             }
 
             try {
@@ -443,7 +464,7 @@ setInterval(() => {
                     }
                 };
                 xhr.onerror = () => handleUploadError("Network Error during Upload");
-                xhr.send(file);
+                  xhr.send(file);
             } catch (err) {
                 handleUploadError("Initialization Failed: " + err.message);
             }
