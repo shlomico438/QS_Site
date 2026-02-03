@@ -31,6 +31,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
     window.handleJobUpdate = function(rawResult) {
+        const preparingScreen = document.getElementById('preparing-screen');
+        if (preparingScreen) preparingScreen.style.display = 'none';
+
+        const mainBtn = document.getElementById('main-btn');
+        if (mainBtn) {
+            mainBtn.disabled = false;
+            mainBtn.innerText = "Upload and Process";
+        }
         try {
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
@@ -136,7 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 const signData = await signRes.json();
-                const { url, key, jobId } = signData.data || signData;
+                const { url, s3Key, jobId } = signData.data || signData;
 
                 localStorage.setItem('activeJobId', jobId);
 
@@ -151,7 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                s3Key: key, jobId: jobId,
+                                s3Key: s3Key, jobId: jobId,
                                 diarization: document.getElementById('diarization-toggle')?.checked || false
                             })
                         });
