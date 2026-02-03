@@ -1,11 +1,10 @@
-   // --- 1. GLOBAL SOCKET INITIALIZATION ---
+// --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
         const savedJobId = localStorage.getItem('activeJobId');
         if (savedJobId) {
             console.log("🔄 Re-joining room:", savedJobId);
             socket.emit('join', { room: savedJobId });
-
             fetch(`/api/check_status/${savedJobId}`)
                 .then(res => res.json())
                 .then(data => {
@@ -41,27 +40,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const audioSource = document.getElementById('audio-source');
     const mainAudio = document.getElementById('main-audio');
 
-    // --- 2. THE HANDLER (THE BRAIN) ---
+    // --- 2. THE HANDLER ---
     window.handleJobUpdate = function(rawResult) {
-        console.log("🚀 handleJobUpdate STARTED"); // If you don't see this, the function isn't being called
+        console.log("🚀 handleJobUpdate STARTED");
         try {
-            // 1. CLEAR OVERLAYS & PROGRESS
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
             const preparingScreen = document.getElementById('preparing-screen');
-            if (preparingScreen) {
-                console.log("🧹 Hiding Preparing Screen...");
-                preparingScreen.style.display = 'none';
-            } else {
-                // Fallback: If your ID is different in index.html, we target the text directly
-                transcriptWindow.innerHTML = '';
-            }
+            if (preparingScreen) preparingScreen.style.display = 'none';
+            else transcriptWindow.innerHTML = '';
 
-            // 2. SHOW CONTROLS
             const controlBars = document.querySelectorAll('.controls-bar');
             controlBars.forEach(bar => bar.style.display = 'flex');
 
-            // 3. RESET MAIN BUTTON
             if (mainBtn) {
                 mainBtn.disabled = false;
                 mainBtn.innerText = "Upload and Process";
@@ -69,7 +60,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (progressBar) progressBar.style.width = "100%";
             if (statusTxt) statusTxt.innerText = "✅ Done";
 
-            // 4. LOCATE DATA
             let segments = null;
             if (rawResult.result && rawResult.result.segments) {
                 segments = rawResult.result.segments;
@@ -84,22 +74,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            // 5. UPDATE UI & RENDER
             window.currentSegments = segments;
             const hasSpeakerData = segments.some(s => s.speaker);
-                updateSpeakerToggleUI(hasSpeakerData);
+            updateSpeakerToggleUI(hasSpeakerData);
 
             if (transcriptWindow && typeof renderParagraphs === 'function') {
                 transcriptWindow.innerHTML = renderParagraphs(segments);
             }
-            console.log("✅ handleJobUpdate FINISHED SUCCESSFULLY");
+            console.log("✅ handleJobUpdate FINISHED");
 
         } catch (error) {
             console.error("⚠️ CRASH in handleJobUpdate:", error);
         }
     };
 
-    // --- 3. TOOLBAR LOGIC ---
+    // --- 3. TOOLBAR & HELPERS ---
     const downloadBtns = document.querySelectorAll('#btn-download');
     const allDownloadMenus = document.querySelectorAll('#download-menu');
 
@@ -118,7 +107,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // --- 4. HELPERS ---
     const formatTime = (s) => {
         const mins = Math.floor(s / 60);
         const secs = Math.floor(s % 60);
@@ -142,37 +130,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const diarizationToggle = document.getElementById('diarization-toggle');
         const speakerSwitch = document.getElementById('toggle-speaker');
         const switches = [diarizationToggle, speakerSwitch];
-
         switches.forEach(sw => {
             if (!sw) return;
-                sw.disabled = false;
-                sw.parentElement.style.opacity = "1";
-                sw.parentElement.style.pointerEvents = "auto";
-            if (hasSpeakerData) {
-                sw.checked = true;
-            }
+            sw.disabled = false;
+            sw.parentElement.style.opacity = "1";
+            sw.parentElement.style.pointerEvents = "auto";
+            if (hasSpeakerData) sw.checked = true;
         });
     }
 
-    // --- HTTP FALLBACK POLLING ---
-    setInterval(() => {
-        const activeJobId = localStorage.getItem('activeJobId');
-        if (activeJobId) {
-            fetch(`/api/check_status/${activeJobId}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'completed' || data.status === 'success') {
-                        if (window.handleJobUpdate) window.handleJobUpdate(data);
-                    }
-                }).catch(err => console.warn("Poll failed:", err));
-        }
-    }, 5000);
-
-    // --- RENDER LOGIC ---
+    // --- 4. RENDER LOGIC ---
     function renderParagraphs(segments) {
         const uniqueSpeakers = new Set(segments.map(s => s.speaker).filter(Boolean));
         window.hasMultipleSpeakers = uniqueSpeakers.size > 1;
-
         let html = "", group = null;
         segments.forEach(seg => {
             if (!group || group.speaker !== seg.speaker) {
@@ -191,7 +161,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const speakerText = isDummy ? '' : formatSpeaker(g.speaker);
         const rowClass = isDummy ? 'paragraph-row no-speaker' : 'paragraph-row';
         const text = g.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
-
         return `<div class="${rowClass}">
                 <div class="ts-col">${formatTime(g.start)}</div>
                 <div class="text-col">
@@ -207,7 +176,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
         const showTime = document.getElementById('toggle-time')?.checked;
         const showSpeaker = document.getElementById('toggle-speaker')?.checked;
-
         if (type === 'docx') {
             const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
             let children = [];
@@ -227,8 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
             window.currentSegments.forEach((seg, i) => {
                 const ts = (s) => {
                     let d = new Date(0); d.setMilliseconds(s * 1000);
-                    let iso = d.toISOString().substr(11, 12);
-                    return type === 'srt' ? iso.replace('.', ',') : iso;
+                    return d.toISOString().substr(11, 12).replace('.', ',');
                 };
                 if (type === 'srt') content += `${i + 1}\n`;
                 content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text.trim()}\n\n`;
@@ -242,12 +209,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const paragraphs = [];
         const isDummy = (group.speaker === "SPEAKER_00" && !window.hasMultipleSpeakers);
         const effectiveShowSpeaker = showSpeaker && !isDummy;
-
         if (effectiveShowSpeaker || showTime) {
             let label = "";
             if (showTime) label += `[${formatTime(group.start)}] `;
             if (effectiveShowSpeaker) label += formatSpeaker(group.speaker);
-
             paragraphs.push(new Paragraph({
                 children: [new TextRun({ text: label, bold: true, color: getSpeakerColor(group.speaker).replace('#', ''), size: 20, rightToLeft: true })],
                 alignment: AlignmentType.RIGHT, bidirectional: true
@@ -262,19 +227,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.jumpTo = (time) => { if (mainAudio) { mainAudio.currentTime = time; mainAudio.play(); } };
 
-    // --- 6. UPLOAD HELPERS ---
+    // --- 6. UPLOAD SECTION (FIXED 403 ERROR) ---
     function resetUI() {
         if (progressBar) progressBar.style.width = "0%";
         if (statusTxt) statusTxt.innerText = "Uploading...";
-        if (mainBtn) {
-            mainBtn.disabled = true;
-            mainBtn.innerText = "Processing...";
-        }
-        // Ensure "Preparing file..." appears in the window
-        if (transcriptWindow) {
-            transcriptWindow.innerHTML = `<p id="preparing-screen" style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
-        }
-
+        if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = "Processing..."; }
+        if (transcriptWindow) transcriptWindow.innerHTML = `<p id="preparing-screen" style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
         const controlBars = document.querySelectorAll('.controls-bar');
         controlBars.forEach(bar => bar.style.display = 'none');
     }
@@ -305,19 +263,23 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
+                // THE FIX: Exact signature matching
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ filename: file.name, filetype: file.type })
                 });
+
                 const signData = await signRes.json();
-                const { url, key, jobId } = signData.data;
+                // Destructure for both naming conventions
+                const { url, key, jobId } = signData.data || signData;
 
                 localStorage.setItem('activeJobId', jobId);
                 if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
 
                 const xhr = new XMLHttpRequest();
                 xhr.open('PUT', url, true);
+                // MUST match the filetype sent to sign-s3 exactly
                 xhr.setRequestHeader('Content-Type', file.type);
 
                 xhr.upload.onprogress = (e) => {
@@ -330,6 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 xhr.onload = async () => {
                     if (xhr.status === 200) {
+                        statusTxt.innerText = "Starting AI Engine...";
                         await fetch('/api/trigger_processing', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -339,10 +302,13 @@ document.addEventListener('DOMContentLoaded', () => {
                             })
                         });
                         startFakeProgress();
+                    } else {
+                        console.error("Upload failed with status:", xhr.status);
+                        statusTxt.innerText = "❌ Upload Failed (403)";
                     }
                 };
-                  xhr.send(file);
-            } catch (err) { console.error(err); }
+                xhr.send(file);
+            } catch (err) { console.error("Initialization Error:", err); }
         });
     }
 });
