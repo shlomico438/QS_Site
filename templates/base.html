@@ -1,5 +1,5 @@
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.0/dist/ffmpeg.min.js"></script>
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -8,6 +8,12 @@
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
 </head>
 
 <body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
@@ -39,10 +45,22 @@
     </footer>
 
     <script>
+        const socket = io({
+            transports: ['websocket'],
+            upgrade: false,
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000
+        });
+    </script>
+    <script>
         function toggleMenu() {
             document.getElementById('nav-menu').classList.toggle('active');
             document.querySelector('.hamburger-menu').classList.toggle('open');
         }
     </script>
+
+    <script src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
+
 </body>
 </html>

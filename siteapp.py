@@ -2,31 +2,15 @@ from gevent import monkey
 monkey.patch_all()
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, join_room
-import os
 import json
 import requests  # Added for RunPod API calls
 import time
 import logging
 import os
-import boto3
-
 # --- CONFIGURATION ---
+SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
 S3_BUCKET = os.environ.get("S3_BUCKET")
-AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID")
-AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-
-RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY")
-RUNPOD_ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID")
-
-
-# Initialize S3 Client (Global)
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-)
+# Note: We don't need the keys here, we need them inside the function
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
@@ -37,77 +21,54 @@ RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.environ.get('RUNPOD_ENDPOINT_ID')
 BUCKET_NAME = "quickscribe-v2-12345"
 
-# Strict settings to keep connections alive during long GPU gaps
+# Strict settings to keep connections alive
 socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
     transports=['websocket'],
-    ping_timeout=120,
+    ping_timeout=600,
     ping_interval=20,
     manage_session=False
 )
+print("--- STEP 11: socket io ---")
 
-# Initialize S3 Client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
-    aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-    region_name='eu-north-1'
-)
+# --- GLOBAL CACHE ---
+job_results_cache = {}
 
-
-# Configure logging to see errors in Koyeb logs
 logging.basicConfig(level=logging.INFO)
 
-# Add this block anywhere in your app.py, for example after defining 'app'
+# --- MOCK ROUTE FOR LOCAL DEBUGGING ---
+@app.route('/api/mock-upload', methods=['PUT'])
+def mock_upload():
+    print("🔮 SIMULATION: Fake file upload received!")
+    return "", 200
 
 @app.after_request
 def add_security_headers(resp):
-    # These headers are REQUIRED for SharedArrayBuffer (which ffmpeg.wasm uses)
     resp.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
     resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     return resp
 
-@socketio.on('join')
-def on_join(data):
-    room = data['room']
-    join_room(room)
-    print(f"Client joined room: {room}") # Optional: Helps with debugging
-
 @app.errorhandler(413)
 def request_entity_too_large(error):
-    # Specific error for files exceeding MAX_CONTENT_LENGTH
-    return jsonify({
-        "status": "error",
-        "message": "File too large. Maximum limit is 500MB."
-    }), 413
-
+    return jsonify({"status": "error", "message": "File too large. Max 500MB."}), 413
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    # Pass through existing HTTP errors (like 404)
     if hasattr(e, 'code'):
         return jsonify({"status": "error", "message": str(e.description)}), e.code
-
-    # Catch-all for unexpected Python crashes (500)
     logging.error(f"Unexpected Server Error: {str(e)}")
-    return jsonify({
-        "status": "error",
-        "message": "Internal server error. Please try again later."
-    }), 500
-# --- WEB ROUTES ---
+    return jsonify({"status": "error", "message": "Internal server error."}), 500
 
+# --- WEB ROUTES ---
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
 
 @app.route('/about')
-def about():
-    return render_template('about.html')
+def about(): return render_template('about.html')
 
 @app.route('/blog')
-def blog():
-    return render_template('blog.html')
+def blog(): return render_template('blog.html')
 
 @app.route('/contact')
 def contact():
@@ -116,46 +77,6 @@ def contact():
 # --- UPLOAD & TRIGGER API ---
 import time  # Ensure time is imported at the top of your file
 
-
-@app.route('/api/upload_full_file', methods=['POST'])
-def upload_full_file():
-    try:
-        file = request.files.get('file')
-        job_id = request.form.get('jobId')
-        # Get speakerCount from form, default to 2
-        num_speakers = request.form.get('speakerCount', 2)
-        language = request.form.get('language', 'he')
-        task = request.form.get('task', 'transcribe')
-
-        if not file or not job_id:
-            return jsonify({"error": "Missing file or jobId"}), 400
-
-        # Save to S3 as full mp3
-        s3_key = f"input/{job_id}.mp3"
-
-        print(f"DEBUG: Starting S3 upload for {job_id}...")
-        s3_client.upload_fileobj(
-            file,
-            BUCKET_NAME,
-            s3_key,
-            ExtraArgs={"ContentType": "audio/mpeg"}
-        )
-        print(f"DEBUG: Full file uploaded to S3: {s3_key}")
-
-        # AUTOMATION: Trigger the GPU worker with retry logic
-        # This will now raise an Exception if it fails 3 times
-        trigger_gpu_job(job_id, s3_key, num_speakers,language, task)
-
-        return jsonify({"message": "Upload complete, GPU triggered", "jobId": job_id}), 200
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"UPLOAD/TRIGGER ERROR: {error_msg}")
-        # Returning 500 here is what triggers the Red Bar in your index.html
-        return jsonify({
-            "status": "error",
-            "message": error_msg
-        }), 500
 
 
 def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
@@ -216,55 +137,153 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
 
     raise Exception(f"Failed to trigger GPU after {max_retries} attempts. Last error: {last_error}")
 
+
+# --- Add this to app.py ---
+
+@app.route('/api/check_status/<job_id>', methods=['GET'])
+def check_job_status(job_id):
+    if SIMULATION_MODE:
+        # Return a fake completed response immediately
+        return jsonify({
+            "status": "completed",
+            "result": {
+                "segments": [
+                    {"start": 0.0, "end": 2.5, "text": "This is a simulation test.", "speaker": "SPEAKER_00"},
+                    {"start": 3.0, "end": 6.0, "text": "Great! I can check the GUI layout now.",
+                     "speaker": "SPEAKER_01"},
+                    {"start": 7.0, "end": 10.0, "text": "Does the download button work?", "speaker": "SPEAKER_00"},
+                    {"start": 10.5, "end": 15.0, "text": "Yes, checking the pop-up menu.", "speaker": "SPEAKER_01"}
+                ]
+            }
+        })
+    # Check the global cache we created earlier
+    if job_id in job_results_cache:
+        print(f"🔎 Client checked status for {job_id} -> Found completed result!")
+        return jsonify(job_results_cache[job_id])
+
+    # If not in cache, it's still processing (or lost, but let's assume processing)
+    return jsonify({"status": "processing"}), 202
+
 # --- GPU FEEDBACK API ---
+# --- 1. Add Global Cache at the top ---
+job_results_cache = {}
+
+# --- 2. Update GPU Callback to SAVE the data ---
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
-    try:
-        data = request.json  # Expects {"jobId": "...", "segments": [...], "status": "..."}
-        job_id = data.get('jobId')
+    data = request.json
+    job_id = data.get('jobId')
 
-        if not job_id:
-            return jsonify({"error": "Missing jobId"}), 400
+    print(f"DEBUG: Received callback for {job_id}")
 
-        # Broadcast results to the specific job room
-        socketio.emit('job_status_update', data, room=job_id)
+    # SAVE IT! (The Mailbox)
+    job_results_cache[job_id] = data
 
-        print(f"DEBUG: Forwarded GPU results to room: {job_id}")
-        return jsonify({"status": "success"}), 200
-    except Exception as e:
-        print(f"CALLBACK ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+    # Try to send it live (in case you are lucky and connected)
+    socketio.emit('job_status_update', data, room=job_id)
+
+    return jsonify({"status": "ok"}), 200
 
 
-# --- NEW: Get Permission to Upload Direct to S3 ---
+# --- 3. Update Join Logic to CHECK the Cache ---
+@socketio.on('join')
+def on_join(data):
+    room = data.get('room')
+    if room:
+        join_room(room)
+        print(f"🔌 Client joined room: {room}")
+
+        # CHECK MAILBOX: Is the result already waiting?
+        if room in job_results_cache:
+            print(f"📦 Found cached result for {room}, sending now!")
+            # Send it to this specific user who just reconnected
+            socketio.emit('job_status_update', job_results_cache[room], room=request.sid)
+
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
-    data = request.json
-    filename = data.get('filename')
-    file_type = data.get('filetype')
+    import time
+    import boto3
 
-    # Generate a unique S3 key
-    s3_key = f"uploads/{int(time.time())}_{filename}"
+    if SIMULATION_MODE:
+        import time
+        print("🔮 SIMULATION: Skipping AWS S3 Signing")
+        # Return a URL that points to our own server instead of S3
+        return jsonify({
+            'data': {
+                'signedRequest': 'http://localhost:8000/api/mock-upload',
+                'url': 'http://localhost:8000/api/mock-upload',
+                'jobId': f"job_sim_{int(time.time())}",
+                's3Key': 'simulation_key'
+            }
+        })
+    else:
+        data = request.json
+        filename = data.get('filename')
+        file_type = data.get('filetype')
 
-    # Generate the "Presigned URL" (The VIP Pass)
-    presigned_url = s3_client.generate_presigned_url(
-        'put_object',
-        Params={
-            'Bucket': S3_BUCKET,
-            'Key': s3_key,
-            'ContentType': file_type
-        },
-        ExpiresIn=3600  # Valid for 1 hour
-    )
+        # --- DEBUG: PRINT CREDENTIAL STATUS ---
+        key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+        secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        region = os.environ.get("AWS_REGION")
 
-    return jsonify({
-        'url': presigned_url,
-        'key': s3_key
+        print(f"DEBUG CHECK:")
+        print(f"1. Key ID Present? {bool(key_id)} (Length: {len(key_id) if key_id else 0})")
+        print(f"2. Secret Present? {bool(secret)} (Length: {len(secret) if secret else 0})")
+        print(f"3. Region: '{region}'")
+
+        # Initialize S3 Client ONLY when the user actually asks for it
+        # s3_client = boto3.client(
+        #     "s3",
+        #     aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        #     aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        #     region_name=os.environ.get("AWS_REGION", "eu-north-1")
+        # )
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
+            region_name = os.environ.get('AWS_REGION')
+        )
+        # 1. Split filename to get extension
+        base_name, extension = os.path.splitext(filename)
+
+        # 2. Create a clean Job ID (WITHOUT extension)
+        # This prevents the output JSON from being named ".mp4"
+        job_id = f"job_{int(time.time())}_{base_name}"
+
+        # 3. Set the S3 Key (WITH extension)
+        # The file on S3 must have the extension to be valid
+        s3_key = f"input/{job_id}{extension}"
+
+
+        # 3. Generate the "VIP Pass" (Presigned URL)
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': S3_BUCKET,
+                'Key': s3_key,
+                'ContentType': file_type
+            },
+            ExpiresIn=3600
+        )
+
+        # 4. Return the specific structure the JavaScript expects
+        return jsonify({
+            'data': {
+                'signedRequest': presigned_url,
+                'url': f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
+                'jobId': job_id,
+                's3Key': s3_key
+            }
     })
 
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
+        if SIMULATION_MODE:
+            print("🔮 SIMULATION: Skipping RunPod Trigger")
+            return jsonify({"status": "started", "runpod_id": "sim_id_123"})
+
         data = request.json
         print(f"📩 Received Trigger Request: {data}")
 
@@ -342,6 +361,11 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     print("CLIENT DISCONNECTED")
+
+# --- HEALTH CHECK ROUTE ---
+@app.route('/health')
+def health_check():
+    return "OK", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))
