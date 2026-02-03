@@ -61,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.originalFileName = "transcript";
 
     // --- 2. THE HANDLER (Attached to window so global socket can see it) ---
-    window.handleJobUpdate = function(data) {
+ window.handleJobUpdate = function(data) {
         const currentStatus = data.status ? data.status.toLowerCase() : "";
 
         if (currentStatus === "completed" || currentStatus === "success") {
@@ -79,26 +79,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 bar.style.display = 'flex';
             });
 
-            // Parse Data
-            let finalSegments = null;
-            if (data.result) {
-                let resultObj = data.result;
-                if (typeof resultObj === "string") {
-                    try { resultObj = JSON.parse(resultObj); } catch(e) {}
-                }
-                if (resultObj.segments) finalSegments = resultObj.segments;
-            }
-            if (!finalSegments && data.segments) finalSegments = data.segments;
+            // === NEW: DISABLE SPEAKER TOGGLES IF FAST MODE ===
+            // Check if the first segment is the "Dummy" speaker
+            let isFastMode = false;
+            let firstSeg = null;
 
-            if (finalSegments && transcriptWindow) {
-                window.currentSegments = finalSegments;
-                transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-            } else if (data.transcription && transcriptWindow) {
-                 transcriptWindow.innerText = data.transcription;
+            // Safe extraction of the first segment
+            if (data.result && data.result.segments) firstSeg = data.result.segments[0];
+            else if (data.segments) firstSeg = data.segments[0];
+
+            if (firstSeg && firstSeg.speaker === "SPEAKER_00") {
+                isFastMode = true;
             }
-        } else if (currentStatus === "failed" || currentStatus === "error") {
-            handleUploadError(data.error || "Unknown error occurred");
-            localStorage.removeItem('activeJobId');
+
+            // Find the switches in the toolbar (toggle-speaker)
+            const speakerSwitches = document.querySelectorAll('#toggle-speaker, input[id$="speaker"]'); // Broad selector to catch it
+
+            speakerSwitches.forEach(sw => {
+                if (isFastMode) {
+                    sw.checked = false;          // Turn it off
+                    sw.disabled = true;          // Disable clicking
+                    sw.parentElement.title = "Speaker detection was disabled for this file.";
+                    sw.parentElement.style.opacity = "0.5";
+                } else {
+                    sw.disabled = false;
+                    sw.parentElement.style.opacity = "1";
         }
     };
 

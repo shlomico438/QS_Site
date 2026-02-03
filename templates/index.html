@@ -51,24 +51,32 @@
                     </select>
                 </div>
 
-                <div class="control-item" style="display:flex; align-items:center; gap:10px;">
-                    <label class="toggle-switch" style="width:40px; height:22px;">
-                        <input type="checkbox" id="diarization-toggle" onchange="toggleSpeakerInput()">
-                        <span class="slider"></span>
-                    </label>
+            <div class="control-item" style="display:flex; align-items:center; gap:10px;">
+                <label class="toggle-switch" style="position: relative; display: inline-block; width: 40px; height: 22px;">
+                    <input type="checkbox" id="diarization-toggle" onchange="toggleSpeakerInput()">
+                    <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px;"></span>
+                    <style>
+                        .slider:before {
+                            position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%;
+                        }
+                        input:checked + .slider { background-color: #2196F3; }
+                        input:checked + .slider:before { transform: translateX(18px); }
+                    </style>
+                </label>
 
-                    <span class="control-label">Detect Speakers</span>
+                <span class="control-label">Detect Speakers</span>
 
-                    <input type="number" id="speaker-count" value="2" min="1" max="10" class="styled-input" style="display:none; width:50px; margin-left:5px;">
-                </div>
-                <script>
-                    function toggleSpeakerInput() {
-                        const isChecked = document.getElementById('diarization-toggle').checked;
-                        document.getElementById('speaker-count').style.display = isChecked ? 'block' : 'none';
-                    }
-                </script>
+                <input type="number" id="speaker-count" value="2" min="1" max="10" class="styled-input" style="display:none; width:50px; margin-left:5px; padding: 5px;">
             </div>
 
+            <script>
+                // Simple helper to show/hide the number input
+                function toggleSpeakerInput() {
+                    const isChecked = document.getElementById('diarization-toggle').checked;
+                    const speakerInput = document.getElementById('speaker-count');
+                    if(speakerInput) speakerInput.style.display = isChecked ? 'block' : 'none';
+                }
+            </script>
             <div class="progress-container" id="p-container" style="display:none;">
                 <div id="progress-bar"></div>
             </div>
