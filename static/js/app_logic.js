@@ -94,16 +94,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // === DISABLE SWITCHES IF FAST MODE (Only 1 speaker found) ===
             // We use the flag calculated during renderParagraphs
-            const speakerSwitches = document.querySelectorAll('#toggle-speaker, input[id$="speaker"]');
-
-                speakerSwitches.forEach(sw => {
+            speakerSwitches.forEach(sw => {
                 if (!window.hasMultipleSpeakers) {
+                    // CASE 1: Single Speaker (Fast Mode) -> Force OFF and Disabled
                     sw.checked = false;
                     sw.disabled = true;
                     sw.parentElement.title = "Speaker detection was disabled (or only 1 speaker found).";
                     sw.parentElement.style.opacity = "0.5";
                 } else {
+                    // CASE 2: Multiple Speakers -> Force ON and Enabled
+                    sw.checked = true;  // <--- THIS WAS MISSING
                     sw.disabled = false;
+                    sw.parentElement.title = "Toggle speaker labels";
                     sw.parentElement.style.opacity = "1";
                 }
             });
