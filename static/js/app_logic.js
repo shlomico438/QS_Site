@@ -13,26 +13,22 @@ if (typeof socket !== 'undefined') {
                          window.handleJobUpdate(data);
                      }
                 }).catch(() => {});
-
-            const statusTxt = document.getElementById('upload-status');
-            if (statusTxt) statusTxt.innerText = "♻️ Connection Restored. Checking status...";
         }
     });
 
-    socket.on('disconnect', (reason) => {
-        console.warn("⚠️ Socket Lost Connection:", reason);
-        if (reason === "io server disconnect") {
-            socket.connect();
-        }
-    });
-
-    socket.on('job_status_update', (data) => {
-        console.log("📩 AI Results Received:", data);
-        if (window.handleJobUpdate) {
+    socket.on('job_finished', (data) => {
+        console.log("📩 SOCKET MESSAGE: Job Finished received", data);
+        if (typeof window.handleJobUpdate === 'function') {
             window.handleJobUpdate(data);
         }
     });
 }
+
+// --- GLOBAL STATE ---
+window.fakeProgressInterval = null;
+window.currentSegments = [];
+window.originalFileName = "transcript";
+window.hasMultipleSpeakers = false;
 
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI ELEMENTS ---
@@ -40,130 +36,89 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileInput = document.getElementById('fileInput');
     const statusTxt = document.getElementById('upload-status');
     const progressBar = document.getElementById('progress-bar');
-    const pContainer = document.getElementById('p-container');
     const mainBtn = document.getElementById('main-btn');
     const audioContainer = document.getElementById('audio-player-container');
     const audioSource = document.getElementById('audio-source');
     const mainAudio = document.getElementById('main-audio');
-    const controlsBar = document.querySelector('.controls-bar');
-    const downloadMenu = document.getElementById('download-menu');
 
-    // --- GLOBAL STATE ---
-    window.fakeProgressInterval = null;
-    window.currentSegments = [];
-    window.originalFileName = "transcript";
-    window.hasMultipleSpeakers = false; // NEW FLAG
-
-    // --- 2. THE HANDLER ---
- window.handleJobUpdate = function(data) {
-        const currentStatus = data.status ? data.status.toLowerCase() : "";
-
-        if (currentStatus === "completed" || currentStatus === "success") {
-            localStorage.removeItem('activeJobId');
+    // --- 2. THE HANDLER (THE BRAIN) ---
+    window.handleJobUpdate = function(rawResult) {
+        console.log("🚀 handleJobUpdate STARTED"); // If you don't see this, the function isn't being called
+        try {
+            // 1. CLEAR OVERLAYS & PROGRESS
             if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
-            if (pContainer) pContainer.style.display = 'none';
-            if (statusTxt) statusTxt.innerText = "Transcription complete!";
-            if (mainBtn) {
-            mainBtn.innerText = "Process Another File";
-            mainBtn.disabled = false;
-            }
-            // Example usage inside your existing result handler
-            if (result.num_speakers > 1) {
-                window.hasMultipleSpeakers = true;
-                updateSpeakerToggleUI(true); // This will turn the switch Navy Blue
+            const preparingScreen = document.getElementById('preparing-screen');
+            if (preparingScreen) {
+                console.log("🧹 Hiding Preparing Screen...");
+                preparingScreen.style.display = 'none';
             } else {
-                window.hasMultipleSpeakers = false;
-                updateSpeakerToggleUI(false); // This will turn the switch Grey
-            }
-            const allControlBars = document.querySelectorAll('.controls-bar');
-            allControlBars.forEach(bar => {
-                bar.style.display = 'flex';
-            });
-
-            // Parse Data
-            let finalSegments = null;
-            if (data.result) {
-                let resultObj = data.result;
-                if (typeof resultObj === "string") {
-                    try { resultObj = JSON.parse(resultObj); } catch(e) {}
-                }
-                if (resultObj.segments) finalSegments = resultObj.segments;
-            }
-            if (!finalSegments && data.segments) finalSegments = data.segments;
-
-            if (finalSegments && transcriptWindow) {
-                window.currentSegments = finalSegments;
-                // RENDER
-                transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-            } else if (data.transcription && transcriptWindow) {
-                 transcriptWindow.innerText = data.transcription;
+                // Fallback: If your ID is different in index.html, we target the text directly
+                transcriptWindow.innerHTML = '';
             }
 
-            // === DISABLE SWITCHES IF FAST MODE (Only 1 speaker found) ===
-            // We use the flag calculated during renderParagraphs
-// === Update Toggle Switches based on Results ===
-            const speakerSwitches = document.querySelectorAll('#toggle-speaker, #diarization-toggle');
+            // 2. SHOW CONTROLS
+            const controlBars = document.querySelectorAll('.controls-bar');
+            controlBars.forEach(bar => bar.style.display = 'flex');
 
-            speakerSwitches.forEach(sw => {
-                if (!window.hasMultipleSpeakers) {
-                    // CASE: Single Speaker (Fast Mode)
-                    // Force switch to OFF, disable it, and make it look grey
-                    sw.checked = false;
-                    sw.disabled = true;
-                    sw.parentElement.style.opacity = "0.5";
-                    sw.parentElement.title = "Speaker detection was disabled (or only 1 speaker found).";
-                } else {
-                    // CASE: Multiple Speakers Found
-                    // Force switch to ON, enable it, and show full color
-                    sw.checked = true;
-                    sw.disabled = false;
-                    sw.parentElement.style.opacity = "1";
-                    sw.parentElement.title = "Toggle speaker labels";
-                }
-            });
-        } else if (currentStatus === "failed" || currentStatus === "error") {
-            handleUploadError(data.error || "Unknown error occurred");
-            localStorage.removeItem('activeJobId');
+            // 3. RESET MAIN BUTTON
+            if (mainBtn) {
+                mainBtn.disabled = false;
+                mainBtn.innerText = "Upload and Process";
+            }
+            if (progressBar) progressBar.style.width = "100%";
+            if (statusTxt) statusTxt.innerText = "✅ Done";
+
+            // 4. LOCATE DATA
+            let segments = null;
+            if (rawResult.result && rawResult.result.segments) {
+                segments = rawResult.result.segments;
+            } else if (rawResult.output && rawResult.output.segments) {
+                segments = rawResult.output.segments;
+            } else if (rawResult.segments) {
+                segments = rawResult.segments;
+            }
+
+            if (!segments || !Array.isArray(segments)) {
+                console.error("❌ DATA ERROR: No segments found", rawResult);
+                return;
+            }
+
+            // 5. UPDATE UI & RENDER
+            window.currentSegments = segments;
+            const hasSpeakerData = segments.some(s => s.speaker);
+                updateSpeakerToggleUI(hasSpeakerData);
+
+            if (transcriptWindow && typeof renderParagraphs === 'function') {
+                transcriptWindow.innerHTML = renderParagraphs(segments);
+            }
+            console.log("✅ handleJobUpdate FINISHED SUCCESSFULLY");
+
+        } catch (error) {
+            console.error("⚠️ CRASH in handleJobUpdate:", error);
         }
     };
 
-    // --- 3. ERROR HANDLING ---
-    window.onerror = (msg) => console.error("System Error: " + msg);
-
-    // --- 4. TOOLBAR & DROPDOWN ---
+    // --- 3. TOOLBAR LOGIC ---
     const downloadBtns = document.querySelectorAll('#btn-download');
     const allDownloadMenus = document.querySelectorAll('#download-menu');
 
     if (downloadBtns.length > 0) {
         downloadBtns.forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-
-            newBtn.addEventListener('click', (e) => {
+            btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                allDownloadMenus.forEach(menu => {
-                    menu.classList.toggle('show');
-                });
+                allDownloadMenus.forEach(menu => menu.classList.toggle('show'));
             });
         });
     }
 
     document.addEventListener('click', (e) => {
         allDownloadMenus.forEach(menu => {
-            if (!menu.contains(e.target) && menu.classList.contains('show')) {
-                menu.classList.remove('show');
-            }
+            if (!menu.contains(e.target)) menu.classList.remove('show');
         });
     });
 
-    document.addEventListener('click', () => {
-        if (downloadMenu && downloadMenu.classList.contains('show')) {
-             downloadMenu.classList.remove('show');
-        }
-    });
-
-    // --- 5. HELPERS ---
+    // --- 4. HELPERS ---
     const formatTime = (s) => {
         const mins = Math.floor(s / 60);
         const secs = Math.floor(s % 60);
@@ -179,59 +134,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const formatSpeaker = (raw) => {
         if (!raw) return "דובר לא ידוע";
-        // REMOVED the line that forced SPEAKER_00 to be empty
         const match = raw.match(/SPEAKER_(\d+)/);
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
 
-// --- HTTP FALLBACK POLLING ---
-setInterval(() => {
-    const activeJobId = localStorage.getItem('activeJobId');
-    if (activeJobId) {
-        fetch(`/api/check_status/${activeJobId}`)
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'completed' || data.status === 'success') {
-                    if (window.handleJobUpdate) {
-                        window.handleJobUpdate(data);
-                    }
-                }
-            })
-                .catch(err => console.warn("Poll failed:", err));
+    function updateSpeakerToggleUI(hasSpeakerData) {
+        const diarizationToggle = document.getElementById('diarization-toggle');
+        const speakerSwitch = document.getElementById('toggle-speaker');
+        const switches = [diarizationToggle, speakerSwitch];
+
+        switches.forEach(sw => {
+            if (!sw) return;
+                sw.disabled = false;
+                sw.parentElement.style.opacity = "1";
+                sw.parentElement.style.pointerEvents = "auto";
+            if (hasSpeakerData) {
+                sw.checked = true;
+            }
+        });
     }
+
+    // --- HTTP FALLBACK POLLING ---
+    setInterval(() => {
+        const activeJobId = localStorage.getItem('activeJobId');
+        if (activeJobId) {
+            fetch(`/api/check_status/${activeJobId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'completed' || data.status === 'success') {
+                        if (window.handleJobUpdate) window.handleJobUpdate(data);
+                    }
+                }).catch(err => console.warn("Poll failed:", err));
+        }
     }, 5000);
 
-/**
- * Updates the speaker toggles.
- * If multiple speakers exist, it enables the switch and turns it ON.
- */
-function updateSpeakerToggleUI(hasMultipleSpeakers) {
-    const diarizationToggle = document.getElementById('diarization-toggle');
-    const speakerSwitch = document.getElementById('toggle-speaker');
-    const switches = [diarizationToggle, speakerSwitch];
-
-    switches.forEach(sw => {
-        if (!sw) return;
-
-        if (hasMultipleSpeakers) {
-            // SUCCESS: Multiple speakers found
-            sw.disabled = false;    // Make it clickable again
-            sw.checked = true;      // Flip it to ON (Navy Blue)
-            sw.parentElement.style.opacity = "1";
-            sw.parentElement.style.pointerEvents = "auto";
-        } else {
-            // FAIL/FAST MODE: No speakers or single speaker
-            sw.checked = false;     // Flip to OFF (Grey)
-            sw.disabled = true;     // Lock it
-            sw.parentElement.style.opacity = "0.5";
-            sw.parentElement.style.pointerEvents = "none";
-        }
-    });
-}
-    // --- RENDER LOGIC (FIXED) ---
+    // --- RENDER LOGIC ---
     function renderParagraphs(segments) {
-        // 1. Detect if we have multiple speakers
-        const uniqueSpeakers = new Set(segments.map(s => s.speaker));
+        const uniqueSpeakers = new Set(segments.map(s => s.speaker).filter(Boolean));
         window.hasMultipleSpeakers = uniqueSpeakers.size > 1;
 
         let html = "", group = null;
@@ -247,17 +186,13 @@ function updateSpeakerToggleUI(hasMultipleSpeakers) {
     }
 
     function buildGroupHTML(g) {
-        // SPEAKER_00 is only "Dummy" if it is the ONLY speaker in the whole file
         const isDummy = (g.speaker === "SPEAKER_00" && !window.hasMultipleSpeakers);
-
         const speakerStyle = isDummy ? 'style="display:none"' : `style="color: ${getSpeakerColor(g.speaker)}"`;
         const speakerText = isDummy ? '' : formatSpeaker(g.speaker);
         const rowClass = isDummy ? 'paragraph-row no-speaker' : 'paragraph-row';
-
         const text = g.sentences.map(s => `<span class="clickable-sent" onclick="jumpTo(${s.start})">${s.text} </span>`).join("");
 
-        return `
-            <div class="${rowClass}">
+        return `<div class="${rowClass}">
                 <div class="ts-col">${formatTime(g.start)}</div>
                 <div class="text-col">
                     <span class="speaker-label" ${speakerStyle}>${speakerText}</span>
@@ -266,15 +201,12 @@ function updateSpeakerToggleUI(hasMultipleSpeakers) {
             </div>`;
     }
 
-    // --- 6. EXPORT ACTIONS ---
+    // --- 5. EXPORT ACTIONS ---
     window.downloadFile = function(type) {
-        if (!window.currentSegments.length) return alert("No transcript available to export.");
+        if (!window.currentSegments.length) return alert("No transcript available.");
         const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
         const showTime = document.getElementById('toggle-time')?.checked;
         const showSpeaker = document.getElementById('toggle-speaker')?.checked;
-
-        if (type === 'docx' && typeof docx === 'undefined') return alert("Error: DOCX library not loaded.");
-        if (typeof saveAs === 'undefined') return alert("Error: FileSaver library not loaded.");
 
         if (type === 'docx') {
             const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
@@ -288,7 +220,6 @@ function updateSpeakerToggleUI(hasMultipleSpeakers) {
                 current.text += seg.text + " ";
             });
             if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
-
             const doc = new Document({ sections: [{ properties: {}, children: children }] });
             Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
         } else {
@@ -309,8 +240,6 @@ function updateSpeakerToggleUI(hasMultipleSpeakers) {
     function createDocxParagraphs(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
-
-        // Fix: Use the same logic as the HTML render
         const isDummy = (group.speaker === "SPEAKER_00" && !window.hasMultipleSpeakers);
         const effectiveShowSpeaker = showSpeaker && !isDummy;
 
@@ -320,88 +249,34 @@ function updateSpeakerToggleUI(hasMultipleSpeakers) {
             if (effectiveShowSpeaker) label += formatSpeaker(group.speaker);
 
             paragraphs.push(new Paragraph({
-                children: [new TextRun({
-                    text: label,
-                    bold: true,
-                    color: getSpeakerColor(group.speaker).replace('#', ''),
-                    size: 20,
-                    rightToLeft: true,
-                })],
-                alignment: AlignmentType.RIGHT,
-                bidirectional: true
+                children: [new TextRun({ text: label, bold: true, color: getSpeakerColor(group.speaker).replace('#', ''), size: 20, rightToLeft: true })],
+                alignment: AlignmentType.RIGHT, bidirectional: true
             }));
         }
         paragraphs.push(new Paragraph({
-            children: [new TextRun({
-                text: group.text.trim(),
-                size: 24,
-                rightToLeft: true,
-            })],
-            alignment: AlignmentType.RIGHT,
-            bidirectional: true,
-            spacing: { after: 300 }
+            children: [new TextRun({ text: group.text.trim(), size: 24, rightToLeft: true })],
+            alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { after: 300 }
         }));
         return paragraphs;
     }
 
-    window.toggleEditMode = () => {
-        transcriptWindow.classList.add('is-editing');
-        const actions = document.getElementById('edit-actions');
-        if (actions) actions.style.display = 'flex';
-        transcriptWindow.querySelectorAll('.clickable-sent').forEach(s => s.contentEditable = "true");
-    };
+    window.jumpTo = (time) => { if (mainAudio) { mainAudio.currentTime = time; mainAudio.play(); } };
 
-    window.saveEdits = () => {
-        transcriptWindow.querySelectorAll('.clickable-sent').forEach((span, i) => {
-            if (window.currentSegments[i]) window.currentSegments[i].text = span.innerText.trim();
-        });
-        transcriptWindow.classList.remove('is-editing');
-        transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-        const actions = document.getElementById('edit-actions');
-        if (actions) actions.style.display = 'none';
-    };
-
-    window.copyTranscript = () => {
-        const text = window.currentSegments.map(s => s.text).join(" ");
-        navigator.clipboard.writeText(text).then(() => alert("Transcript Copied!"));
-    };
-
-    window.jumpTo = (time) => {
-        if (mainAudio) { mainAudio.currentTime = time; mainAudio.play(); }
-    };
-
-    // --- 7. UPLOAD & UI HELPERS ---
-    function handleUploadError(msg) {
-        if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-        if (statusTxt) {
-        statusTxt.innerText = "Error: " + msg;
-        statusTxt.style.color = "#ef4444";
-        }
-        if (mainBtn) {
-        mainBtn.disabled = false;
-        mainBtn.innerText = "Upload and Process";
-        }
-        if (fileInput) fileInput.value = '';
-    }
-
+    // --- 6. UPLOAD HELPERS ---
     function resetUI() {
-        if (pContainer) pContainer.style.display = 'block';
         if (progressBar) progressBar.style.width = "0%";
-        if (statusTxt) {
-        statusTxt.style.color = "#666";
-        statusTxt.innerText = "Uploading...";
-        }
+        if (statusTxt) statusTxt.innerText = "Uploading...";
         if (mainBtn) {
-        mainBtn.disabled = true;
-        mainBtn.innerText = "Processing...";
+            mainBtn.disabled = true;
+            mainBtn.innerText = "Processing...";
         }
-        const allControlBars = document.querySelectorAll('.controls-bar');
-        allControlBars.forEach(bar => {
-            bar.style.display = 'none';
-        });
-        if (transcriptWindow) transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
+        // Ensure "Preparing file..." appears in the window
+        if (transcriptWindow) {
+            transcriptWindow.innerHTML = `<p id="preparing-screen" style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
+        }
 
-        localStorage.removeItem('speakerMap');
+        const controlBars = document.querySelectorAll('.controls-bar');
+        controlBars.forEach(bar => bar.style.display = 'none');
     }
 
     function startFakeProgress() {
@@ -416,38 +291,27 @@ function updateSpeakerToggleUI(hasMultipleSpeakers) {
         }, 1000);
     }
 
-    // --- 8. MAIN UPLOAD LISTENER ---
     if (fileInput) {
         fileInput.addEventListener('change', async function() {
             const file = this.files[0];
             if (!file) return;
-
-            this.value = '';
             window.originalFileName = file.name;
             resetUI();
 
             if (audioSource && mainAudio && audioContainer) {
-            audioSource.src = URL.createObjectURL(file);
-            mainAudio.load();
-            audioContainer.style.display = 'block';
+                audioSource.src = URL.createObjectURL(file);
+                mainAudio.load();
+                audioContainer.style.display = 'block';
             }
 
             try {
-                statusTxt.innerText = "Preparing secure upload...";
-
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ filename: file.name, filetype: file.type })
                 });
-
-                if (!signRes.ok) throw new Error("Sign Failed");
-
                 const signData = await signRes.json();
-                const { data } = signData;
-                const url = data.signedRequest || signData.url;
-                const key = data.s3Key || signData.key;
-                const jobId = data.jobId;
+                const { url, key, jobId } = signData.data;
 
                 localStorage.setItem('activeJobId', jobId);
                 if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
@@ -459,41 +323,26 @@ function updateSpeakerToggleUI(hasMultipleSpeakers) {
                 xhr.upload.onprogress = (e) => {
                     if (e.lengthComputable) {
                         const percent = Math.round((e.loaded / e.total) * 100);
-                        progressBar.style.width = percent + "%";
-                        statusTxt.innerText = `Uploading to Storage: ${percent}%`;
+                        if (progressBar) progressBar.style.width = percent + "%";
+                        if (statusTxt) statusTxt.innerText = `Uploading: ${percent}%`;
                     }
                 };
 
                 xhr.onload = async () => {
                     if (xhr.status === 200) {
-                        statusTxt.innerText = "Starting AI Processing...";
-
-                        const speakerEl = document.getElementById('speaker-count');
-                        const langEl = document.getElementById('audio-lang');
-                        const diarizationToggle = document.getElementById('diarization-toggle');
-
                         await fetch('/api/trigger_processing', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                s3Key: key,
-                                jobId: jobId,
-                                speakerCount: speakerEl ? speakerEl.value : 2,
-                                language: langEl ? langEl.value : 'he',
-                                task: 'transcribe',
-                                diarization: diarizationToggle ? diarizationToggle.checked : false
+                                s3Key: key, jobId: jobId,
+                                diarization: document.getElementById('diarization-toggle')?.checked || false
                             })
                         });
                         startFakeProgress();
-                    } else {
-                        handleUploadError("Storage Upload Failed");
                     }
                 };
-                xhr.onerror = () => handleUploadError("Network Error during Upload");
                   xhr.send(file);
-            } catch (err) {
-                handleUploadError("Initialization Failed: " + err.message);
-            }
+            } catch (err) { console.error(err); }
         });
     }
 });

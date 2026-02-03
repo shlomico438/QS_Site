@@ -56,39 +56,33 @@
                     <input type="checkbox" id="diarization-toggle" onchange="toggleSpeakerInput()">
                     <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px;"></span>
                     <style>
-                        .switch {
-                            position: relative; display: inline-block; width: 44px; height: 24px;
-                        }
+                        /* The Switch Container */
+                        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
                         .switch input { opacity: 0; width: 0; height: 0; }
 
-                        /* The slider - OFF State */
+                        /* The Slider - Grey when OFF */
                         .slider {
                             position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
-                            background-color: #cbd5e1; /* Light greyish-blue when off */
-                            transition: .4s; border-radius: 34px;
-                            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+                            background-color: #cbd5e1; transition: .4s; border-radius: 34px;
                         }
 
                         .slider:before {
                             position: absolute; content: ""; height: 18px; width: 18px;
-                            left: 3px; bottom: 3px; background-color: white;
-                            transition: .4s; border-radius: 50%;
-                            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                            left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%;
                         }
 
-                        /* THE FIX: Forced Navy Blue ON State */
+                        /* THE FIX: Forced Navy Blue when ON */
                         input:checked + .slider {
                             background-color: #1e3a8a !important; /* Matches your button exactly */
-                            box-shadow: 0 0 8px rgba(30, 58, 138, 0.4);
                         }
 
                         input:checked + .slider:before {
                             transform: translateX(20px);
                         }
 
-                        /* Style for Disabled state */
+                        /* Style for Locked/Disabled State */
                         input:disabled + .slider {
-                            background-color: #f1f5f9;
+                            background-color: #e2e8f0;
                             opacity: 0.6;
                             cursor: not-allowed;
                         }
