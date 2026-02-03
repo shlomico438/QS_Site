@@ -221,71 +221,58 @@ def on_join(data):
 
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
-    import time
     import boto3
     import os
+    import time
 
     if SIMULATION_MODE:
-        print("🔮 SIMULATION: Skipping AWS S3 Signing")
-        return jsonify({
-            'data': {
-                'signedRequest': 'http://localhost:8000/api/mock-upload',
-                'url': 'http://localhost:8000/api/mock-upload',
-                'jobId': f"job_sim_{int(time.time())}",
-                's3Key': 'simulation_key'
-            }
-        })
-    else:
-        data = request.json
-        filename = data.get('filename')
-        file_type = data.get('filetype')
+        return jsonify({'data': {'url': 'http://localhost:8000/api/mock-upload', 'jobId': 'sim', 's3Key': 'sim'}})
 
-        # --- THE FIX: Use standard AWS naming conventions ---
-        # Ensure these are set in your Koyeb/RunPod Environment Variables
-        key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-        secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-        region = os.environ.get("AWS_REGION", "eu-north-1")
+    data = request.json
+    filename = data.get('filename')
+    file_type = data.get('filetype')
 
-        # Use BUCKET_NAME if S3_BUCKET is empty
-        bucket = os.environ.get("S3_BUCKET") or "quickscribe-v2-12345"
+    # --- THE FIX: Standardize names to match Koyeb/RunPod ---
+    # We pull from the environment first
+    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "eu-north-1")
+    bucket = os.environ.get("S3_BUCKET") or "quickscribe-v2-12345"
 
-        print(f"DEBUG CHECK: Key ID Present? {bool(key_id)} | Bucket: {bucket}")
+    # SAFETY CHECK: If keys are missing, don't try to sign (prevents 500 error)
+    if not key_id or not secret_key:
+        print(f"❌ ERROR: AWS Credentials missing. ID: {bool(key_id)}, Secret: {bool(secret_key)}")
+        return jsonify({"status": "error", "message": "Backend AWS credentials not configured"}), 500
 
-        # Initialize S3 Client with the correct variables
+    try:
         s3_client = boto3.client(
             's3',
             aws_access_key_id=key_id,
-            aws_secret_access_key=secret,
+            aws_secret_access_key=secret_key,
             region_name=region
         )
 
-        # Create unique Job ID and S3 Key
         base_name, extension = os.path.splitext(filename)
         job_id = f"job_{int(time.time())}_{base_name}"
         s3_key = f"input/{job_id}{extension}"
 
-        try:
-            # Generate the Presigned URL
-            presigned_url = s3_client.generate_presigned_url(
-                'put_object',
-                Params={
-                    'Bucket': bucket,
-                    'Key': s3_key,
-                    'ContentType': file_type  # Must match frontend xhr.setRequestHeader
-                },
-                ExpiresIn=3600
-            )
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': bucket, 'Key': s3_key, 'ContentType': file_type},
+            ExpiresIn=3600
+        )
 
-            return jsonify({
-                'data': {
-                    'url': presigned_url,
-                    's3Key': s3_key,
-                    'jobId': job_id
-                }
-            })
-        except Exception as e:
-            print(f"❌ S3 Signing Error: {str(e)}")
-            return jsonify({"status": "error", "message": str(e)}), 500
+        # Return exactly what the frontend expects to avoid 'undefined' errors
+        return jsonify({
+            'data': {
+                'url': presigned_url,
+                's3Key': s3_key,
+                'jobId': job_id
+            }
+        })
+    except Exception as e:
+        print(f"❌ S3 Signing Crash: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
