@@ -1,34 +1,38 @@
-
 /* --- APP LAYOUT --- */
-main.main-content,
-.app-mode,
-.main-app-container,
-.transcription-wrapper {
-    min-height: 0;
+main.main-content {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    overflow: hidden !important;
+    padding: 0 !important;
 }
 
 .app-mode {
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    background: #f8f9fa;
-}
-.main-app-container {
-    width: 100%;
-    max-width: 900px;
-    height: 100vh;
-
+    flex: 1;
     display: flex;
     flex-direction: column;
+    height: 100%;
+    background-color: #f8f9fa;
+    overflow: hidden;
+}
 
-    padding: 16px;
+.main-app-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 15px;
+    max-width: 1000px;
+    margin: 0 auto;
+    width: 100%;
     box-sizing: border-box;
 }
 
-/* fixed sections */
-#audio-player-container,
-.controls-bar {
-    flex-shrink: 0;
+/* --- AUDIO PLAYER --- */
+#audio-player-container {
+    flex: 0 0 auto;
+    margin-bottom: 12px;
+    display: none;
+    width: 100%;
 }
 
 audio {
@@ -38,25 +42,20 @@ audio {
 
 /* --- HORIZONTAL CONTROLS BAR --- */
 .controls-bar {
-    display: flex;
+    flex: 0 0 auto;
+    padding: 8px 15px;
+    background: #f1f3f5;
+    border: 1px solid #e5e7eb;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    display: none; /* Shown by logic after transcription */
     justify-content: space-between;
     align-items: center;
-    gap: 16px;
-    padding: 12px;
-    background: #ffffff;
-    border-radius: 8px;
-    margin-bottom: 12px;
 }
-/* left toggles */
-.toggles-group.toggles-group {
+
+.toggles-group, .toolbar-group, .action-buttons {
     display: flex;
-    gap: 12px;
-    align-items: center;
-}
-/* right toolbar */
-.toolbar-group {
-    display: flex;
-    gap: 10px;
+    gap: 15px;
     align-items: center;
 }
 
@@ -75,7 +74,6 @@ audio {
     width: 34px;
     height: 18px;
 }
-
 
 .toggle-switch input { opacity: 0; width: 0; height: 0; }
 
@@ -134,19 +132,24 @@ input:checked + .slider:before { transform: translateX(16px); }
 /* --- TRANSCRIPTION WINDOW & SPEAKER COLOR --- */
 .transcription-wrapper {
     flex: 1;
-    min-height: 0;
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    position: relative;
 }
 
 #transcript-window {
     flex: 1;
     overflow-y: auto;
+    padding: 20px;
     background: #fff;
-    border-radius: 8px;
-    padding: 16px;
+    border: 1px solid #e5e7eb;
+    border-radius: 0 0 8px 8px;
+    direction: rtl;
+    text-align: right;
+    font-size: 1.1rem;
+    line-height: 1.6;
 }
-
 
 .paragraph-row {
     display: flex;
@@ -188,13 +191,10 @@ input:checked + .slider:before { transform: translateX(16px); }
     display: none !important;
 }
 
-
 /* --- DROPDOWN --- */
 .dropdown-menu {
     position: absolute;
-    top: 100%;
-    right: 0;
-
+    top: 110%; right: 0;
     background: white;
     border: 1px solid #ddd;
     border-radius: 8px;
@@ -202,8 +202,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     display: none;
     flex-direction: column;
     min-width: 140px;
-    z-index: 9999; /* Keep this high! */
+    z-index: 100;
 }
+
 .dropdown-menu.show { display: flex; }
 
 .dropdown-item {
@@ -235,14 +236,14 @@ input:checked + .slider:before { transform: translateX(16px); }
     transition: width 0.3s ease;
 }
 
-/* --- UPLOAD ZONE --- */
+/* --- UPLOAD ZONE & SHADED BUTTON --- */
 .upload-zone {
-    flex-shrink: 0;
-    background: #fff;
-    padding: 12px;
-    border-radius: 8px;
+    flex: 0 0 auto;
+    padding: 15px;
+    text-align: center;
+    background: #f8f9fa;
+    border-top: 1px solid #eee;
 }
-
 
 .btn-primary {
     padding: 10px 40px;
@@ -351,11 +352,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     }
 
     /* 3. Adjust Transcript Window Padding */
-   .main-app-container {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+    .main-app-container {
+        padding: 10px;
+        width: 95%;
     }
 
     /* 4. Allow Toolbar to wrap */
@@ -409,25 +408,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     }
 
     /* Ensure the transcript content doesn't force width issues */
- /* Find this inside the @media (max-width: 768px) block */
     #transcript-window {
-        /* --- DELETE OR COMMENT OUT THIS LINE --- */
-        /* height: 60vh; */
-
-        /* --- ADD THESE LINES INSTEAD --- */
-        flex: 1;                /* Grow/Shrink to fit exactly */
         height: auto !important;
-        max-height: none !important;
-        overflow-y: auto !important;
-        /* ------------------------------- */
-
-        /* Keep your existing visual styles below */
-        background: #f9fafb;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 0px;
-        display: block;
+        max-height: none !important; /* Let the wrapper handle the height */
     }
 
     /* 5. FIXED BOTTOM CONTROLS (Upload Zone) */
@@ -446,21 +429,40 @@ input:checked + .slider:before { transform: translateX(16px); }
 
     /* Optional: Compact the header to save more space */
     .navbar {
-        display: flex;
-        justify-content: space-between;
         padding: 0.5rem 1rem !important;
         min-height: auto !important;
-        position: relative;
-        padding: 1rem;
     }
+    /* --- BASE NAVBAR STYLES (Desktop) --- */
+.navbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    background: #fff;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    position: relative;
+    z-index: 1000;
+}
+
+.brand-logo {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #333;
+    text-decoration: none;
+}
+
+.nav-links a {
+    margin-left: 20px;
+    text-decoration: none;
+    color: #555;
+    font-weight: 500;
+}
 
 /* Hide Hamburger on Desktop */
 .hamburger-menu {
     display: none;
 }
-body {
-background: red !important;
-}
+
 /* --- MOBILE STYLES (Hamburger & Centered Logo) --- */
 @media screen and (max-width: 768px) {
     .navbar {
@@ -472,8 +474,9 @@ background: red !important;
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
-        z-index: 2;
+        width: auto;
     }
+
     /* 2. Show the Hamburger Icon (3 Lines) */
     .hamburger-menu {
         display: flex;
