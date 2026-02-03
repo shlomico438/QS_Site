@@ -56,11 +56,31 @@
                     <input type="checkbox" id="diarization-toggle" onchange="toggleSpeakerInput()">
                     <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px;"></span>
                     <style>
-                        .slider:before {
-                            position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%;
+                        /* Default background when the switch is OFF (Light Grey) */
+                        .slider {
+                            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+                            background-color: #ccc; transition: .4s; border-radius: 34px;
                         }
-                        input:checked + .slider { background-color: #9333ea; }
-                        input:checked + .slider:before { transform: translateX(18px); }
+
+                        .slider:before {
+                            position: absolute; content: ""; height: 16px; width: 16px;
+                            left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%;
+                        }
+
+                        /* Background when the switch is ON (Navy Blue) */
+                        input:checked + .slider {
+                            background-color: #1e3a8a;
+                        }
+
+                        input:checked + .slider:before {
+                            transform: translateX(18px);
+                        }
+
+                        /* Visual style for the DISABLED state (Fast Mode) */
+                        input:disabled + .slider {
+                            background-color: #94a3b8;
+                            cursor: not-allowed;
+                        }
                     </style>
                 </label>
 

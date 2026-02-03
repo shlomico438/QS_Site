@@ -94,22 +94,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // === DISABLE SWITCHES IF FAST MODE (Only 1 speaker found) ===
             // We use the flag calculated during renderParagraphs
+// === Update Toggle Switches based on Results ===
+            const speakerSwitches = document.querySelectorAll('#toggle-speaker, #diarization-toggle');
+
             speakerSwitches.forEach(sw => {
                 if (!window.hasMultipleSpeakers) {
-                    // CASE 1: Single Speaker (Fast Mode) -> Force OFF and Disabled
+                    // CASE: Single Speaker (Fast Mode)
+                    // Force switch to OFF, disable it, and make it look grey
                     sw.checked = false;
                     sw.disabled = true;
-                    sw.parentElement.title = "Speaker detection was disabled (or only 1 speaker found).";
                     sw.parentElement.style.opacity = "0.5";
+                    sw.parentElement.title = "Speaker detection was disabled (or only 1 speaker found).";
                 } else {
-                    // CASE 2: Multiple Speakers -> Force ON and Enabled
-                    sw.checked = true;  // <--- THIS WAS MISSING
+                    // CASE: Multiple Speakers Found
+                    // Force switch to ON, enable it, and show full color
+                    sw.checked = true;
                     sw.disabled = false;
-                    sw.parentElement.title = "Toggle speaker labels";
                     sw.parentElement.style.opacity = "1";
+                    sw.parentElement.title = "Toggle speaker labels";
                 }
             });
-
         } else if (currentStatus === "failed" || currentStatus === "error") {
             handleUploadError(data.error || "Unknown error occurred");
             localStorage.removeItem('activeJobId');
