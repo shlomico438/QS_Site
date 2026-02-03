@@ -68,6 +68,14 @@ document.addEventListener('DOMContentLoaded', () => {
             mainBtn.innerText = "Process Another File";
             mainBtn.disabled = false;
             }
+            // Example usage inside your existing result handler
+            if (result.num_speakers > 1) {
+                window.hasMultipleSpeakers = true;
+                updateSpeakerToggleUI(true); // This will turn the switch Navy Blue
+            } else {
+                window.hasMultipleSpeakers = false;
+                updateSpeakerToggleUI(false); // This will turn the switch Grey
+            }
             const allControlBars = document.querySelectorAll('.controls-bar');
             allControlBars.forEach(bar => {
                 bar.style.display = 'flex';
@@ -193,6 +201,33 @@ setInterval(() => {
     }
     }, 5000);
 
+/**
+ * Updates the speaker toggles.
+ * If multiple speakers exist, it enables the switch and turns it ON.
+ */
+function updateSpeakerToggleUI(hasMultipleSpeakers) {
+    const diarizationToggle = document.getElementById('diarization-toggle');
+    const speakerSwitch = document.getElementById('toggle-speaker');
+    const switches = [diarizationToggle, speakerSwitch];
+
+    switches.forEach(sw => {
+        if (!sw) return;
+
+        if (hasMultipleSpeakers) {
+            // SUCCESS: Multiple speakers found
+            sw.disabled = false;    // Make it clickable again
+            sw.checked = true;      // Flip it to ON (Navy Blue)
+            sw.parentElement.style.opacity = "1";
+            sw.parentElement.style.pointerEvents = "auto";
+        } else {
+            // FAIL/FAST MODE: No speakers or single speaker
+            sw.checked = false;     // Flip to OFF (Grey)
+            sw.disabled = true;     // Lock it
+            sw.parentElement.style.opacity = "0.5";
+            sw.parentElement.style.pointerEvents = "none";
+        }
+    });
+}
     // --- RENDER LOGIC (FIXED) ---
     function renderParagraphs(segments) {
         // 1. Detect if we have multiple speakers
