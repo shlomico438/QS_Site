@@ -218,15 +218,15 @@ def on_join(data):
             # Send it to this specific user who just reconnected
             socketio.emit('job_status_update', job_results_cache[room], room=request.sid)
 
+
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
     import time
     import boto3
+    import os
 
     if SIMULATION_MODE:
-        import time
         print("🔮 SIMULATION: Skipping AWS S3 Signing")
-        # Return a URL that points to our own server instead of S3
         return jsonify({
             'data': {
                 'signedRequest': 'http://localhost:8000/api/mock-upload',
@@ -240,61 +240,52 @@ def sign_s3():
         filename = data.get('filename')
         file_type = data.get('filetype')
 
-        # --- DEBUG: PRINT CREDENTIAL STATUS ---
+        # --- THE FIX: Use standard AWS naming conventions ---
+        # Ensure these are set in your Koyeb/RunPod Environment Variables
         key_id = os.environ.get("AWS_ACCESS_KEY_ID")
         secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-        region = os.environ.get("AWS_REGION")
+        region = os.environ.get("AWS_REGION", "eu-north-1")
 
-        print(f"DEBUG CHECK:")
-        print(f"1. Key ID Present? {bool(key_id)} (Length: {len(key_id) if key_id else 0})")
-        print(f"2. Secret Present? {bool(secret)} (Length: {len(secret) if secret else 0})")
-        print(f"3. Region: '{region}'")
+        # Use BUCKET_NAME if S3_BUCKET is empty
+        bucket = os.environ.get("S3_BUCKET") or "quickscribe-v2-12345"
 
-        # Initialize S3 Client ONLY when the user actually asks for it
-        # s3_client = boto3.client(
-        #     "s3",
-        #     aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-        #     aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-        #     region_name=os.environ.get("AWS_REGION", "eu-north-1")
-        # )
+        print(f"DEBUG CHECK: Key ID Present? {bool(key_id)} | Bucket: {bucket}")
+
+        # Initialize S3 Client with the correct variables
         s3_client = boto3.client(
             's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_KEY'),
-            region_name = os.environ.get('AWS_REGION')
+            aws_access_key_id=key_id,
+            aws_secret_access_key=secret,
+            region_name=region
         )
-        # 1. Split filename to get extension
+
+        # Create unique Job ID and S3 Key
         base_name, extension = os.path.splitext(filename)
-
-        # 2. Create a clean Job ID (WITHOUT extension)
-        # This prevents the output JSON from being named ".mp4"
         job_id = f"job_{int(time.time())}_{base_name}"
-
-        # 3. Set the S3 Key (WITH extension)
-        # The file on S3 must have the extension to be valid
         s3_key = f"input/{job_id}{extension}"
 
+        try:
+            # Generate the Presigned URL
+            presigned_url = s3_client.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': bucket,
+                    'Key': s3_key,
+                    'ContentType': file_type  # Must match frontend xhr.setRequestHeader
+                },
+                ExpiresIn=3600
+            )
 
-        # 3. Generate the "VIP Pass" (Presigned URL)
-        presigned_url = s3_client.generate_presigned_url(
-            'put_object',
-            Params={
-                'Bucket': S3_BUCKET,
-                'Key': s3_key,
-                'ContentType': file_type
-            },
-            ExpiresIn=3600
-        )
-
-        # 4. Return the specific structure the JavaScript expects
-        return jsonify({
-            'data': {
-                'signedRequest': presigned_url,
-                'url': f"https://{S3_BUCKET}.s3.amazonaws.com/{s3_key}",
-                'jobId': job_id,
-                's3Key': s3_key
-            }
-    })
+            return jsonify({
+                'data': {
+                    'url': presigned_url,
+                    's3Key': s3_key,
+                    'jobId': job_id
+                }
+            })
+        except Exception as e:
+            print(f"❌ S3 Signing Error: {str(e)}")
+            return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
