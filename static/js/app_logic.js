@@ -1,15 +1,11 @@
    // --- 1. GLOBAL SOCKET INITIALIZATION ---
-// We define listeners here (outside DOMContentLoaded) so we never miss a message
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
-        // 1. Check if we are actually waiting for a job
         const savedJobId = localStorage.getItem('activeJobId');
         if (savedJobId) {
-            // CASE A: User is waiting -> Show the status!
             console.log("🔄 Re-joining room:", savedJobId);
             socket.emit('join', { room: savedJobId });
 
-            // Check immediately upon reconnection
             fetch(`/api/check_status/${savedJobId}`)
                 .then(res => res.json())
                 .then(data => {
@@ -18,7 +14,6 @@ if (typeof socket !== 'undefined') {
                      }
                 }).catch(() => {});
 
-            // Optional: Update UI only if a job exists
             const statusTxt = document.getElementById('upload-status');
             if (statusTxt) statusTxt.innerText = "♻️ Connection Restored. Checking status...";
         }
@@ -26,7 +21,6 @@ if (typeof socket !== 'undefined') {
 
     socket.on('disconnect', (reason) => {
         console.warn("⚠️ Socket Lost Connection:", reason);
-        // If Koyeb kills the connection, try to kickstart it
         if (reason === "io server disconnect") {
             socket.connect();
         }
@@ -58,8 +52,9 @@ document.addEventListener('DOMContentLoaded', () => {
     window.fakeProgressInterval = null;
     window.currentSegments = [];
     window.originalFileName = "transcript";
+    window.hasMultipleSpeakers = false; // NEW FLAG
 
-    // --- 2. THE HANDLER (Attached to window so global socket can see it) ---
+    // --- 2. THE HANDLER ---
  window.handleJobUpdate = function(data) {
         const currentStatus = data.status ? data.status.toLowerCase() : "";
 
@@ -91,29 +86,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (finalSegments && transcriptWindow) {
                 window.currentSegments = finalSegments;
+                // RENDER
                 transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
             } else if (data.transcription && transcriptWindow) {
                  transcriptWindow.innerText = data.transcription;
             }
 
-            // === NEW: DISABLE SPEAKER TOGGLES IF FAST MODE ===
-            let isFastMode = false;
-            let firstSeg = null;
-
-            if (data.result && data.result.segments) firstSeg = data.result.segments[0];
-            else if (data.segments) firstSeg = data.segments[0];
-
-            if (firstSeg && firstSeg.speaker === "SPEAKER_00") {
-                isFastMode = true;
-            }
-
+            // === DISABLE SWITCHES IF FAST MODE (Only 1 speaker found) ===
+            // We use the flag calculated during renderParagraphs
             const speakerSwitches = document.querySelectorAll('#toggle-speaker, input[id$="speaker"]');
 
                 speakerSwitches.forEach(sw => {
-                if (isFastMode) {
+                if (!window.hasMultipleSpeakers) {
                     sw.checked = false;
                     sw.disabled = true;
-                    sw.parentElement.title = "Speaker detection was disabled for this file.";
+                    sw.parentElement.title = "Speaker detection was disabled (or only 1 speaker found).";
                     sw.parentElement.style.opacity = "0.5";
                 } else {
                     sw.disabled = false;
@@ -141,7 +128,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             newBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                // Toggle ALL menus found
                 allDownloadMenus.forEach(menu => {
                     menu.classList.toggle('show');
                 });
@@ -179,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const formatSpeaker = (raw) => {
         if (!raw) return "דובר לא ידוע";
-        if (raw === "SPEAKER_00") return "";
+        // REMOVED the line that forced SPEAKER_00 to be empty
         const match = raw.match(/SPEAKER_(\d+)/);
         return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
     };
@@ -188,7 +174,6 @@ document.addEventListener('DOMContentLoaded', () => {
 setInterval(() => {
     const activeJobId = localStorage.getItem('activeJobId');
     if (activeJobId) {
-        console.log("🚑 Safety Check: Asking server via HTTP...");
         fetch(`/api/check_status/${activeJobId}`)
             .then(response => response.json())
             .then(data => {
@@ -202,7 +187,12 @@ setInterval(() => {
     }
     }, 5000);
 
+    // --- RENDER LOGIC (FIXED) ---
     function renderParagraphs(segments) {
+        // 1. Detect if we have multiple speakers
+        const uniqueSpeakers = new Set(segments.map(s => s.speaker));
+        window.hasMultipleSpeakers = uniqueSpeakers.size > 1;
+
         let html = "", group = null;
         segments.forEach(seg => {
             if (!group || group.speaker !== seg.speaker) {
@@ -216,7 +206,9 @@ setInterval(() => {
     }
 
     function buildGroupHTML(g) {
-        const isDummy = (g.speaker === "SPEAKER_00");
+        // SPEAKER_00 is only "Dummy" if it is the ONLY speaker in the whole file
+        const isDummy = (g.speaker === "SPEAKER_00" && !window.hasMultipleSpeakers);
+
         const speakerStyle = isDummy ? 'style="display:none"' : `style="color: ${getSpeakerColor(g.speaker)}"`;
         const speakerText = isDummy ? '' : formatSpeaker(g.speaker);
         const rowClass = isDummy ? 'paragraph-row no-speaker' : 'paragraph-row';
@@ -277,7 +269,8 @@ setInterval(() => {
         const { Paragraph, TextRun, AlignmentType } = docx;
         const paragraphs = [];
 
-        const isDummy = (group.speaker === "SPEAKER_00");
+        // Fix: Use the same logic as the HTML render
+        const isDummy = (group.speaker === "SPEAKER_00" && !window.hasMultipleSpeakers);
         const effectiveShowSpeaker = showSpeaker && !isDummy;
 
         if (effectiveShowSpeaker || showTime) {
@@ -401,7 +394,6 @@ setInterval(() => {
             try {
                 statusTxt.innerText = "Preparing secure upload...";
 
-                // 1. Get Signed URL
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
