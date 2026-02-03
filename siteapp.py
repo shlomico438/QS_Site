@@ -227,28 +227,28 @@ def sign_s3():
 
     if SIMULATION_MODE:
         return jsonify({'data': {'url': 'http://localhost:8000/api/mock-upload', 'jobId': 'sim', 's3Key': 'sim'}})
+    else:
+        data = request.json
+        filename = data.get('filename')
+        file_type = data.get('filetype')
 
-    data = request.json
-    filename = data.get('filename')
-    file_type = data.get('filetype')
+        # 1. Use consistent standard names for your environment variables
+        # Make sure these match exactly what you typed in Koyeb/RunPod
+        key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+        secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        region = os.environ.get("AWS_REGION", "eu-north-1")
 
-    # --- THE FIX: Standardize names to match Koyeb/RunPod ---
-    # We pull from the environment first
-    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("AWS_REGION", "eu-north-1")
-    bucket = os.environ.get("S3_BUCKET") or "quickscribe-v2-12345"
+        # 2. DEBUG: Verify they aren't empty before initializing
+        print(f"DEBUG: Key ID Present? {bool(key_id)} | Secret Present? {bool(secret)}")
 
-    # SAFETY CHECK: If keys are missing, don't try to sign (prevents 500 error)
-    if not key_id or not secret_key:
-        print(f"鉂?ERROR: AWS Credentials missing. ID: {bool(key_id)}, Secret: {bool(secret_key)}")
-        return jsonify({"status": "error", "message": "Backend AWS credentials not configured"}), 500
+        if not key_id or not secret:
+            return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
 
-    try:
+        # 3. Initialize with the CORRECT variables
         s3_client = boto3.client(
             's3',
             aws_access_key_id=key_id,
-            aws_secret_access_key=secret_key,
+            aws_secret_access_key=secret,
             region_name=region
         )
 
@@ -256,13 +256,17 @@ def sign_s3():
         job_id = f"job_{int(time.time())}_{base_name}"
         s3_key = f"input/{job_id}{extension}"
 
+        # 4. Generate the URL
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
-            Params={'Bucket': bucket, 'Key': s3_key, 'ContentType': file_type},
+            Params={
+                'Bucket': S3_BUCKET,
+                'Key': s3_key,
+                'ContentType': file_type  # MUST match frontend header
+            },
             ExpiresIn=3600
         )
 
-        # Return exactly what the frontend expects to avoid 'undefined' errors
         return jsonify({
             'data': {
                 'url': presigned_url,
@@ -270,10 +274,6 @@ def sign_s3():
                 'jobId': job_id
             }
         })
-    except Exception as e:
-        print(f"鉂?S3 Signing Crash: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
