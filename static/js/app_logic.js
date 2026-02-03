@@ -105,20 +105,41 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- 3. ERROR HANDLING ---
     window.onerror = (msg) => console.error("System Error: " + msg);
 
-// --- 4. TOOLBAR & DROPDOWN ---
-    // Note: 'downloadMenu' is already defined at the top of the file, so we don't say 'const' again.
+
+// --- 4. TOOLBAR & DROPDOWN (Final Fix) ---
     const downloadBtns = document.querySelectorAll('#btn-download');
+    // FIX: Select ALL menus (Mobile + PC) to ensure we get the right one
+    const allDownloadMenus = document.querySelectorAll('#download-menu');
 
     if (downloadBtns.length > 0) {
         downloadBtns.forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation(); // Stop the click from closing the menu immediately
-                if (downloadMenu) {
-                    downloadMenu.classList.toggle('show');
-                }
-    });
+            // Remove old listeners to prevent "Double Click" stack
+            const newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+
+            newBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                console.log("🚑 Button Clicked! (Opening Menu)");
+
+                // Toggle ALL menus found
+                allDownloadMenus.forEach(menu => {
+                    // Simple Toggle
+                    menu.classList.toggle('show');
+                });
+            });
         });
     }
+
+    // Close menu when clicking anywhere else
+    document.addEventListener('click', (e) => {
+        // Only close if we didn't click inside the menu itself
+        allDownloadMenus.forEach(menu => {
+            if (!menu.contains(e.target) && menu.classList.contains('show')) {
+                menu.classList.remove('show');
+            }
+        });
+    });
+
 
     // Close menu when clicking anywhere else on the document
     document.addEventListener('click', () => {
@@ -272,7 +293,8 @@ setInterval(() => {
 
     window.toggleEditMode = () => {
         transcriptWindow.classList.add('is-editing');
-        document.getElementById('edit-actions').style.display = 'flex';
+        const actions = document.getElementById('edit-actions');
+        if (actions) actions.style.display = 'flex';
         transcriptWindow.querySelectorAll('.clickable-sent').forEach(s => s.contentEditable = "true");
     };
 
@@ -282,7 +304,8 @@ setInterval(() => {
         });
         transcriptWindow.classList.remove('is-editing');
         transcriptWindow.innerHTML = renderParagraphs(window.currentSegments);
-        document.getElementById('edit-actions').style.display = 'none';
+        const actions = document.getElementById('edit-actions');
+        if (actions) actions.style.display = 'none';
     };
 
     window.copyTranscript = () => {
@@ -294,25 +317,37 @@ setInterval(() => {
         if (mainAudio) { mainAudio.currentTime = time; mainAudio.play(); }
     };
 
-    // --- 6. UPLOAD PROCESS ---
+    // --- 7. UPLOAD & UI HELPERS ---
     function handleUploadError(msg) {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+        if (statusTxt) {
         statusTxt.innerText = "Error: " + msg;
         statusTxt.style.color = "#ef4444";
+        }
+        if (mainBtn) {
         mainBtn.disabled = false;
         mainBtn.innerText = "Upload and Process";
-        fileInput.value = '';
+        }
+        if (fileInput) fileInput.value = '';
     }
 
     function resetUI() {
-        pContainer.style.display = 'block';
-        progressBar.style.width = "0%";
+        if (pContainer) pContainer.style.display = 'block';
+        if (progressBar) progressBar.style.width = "0%";
+        if (statusTxt) {
         statusTxt.style.color = "#666";
         statusTxt.innerText = "Uploading...";
+        }
+        if (mainBtn) {
         mainBtn.disabled = true;
         mainBtn.innerText = "Processing...";
-        controlsBar.style.display = 'none';
-        transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
+        }
+        // --- FIX: Hide ALL control bars, not just the first one ---
+        const allControlBars = document.querySelectorAll('.controls-bar');
+        allControlBars.forEach(bar => {
+            bar.style.display = 'none';
+        });
+        if (transcriptWindow) transcriptWindow.innerHTML = `<p style="color:#9ca3af; text-align:center; margin-top:80px;">Preparing file...</p>`;
     }
 
     function startFakeProgress() {
@@ -321,13 +356,14 @@ setInterval(() => {
         window.fakeProgressInterval = setInterval(() => {
             if (current < 95) {
                 current += 0.5;
-                progressBar.style.width = current + "%";
-                statusTxt.innerText = `Analyzing content... ${Math.floor(current)}%`;
+                if (progressBar) progressBar.style.width = current + "%";
+                if (statusTxt) statusTxt.innerText = `Analyzing content... ${Math.floor(current)}%`;
             }
         }, 1000);
     }
 
-    // --- 7. MAIN EVENT LISTENER ---
+
+    // --- 8. MAIN UPLOAD LISTENER ---
     if (fileInput) {
         fileInput.addEventListener('change', async function() {
             const file = this.files[0];
