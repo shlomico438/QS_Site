@@ -363,7 +363,7 @@ setInterval(() => {
     }
 
 
-    // --- 8. MAIN UPLOAD LISTENER ---
+// --- 8. MAIN UPLOAD LISTENER (FIXED) ---
     if (fileInput) {
         fileInput.addEventListener('change', async function() {
             const file = this.files[0];
@@ -374,20 +374,15 @@ setInterval(() => {
             resetUI();
 
             if (audioSource && mainAudio && audioContainer) {
-            audioSource.src = URL.createObjectURL(file);
-            mainAudio.load();
-            audioContainer.style.display = 'block';
+                audioSource.src = URL.createObjectURL(file);
+                mainAudio.load();
+                audioContainer.style.display = 'block';
             }
-
-            const jobId = "job_" + Date.now();
-            localStorage.setItem('activeJobId', jobId);
-
-            // Emit join immediately
-            if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
 
             try {
                 statusTxt.innerText = "Preparing secure upload...";
 
+                // 1. Get the Signed URL AND the Correct Job ID from Server
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -395,10 +390,19 @@ setInterval(() => {
                 });
 
                 if (!signRes.ok) throw new Error("Sign Failed");
+
                 const signData = await signRes.json();
                 const { data } = signData;
                 const url = data.signedRequest || signData.url;
                 const key = data.s3Key || signData.key;
+
+                // --- FIX IS HERE: Use the Server's ID, not a random one ---
+                const jobId = data.jobId;
+                // ----------------------------------------------------------
+
+                // Now we can save it and join the room
+                localStorage.setItem('activeJobId', jobId);
+                if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
 
                 const xhr = new XMLHttpRequest();
                 xhr.open('PUT', url, true);
@@ -424,7 +428,7 @@ setInterval(() => {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 s3Key: key,
-                                jobId: jobId,
+                                jobId: jobId, // Sending the CORRECT ID (no extension)
                                 speakerCount: speakerEl ? speakerEl.value : 2,
                                 language: langEl ? langEl.value : 'he',
                                 task: 'transcribe'
@@ -436,7 +440,7 @@ setInterval(() => {
                     }
                 };
                 xhr.onerror = () => handleUploadError("Network Error during Upload");
-                  xhr.send(file);
+                xhr.send(file);
             } catch (err) {
                 handleUploadError("Initialization Failed: " + err.message);
             }
