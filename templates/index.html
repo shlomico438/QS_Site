@@ -17,7 +17,7 @@
             <div class="controls-bar">
                 <div class="toggles-group">
                     <label><div class="toggle-switch"><input type="checkbox" id="toggle-time" checked onchange="document.getElementById('transcript-window').classList.toggle('hide-time', !this.checked)"><span class="slider"></span></div><span>Time</span></label>
-                    <label><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" checked onchange="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span>Speaker</span></label>
+                    <label><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span>Speaker</span></label>
                 </div>
                 <div class="toolbar-group">
                     <div style="position: relative;">
@@ -112,4 +112,23 @@
         </div>
     </div>
 </div>
+<script>
+    // This script makes the download menu appear/disappear
+    document.addEventListener('DOMContentLoaded', () => {
+        const dBtn = document.getElementById('btn-download');
+        const dMenu = document.getElementById('download-menu');
+
+        if (dBtn && dMenu) {
+            dBtn.onclick = (e) => {
+                e.stopPropagation(); // Prevents the menu from closing immediately
+                dMenu.style.display = dMenu.style.display === 'none' ? 'block' : 'none';
+            };
+        }
+
+        // Closes the menu if you click anywhere else on the screen
+        document.addEventListener('click', () => {
+            if (dMenu) dMenu.style.display = 'none';
+        });
+    });
+</script>
 {% endblock %}

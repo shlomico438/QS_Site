@@ -218,33 +218,88 @@ def on_join(data):
             # Send it to this specific user who just reconnected
             socketio.emit('job_status_update', job_results_cache[room], room=request.sid)
 
+# --- SIMULATION BACKGROUND TASK ---
+# This simulates the GPU finishing and sending data back after 4 seconds
+# Updated simulation thread logic
+def simulate_completion(jid, run_diarization):
+    import time
+    time.sleep(1)
+    segments = []
 
+    for i in range(1, 11):
+        if not run_diarization:
+            segments.append({
+                "start": float(i * 10),
+                "end": float(i * 10 + 5),
+                "text": f"Line {i}: Plain text testing for the one-pager layout."
+            })
+        else:
+            # IMPORTANT: The key MUST be "speaker" (lowercase)
+            segments.append({
+                "start": float(i * 10),
+                "end": float(i * 10 + 4),
+                "text": f"Speaker 1 Message {i}: Scroll testing.",
+                "speaker": "SPEAKER_00"
+            })
+            segments.append({
+                "start": float(i * 10 + 5),
+                "end": float(i * 10 + 9),
+                "text": f"Speaker 2 Message {i}: More text to fill space.",
+                "speaker": "SPEAKER_01"
+            })
+
+    mock_data = {
+        "jobId": jid,
+        "status": "completed",
+        "result": {"segments": segments}
+    }
+
+    # Use the global variables explicitly to avoid thread scope issues
+    global job_results_cache
+    job_results_cache[jid] = mock_data
+
+    # This sends the message that clears the "Processing" button
+    socketio.emit('job_status_update', mock_data, room=jid)
+    print(f"🔮 SIMULATION COMPLETE: Room {jid} | Diarization: {run_diarization}")
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
     import boto3
     import os
     import time
+    from threading import Thread
 
     if SIMULATION_MODE:
-        return jsonify({'data': {'url': 'http://localhost:8000/api/mock-upload', 'jobId': 'sim', 's3Key': 'sim'}})
+        job_id = f"job_sim_{int(time.time())}"
+
+        # --- FIX: Extract the diarization flag from the request ---
+        data = request.json or {}
+        is_diarization_requested = data.get('diarization', False)
+
+        # --- FIX: Pass BOTH arguments to the thread ---
+        Thread(target=simulate_completion, args=(job_id, is_diarization_requested)).start()
+
+        return jsonify({
+            'data': {
+                'url': 'http://localhost:8000/api/mock-upload',
+                's3Key': 'simulation_key',
+                'jobId': job_id
+            }
+        })
+
     else:
+        # --- LIVE AWS LOGIC ---
         data = request.json
         filename = data.get('filename')
         file_type = data.get('filetype')
 
-        # 1. Use consistent standard names for your environment variables
-        # Make sure these match exactly what you typed in Koyeb/RunPod
         key_id = os.environ.get("AWS_ACCESS_KEY_ID")
         secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
         region = os.environ.get("AWS_REGION", "eu-north-1")
-
-        # 2. DEBUG: Verify they aren't empty before initializing
-        print(f"DEBUG: Key ID Present? {bool(key_id)} | Secret Present? {bool(secret)}")
+        bucket = os.environ.get("S3_BUCKET") or "quickscribe-v2-12345"
 
         if not key_id or not secret:
             return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
 
-        # 3. Initialize with the CORRECT variables
         s3_client = boto3.client(
             's3',
             aws_access_key_id=key_id,
@@ -256,13 +311,12 @@ def sign_s3():
         job_id = f"job_{int(time.time())}_{base_name}"
         s3_key = f"input/{job_id}{extension}"
 
-        # 4. Generate the URL
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
             Params={
-                'Bucket': S3_BUCKET,
+                'Bucket': bucket,
                 'Key': s3_key,
-                'ContentType': file_type  # MUST match frontend header
+                'ContentType': file_type
             },
             ExpiresIn=3600
         )
