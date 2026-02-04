@@ -8,7 +8,7 @@ import time
 import logging
 import os
 # --- CONFIGURATION ---
-SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
+SIMULATION_MODE = True  # <--- Set to False when deploying to Koyeb
 S3_BUCKET = os.environ.get("S3_BUCKET")
 # Note: We don't need the keys here, we need them inside the function
 
@@ -223,30 +223,31 @@ def on_join(data):
 # Updated simulation thread logic
 def simulate_completion(jid, run_diarization):
     import time
-    time.sleep(1)
+    time.sleep(4)
     segments = []
 
-    for i in range(1, 11):
-        if not run_diarization:
-            segments.append({
-                "start": float(i * 10),
-                "end": float(i * 10 + 5),
-                "text": f"Line {i}: Plain text testing for the one-pager layout."
-            })
-        else:
-            # IMPORTANT: The key MUST be "speaker" (lowercase)
-            segments.append({
-                "start": float(i * 10),
-                "end": float(i * 10 + 4),
-                "text": f"Speaker 1 Message {i}: Scroll testing.",
-                "speaker": "SPEAKER_00"
-            })
-            segments.append({
-                "start": float(i * 10 + 5),
-                "end": float(i * 10 + 9),
-                "text": f"Speaker 2 Message {i}: More text to fill space.",
-                "speaker": "SPEAKER_01"
-            })
+    # Use a real transcript snippet for the simulation
+    transcript_text = [
+        "כזה של אהבה וענווה, המון ענווה, המון תחושה שהן...",
+        "אבל ראית כמה שונות אחת מהשנייה?",
+        "ראית גם את השוני?",
+        "שונות ואוהבות, ראיתי שונות ואוהבות."
+    ]
+
+    for i, text in enumerate(transcript_text):
+        # Create a basic segment
+        segment = {
+            "start": float(i * 5),
+            "end": float(i * 5 + 4),
+            "text": text
+        }
+
+        # ONLY add the speaker key if diarization was requested
+        if run_diarization:
+            # Alternating speakers for the test
+            segment["speaker"] = "SPEAKER_00" if i % 2 == 0 else "SPEAKER_01"
+
+        segments.append(segment)
 
     mock_data = {
         "jobId": jid,
@@ -254,13 +255,13 @@ def simulate_completion(jid, run_diarization):
         "result": {"segments": segments}
     }
 
-    # Use the global variables explicitly to avoid thread scope issues
     global job_results_cache
     job_results_cache[jid] = mock_data
 
-    # This sends the message that clears the "Processing" button
+    # Send the result to the frontend
     socketio.emit('job_status_update', mock_data, room=jid)
-    print(f"🔮 SIMULATION COMPLETE: Room {jid} | Diarization: {run_diarization}")
+    print(f"🔮 SIMULATION COMPLETE: Room {jid} | Diarization Output: {run_diarization}")
+
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
     import boto3

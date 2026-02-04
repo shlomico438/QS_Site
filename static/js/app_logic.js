@@ -35,7 +35,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const mainBtn = document.getElementById('main-btn');
     const diarizationToggle = document.getElementById('diarization-toggle');
     const speakerToggle = document.getElementById('toggle-speaker');
+    const mainAudio = document.getElementById('main-audio');
 
+    if (mainAudio) {
+        mainAudio.addEventListener('timeupdate', () => {
+            const currentTime = mainAudio.currentTime;
+
+            // Find the segment that matches the current time
+            let activeSegment = null;
+            window.currentSegments.forEach(seg => {
+                if (currentTime >= seg.start) {
+                    activeSegment = seg;
+                }
+            });
+
+            if (activeSegment) {
+                // Remove highlight from everyone
+                document.querySelectorAll('.paragraph-row').forEach(row => {
+                    row.style.backgroundColor = "transparent";
+                    row.style.borderLeft = "none";
+                });
+
+                // Add highlight to the active one
+                const activeRow = document.getElementById(`seg-${Math.floor(activeSegment.start)}`);
+                if (activeRow) {
+                    activeRow.style.backgroundColor = "#f0f7ff"; // Light blue highlight
+                    activeRow.style.borderLeft = "4px solid #1e3a8a"; // Navy accent
+
+                    // Optional: Auto-scroll the transcript to keep up with the audio
+                    // activeRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }
+        });
+    }
     // If the user flips the "Show" switch, we just re-render
     if (speakerToggle) {
         speakerToggle.addEventListener('change', () => {
@@ -69,6 +101,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const preparingScreen = document.getElementById('preparing-screen');
         if (preparingScreen) preparingScreen.style.display = 'none';
 
+        // 1. UNHIDE THE PLAYER
+        const playerContainer = document.getElementById('audio-player-container');
+        if (playerContainer) playerContainer.style.display = 'block';
+
+        // 2. LOAD THE AUDIO
+        // Retrieve the local URL we stored during the 'change' event
+        const audioSource = document.getElementById('audio-source');
+        const mainAudio = document.getElementById('main-audio');
+        const savedUrl = localStorage.getItem('currentAudioUrl');
+
+        if (audioSource && mainAudio && savedUrl) {
+            audioSource.src = savedUrl;
+            mainAudio.load(); // Force the player to recognize the new file
+        }
+
         // 2. UNHIDE CORE COMPONENTS
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
         const audioPlayer = document.getElementById('audio-player-container');
@@ -85,9 +132,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const segments = output.segments || [];
         window.currentSegments = segments;
 
-        // SNAPSHOT: Look for the 'speaker' key (case sensitive!)
-        window.aiDiarizationRan = segments.some(s => s.speaker);
+        // We create a Set of all speaker IDs found in the segments
+        const uniqueSpeakers = new Set(
+            segments
+                .map(s => s.speaker)
+                .filter(s => s !== undefined && s.speaker !== null)
+        );
 
+        // Only enable if there are 2 or more DIFFERENT speakers
+        window.aiDiarizationRan = uniqueSpeakers.size > 1;
         // AUTO-ACTIVATE: If AI ran, we turn the 'Show Speakers' switch ON
         const speakerToggle = document.getElementById('toggle-speaker');
         if (window.aiDiarizationRan && speakerToggle) {
@@ -264,38 +317,75 @@ document.addEventListener('DOMContentLoaded', () => {
     window.copyTranscript = function() {
         const text = document.getElementById('transcript-window').innerText;
         navigator.clipboard.writeText(text).then(() => {
-            alert("Transcript copied to clipboard!");
         });
     };
+    window.saveEdits = function() {
+        const win = document.getElementById('transcript-window');
+        const editActions = document.getElementById('edit-actions');
 
+        win.contentEditable = 'false';
+        win.style.border = "1px solid #e2e8f0";
+        win.style.backgroundColor = "transparent";
+
+        if (editActions) editActions.style.display = 'none';
+
+        console.log("✅ Edits saved locally.");
+        // Note: To save permanently to a database, you would add a fetch() here.
+    };
+
+    window.cancelEdits = function() {
+        const win = document.getElementById('transcript-window');
+        const editActions = document.getElementById('edit-actions');
+
+        if (window.transcriptBackup) {
+            win.innerHTML = window.transcriptBackup;
+        }
+
+        win.contentEditable = 'false';
+        win.style.border = "1px solid #e2e8f0";
+        win.style.backgroundColor = "transparent";
+
+        if (editActions) editActions.style.display = 'none';
+    };
     window.toggleEditMode = function() {
-        const windowDiv = document.getElementById('transcript-window');
-        const isEditable = windowDiv.contentEditable === 'true';
-        windowDiv.contentEditable = !isEditable;
+        const win = document.getElementById('transcript-window');
+        const editActions = document.getElementById('edit-actions');
+        const isEditable = win.contentEditable === 'true';
 
-        const editBtn = document.querySelector('button[onclick*="toggleEditMode"]');
-        if (editBtn) {
-            editBtn.style.backgroundColor = !isEditable ? "#dbeafe" : "transparent";
+        if (!isEditable) {
+            // --- START EDITING ---
+            win.contentEditable = 'true';
+            win.style.border = "2px solid #1e3a8a";
+            win.style.backgroundColor = "#fff";
+
+            // Save a backup in case the user cancels
+            window.transcriptBackup = win.innerHTML;
+
+            // Show the Save/Cancel buttons
+            if (editActions) editActions.style.display = 'flex';
+        } else {
+            // If they click the "Pencil" again, we treat it as Save
+            window.saveEdits();
         }
     };
 
     function buildGroupHTML(g) {
-        const speakerToggle = document.getElementById('toggle-speaker');
-        const isSpeakerVisible = speakerToggle && speakerToggle.checked;
+        const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
+        const shouldHideSpeaker = !isSpeakerVisible;
 
-        // Hide if it's the only speaker OR if the 'Show Speakers' toggle is OFF
-        const shouldHideSpeaker = (g.speaker === "SPEAKER_00" && !window.hasMultipleSpeakers) || !isSpeakerVisible;
-
-        return `<div class="paragraph-row ${shouldHideSpeaker ? 'no-speaker' : ''}">
-                <div class="ts-col">${formatTime(g.start)}</div>
-                <div class="text-col">
-                    <span class="speaker-label" style="color:${getSpeakerColor(g.speaker)}; display: ${shouldHideSpeaker ? 'none' : 'inline'}">
-                        ${g.speaker ? g.speaker.replace('SPEAKER_', 'דובר ') : ''}
-                    </span>
-                    <p>${g.text}</p>
-                </div>
-            </div>`;
+        // Added data-start and a unique ID for highlighting
+        return `
+        <div class="paragraph-row" id="seg-${Math.floor(g.start)}" data-start="${g.start}" style="display: flex; margin-bottom: 12px; padding: 5px; transition: background 0.3s;">
+            <div class="ts-col" style="min-width: 60px; color: #888;">${formatTime(g.start)}</div>
+            <div class="text-col" style="flex: 1;">
+                <span class="speaker-label" style="color:${getSpeakerColor(g.speaker)}; font-weight: bold; display: ${shouldHideSpeaker ? 'none' : 'block'};">
+                    ${g.speaker ? g.speaker.replace('SPEAKER_', 'דובר ') : ''}
+                </span>
+                <p style="margin: 0; cursor: pointer;" onclick="window.jumpTo(${g.start})">${g.text}</p>
+            </div>
+        </div>`;
     }
+
     function startFakeProgress() {
         let current = 0;
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
@@ -316,6 +406,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const file = this.files[0];
             if (!file) return;
+
+            // CREATE A LOCAL PREVIEW URL
+            const objectUrl = URL.createObjectURL(file);
+            localStorage.setItem('currentAudioUrl', objectUrl);
 
             const currentFile = file; // Captured for use in the fetch
             fileInput.value = ""; // Reset for next selection

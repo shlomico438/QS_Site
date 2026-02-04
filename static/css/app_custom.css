@@ -513,4 +513,15 @@ input:checked + .slider:before { transform: translateX(16px); }
         display: block;
         border-bottom: 1px solid #f0f0f0;
     }
+    .paragraph-row {
+    border-radius: 4px;
+    border-left: 4px solid transparent;
+    }
+
+    /* This is the class our JS will manipulate via inline styles,
+       but you can also define a class here for easier management */
+    .active-highlight {
+        background-color: #f0f7ff !important;
+        border-left: 4px solid #1e3a8a !important;
+    }
 }
