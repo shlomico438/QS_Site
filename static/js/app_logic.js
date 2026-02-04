@@ -136,67 +136,75 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 5. UPLOAD LOGIC (FIXED 403) ---
     // Replace your existing fileInput listener with this
-if (fileInput) {
-    fileInput.addEventListener('change', async function() {
-        if (window.isTriggering) return; // Prevent triple triggers if multiple events fire
+    if (fileInput) {
+        fileInput.addEventListener('change', async function() {
+            // 1. Check the lock
+            if (window.isTriggering) {
+                console.warn("Already processing. Please wait or refresh.");
+                return;
+            }
 
-        const file = this.files[0];
-        if (!file) return;
+            const file = this.files[0];
+            if (!file) return;
 
-        // RESET UI
-        if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = "Processing..."; }
-        if (statusTxt) statusTxt.innerText = "Uploading...";
-        if (transcriptWindow) transcriptWindow.innerHTML = `<p id="preparing-screen" style="text-align:center; margin-top:80px;">Preparing file...</p>`;
+            // Clear the input value immediately.
+            // This allows the 'change' event to fire again if you select the same file later.
+            const currentFile = file;
+            fileInput.value = "";
 
-        try {
-            const signRes = await fetch('/api/sign-s3', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: file.name, filetype: file.type })
-            });
+            // UI RESET
+            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = "Processing..."; }
+            if (statusTxt) statusTxt.innerText = "Uploading...";
 
-            const signData = await signRes.json();
-            // Extraction using s3Key to match backend sign_s3 return
-            const { url, s3Key, jobId } = signData.data || signData;
+            try {
+                const signRes = await fetch('/api/sign-s3', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: currentFile.name, filetype: currentFile.type })
+                });
 
-            localStorage.setItem('activeJobId', jobId);
-            socket.emit('join', { room: jobId }); // Join room immediately
+                const signData = await signRes.json();
+                const { url, s3Key, jobId } = signData.data || signData;
 
-            const xhr = new XMLHttpRequest();
-            xhr.open('PUT', url, true);
-            xhr.setRequestHeader('Content-Type', file.type);
+                localStorage.setItem('activeJobId', jobId);
+                socket.emit('join', { room: jobId }); // Join room immediately
 
-            xhr.onload = async () => {
-                // Ensure we only trigger ONCE even if the browser sends multiple onload events
-                if (xhr.status === 200 && !window.isTriggering) {
-                    window.isTriggering = true; // Lock engaged
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', url, true);
+                xhr.setRequestHeader('Content-Type', currentFile.type);
 
-                    await fetch('/api/trigger_processing', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            s3Key: s3Key,
-                            jobId: jobId,
-                            diarization: document.getElementById('diarization-toggle')?.checked || false
-                        })
-                    });
+                xhr.onload = async () => {
+                    if (xhr.status === 200 && !window.isTriggering) {
+                        window.isTriggering = true; // Lock engaged
 
-                    // Start progress bar
-                    let current = 0;
-                    window.fakeProgressInterval = setInterval(() => {
-                        if (current < 95) {
-                            current += 0.5;
-                            if (progressBar) progressBar.style.width = current + "%";
-                            if (statusTxt) statusTxt.innerText = `Transcribing... ${Math.floor(current)}%`;
-                        }
-                    }, 1000);
-                }
-            };
-            xhr.send(file);
-        } catch (err) {
-            console.error(err);
-            window.isTriggering = false; // Release lock if error occurs
-        }
-    });
-}
+                        await fetch('/api/trigger_processing', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                s3Key: s3Key, jobId: jobId,
+                                diarization: document.getElementById('diarization-toggle')?.checked || false
+                            })
+                        });
+                        startFakeProgress();
+                    } else {
+                        // Release lock if upload fails
+                        window.isTriggering = false;
+                        if (mainBtn) mainBtn.disabled = false;
+                    }
+                };
+
+                // Release lock if network error occurs during PUT
+                xhr.onerror = () => {
+                    window.isTriggering = false;
+                    if (mainBtn) mainBtn.disabled = false;
+                };
+
+                xhr.send(currentFile);
+            } catch (err) {
+                console.error(err);
+                window.isTriggering = false; // Release lock on error
+                if (mainBtn) mainBtn.disabled = false;
+            }
+        });
+    }
 });
