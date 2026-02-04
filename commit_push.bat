@@ -27,7 +27,23 @@ if %errorlevel% neq 0 (
 )
 echo [SUCCESS] Syntax check passed.
 
-echo.
+echo -----------------------------------------
+echo [0.5/4] Checking Simulation Mode...
+echo -----------------------------------------
+:: Using $null works in PowerShell, and >nul works in CMD.
+:: For a batch file, we use >nul 2>&1 to be safe.
+findstr /C:"SIMULATION_MODE = True" siteapp.py >nul 2>&1
+
+if %errorlevel% equ 0 (
+    echo.
+    echo [ERROR] SIMULATION_MODE is still set to True!
+    echo Please set it to False in siteapp.py before deploying.
+    pause
+    exit /b 1
+) else (
+    echo [SUCCESS] Production mode verified.
+)
+
 echo -----------------------------------------
 echo [1/4] Adding changes...
 echo -----------------------------------------

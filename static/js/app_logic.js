@@ -155,6 +155,34 @@ document.addEventListener('DOMContentLoaded', () => {
             transcriptWindow.innerHTML = renderParagraphs(segments);
         }
     };
+    function groupSegmentsBySpeaker(segments) {
+        if (!segments.length) return [];
+
+        const groups = [];
+        let currentGroup = {
+            speaker: segments[0].speaker,
+            start: segments[0].start,
+            text: segments[0].text
+        };
+
+        for (let i = 1; i < segments.length; i++) {
+            const seg = segments[i];
+            // If the speaker is the same, just add the text to the current group
+            if (seg.speaker === currentGroup.speaker) {
+                currentGroup.text += " " + seg.text;
+            } else {
+                // Speaker changed: save the old group and start a new one
+                groups.push(currentGroup);
+                currentGroup = {
+                    speaker: seg.speaker,
+                    start: seg.start,
+                    text: seg.text
+                };
+            }
+    }
+    groups.push(currentGroup);
+    return groups;
+    }
     /**
      * Synchronizes the relationship between the 'Detect Speakers' AI toggle
      * and the 'Show Speakers' UI toggle.
@@ -175,8 +203,31 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Hard-coded render: buildGroupHTML will check the 'checked' state of speakerToggle
-        if (window.currentSegments.length > 0) {
-            document.getElementById('transcript-window').innerHTML = renderParagraphs(window.currentSegments);
+        function render() {
+            const transcriptWindow = document.getElementById('transcript-window');
+            if (!transcriptWindow || !window.currentSegments) return;
+
+            // 1. Group the segments first
+            const groupedData = groupSegmentsBySpeaker(window.currentSegments);
+
+            // 2. Map through the groups instead of raw segments
+            const html = groupedData.map(g => {
+                const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
+                const showLabel = isSpeakerVisible && window.aiDiarizationRan;
+
+                return `
+                <div class="paragraph-row" style="margin-bottom: 20px;">
+                    <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+                        ${formatTime(g.start)}
+                        <span style="display: ${showLabel ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(g.speaker)}">
+                            | ${g.speaker.replace('SPEAKER_', 'דובר ')}
+                        </span>
+                    </div>
+                    <p style="margin: 0; cursor: pointer;" onclick="window.jumpTo(${g.start})">${g.text}</p>
+                </div>`;
+            }).join('');
+
+            transcriptWindow.innerHTML = html;
         }
     }
     // --- 3. UI HELPERS ---
