@@ -155,33 +155,36 @@ document.addEventListener('DOMContentLoaded', () => {
             transcriptWindow.innerHTML = renderParagraphs(segments);
         }
     };
+
     function groupSegmentsBySpeaker(segments) {
-        if (!segments.length) return [];
+        if (!segments || segments.length === 0) return [];
 
         const groups = [];
+        // Normalize the speaker: if it's missing, call it 'monologue'
         let currentGroup = {
-            speaker: segments[0].speaker,
+            speaker: segments[0].speaker || 'monologue',
             start: segments[0].start,
             text: segments[0].text
         };
 
         for (let i = 1; i < segments.length; i++) {
             const seg = segments[i];
-            // If the speaker is the same, just add the text to the current group
-            if (seg.speaker === currentGroup.speaker) {
+            const segSpeaker = seg.speaker || 'monologue';
+
+            // If the normalized speaker matches, merge the text
+            if (segSpeaker === currentGroup.speaker) {
                 currentGroup.text += " " + seg.text;
             } else {
-                // Speaker changed: save the old group and start a new one
                 groups.push(currentGroup);
                 currentGroup = {
-                    speaker: seg.speaker,
+                    speaker: segSpeaker,
                     start: seg.start,
                     text: seg.text
                 };
             }
-    }
-    groups.push(currentGroup);
-    return groups;
+        }
+        groups.push(currentGroup);
+        return groups;
     }
     /**
      * Synchronizes the relationship between the 'Detect Speakers' AI toggle
@@ -264,21 +267,30 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderParagraphs(segments) {
         if (!segments || segments.length === 0) return "";
 
-        const uniqueSpeakers = new Set(segments.map(s => s.speaker).filter(Boolean));
-        window.hasMultipleSpeakers = uniqueSpeakers.size > 1;
+        let html = "", group = null;
 
-        let html = "";
         segments.forEach(seg => {
-            // Every segment gets passed through buildGroupHTML for proper row styling
-            html += buildGroupHTML({
-                speaker: seg.speaker,
-                start: seg.start,
-                text: seg.text
-            });
+            // Normalize: Treat null, undefined, or missing as the same "none" speaker
+            const currentSpeaker = seg.speaker || "none";
+            const groupSpeaker = group ? (group.speaker || "none") : null;
+
+            if (!group || groupSpeaker !== currentSpeaker) {
+                // Close the previous group
+                if (group) html += buildGroupHTML(group);
+
+                // Start a new group
+                group = {
+                    speaker: seg.speaker, // Keep original for labels
+                    start: seg.start,
+                    sentences: []
+                };
+            }
+            group.sentences.push(seg);
         });
+
+        if (group) html += buildGroupHTML(group);
         return html;
     }
-
     // --- BUTTON HANDLERS ---
     window.jumpTo = function(seconds) {
         const audio = document.querySelector('audio');
@@ -420,22 +432,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    function buildGroupHTML(g) {
-        const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
-        const shouldHideSpeaker = !isSpeakerVisible;
+function buildGroupHTML(group) {
+    // Join all sentences in the group with a space
+    const fullText = group.sentences.map(s => s.text).join(" ");
 
-        // Added data-start and a unique ID for highlighting
-        return `
-        <div class="paragraph-row" id="seg-${Math.floor(g.start)}" data-start="${g.start}" style="display: flex; margin-bottom: 12px; padding: 5px; transition: background 0.3s;">
-            <div class="ts-col" style="min-width: 60px; color: #888;">${formatTime(g.start)}</div>
-            <div class="text-col" style="flex: 1;">
-                <span class="speaker-label" style="color:${getSpeakerColor(g.speaker)}; font-weight: bold; display: ${shouldHideSpeaker ? 'none' : 'block'};">
-                    ${g.speaker ? g.speaker.replace('SPEAKER_', 'דובר ') : ''}
-                </span>
-                <p style="margin: 0; cursor: pointer;" onclick="window.jumpTo(${g.start})">${g.text}</p>
-            </div>
+    // ... your existing HTML return with formatTime(group.start) and speaker labels
+    return `
+        <div class="paragraph-row">
+            <span class="timestamp">${formatTime(group.start)}</span>
+            <p onclick="window.jumpTo(${group.start})">${fullText}</p>
         </div>`;
-    }
+}
 
     function startFakeProgress() {
         let current = 0;
