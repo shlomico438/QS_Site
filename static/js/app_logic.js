@@ -37,6 +37,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
 
+    // Ensure toggles refresh the view immediately
+    document.getElementById('toggle-time')?.addEventListener('change', () => render());
+    document.getElementById('toggle-speaker')?.addEventListener('change', () => render());
     if (mainAudio) {
         mainAudio.addEventListener('timeupdate', () => {
             const currentTime = mainAudio.currentTime;
@@ -205,33 +208,40 @@ document.addEventListener('DOMContentLoaded', () => {
             speakerToggle.parentElement.style.opacity = "0.5";
         }
 
-        // Hard-coded render: buildGroupHTML will check the 'checked' state of speakerToggle
-        function render() {
-            const transcriptWindow = document.getElementById('transcript-window');
-            if (!transcriptWindow || !window.currentSegments) return;
+    // 1. Fixed: Attached to window to solve "ReferenceError"
+    window.render = function() {
+        const transcriptWindow = document.getElementById('transcript-window');
+        if (!transcriptWindow || !window.currentSegments) return;
 
-            // 1. Group the segments first
-            const groupedData = groupSegmentsBySpeaker(window.currentSegments);
+        const groupedData = groupSegmentsBySpeaker(window.currentSegments);
 
-            // 2. Map through the groups instead of raw segments
-            const html = groupedData.map(g => {
-                const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
-                const showLabel = isSpeakerVisible && window.aiDiarizationRan;
+        const html = groupedData.map(g => {
+            // 2. Fixed: Get state of both toggles
+            const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
+            const isTimeVisible = document.getElementById('toggle-time')?.checked;
 
-                return `
-                <div class="paragraph-row" style="margin-bottom: 20px;">
-                    <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+            const showLabel = isSpeakerVisible && window.aiDiarizationRan;
+
+            return `
+            <div class="paragraph-row" style="margin-bottom: 20px;">
+                <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+
+                    <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
                         ${formatTime(g.start)}
-                        <span style="display: ${showLabel ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(g.speaker)}">
-                            | ${g.speaker.replace('SPEAKER_', 'דובר ')}
-                        </span>
-                    </div>
-                    <p style="margin: 0; cursor: pointer;" onclick="window.jumpTo(${g.start})">${g.text}</p>
-                </div>`;
-            }).join('');
+                    </span>
 
-            transcriptWindow.innerHTML = html;
-        }
+                    <span style="display: ${showLabel ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(g.speaker)}">
+                        ${isTimeVisible ? '| ' : ''}${g.speaker.replace('SPEAKER_', 'דובר ')}
+                    </span>
+                </div>
+                <p style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${g.start})">
+                    ${g.text}
+                </p>
+            </div>`;
+        }).join('');
+
+        transcriptWindow.innerHTML = html;
+    };
     }
     // --- 3. UI HELPERS ---
     function updateSpeakerToggleUI(hasSpeakerData) {
@@ -432,18 +442,31 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-function buildGroupHTML(group) {
-    // Join all sentences in the group with a space
-    const fullText = group.sentences.map(s => s.text).join(" ");
+    function buildGroupHTML(group) {
+        const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
+        const isTimeVisible = document.getElementById('toggle-time')?.checked;
 
-    // ... your existing HTML return with formatTime(group.start) and speaker labels
-    return `
-        <div class="paragraph-row">
-            <span class="timestamp">${formatTime(group.start)}</span>
-            <p onclick="window.jumpTo(${group.start})">${fullText}</p>
+        const rawSpeaker = group.speaker || "SPEAKER_00";
+        const speakerDisplay = rawSpeaker.replace('SPEAKER_', 'דובר ');
+        const fullText = group.sentences.map(s => s.text).join(" ");
+
+        return `
+        <div class="paragraph-row" style="display: flex; justify-content: flex-end; width: 100%; margin-bottom: 25px; direction: rtl;">
+
+            <div style="min-width: 90px; text-align: right; margin-left: 15px; flex-shrink: 0; font-size: 0.85em; color: #888;">
+                <div style="display: ${isTimeVisible ? 'block' : 'none'};">${formatTime(group.start)}</div>
+                <div style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: bold; color: ${getSpeakerColor(rawSpeaker)};">
+                    ${speakerDisplay}
+                </div>
+            </div>
+
+            <div style="flex-grow: 1; text-align: right;">
+                <p style="margin: 0; cursor: pointer; line-height: 1.7; font-size: 1.1em;" onclick="window.jumpTo(${group.start})">
+                    ${fullText}
+                </p>
+            </div>
         </div>`;
-}
-
+    }
     function startFakeProgress() {
         let current = 0;
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
