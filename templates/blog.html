@@ -7,6 +7,200 @@
     <hr>
 
     <article class="blog-post">
+        <p class="post-meta">February 14, 2026 | Performance Benchmarks</p>
+        <h2>Breaking the Benchmark: 94.36% Accuracy</h2>
+        <p>When it comes to transcription, the most important differentiator is accuracy. We recently benchmarked QuickScribe against the industry's leading generic models, and the results speak for themselves. Not only did we achieve a staggering 94.36% accuracy, but our word variance stayed almost perfectly aligned with the human baseline.</p>
+        
+        <style>
+          /* Container styling for the dashboard */
+          .leaderboard-container {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            max-width: 100%;
+            margin: 30px 0;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            overflow: hidden;
+          }
+        
+          /* Table base styling */
+          .leaderboard-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+          }
+        
+          .leaderboard-table th {
+            background-color: #f8f9fa;
+            color: #6c757d;
+            font-weight: 600;
+            padding: 16px 20px;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #e9ecef;
+          }
+        
+          .leaderboard-table td {
+            padding: 16px 20px;
+            border-bottom: 1px solid #e9ecef;
+            color: #333;
+            font-size: 15px;
+            vertical-align: middle;
+          }
+        
+          /* Highlight QuickScribe row */
+          .qs-row {
+            background-color: #f0fdf4;
+            font-weight: bold;
+          }
+        
+          .qs-row td {
+            color: #166534;
+          }
+        
+          /* Bar graph container */
+          .bar-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+          }
+        
+          .bar-background {
+            flex-grow: 1;
+            height: 12px;
+            background-color: #e9ecef;
+            border-radius: 6px;
+            overflow: hidden;
+          }
+        
+          /* The actual colored bar */
+          .bar-fill {
+            height: 100%;
+            border-radius: 6px;
+            transition: width 1s ease-in-out; 
+          }
+        
+          /* Color coding based on performance */
+          .fill-excellent { background-color: #22c55e; } 
+          .fill-average { background-color: #94a3b8; }   
+          .fill-poor { background-color: #ef4444; }      
+        
+          /* Accuracy text styling */
+          .accuracy-text {
+            min-width: 60px;
+            text-align: right;
+            font-weight: 600;
+          }
+        
+          /* Badge styling for the winner */
+          .winner-badge {
+            display: inline-block;
+            background: #22c55e;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 8px;
+            font-weight: bold;
+          }
+        </style>
+
+        <div class="leaderboard-container">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th>Engine</th>
+                <th style="width: 45%;">Accuracy</th>
+                <th>WER</th>
+                <th>Word Variance</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="qs-row">
+                <td>QuickScribe <span class="winner-badge">🏆 Winner</span></td>
+                <td>
+                  <div class="bar-wrapper">
+                    <div class="bar-background">
+                      <div class="bar-fill fill-excellent" style="width: 94.36%;"></div>
+                    </div>
+                    <span class="accuracy-text">94.36%</span>
+                  </div>
+                </td>
+                <td>5.64%</td>
+                <td>+1 word</td>
+              </tr>
+              <tr>
+                <td>Whisper (OpenAI)</td>
+                <td>
+                  <div class="bar-wrapper">
+                    <div class="bar-background">
+                      <div class="bar-fill fill-average" style="width: 77.27%;"></div>
+                    </div>
+                    <span class="accuracy-text">77.27%</span>
+                  </div>
+                </td>
+                <td>22.73%</td>
+                <td>-40 words</td>
+              </tr>
+              <tr>
+                <td>Gemini Pro</td>
+                <td>
+                  <div class="bar-wrapper">
+                    <div class="bar-background">
+                      <div class="bar-fill fill-average" style="width: 76.02%;"></div>
+                    </div>
+                    <span class="accuracy-text">76.02%</span>
+                  </div>
+                </td>
+                <td>23.98%</td>
+                <td>+1 word</td>
+              </tr>
+              <tr>
+                <td>Sonix</td>
+                <td>
+                  <div class="bar-wrapper">
+                    <div class="bar-background">
+                      <div class="bar-fill fill-average" style="width: 71.00%;"></div>
+                    </div>
+                    <span class="accuracy-text">71.00%</span>
+                  </div>
+                </td>
+                <td>29.00%</td>
+                <td>0 words</td>
+              </tr>
+              <tr>
+                <td>YouTube</td>
+                <td>
+                  <div class="bar-wrapper">
+                    <div class="bar-background">
+                      <div class="bar-fill fill-poor" style="width: 47.81%;"></div>
+                    </div>
+                    <span class="accuracy-text">47.81%</span>
+                  </div>
+                </td>
+                <td>52.19%</td>
+                <td>+42 words</td>
+              </tr>
+              <tr>
+                <td>Clipchamp</td>
+                <td>
+                  <div class="bar-wrapper">
+                    <div class="bar-background">
+                      <div class="bar-fill fill-poor" style="width: 34.95%;"></div>
+                    </div>
+                    <span class="accuracy-text">34.95%</span>
+                  </div>
+                </td>
+                <td>65.05%</td>
+                <td>-48 words</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+    </article>
+
+    <article class="blog-post">
         <p class="post-meta">January 13, 2026 | By Shlomi Cohen, Founder</p>
         <h2>The Spark: Why I Built QuickScribe</h2>
         <p>The idea for QuickScribe didn't start in a lab; it started with my sister-in-law, Dr. Sarit Barzilay. While writing her latest book, she was interviewing subjects via Zoom and relying on standard AI tools for transcription. She mentioned the results were so poor that she actually had to hire human editors to fix the mistakes manually.</p>
