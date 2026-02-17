@@ -177,4 +177,43 @@ html, body {
         text-align: center;
         border-bottom: 1px solid #f9f9f9;
     }
+    /* Prevent selecting the transcript text */
+    #transcript-window {
+    -webkit-user-select: none;  /* Safari */
+    -moz-user-select: none;     /* Firefox */
+    -ms-user-select: none;      /* IE/Edge */
+    user-select: none;          /* Standard */
+    cursor: default;
+    }
+    /* Allow selection ONLY when in Edit Mode */
+    #transcript-window[contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+        cursor: text;
+    }
+    .toast-notification {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #059669; /* Nice Emerald Green */
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 9999;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+    }
+
+    .toast-notification.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(-10px);
+    }
+
+    .toast-error {
+        background-color: #dc2626; /* Soft Red for errors */
+    }
 }

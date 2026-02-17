@@ -6,9 +6,14 @@ import json
 import requests  # Added for RunPod API calls
 import time
 import logging
+import boto3
 import os
+from dotenv import load_dotenv
+
 # --- CONFIGURATION ---
 SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
+if SIMULATION_MODE is True:
+    load_dotenv()
 S3_BUCKET = os.environ.get("S3_BUCKET")
 # Note: We don't need the keys here, we need them inside the function
 
@@ -37,10 +42,44 @@ job_results_cache = {}
 
 logging.basicConfig(level=logging.INFO)
 
+
+
+@app.route('/api/get_presigned_url', methods=['POST'])
+def get_presigned_url():
+    try:
+        data = request.json
+        s3_key = data.get('s3Key')
+
+        if not s3_key:
+            return jsonify({"error": "No s3Key provided"}), 400
+
+        # Initialize S3 client with your specific credentials
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION')
+        )
+        # The correct way to access the region in boto3
+        url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': os.environ.get('S3_BUCKET_NAME'),
+                'Key': s3_key
+            },
+            ExpiresIn=3600  # Link valid for 1 hour
+        )
+
+        return jsonify({"url": url})
+
+    except Exception as e:
+        print(f"S3 Error: {str(e)}")  # This will show up in your terminal/logs
+        return jsonify({"error": str(e)}), 500
+
 # --- MOCK ROUTE FOR LOCAL DEBUGGING ---
 @app.route('/api/mock-upload', methods=['PUT'])
 def mock_upload():
-    print("馃敭 SIMULATION: Fake file upload received!")
+    print("SIMULATION: Fake file upload received!")
     return "", 200
 
 @app.after_request
@@ -210,7 +249,7 @@ def on_join(data):
     room = data.get('room')
     if room:
         join_room(room)
-        print(f"馃攲 Client joined room: {room}")
+        print(f"Client joined room: {room}")
 
         # CHECK MAILBOX: Is the result already waiting?
         if room in job_results_cache:
@@ -223,7 +262,7 @@ def on_join(data):
 # Updated simulation thread logic
 def simulate_completion(jid, run_diarization):
     import time
-    time.sleep(4)
+    time.sleep(1)
     segments = []
 
     # Use a real transcript snippet for the simulation
@@ -278,6 +317,7 @@ def simulate_completion(jid, run_diarization):
     socketio.emit('job_status_update', mock_data, room=jid)
     print(f"🔮 SIMULATION COMPLETE: Room {jid} | Diarization Output: {run_diarization}")
 
+
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
     import boto3
@@ -285,27 +325,28 @@ def sign_s3():
     import time
     from threading import Thread
 
+    data = request.json or {}
+
     if SIMULATION_MODE:
         job_id = f"job_sim_{int(time.time())}"
+        # We use a consistent key for simulation recovery
+        # If you have a specific test file, name it simulation_audio in S3
+        s3_key = 'simulation_audio'
 
-        # --- FIX: Extract the diarization flag from the request ---
-        data = request.json or {}
         is_diarization_requested = data.get('diarization', False)
 
-        # --- FIX: Pass BOTH arguments to the thread ---
         Thread(target=simulate_completion, args=(job_id, is_diarization_requested)).start()
 
         return jsonify({
             'data': {
                 'url': 'http://localhost:8000/api/mock-upload',
-                's3Key': 'simulation_key',
+                's3Key': s3_key,  # Matches the backup key
                 'jobId': job_id
             }
         })
 
     else:
         # --- LIVE AWS LOGIC ---
-        data = request.json
         filename = data.get('filename')
         file_type = data.get('filetype')
 
@@ -341,11 +382,10 @@ def sign_s3():
         return jsonify({
             'data': {
                 'url': presigned_url,
-                's3Key': s3_key,
+                's3Key': s3_key,  # This must be saved by the frontend!
                 'jobId': job_id
             }
         })
-
 
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():

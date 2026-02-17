@@ -1,6 +1,13 @@
-// Add this to your GLOBAL STATE section
+import { supabase } from './supabaseClient.js'
+
+// --- GLOBAL STATE ---
 window.isTriggering = false;
 window.aiDiarizationRan = false;
+window.fakeProgressInterval = null;
+window.currentSegments = [];
+window.originalFileName = "transcript";
+window.hasMultipleSpeakers = false;
+let isSignUpMode = true;
 
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
@@ -12,7 +19,6 @@ if (typeof socket !== 'undefined') {
         }
     });
 
-    // CHANGE: Listen for 'job_status_update' instead of 'job_finished'
     socket.on('job_status_update', (data) => {
         console.log("📩 AI Results Received via Socket:", data);
         if (typeof window.handleJobUpdate === 'function') {
@@ -21,11 +27,467 @@ if (typeof socket !== 'undefined') {
     });
 }
 
-// --- GLOBAL STATE ---
-window.fakeProgressInterval = null;
-window.currentSegments = [];
-window.originalFileName = "transcript";
-window.hasMultipleSpeakers = false;
+
+
+// --- 2. AUTH HELPERS ---
+
+const formatTime = (s) => {
+    const d = new Date(0); d.setSeconds(s);
+    return d.toISOString().substr(14, 5);
+};
+
+const getSpeakerColor = (id) => {
+    const colors = ['#5d5dff', '#9333ea', '#059669', '#d97706'];
+    const num = id ? parseInt(id.match(/\d+/)) : 0;
+    return colors[num % colors.length];
+};
+
+const formatSpeaker = (raw) => {
+    if (!raw) return "דובר לא ידוע";
+    const match = raw.match(/SPEAKER_(\d+)/);
+    return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
+};
+
+
+window.toggleModal = function(show) {
+    if (show) {
+        // Save the key before the user starts logging in
+        const currentKey = localStorage.getItem('lastS3Key');
+        if (currentKey) localStorage.setItem('pendingS3Key', currentKey);
+    }
+    const modal = document.getElementById('auth-modal');
+    if (modal) modal.style.display = show ? 'flex' : 'none';
+};
+
+function showStatus(message, isError = false) {
+    // Create element if it doesn't exist
+    let toast = document.getElementById('toast-container');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'toast-container';
+        toast.className = 'toast-notification';
+        document.body.appendChild(toast);
+    }
+
+    toast.innerText = message;
+    toast.classList.toggle('toast-error', isError);
+    toast.classList.add('show');
+
+    // Hide after 4 seconds
+    setTimeout(() => {
+        toast.classList.remove('show');
+    }, 4000);
+}
+async function setupNavbarAuth() {
+    const navBtn = document.getElementById('nav-auth-btn');
+    if (!navBtn) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (user) {
+        // Get name from Google or Manual Signup
+        const firstName = user.user_metadata?.full_name?.split(' ')[0] || "Dana";
+
+        // User is logged in: Show Name + Log Out
+        navBtn.innerHTML = `Welcome, ${firstName} | <span style="font-weight:400; font-size:0.9em;">Log Out</span>`;
+        navBtn.style.color = "#1e3a8a";
+        navBtn.onclick = async (e) => {
+            e.preventDefault();
+            await supabase.auth.signOut();
+            window.location.reload();
+        };
+    } else {
+        // User is logged out: Show "Sign In"
+        navBtn.innerText = "Sign In";
+        navBtn.style.color = "#5d5dff";
+        navBtn.onclick = (e) => {
+            e.preventDefault();
+            window.toggleModal(true);
+        };
+    }
+}
+
+
+async function startJobExport({ type, s3Key }) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data, error } = await supabase
+        .from('jobs')
+        .insert([
+            {
+                user_id: user.id,
+                type: type, // This will now save as 'copy', 'txt', etc.
+                status: 'completed',
+                input_s3_key: s3Key,
+                // Add metadata if you want to track Shlomi's specific workshop
+                metadata: { client_name: "Shlomi Cohen", exported_at: new Date() }
+            }
+        ]);
+
+    if (error) throw error;
+    console.log(`✅ Success! ${type} event saved for ${user.email}`);
+}
+    function createDocxParagraphs(group, showTime, showSpeaker) {
+        const { Paragraph, TextRun, AlignmentType } = docx;
+        const paragraphs = [];
+        if (showSpeaker || showTime) {
+            let label = "";
+            if (showTime) label += `[${formatTime(group.start)}] `;
+            if (showSpeaker) label += formatSpeaker(group.speaker);
+
+            paragraphs.push(new Paragraph({
+                children: [new TextRun({
+                    text: label,
+                    bold: true,
+                    color: getSpeakerColor(group.speaker).replace('#', ''),
+                    size: 20,
+                    rightToLeft: true,
+                })],
+                alignment: AlignmentType.RIGHT,
+                bidirectional: true
+            }));
+        }
+        paragraphs.push(new Paragraph({
+            children: [new TextRun({
+                text: group.text.trim(),
+                size: 24,
+                rightToLeft: true,
+            })],
+            alignment: AlignmentType.RIGHT,
+            bidirectional: true,
+            spacing: { after: 300 }
+        }));
+        return paragraphs;
+    }
+
+
+
+window.downloadFile = async function(type, bypassUser = null) {
+    if (!window.currentSegments.length) return alert("No transcript available to export.");
+    const { data: { user: activeUser } } = bypassUser ? { data: { user: bypassUser } } : await supabase.auth.getUser();
+    if (!activeUser) {
+        console.log("💾 Parking export type:", type);
+        window.pendingExportType = type;
+        window.toggleModal(true); // Open the sign-in modal
+        return; // <--- CRITICAL: This stops the function here so the file doesn't download
+    }
+    const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
+    const showTime = document.getElementById('toggle-time')?.checked;
+    const showSpeaker = document.getElementById('toggle-speaker')?.checked;
+
+    //SAVE TO DATABASE ---
+    try {
+        const fileDetails = {
+            type: 'transcription', // or 'render' depending on your logic
+            s3Key: localStorage.getItem('lastS3Key') // We need to store this during upload
+        };
+
+        // Call your Supabase function
+        await startJobExport(fileDetails);
+        console.log("Job record synced to Supabase.");
+    } catch (err) {
+        console.error("Failed to sync job to database:", err);
+        // We don't block the download if the DB fails,
+        // but we log it for debugging.
+    }
+    // -----------------------------
+
+    if (type === 'docx' && typeof docx === 'undefined') return alert("Error: DOCX library not loaded.");
+    if (typeof saveAs === 'undefined') return alert("Error: FileSaver library not loaded.");
+
+    if (type === 'docx') {
+        const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
+        let children = [];
+        let current = null;
+        window.currentSegments.forEach(seg => {
+            if (!current || current.speaker !== seg.speaker) {
+                if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
+                current = { speaker: seg.speaker, text: "", start: seg.start };
+            }
+            current.text += seg.text + " ";
+        });
+        if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
+
+        const doc = new Document({ sections: [{ properties: {}, children: children }] });
+        Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
+    } else {
+        let content = type === 'vtt' ? "WEBVTT\n\n" : "";
+        window.currentSegments.forEach((seg, i) => {
+            const ts = (s) => {
+                let d = new Date(0); d.setMilliseconds(s * 1000);
+                let iso = d.toISOString().substr(11, 12);
+                return type === 'srt' ? iso.replace('.', ',') : iso;
+            };
+            if (type === 'srt') content += `${i + 1}\n`;
+            content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text.trim()}\n\n`;
+        });
+        saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`);
+    }
+};
+
+
+// Google Login Handler
+document.getElementById('google-login').addEventListener('click', async () => {
+    if (window.currentSegments.length > 0) {
+            localStorage.setItem('pendingTranscript', JSON.stringify(window.currentSegments));
+        }
+    const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+            // This ensures they come back to your current page after logging in
+            redirectTo: window.location.origin
+        }
+    });
+    if (error) alert("Google Login Error: " + error.message);
+});
+
+// Update your Toggle Mode logic to be cleaner
+document.getElementById('toggle-auth-mode').addEventListener('click', (e) => {
+    e.preventDefault();
+    isSignUpMode = !isSignUpMode;
+
+    document.getElementById('modal-title').innerText = isSignUpMode ? "Get Started" : "Welcome Back";
+    document.getElementById('signup-fields').style.display = isSignUpMode ? "block" : "none";
+    document.getElementById('auth-submit-btn').innerText = isSignUpMode ? "Sign Up & Export" : "Log In & Export";
+    document.getElementById('auth-switch-text').innerText = isSignUpMode ? "Already have an account?" : "Need an account?";
+    document.getElementById('toggle-auth-mode').innerText = isSignUpMode ? "Log In" : "Sign Up";
+});
+
+document.addEventListener('DOMContentLoaded', async () => {
+    // 1. Always setup the Navbar first
+    await setupNavbarAuth();
+    const transcriptWindow = document.getElementById('transcript-window');
+
+    document.querySelectorAll('.dropdown-item').forEach(btn => {
+        btn.addEventListener('click', function() {
+        const type = this.getAttribute('data-type');
+        console.log("🖱️ User requested export:", type);
+        window.downloadFile(type);
+        });
+    });
+
+    if (transcriptWindow) {
+        transcriptWindow.oncontextmenu = (e) => {
+            // Only allow right-click if we are editing
+            if (transcriptWindow.contentEditable !== "true") {
+                e.preventDefault();
+                return false;
+            }
+        };
+    }
+    // 2. Get the session
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+        console.error("Auth session error:", sessionError.message);
+        return;
+    }
+
+    // 3. --- PASSWORD RECOVERY LOGIC (Keep this!) ---
+    if (session && window.location.hash.includes('type=recovery')) {
+        const newPassword = prompt("Please enter your new password:");
+        if (newPassword) {
+            const { error } = await supabase.auth.updateUser({ password: newPassword });
+            if (error) alert("Error resetting password: " + error.message);
+            else alert("Password updated successfully!");
+        }
+    }
+
+    // 4. --- DATA RECOVERY LOGIC (For Google Login) ---
+    const savedTranscript = localStorage.getItem('pendingTranscript');
+    const savedS3Key = localStorage.getItem('pendingS3Key');
+
+    if (savedTranscript && session) {
+        console.log("Found pending transcript. Recovering UI...");
+
+        window.currentSegments = JSON.parse(savedTranscript);
+
+        // 1. UNHIDE UI COMPONENTS
+        // This shows the player, the export buttons, and the switches
+        document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
+
+        const playerContainer = document.getElementById('audio-player-container');
+        if (playerContainer) playerContainer.style.display = 'block';
+
+        // 2. RESTORE THE AUDIO
+        const audioSource = document.getElementById('audio-source');
+        const mainAudio = document.getElementById('main-audio');
+        const savedUrl = localStorage.getItem('currentAudioUrl');
+
+        if (audioSource && mainAudio && savedUrl) {
+            fetch(savedUrl).catch(async () => {
+                // Check both for existence and the literal string "undefined"
+                if (savedS3Key && savedS3Key !== "undefined") {
+                    console.log("Local audio expired. Fetching from S3...");
+                    try {
+                        const response = await fetch('/api/get_presigned_url', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ s3Key: savedS3Key })
+                        });
+
+                        if (!response.ok) throw new Error("Backend failed to provide URL");
+
+                        const data = await response.json();
+
+                        // Safety: Only load if we actually got a URL back
+                        if (data.url) {
+                            audioSource.src = data.url;
+                            mainAudio.load();
+                            console.log("✅ Audio restored from S3");
+                        } else {
+                            console.warn("Backend returned no URL:", data.error);
+                        }
+                    } catch (err) {
+                        console.error("Fetch error:", err);
+                    } // Added missing closing brace for 'try'
+                } else {
+                    console.warn("No S3 key found for recovery.");
+                }
+            });
+        }
+
+        // 3. RENDER THE TEXT
+        if (typeof window.render === 'function') {
+            window.render();
+        }
+
+        // 4. SYNC SWITCHES (Ensures 'Show Speakers' works)
+        if (typeof syncSpeakerControls === 'function') {
+            // We assume AI ran if there is speaker data
+            const uniqueSpeakers = new Set(window.currentSegments.map(s => s.speaker).filter(s => s));
+            window.aiDiarizationRan = uniqueSpeakers.size > 1;
+            syncSpeakerControls();
+        }
+
+        // 5. DATABASE SYNC (Your existing logic)
+        if (savedS3Key) {
+            localStorage.setItem('lastS3Key', savedS3Key);
+            try {
+                await startJobExport({ type: 'transcription', s3Key: savedS3Key });
+            } catch (err) { console.error("Export failed:", err); }
+        }
+
+        if (window.pendingExportType) {
+            const type = window.pendingExportType; // 'docx', 'srt', or 'vtt'
+            const user = session.user; // Use the user from the session we just fetched
+
+            console.log(`🚀 Auto-resuming pending ${type} export...`);
+
+            // Call your existing download function which handles
+            // both Supabase logging AND file generation.
+            window.downloadFile(type, user);
+
+            // Reset the pending type so it doesn't loop
+            window.pendingExportType = null;
+
+            showStatus(`Exporting your ${type.toUpperCase()} file...`, false);
+        }
+
+        // Clean up LocalStorage so it doesn't run again on next refresh
+        localStorage.removeItem('pendingTranscript');
+        localStorage.removeItem('pendingS3Key');
+    }
+});
+
+async function updateUIForUser() {
+    const { data: { user } } = await supabase.auth.getUser();
+    const authBtn = document.getElementById('main-auth-trigger'); // The button that opens the modal
+
+    if (user && authBtn) {
+        authBtn.innerText = "Log Out";
+        authBtn.onclick = async () => {
+            await supabase.auth.signOut();
+            window.location.reload();
+        };
+    }
+}
+
+document.getElementById('forgot-password-link')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('auth-email').value;
+
+    if (!email) {
+        alert("Please enter your email address first.");
+        return;
+    }
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin, // This sends them back to your site
+    });
+
+    if (error) alert(error.message);
+    else alert("Password reset email sent! Check your inbox.");
+});
+
+const authSubmitBtn = document.getElementById('auth-submit-btn');
+if (authSubmitBtn) {
+    authSubmitBtn.addEventListener('click', async () => {
+        console.log("🖱️ Auth Submit Clicked. Current Mode:", isSignUpMode ? "SignUp" : "Login");
+
+        const email = document.getElementById('auth-email').value;
+        const password = document.getElementById('auth-password').value;
+
+        if (!email || !password) return alert("Please fill in all fields.");
+
+        authSubmitBtn.disabled = true;
+        authSubmitBtn.innerText = "Processing...";
+
+        try {
+            let result;
+            if (isSignUpMode) {
+                result = await supabase.auth.signUp({
+                    email, password,
+                    options: { data: { full_name: document.getElementById('auth-name')?.value } }
+                });
+            } else {
+                result = await supabase.auth.signInWithPassword({ email, password });
+            }
+
+            if (result.error) throw result.error;
+
+            console.log("✅ Auth Success. User:", result.user?.email);
+
+            // --- DEBUG: CHECKING PENDING STATE ---
+            console.log("🔍 Pending Export Type:", window.pendingExportType);
+            console.log("🔍 Current Segments Length:", window.currentSegments?.length);
+
+            const user = result.data.user; // Get the user from the result
+            console.log("✅ Login Success for:", user.email);
+            window.toggleModal(false);
+
+            if (typeof setupNavbarAuth === 'function') {
+                await setupNavbarAuth();
+            }
+
+            // --- THE CRITICAL TRIGGER ---
+            if (window.currentSegments && window.currentSegments.length > 0) {
+                const typeToResume = window.pendingExportType || 'docx';
+                console.warn("🚀 TRIGGERING DOWNLOAD AUTOMATICALLY FOR:", typeToResume);
+
+                // We wrap this in a tiny timeout to ensure the modal
+                // is fully closed and the browser is ready.
+                setTimeout(() => {
+                    if (window.pendingExportType) {
+                        console.warn("🚀 Auto-triggering export for:", window.pendingExportType);
+                        window.downloadFile(window.pendingExportType, user); // Pass the user here!
+                        window.pendingExportType = null;
+                    }
+                }, 100);
+            } else {
+                console.warn("⚠️ No transcript found to auto-export. Reloading...");
+                window.location.reload();
+            }
+
+        } catch (err) {
+            console.error("❌ Auth Error Details:", err);
+            showStatus(err.message, true);
+        } finally {
+            authSubmitBtn.disabled = false;
+            authSubmitBtn.innerText = isSignUpMode ? "Sign Up & Export" : "Log In & Export";
+        }
+    });
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
@@ -262,16 +724,6 @@ document.addEventListener('DOMContentLoaded', () => {
             speakerToggle.parentElement.style.opacity = "0.5";
         }
     }
-    const formatTime = (s) => {
-        const d = new Date(0); d.setSeconds(s);
-        return d.toISOString().substr(14, 5);
-    };
-
-    const getSpeakerColor = (id) => {
-        const colors = ['#5d5dff', '#9333ea', '#059669', '#d97706'];
-        const num = id ? parseInt(id.match(/\d+/)) : 0;
-        return colors[num % colors.length];
-    };
 
     // --- 4. RENDER LOGIC ---
     function renderParagraphs(segments) {
@@ -309,87 +761,36 @@ document.addEventListener('DOMContentLoaded', () => {
             audio.play();
         }
     };
-    window.downloadFile = function(type) {
-        if (!window.currentSegments.length) return alert("No transcript available to export.");
-        const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
-        const showTime = document.getElementById('toggle-time')?.checked;
-        const showSpeaker = document.getElementById('toggle-speaker')?.checked;
 
-        if (type === 'docx' && typeof docx === 'undefined') return alert("Error: DOCX library not loaded.");
-        if (typeof saveAs === 'undefined') return alert("Error: FileSaver library not loaded.");
 
-        if (type === 'docx') {
-            const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
-            let children = [];
-            let current = null;
-            window.currentSegments.forEach(seg => {
-                if (!current || current.speaker !== seg.speaker) {
-                    if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
-                    current = { speaker: seg.speaker, text: "", start: seg.start };
-                }
-                current.text += seg.text + " ";
-            });
-            if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
-
-            const doc = new Document({ sections: [{ properties: {}, children: children }] });
-            Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
-        } else {
-            let content = type === 'vtt' ? "WEBVTT\n\n" : "";
-            window.currentSegments.forEach((seg, i) => {
-                const ts = (s) => {
-                    let d = new Date(0); d.setMilliseconds(s * 1000);
-                    let iso = d.toISOString().substr(11, 12);
-                    return type === 'srt' ? iso.replace('.', ',') : iso;
-                };
-                if (type === 'srt') content += `${i + 1}\n`;
-                content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text.trim()}\n\n`;
-            });
-            saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`);
-        }
-    };
-
-    function createDocxParagraphs(group, showTime, showSpeaker) {
-        const { Paragraph, TextRun, AlignmentType } = docx;
-        const paragraphs = [];
-        if (showSpeaker || showTime) {
-            let label = "";
-            if (showTime) label += `[${formatTime(group.start)}] `;
-            if (showSpeaker) label += formatSpeaker(group.speaker);
-
-            paragraphs.push(new Paragraph({
-                children: [new TextRun({
-                    text: label,
-                    bold: true,
-                    color: getSpeakerColor(group.speaker).replace('#', ''),
-                    size: 20,
-                    rightToLeft: true,
-                })],
-                alignment: AlignmentType.RIGHT,
-                bidirectional: true
-            }));
-        }
-        paragraphs.push(new Paragraph({
-            children: [new TextRun({
-                text: group.text.trim(),
-                size: 24,
-                rightToLeft: true,
-            })],
-            alignment: AlignmentType.RIGHT,
-            bidirectional: true,
-            spacing: { after: 300 }
-        }));
-        return paragraphs;
-    }
-
-        const formatSpeaker = (raw) => {
-        if (!raw) return "דובר לא ידוע";
-        const match = raw.match(/SPEAKER_(\d+)/);
-        return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
-    };
-
-    window.copyTranscript = function() {
+    window.copyTranscript = async function() {
         const text = document.getElementById('transcript-window').innerText;
-        navigator.clipboard.writeText(text).then(() => {
+        if (!text || !text.trim()) return;
+
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            localStorage.setItem('pendingTranscript', JSON.stringify(window.currentSegments));
+            const currentKey = localStorage.getItem('lastS3Key');
+            if (currentKey) localStorage.setItem('pendingS3Key', currentKey);
+
+            window.toggleModal(true);
+            return;
+        }
+
+        // Copy to clipboard
+        navigator.clipboard.writeText(text).then(async () => {
+            showStatus("Copied to clipboard!"); // Using our new toast!
+
+            // --- NEW: Add the 'copy' type here ---
+            const currentS3Key = localStorage.getItem('lastS3Key');
+            try {
+                await startJobExport({
+                    type: 'copy', // Distinguishes from 'txt' or 'docx'
+                    s3Key: currentS3Key
+                });
+            } catch (err) {
+                console.error("Failed to log copy event:", err);
+            }
         });
     };
     window.saveEdits = function() {
@@ -479,7 +880,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1000);
     }
 
-    // --- 5. UPLOAD LOGIC (FIXED 403) ---
+    // --- 5. UPLOAD LOGIC ---
     // Replace your existing fileInput listener with this
     if (fileInput) {
         fileInput.addEventListener('change', async function() {
@@ -503,34 +904,49 @@ document.addEventListener('DOMContentLoaded', () => {
             if (statusTxt) { statusTxt.innerText = "Uploading..."; statusTxt.style.display = "block"; }
 
             try {
-                // THE FIX: This must stay inside the 'async' function
+                // 1. Get the Signed URL from Python
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         filename: currentFile.name,
                         filetype: currentFile.type,
-                        diarization: diarizationValue // Correctly passed to siteapp.py
+                        diarization: diarizationValue
                     })
                 });
 
-                const signData = await signRes.json();
-                const { url, s3Key, jobId } = signData.data || signData;
+                const result = await signRes.json();
 
-                // Start Socket communication
-                localStorage.setItem('activeJobId', jobId);
-                if (typeof socket !== 'undefined') socket.emit('join', { room: jobId });
+                // Safety check for Dana's app logic
+                if (!result.data) {
+                    throw new Error("Failed to get S3 signature from server.");
+                }
 
-                // Proceed with S3 Upload
+                const { url, s3Key, jobId } = result.data;
+
+                // 2. 💾 PARK THE KEYS IMMEDIATELY
+                // This ensures recovery works for shlomico1234@gmail.com after login
+                localStorage.setItem('lastS3Key', s3Key);
+                localStorage.setItem('pendingS3Key', s3Key);
+                localStorage.setItem('lastJobId', jobId);
+                console.log("💾 Keys parked for recovery:", s3Key);
+
+                // 3. Start Socket communication
+                if (typeof socket !== 'undefined') {
+                    socket.emit('join', { room: jobId });
+                }
+
+                // 4. Proceed with S3 Upload (XHR for progress tracking)
                 const xhr = new XMLHttpRequest();
                 xhr.open('PUT', url, true);
                 xhr.setRequestHeader('Content-Type', currentFile.type);
 
                 xhr.onload = async () => {
-                    if (xhr.status === 200) {
+                    if (xhr.status === 200 || xhr.status === 201) {
+                        console.log("✅ File uploaded to S3. Triggering processing...");
                         window.isTriggering = true;
 
-                        // Trigger GPU (Pass the flag again for the live logic)
+                        // 5. Trigger GPU/RunPod
                         await fetch('/api/trigger_processing', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -540,19 +956,30 @@ document.addEventListener('DOMContentLoaded', () => {
                                 diarization: diarizationValue
                             })
                         });
-                        startFakeProgress();
+
+                        if (typeof startFakeProgress === 'function') startFakeProgress();
                     } else {
+                        console.error("S3 Upload Failed:", xhr.statusText);
                         window.isTriggering = false;
-                        if (mainBtn) mainBtn.disabled = false;
+                        if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                     }
                 };
+
+                xhr.onerror = () => {
+                    console.error("XHR Network Error during upload.");
+                    window.isTriggering = false;
+                };
+
                 xhr.send(currentFile);
 
-            } catch (err) {
+            }
+            catch (err) {
                 console.error("Upload Error:", err);
                 window.isTriggering = false;
-                if (mainBtn) mainBtn.disabled = false;
+                if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
+                // Use our new toast notification for a professional feel
+                if (typeof showStatus === 'function') showStatus("Error starting upload.", true);
             }
-        });
+        })
     }
 });

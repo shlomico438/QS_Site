@@ -9,11 +9,11 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
-    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
     <script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
-    <script src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
+    <link rel="icon" href="data:,">
 </head>
 
 <body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
@@ -33,6 +33,7 @@
             <a href="/about" class="nav-item">About Us</a>
             <a href="/blog" class="nav-item">Blog</a>
             <a href="/contact" class="nav-item">Contact</a>
+            <a href="#" class="nav-item" id="nav-auth-btn" style="color: #5d5dff; font-weight: 800;">Sign In</a>
         </div>
     </header>
 
@@ -60,7 +61,6 @@
         }
     </script>
 
-    <script src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
 
 </body>
 </html>
