@@ -64,7 +64,7 @@ def get_presigned_url():
         url = s3_client.generate_presigned_url(
             'get_object',
             Params={
-                'Bucket': os.environ.get('S3_BUCKET_NAME'),
+                'Bucket': os.environ.get('S3_BUCKET'),
                 'Key': s3_key
             },
             ExpiresIn=3600  # Link valid for 1 hour
