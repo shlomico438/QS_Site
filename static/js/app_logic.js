@@ -169,6 +169,8 @@ window.downloadFile = async function(type, bypassUser = null) {
     if (!activeUser) {
         console.log("💾 Parking export type:", type);
         window.pendingExportType = type;
+        localStorage.setItem('pendingExportType', type);
+
         window.toggleModal(true); // Open the sign-in modal
         return; // <--- CRITICAL: This stops the function here so the file doesn't download
     }
@@ -368,21 +370,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (err) { console.error("Export failed:", err); }
         }
 
-        if (window.pendingExportType) {
-            const type = window.pendingExportType; // 'docx', 'srt', or 'vtt'
+
+        //const type = window.pendingExportType; // 'docx', 'srt', or 'vtt'
+        const savedExportType = localStorage.getItem('pendingExportType') || window.pendingExportType;
+
+        if (savedExportType) {
             const user = session.user; // Use the user from the session we just fetched
+            console.log(`🚀 Auto-resuming pending ${savedExportType} export...`);
 
-            console.log(`🚀 Auto-resuming pending ${type} export...`);
-
-            // Call your existing download function which handles
-            // both Supabase logging AND file generation.
-            window.downloadFile(type, user);
+            // Trigger the download instantly
+            window.downloadFile(savedExportType, user);
 
             // Reset the pending type so it doesn't loop
             window.pendingExportType = null;
-
-            showStatus(`Exporting your ${type.toUpperCase()} file...`, false);
+            localStorage.removeItem('pendingExportType');
+            showStatus(`Exporting your ${savedExportType.toUpperCase()} file...`, false);
         }
+
 
         // Clean up LocalStorage so it doesn't run again on next refresh
         localStorage.removeItem('pendingTranscript');
@@ -469,8 +473,8 @@ if (authSubmitBtn) {
                 // is fully closed and the browser is ready.
                 setTimeout(() => {
                     if (window.pendingExportType) {
-                        console.warn("🚀 Auto-triggering export for:", window.pendingExportType);
-                        window.downloadFile(window.pendingExportType, user); // Pass the user here!
+                        console.warn("🚀 EXECUTING DOWNLOAD:", typeToResume);
+                        window.downloadFile(typeToResume, user);
                         window.pendingExportType = null;
                     }
                 }, 100);

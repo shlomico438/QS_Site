@@ -14,8 +14,7 @@ SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
 if SIMULATION_MODE is True:
     from dotenv import load_dotenv
     load_dotenv()
-S3_BUCKET = os.environ.get("S3_BUCKET")
-# Note: We don't need the keys here, we need them inside the function
+    S3_BUCKET = os.environ.get("S3_BUCKET")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
