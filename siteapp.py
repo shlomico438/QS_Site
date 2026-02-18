@@ -8,13 +8,14 @@ import time
 import logging
 import boto3
 import os
+import subprocess
+import sys
 
 # --- CONFIGURATION ---
-SIMULATION_MODE = False  # <--- Set to False when deploying to Koyeb
-if SIMULATION_MODE is True:
-    from dotenv import load_dotenv
-    load_dotenv()
-    S3_BUCKET = os.environ.get("S3_BUCKET")
+# Read simulation flag from environment so someone can set it before running
+SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'false')).lower() in ('1', 'true', 'yes')
+
+S3_BUCKET = os.environ.get("S3_BUCKET")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
@@ -453,6 +454,58 @@ def trigger_processing():
         print(f"❌ trigger_processing CRASHED: {str(e)}")
         import traceback
         traceback.print_exc()  # This will show the exact line of the crash in Koyeb logs
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# --- CONTROL ROUTES FOR SIMULATION / PROCESS START ---
+@app.route('/api/set_simulation', methods=['POST'])
+def set_simulation():
+    """Toggle the server-side SIMULATION_MODE flag."""
+    global SIMULATION_MODE
+    try:
+        data = request.json or {}
+        run = bool(data.get('run', False))
+        SIMULATION_MODE = run
+        print(f"SIMULATION_MODE set to: {SIMULATION_MODE}")
+        return jsonify({"simulation_mode": SIMULATION_MODE}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/start_process', methods=['POST'])
+def start_process():
+    """Start a detached background process that runs siteapp.py (returns PID).
+
+    Caution: starting another instance of this app may fail if the port is already in use.
+    This endpoint is intended for local development/testing only.
+    """
+    try:
+        global spawned_process_pid
+        # If we already started one, check if it's alive
+        if 'spawned_process_pid' in globals():
+            try:
+                os.kill(spawned_process_pid, 0)
+                return jsonify({"status": "already_running", "pid": spawned_process_pid}), 200
+            except Exception:
+                pass
+
+        python_exec = sys.executable or 'python'
+        cmd = [python_exec, 'siteapp.py']
+
+        if os.name == 'nt':
+            # DETACHED/NO WINDOW on Windows
+            CREATE_NO_WINDOW = 0x08000000
+            p = subprocess.Popen(cmd, cwd=os.getcwd(), creationflags=CREATE_NO_WINDOW)
+        else:
+            # Detach on POSIX
+            p = subprocess.Popen(cmd, cwd=os.getcwd(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setpgrp)
+
+        spawned_process_pid = p.pid
+        print(f"Started background process: PID={spawned_process_pid}")
+        return jsonify({"status": "started", "pid": spawned_process_pid}), 200
+
+    except Exception as e:
+        print(f"Failed to start process: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- WEBSOCKET EVENT HANDLERS ---

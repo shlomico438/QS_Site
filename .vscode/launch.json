@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run siteapp (Simulation ON)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/siteapp.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "SIMULATION_MODE": "1",
+                "GEVENT_SUPPORT": "True"
+            }
+        }
+    ]
+}

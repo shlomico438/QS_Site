@@ -536,6 +536,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         });
+        // When the user presses Play, set a simulation flag and request the server
+        mainAudio.addEventListener('play', async () => {
+            window.simulationFlag = true;
+            try {
+                await fetch('/api/set_simulation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ run: true })
+                });
+
+                // Start a background python process (for local development)
+                await fetch('/api/start_process', { method: 'POST' });
+
+                if (typeof showStatus === 'function') showStatus('Simulation started', false);
+            } catch (err) {
+                console.error('Failed to start simulation:', err);
+                if (typeof showStatus === 'function') showStatus('Failed to start simulation', true);
+            }
+        });
     }
     // If the user flips the "Show" switch, we just re-render
     if (speakerToggle) {
