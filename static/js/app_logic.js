@@ -260,109 +260,139 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
     const transcriptWindow = document.getElementById('transcript-window');
+    const mainAudio = document.getElementById('main-audio');
 
     document.querySelectorAll('.dropdown-item').forEach(btn => {
         btn.addEventListener('click', function() {
-        const type = this.getAttribute('data-type');
-        console.log("🖱️ User requested export:", type);
-        window.downloadFile(type);
+            const type = this.getAttribute('data-type');
+            console.log("🖱️ User requested export:", type);
+            window.downloadFile(type);
         });
     });
 
-    if (transcriptWindow) {
-        transcriptWindow.oncontextmenu = (e) => {
-            // Only allow right-click if we are editing
-            if (transcriptWindow.contentEditable !== "true") {
-                e.preventDefault();
-                return false;
-            }
-        };
-    }
-    // 2. Get the session
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError) {
-        console.error("Auth session error:", sessionError.message);
-        return;
-    }
+    if (mainAudio) {
+            // Attach audio handlers once
+            if (!mainAudio._qs_listeners_attached) {
+                mainAudio.addEventListener('timeupdate', () => {
+                    const currentTime = mainAudio.currentTime;
+                    // Debug: log current time and segment counts
+                    console.debug('audio timeupdate', { currentTime, segments: (window.currentSegments || []).length });
 
-    // 3. --- PASSWORD RECOVERY LOGIC (Keep this!) ---
-    if (session && window.location.hash.includes('type=recovery')) {
-        const newPassword = prompt("Please enter your new password:");
-        if (newPassword) {
-            const { error } = await supabase.auth.updateUser({ password: newPassword });
-            if (error) alert("Error resetting password: " + error.message);
-            else alert("Password updated successfully!");
-        }
-    }
+                    // Find the segment that matches the current time (prefer segments where currentTime is between start and end)
+                    let activeSegment = null;
+                    if (window.currentSegments && window.currentSegments.length) {
+                        activeSegment = window.currentSegments.find(seg => (currentTime >= seg.start && (seg.end ? currentTime <= seg.end : currentTime < (seg.start + 5))));
+                        if (!activeSegment) {
+                            // Fallback: choose last segment that started before currentTime
+                            for (let i = 0; i < window.currentSegments.length; i++) {
+                                const seg = window.currentSegments[i];
+                                if (currentTime >= seg.start) activeSegment = seg;
+                            }
+                        }
+                    }
 
-    // 4. --- DATA RECOVERY LOGIC (For Google Login) ---
-    const savedTranscript = localStorage.getItem('pendingTranscript');
-    const savedS3Key = localStorage.getItem('pendingS3Key');
-
-    if (savedTranscript && session) {
-        console.log("Found pending transcript. Recovering UI...");
-
-        window.currentSegments = JSON.parse(savedTranscript);
-
-        // 1. UNHIDE UI COMPONENTS
-        // This shows the player, the export buttons, and the switches
-        document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
-
-        const playerContainer = document.getElementById('audio-player-container');
-        if (playerContainer) playerContainer.style.display = 'block';
-
-        // 2. RESTORE THE AUDIO
-        const audioSource = document.getElementById('audio-source');
-        const mainAudio = document.getElementById('main-audio');
-        const savedUrl = localStorage.getItem('currentAudioUrl');
-
-        if (audioSource && mainAudio && savedUrl) {
-            fetch(savedUrl).catch(async () => {
-                // Check both for existence and the literal string "undefined"
-                if (savedS3Key && savedS3Key !== "undefined") {
-                    console.log("Local audio expired. Fetching from S3...");
-                    try {
-                        const response = await fetch('/api/get_presigned_url', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ s3Key: savedS3Key })
+                    if (activeSegment) {
+                        // Remove highlight from everyone
+                        document.querySelectorAll('.paragraph-row').forEach(row => {
+                            row.style.backgroundColor = "transparent";
+                            row.style.borderLeft = "none";
                         });
 
-                        if (!response.ok) throw new Error("Backend failed to provide URL");
-
-                        const data = await response.json();
-
-                        // Safety: Only load if we actually got a URL back
-                        if (data.url) {
-                            audioSource.src = data.url;
-                            mainAudio.load();
-                            console.log("✅ Audio restored from S3");
-                        } else {
-                            console.warn("Backend returned no URL:", data.error);
+                        // Add highlight to the active one
+                        const activeRow = document.getElementById(`seg-${Math.floor(activeSegment.start)}`);
+                        if (activeRow) {
+                            activeRow.style.backgroundColor = "#f0f7ff"; // Light blue highlight
+                            activeRow.style.borderLeft = "4px solid #1e3a8a"; // Navy accent
                         }
+                    }
+                });
+
+                // When the user presses Play, set a simulation flag and request the server
+                mainAudio.addEventListener('play', async () => {
+                    window.simulationFlag = true;
+                    try {
+                        await fetch('/api/set_simulation', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ run: true })
+                        });
+
+                        // Start a background python process (for local development)
+                        await fetch('/api/start_process', { method: 'POST' });
+
+                        if (typeof showStatus === 'function') showStatus('Simulation started', false);
                     } catch (err) {
-                        console.error("Fetch error:", err);
-                    } // Added missing closing brace for 'try'
-                } else {
-                    console.warn("No S3 key found for recovery.");
+                        console.error('Failed to start simulation:', err);
+                        if (typeof showStatus === 'function') showStatus('Failed to start simulation', true);
+                    }
+                });
+
+                mainAudio._qs_listeners_attached = true;
+            }
+        }
+
+        // Always attach video handlers (do not require audio to exist)
+        const mainVideoEl = document.getElementById('main-video');
+        if (mainVideoEl && !mainVideoEl._qs_listeners_attached) {
+            mainVideoEl.addEventListener('timeupdate', () => {
+                const currentTime = mainVideoEl.currentTime;
+                console.debug('video timeupdate', { currentTime, segments: (window.currentSegments || []).length });
+
+                // Find the active segment more precisely
+                let activeSegment = null;
+                if (window.currentSegments && window.currentSegments.length) {
+                    activeSegment = window.currentSegments.find(seg => (currentTime >= seg.start && (seg.end ? currentTime <= seg.end : currentTime < (seg.start + 5))));
+                    if (!activeSegment) {
+                        for (let i = 0; i < window.currentSegments.length; i++) {
+                            const seg = window.currentSegments[i];
+                            if (currentTime >= seg.start) activeSegment = seg;
+                        }
+                    }
+                }
+
+                try {
+                    // Clear previous highlights
+                    document.querySelectorAll('.paragraph-row').forEach(row => row.classList.remove('active-highlight'));
+
+                    if (activeSegment) {
+                        const id = `seg-${Math.floor(activeSegment.start)}`;
+                        const activeRow = document.getElementById(id);
+                        if (activeRow) {
+                            console.log('video activeSegment', activeSegment.start, 'id', id, 'elemExists=', !!activeRow);
+                            activeRow.classList.add('active-highlight');
+                            // auto-scroll a bit to keep in view
+                            activeRow.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+                        } else {
+                            console.log('Highlight: no element found for', id, 'currentTime=', currentTime);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Highlighting failure', e);
                 }
             });
-        }
 
-        // 3. RENDER THE TEXT
-        if (typeof window.render === 'function') {
-            window.render();
-        }
+            mainVideoEl.addEventListener('play', async () => {
+                window.simulationFlag = true;
+                try {
+                    await fetch('/api/set_simulation', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ run: true })
+                    });
+                    await fetch('/api/start_process', { method: 'POST' });
+                    if (typeof showStatus === 'function') showStatus('Simulation started', false);
+                } catch (err) {
+                    console.error('Failed to start simulation:', err);
+                    if (typeof showStatus === 'function') showStatus('Failed to start simulation', true);
+                }
+            });
 
-        // 4. SYNC SWITCHES (Ensures 'Show Speakers' works)
-        if (typeof syncSpeakerControls === 'function') {
-            // We assume AI ran if there is speaker data
-            const uniqueSpeakers = new Set(window.currentSegments.map(s => s.speaker).filter(s => s));
-            window.aiDiarizationRan = uniqueSpeakers.size > 1;
-            syncSpeakerControls();
+            mainVideoEl._qs_listeners_attached = true;
         }
 
         // 5. DATABASE SYNC (Your existing logic)
+        const savedTranscript = localStorage.getItem('pendingTranscript');
+        const savedS3Key = localStorage.getItem('pendingS3Key');
         if (savedS3Key) {
             localStorage.setItem('lastS3Key', savedS3Key);
             try {
@@ -392,7 +422,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         localStorage.removeItem('pendingTranscript');
         localStorage.removeItem('pendingS3Key');
     }
-});
+);
 
 async function updateUIForUser() {
     const { data: { user } } = await supabase.auth.getUser();
@@ -509,14 +539,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mainAudio) {
         mainAudio.addEventListener('timeupdate', () => {
             const currentTime = mainAudio.currentTime;
+            // Debug: log current time and segment counts
+            console.debug('audio timeupdate', { currentTime, segments: (window.currentSegments || []).length });
 
-            // Find the segment that matches the current time
+            // Find the segment that matches the current time (prefer segments where currentTime is between start and end)
             let activeSegment = null;
-            window.currentSegments.forEach(seg => {
-                if (currentTime >= seg.start) {
-                    activeSegment = seg;
+            if (window.currentSegments && window.currentSegments.length) {
+                activeSegment = window.currentSegments.find(seg => (currentTime >= seg.start && (seg.end ? currentTime <= seg.end : currentTime < (seg.start + 5))));
+                if (!activeSegment) {
+                    // Fallback: choose last segment that started before currentTime
+                    for (let i = 0; i < window.currentSegments.length; i++) {
+                        const seg = window.currentSegments[i];
+                        if (currentTime >= seg.start) activeSegment = seg;
+                    }
                 }
-            });
+            }
 
             if (activeSegment) {
                 // Remove highlight from everyone
@@ -536,6 +573,48 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         });
+        // Mirror highlighting behavior for video element if present
+        const mainVideo = document.getElementById('main-video');
+        if (mainVideo) {
+            mainVideo.addEventListener('timeupdate', () => {
+                const currentTime = mainVideo.currentTime;
+                console.debug('video timeupdate', { currentTime, segments: (window.currentSegments || []).length });
+
+                // Find the active segment more precisely
+                let activeSegment = null;
+                if (window.currentSegments && window.currentSegments.length) {
+                    activeSegment = window.currentSegments.find(seg => (currentTime >= seg.start && (seg.end ? currentTime <= seg.end : currentTime < (seg.start + 5))));
+                    if (!activeSegment) {
+                        for (let i = 0; i < window.currentSegments.length; i++) {
+                            const seg = window.currentSegments[i];
+                            if (currentTime >= seg.start) activeSegment = seg;
+                        }
+                    }
+                }
+
+                // Debug: log active times when no highlight appears
+                // (This helps users paste console output if things still fail)
+                try {
+                    // Clear previous highlights
+                    document.querySelectorAll('.paragraph-row').forEach(row => row.classList.remove('active-highlight'));
+
+                    if (activeSegment) {
+                        const id = `seg-${Math.floor(activeSegment.start)}`;
+                        const activeRow = document.getElementById(id);
+                            if (activeRow) {
+                                console.log('video activeSegment', activeSegment.start, 'id', id, 'elemExists=', !!activeRow);
+                                activeRow.classList.add('active-highlight');
+                                // auto-scroll a bit to keep in view
+                                activeRow.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+                            } else {
+                                console.log('Highlight: no element found for', id, 'currentTime=', currentTime);
+                            }
+                    }
+                } catch (e) {
+                    console.warn('Highlighting failure', e);
+                }
+            });
+        }
         // When the user presses Play, set a simulation flag and request the server
         mainAudio.addEventListener('play', async () => {
             window.simulationFlag = true;
@@ -778,10 +857,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // --- BUTTON HANDLERS ---
     window.jumpTo = function(seconds) {
+        const video = document.querySelector('video');
         const audio = document.querySelector('audio');
-        if (audio) {
-            audio.currentTime = seconds;
-            audio.play();
+        const player = video || audio;
+        if (player) {
+            player.currentTime = seconds;
+            player.play();
         }
     };
 
@@ -911,6 +992,383 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const file = this.files[0];
             if (!file) return;
+
+            // If the user selected a local video (mp4/webm), load it into the preview
+            try {
+                const isVideo = (file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov)$/i.test(file.name);
+                if (isVideo) {
+                    const url = URL.createObjectURL(file);
+                    window.originalFileName = file.name.replace(/\.[^.]+$/, '');
+                    const src = document.getElementById('video-source');
+                    const video = document.getElementById('main-video');
+                    if (src) src.src = url;
+                    if (video) {
+                        // Bring to front and ensure controls are usable
+                        video.style.position = 'relative';
+                        video.style.zIndex = '1002';
+                        video.controls = true;
+                        video.load();
+                        video.pause();
+                        try { video.focus(); } catch (e) {}
+                    }
+                    showStatus('Video loaded locally', false);
+                    // reset the file input so it can be used again
+                    fileInput.value = '';
+                    return; // skip upload flow when previewing locally
+                }
+                // If the user selected a subtitle file (srt/vtt/text), handle it locally
+                const isSubtitle = (file.type && (file.type.includes('vtt') || file.type.includes('text'))) || /\.(srt|vtt|txt)$/i.test(file.name);
+                if (isSubtitle) {
+                    try {
+                        await handleSubtitleFile(file);
+                        showStatus('Subtitle loaded locally', false);
+                    } catch (e) {
+                        console.warn('Local subtitle load failed', e);
+                        showStatus('Failed to load subtitle locally', true);
+                    }
+                    fileInput.value = '';
+                    return;
+                }
+            } catch (e) {
+                console.warn('Video preview failed', e);
+            }
+
+// ----------------- Video + Subtitle Frontend Helpers -----------------
+function parseSRT(srtText) {
+    if (!srtText) return [];
+    const blocks = srtText.trim().split(/\r?\n\r?\n/);
+    const cues = [];
+    const toSeconds = (t) => {
+        // Accept 00:00:05,123 or 00:00:05.123
+        const parts = t.replace(',', '.').split(':');
+        const h = parseFloat(parts[0] || 0);
+        const m = parseFloat(parts[1] || 0);
+        const s = parseFloat(parts[2] || 0);
+        return h * 3600 + m * 60 + s;
+    };
+
+    for (const block of blocks) {
+        const lines = block.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        if (lines.length < 2) continue;
+        // First line may be index
+        let timeLine = lines[1];
+        if (lines[0].match(/^\d+$/) && lines.length >= 3) timeLine = lines[1];
+        else if (!lines[0].match(/-->/)) timeLine = lines[1] || lines[0];
+
+        const m = timeLine.match(/(\d{2}:\d{2}:\d{2}[.,]\d{1,3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{1,3})/);
+        if (!m) continue;
+        const start = toSeconds(m[1]);
+        const end = toSeconds(m[2]);
+        const text = lines.slice(2).join('\n') || lines.slice(1).slice(1).join('\n') || lines.slice(1).join(' ');
+        cues.push({ start, end, text });
+    }
+    return cues;
+}
+
+function srtFromCues(cues) {
+    return cues.map((c, i) => {
+        const pad = (n) => String(Math.floor(n)).padStart(2, '0');
+        const fmt = (s) => {
+            const ms = Math.floor((s - Math.floor(s)) * 1000);
+            const hh = Math.floor(s / 3600);
+            const mm = Math.floor((s % 3600) / 60);
+            const ss = Math.floor(s % 60);
+            return `${pad(hh)}:${pad(mm)}:${pad(ss)},${String(ms).padStart(3,'0')}`;
+        };
+        return `${i+1}\n${fmt(c.start)} --> ${fmt(c.end)}\n${c.text}\n`;
+    }).join('\n');
+}
+
+function renderTranscriptFromCues(cues) {
+    window.currentSegments = cues;
+    const container = document.getElementById('transcript-window');
+    if (!container) return;
+    if (!cues || cues.length === 0) {
+        container.innerHTML = '<p style="color:#9ca3af; text-align:center; margin-top:40px;">No subtitles loaded</p>';
+        return;
+    }
+    const html = cues.map((c, idx) => {
+        // split into words and assign approximate per-word timings
+        const words = String(c.text || '').split(/(\s+)/).filter(Boolean);
+        const dur = Math.max(0.001, (c.end || (c.start + 0.5)) - c.start);
+        let acc = 0;
+        const wordSpans = words.map((w, wi) => {
+            // treat whitespace tokens as raw text (no timing)
+            if (/^\s+$/.test(w)) return w.replace(/ /g, '&nbsp;');
+            const start = c.start + (acc * dur / words.length);
+            const end = c.start + ((acc + 1) * dur / words.length);
+            acc++;
+            const safe = w.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return `<span class="word-token" data-idx="${idx}" data-start="${start}" data-end="${end}">${safe}</span>`;
+        }).join('');
+
+        return `
+        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="margin-bottom:12px; direction: rtl; text-align: right;">
+            <div style="font-size:0.85em; color:#6b7280; margin-bottom:4px;">[${formatTime(Math.floor(c.start))}]</div>
+            <p contenteditable="true" data-idx="${idx}" style="margin:0; line-height:1.6;">${wordSpans}</p>
+        </div>`;
+    }).join('');
+
+    container.innerHTML = html;
+
+    // Update model when edited (rebuild text from spans)
+    container.querySelectorAll('p[contenteditable]').forEach(p => {
+        p.addEventListener('input', (e) => {
+            const i = parseInt(p.getAttribute('data-idx'));
+            if (!isNaN(i) && window.currentSegments[i]) {
+                // rebuild text by joining span/text nodes
+                const texts = [];
+                p.childNodes.forEach(node => {
+                    if (node.nodeType === Node.TEXT_NODE) texts.push(node.textContent);
+                    else if (node.nodeType === Node.ELEMENT_NODE) texts.push(node.innerText);
+                });
+                window.currentSegments[i].text = texts.join('').trim();
+            }
+        });
+    });
+}
+
+async function handleSubtitleFile(file) {
+    if (!file) return;
+    const text = await file.text();
+    // If VTT, strip header
+    const isVtt = text.trim().startsWith('WEBVTT');
+    const srtText = isVtt ? text.replace(/^WEBVTT.*\n+/,'') : text;
+    const cues = parseSRT(srtText);
+    renderTranscriptFromCues(cues);
+    // Make the transcript editable immediately so users can edit loaded subtitles
+    try {
+        const container = document.getElementById('transcript-window');
+        if (container) container.setAttribute('contenteditable', 'true');
+        // Ensure the controls bar and player are visible for local previews
+        document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
+        const video = document.getElementById('main-video');
+        if (video) video.style.display = 'block';
+    } catch (e) { console.warn('Could not enable inline editing:', e); }
+    // Also attach a VTT track to the video for live preview
+    try {
+        // If the original file is a VTT file, attach it directly to avoid re-serialization issues
+        let vttUrl = null;
+        if (file && file.name && /\.vtt$/i.test(file.name)) {
+            vttUrl = URL.createObjectURL(file);
+        } else {
+            const vttLines = ['WEBVTT\n'];
+            const fmt = (s) => {
+                const ms = Math.floor((s - Math.floor(s)) * 1000);
+                const hh = Math.floor(s / 3600);
+                const mm = Math.floor((s % 3600) / 60);
+                const ss = Math.floor(s % 60);
+                const pad = (n) => String(n).padStart(2, '0');
+                return `${pad(hh)}:${pad(mm)}:${pad(ss)}.${String(ms).padStart(3,'0')}`;
+            };
+            for (const c of cues) {
+                vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}`);
+                vttLines.push(c.text.replace(/<[^>]+>/g, ''));
+                vttLines.push('');
+            }
+            const vttBlob = new Blob([vttLines.join('\n')], { type: 'text/vtt' });
+            vttUrl = URL.createObjectURL(vttBlob);
+        }
+
+        const video = document.getElementById('main-video');
+            if (video) {
+            // Remove existing tracks
+            Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
+            const track = document.createElement('track');
+            track.kind = 'subtitles';
+            track.label = 'Subtitles';
+            track.srclang = 'he';
+            track.src = vttUrl;
+            track.default = true;
+            video.appendChild(track);
+
+            const setShowing = () => {
+                try {
+                    const tt = video.textTracks;
+                    console.log('Subtitle textTracks length:', tt.length);
+                    for (let i = 0; i < tt.length; i++) {
+                        console.log('textTrack', i, 'mode(before)=', tt[i].mode, 'cues=', tt[i].cues ? tt[i].cues.length : 'n/a');
+                        tt[i].mode = 'showing';
+                        console.log('textTrack', i, 'mode(after)=', tt[i].mode, 'cues=', tt[i].cues ? tt[i].cues.length : 'n/a');
+                        if (tt[i].cues && tt[i].cues.length > 0) {
+                            console.log('First cue text:', tt[i].cues[0].text);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to set textTracks mode', e);
+                }
+            };
+
+            track.addEventListener('load', () => {
+                try { setShowing(); } catch (e) { console.warn(e); }
+            });
+
+            // Fallback attempts in case load event doesn't fire
+            setTimeout(setShowing, 100);
+            setTimeout(setShowing, 500);
+            setTimeout(setShowing, 1500);
+
+            // Additional fallback: if parsing earlier didn't populate the transcript,
+            // read cues directly from the video's TextTrack and render them.
+            setTimeout(() => {
+                try {
+                    const tt = video.textTracks;
+                    if (tt && tt.length > 0) {
+                        for (let i = 0; i < tt.length; i++) {
+                            const trackObj = tt[i];
+                            if (trackObj && trackObj.cues && trackObj.cues.length > 0) {
+                                const cuesArr = [];
+                                for (let j = 0; j < trackObj.cues.length; j++) {
+                                    const cue = trackObj.cues[j];
+                                    cuesArr.push({ start: cue.startTime, end: cue.endTime, text: cue.text });
+                                }
+                                if (cuesArr.length) {
+                                    renderTranscriptFromCues(cuesArr);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to read cues from video.textTracks fallback', e);
+                }
+            }, 300);
+        }
+    } catch (e) {
+        console.warn('Failed to attach VTT track', e);
+    }
+    showStatus('Subtitles loaded', false);
+}
+
+function downloadSRT() {
+    if (!window.currentSegments || window.currentSegments.length === 0) return showStatus('No subtitles to download', true);
+    const srt = srtFromCues(window.currentSegments);
+    const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
+    saveAs(blob, (window.originalFileName || 'video') + '.srt');
+}
+
+async function createBurnedInVideo() {
+    const video = document.getElementById('main-video');
+    if (!video || !video.currentSrc) return showStatus('Load a video file first', true);
+    if (!window.currentSegments || window.currentSegments.length === 0) return showStatus('Load subtitles first', true);
+
+    // Prepare canvas
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 360;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.style.display = 'none';
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    // subtitle styling
+    const fontSize = Math.max(20, Math.floor(h / 20));
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'white';
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 6;
+
+    // Capture canvas stream
+    const stream = canvas.captureStream(30);
+    const chunks = [];
+    let mime = 'video/webm;codecs=vp9';
+    if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm;codecs=vp8';
+    const recorder = new MediaRecorder(stream, { mimeType: mime });
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+
+    recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        saveAs(blob, (window.originalFileName || 'video') + '-subbed.webm');
+        showStatus('Video with subtitles created', false);
+        try { document.body.removeChild(canvas); } catch (e) {}
+    };
+
+    // Draw loop
+    let rafId = null;
+    const draw = () => {
+        ctx.drawImage(video, 0, 0, w, h);
+
+        // find active cue
+        const t = video.currentTime;
+        const active = window.currentSegments.find(c => t >= c.start && t <= c.end);
+        if (active) {
+            const lines = active.text.split('\n');
+            const padding = 12;
+            // measure height
+            const lineHeight = fontSize + 6;
+            const totalH = lines.length * lineHeight + padding * 2;
+            // background
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.fillRect(0, h - totalH - 20, w, totalH + 10);
+
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+            ctx.lineWidth = 6;
+            let y = h - totalH - 20 + padding + fontSize;
+            for (const line of lines) {
+                ctx.strokeText(line, w - 20, y);
+                ctx.fillText(line, w - 20, y);
+                y += lineHeight;
+            }
+        }
+
+        rafId = requestAnimationFrame(draw);
+    };
+
+    // Start recording and playback
+    recorder.start();
+    // Play muted to avoid audio capture issues; we'll capture system audio is not possible reliably
+    const prevMuted = video.muted;
+    video.muted = true;
+    await video.play();
+    draw();
+
+    // Stop when video ends
+    video.onended = () => {
+        cancelAnimationFrame(rafId);
+        recorder.stop();
+        video.muted = prevMuted;
+    };
+
+    showStatus('Rendering video — please wait until playback finishes', false);
+}
+
+// Init handlers for the new UI elements
+document.addEventListener('DOMContentLoaded', () => {
+    const videoInput = document.getElementById('videoFileInput');
+    const subtitleInput = document.getElementById('subtitleFileInput');
+    const downloadBtn = document.getElementById('btn-download-srt');
+    const burnBtn = document.getElementById('btn-burn-video');
+    const video = document.getElementById('main-video');
+
+    if (videoInput) videoInput.addEventListener('change', async (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        const url = URL.createObjectURL(f);
+        window.originalFileName = f.name.replace(/\.[^.]+$/, '');
+        const src = document.getElementById('video-source');
+        if (src) src.src = url;
+        if (video) {
+            video.style.position = 'relative';
+            video.style.zIndex = '1002';
+            video.controls = true;
+            video.load();
+            video.pause();
+            try { video.focus(); } catch (e) {}
+        }
+        showStatus('Video loaded locally', false);
+    });
+
+    if (subtitleInput) subtitleInput.addEventListener('change', async (e) => {
+        const f = e.target.files[0];
+        await handleSubtitleFile(f);
+    });
+
+    if (downloadBtn) downloadBtn.addEventListener('click', () => downloadSRT());
+    if (burnBtn) burnBtn.addEventListener('click', () => createBurnedInVideo());
+});
+
 
             // CREATE A LOCAL PREVIEW URL
             const objectUrl = URL.createObjectURL(file);

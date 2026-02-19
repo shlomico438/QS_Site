@@ -10,6 +10,13 @@ import boto3
 import os
 import subprocess
 import sys
+import tempfile
+
+# python-docx imports for server-side RTL post-processing
+from docx import Document as DocxDocument
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 # --- CONFIGURATION ---
 # Read simulation flag from environment so someone can set it before running
