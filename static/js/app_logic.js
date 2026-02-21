@@ -59,6 +59,59 @@ window.toggleModal = function(show) {
     if (modal) modal.style.display = show ? 'flex' : 'none';
 };
 
+// --- SUBTITLE CHUNKER ---
+function splitLongSegments(segments, maxChars = 55) {
+    const result = [];
+    
+    for (const seg of segments) {
+        // If it's already short enough, just keep it
+        if (!seg.text || seg.text.length <= maxChars) {
+            result.push(seg);
+            continue;
+        }
+
+        // Split by ANY kind of space (crucial for Hebrew AI non-breaking spaces)
+        const words = seg.text.split(/\s+/);
+        let currentText = '';
+        let chunks = [];
+
+        // Group words into chunks that fit the maxChars limit
+        for (const word of words) {
+            // Check if adding this word (with space) would exceed the limit
+            const testText = currentText + word + ' ';
+            if (testText.length > maxChars && currentText.length > 0) {
+                chunks.push(currentText.trim());
+                currentText = word + ' ';
+            } else {
+                currentText += word + ' ';
+            }
+        }
+        if (currentText.trim()) {
+            chunks.push(currentText.trim());
+        }
+
+        // Assign proportional timeframes to the new chunks
+        const totalDuration = (seg.end || seg.start + 5) - seg.start;
+        const totalChars = seg.text.length;
+        let currentTime = seg.start;
+
+        for (const chunk of chunks) {
+            // Calculate how much time this chunk takes based on its character length
+            const chunkDuration = (chunk.length / totalChars) * totalDuration;
+            
+            result.push({
+                start: currentTime,
+                end: currentTime + chunkDuration,
+                text: chunk,
+                speaker: seg.speaker
+            });
+            
+            currentTime += chunkDuration;
+        }
+    }
+    return result;
+}
+
 function showStatus(message, isError = false) {
     // Create element if it doesn't exist
     let toast = document.getElementById('toast-container');
@@ -297,12 +350,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                             row.style.backgroundColor = "transparent";
                             row.style.borderLeft = "none";
                         });
+                        document.querySelectorAll('.paragraph-row p').forEach(p => {
+                            p.style.backgroundColor = "transparent";
+                        });
 
                         // Add highlight to the active one
                         const activeRow = document.getElementById(`seg-${Math.floor(activeSegment.start)}`);
                         if (activeRow) {
                             activeRow.style.backgroundColor = "#f0f7ff"; // Light blue highlight
                             activeRow.style.borderLeft = "4px solid #1e3a8a"; // Navy accent
+                            const p = activeRow.querySelector('p');
+                            if (p) {
+                                p.style.backgroundColor = "#fff9c4"; // Light yellow
+                            }
                         }
                     }
                 });
@@ -353,6 +413,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 try {
                     // Clear previous highlights
                     document.querySelectorAll('.paragraph-row').forEach(row => row.classList.remove('active-highlight'));
+                    document.querySelectorAll('.paragraph-row p').forEach(p => p.style.backgroundColor = "transparent");
 
                     if (activeSegment) {
                         const id = `seg-${Math.floor(activeSegment.start)}`;
@@ -362,6 +423,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             activeRow.classList.add('active-highlight');
                             // auto-scroll a bit to keep in view
                             activeRow.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+                            const p = activeRow.querySelector('p');
+                            if (p) {
+                                p.style.backgroundColor = "#fff9c4"; // Light yellow
+                                activeRow.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+                            }
                         } else {
                             console.log('Highlight: no element found for', id, 'currentTime=', currentTime);
                         }
@@ -561,6 +627,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     row.style.backgroundColor = "transparent";
                     row.style.borderLeft = "none";
                 });
+                document.querySelectorAll('.paragraph-row p').forEach(p => {
+                    p.style.backgroundColor = "transparent";
+                });
 
                 // Add highlight to the active one
                 const activeRow = document.getElementById(`seg-${Math.floor(activeSegment.start)}`);
@@ -570,6 +639,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // Optional: Auto-scroll the transcript to keep up with the audio
                     // activeRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    const p = activeRow.querySelector('p');
+                    if (p) {
+                        p.style.backgroundColor = "#fff9c4"; // Light yellow
+                    }
                 }
             }
         });
@@ -597,6 +670,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     // Clear previous highlights
                     document.querySelectorAll('.paragraph-row').forEach(row => row.classList.remove('active-highlight'));
+                    document.querySelectorAll('.paragraph-row p').forEach(p => p.style.backgroundColor = "transparent");
 
                     if (activeSegment) {
                         const id = `seg-${Math.floor(activeSegment.start)}`;
@@ -606,6 +680,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                 activeRow.classList.add('active-highlight');
                                 // auto-scroll a bit to keep in view
                                 activeRow.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+                                const p = activeRow.querySelector('p');
+                                if (p) {
+                                    p.style.backgroundColor = "#fff9c4"; // Light yellow
+                                    activeRow.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+                                }
                             } else {
                                 console.log('Highlight: no element found for', id, 'currentTime=', currentTime);
                             }
@@ -695,10 +774,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 3. PROCESS DATA
+        // 3. PROCESS DATA
         const output = rawResult.result || rawResult.output || rawResult;
-        const segments = output.segments || [];
+        
+        // ADDED THIS LINE: We must grab the segments from the output first!
+        let segments = output.segments || []; 
+        segments = splitLongSegments(segments, 55);
         window.currentSegments = segments;
-
+        
         // We create a Set of all speaker IDs found in the segments
         const uniqueSpeakers = new Set(
             segments
@@ -719,15 +802,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const transcriptWindow = document.getElementById('transcript-window');
         if (transcriptWindow) {
-            transcriptWindow.innerHTML = renderParagraphs(segments);
+            window.render();
+            // NEW: Live Preview for Subtitles
+            transcriptWindow.addEventListener('input', (e) => {
+                // Only run if we are actively in edit mode
+                if (transcriptWindow.contentEditable !== 'true') return;
+                
+                const p = e.target.closest('p[data-idx]');
+                if (p) {
+                    const idx = parseInt(p.getAttribute('data-idx'));
+                    const newText = p.innerText.trim();
+                    
+                    // Instantly update the HTML5 Video Track Cue
+                    const video = document.getElementById('main-video');
+                    if (video && video.textTracks && video.textTracks.length > 0) {
+                        const track = video.textTracks[0];
+                        if (track.cues && track.cues[idx]) {
+                            track.cues[idx].text = newText;
+                        }
+                    }
+                }
+            });
         }
     };
 
-    function groupSegmentsBySpeaker(segments) {
+function groupSegmentsBySpeaker(segments, enableGlue = true) {
         if (!segments || segments.length === 0) return [];
 
+        // --- SUBTITLE MODE (No Glue) ---
+        // If glue is disabled, just return the segments exactly as the Chopper cut them.
+        if (!enableGlue) {
+            return segments.map(seg => ({
+                speaker: seg.speaker || 'monologue',
+                start: seg.start,
+                text: seg.text
+            }));
+        }
+
+        // --- DOCUMENT MODE (Glue) ---
+        // If glue is enabled, merge consecutive segments from the same speaker.
         const groups = [];
-        // Normalize the speaker: if it's missing, call it 'monologue'
         let currentGroup = {
             speaker: segments[0].speaker || 'monologue',
             start: segments[0].start,
@@ -738,7 +852,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const seg = segments[i];
             const segSpeaker = seg.speaker || 'monologue';
 
-            // If the normalized speaker matches, merge the text
             if (segSpeaker === currentGroup.speaker) {
                 currentGroup.text += " " + seg.text;
             } else {
@@ -753,6 +866,7 @@ document.addEventListener('DOMContentLoaded', () => {
         groups.push(currentGroup);
         return groups;
     }
+    
     /**
      * Synchronizes the relationship between the 'Detect Speakers' AI toggle
      * and the 'Show Speakers' UI toggle.
@@ -777,7 +891,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const transcriptWindow = document.getElementById('transcript-window');
         if (!transcriptWindow || !window.currentSegments) return;
 
-        const groupedData = groupSegmentsBySpeaker(window.currentSegments);
+        // Placeholder variable: Set to 'false' for Subtitles, 'true' for Docx
+        // Later, you can attach this to a toggle switch like: document.getElementById('view-mode-toggle').checked;
+        window.isDocumentMode = false; 
+        const groupedData = groupSegmentsBySpeaker(window.currentSegments, window.isDocumentMode);
+
 
         const html = groupedData.map(g => {
             // 2. Fixed: Get state of both toggles
@@ -897,34 +1015,91 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     };
+    
     window.saveEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
 
+        // 1. EXTRACT FROM SCREEN: Update the master array ONLY on save
+        win.querySelectorAll('p[data-idx]').forEach(p => {
+            const i = parseInt(p.getAttribute('data-idx'));
+            if (!isNaN(i) && window.currentSegments[i]) {
+                window.currentSegments[i].text = p.innerText.trim();
+            }
+        });
+
+        // 2. ELIMINATE CACHE: Force the video to use the fresh edits
+        window.refreshVideoSubtitles();
+
+        // 3. LOCK UI: Close edit mode
         win.contentEditable = 'false';
         win.style.border = "1px solid #e2e8f0";
         win.style.backgroundColor = "transparent";
 
         if (editActions) editActions.style.display = 'none';
-
-        console.log("✅ Edits saved locally.");
-        // Note: To save permanently to a database, you would add a fetch() here.
+        console.log("✅ Edits saved and subtitles re-synced.");
     };
 
     window.cancelEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
 
+        // Restore the original text from before they clicked the pencil
         if (window.transcriptBackup) {
             win.innerHTML = window.transcriptBackup;
         }
 
+        // Lock UI
         win.contentEditable = 'false';
         win.style.border = "1px solid #e2e8f0";
         win.style.backgroundColor = "transparent";
-
         if (editActions) editActions.style.display = 'none';
     };
+
+    // --- NEW: The VTT Cache Buster ---
+    window.refreshVideoSubtitles = function() {
+        const video = document.getElementById('main-video');
+        if (!video || !window.currentSegments.length) return;
+
+        // Rebuild the entire VTT file from scratch
+        const vttLines = ['WEBVTT\n'];
+        const pad = (n, m=2) => String(n).padStart(m, '0');
+        const fmt = (s) => {
+            const ms = Math.floor((s - Math.floor(s)) * 1000);
+            const hh = Math.floor(s / 3600);
+            const mm = Math.floor((s % 3600) / 60);
+            const ss = Math.floor(s % 60);
+            return `${pad(hh)}:${pad(mm)}:${pad(ss)}.${pad(ms, 3)}`;
+        };
+
+        for (const c of window.currentSegments) {
+            vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}`);
+            vttLines.push(c.text.replace(/<[^>]+>/g, '')); // Strip out any HTML spans
+            vttLines.push('');
+        }
+
+        const vttBlob = new Blob([vttLines.join('\n')], { type: 'text/vtt' });
+        const vttUrl = URL.createObjectURL(vttBlob);
+
+        // Delete the old cached track and attach the new one
+        Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = 'Subtitles';
+        track.srclang = 'he';
+        track.src = vttUrl;
+        track.default = true;
+        
+        video.appendChild(track);
+
+        // Force the browser to display it
+        track.addEventListener('load', () => {
+            try {
+                Array.from(video.textTracks).forEach(tt => tt.mode = 'showing');
+            } catch (e) { console.warn("Track mode error:", e); }
+        });
+    };
+
     window.toggleEditMode = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
@@ -1033,6 +1208,101 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.warn('Video preview failed', e);
             }
 
+            // CREATE A LOCAL PREVIEW URL
+            const objectUrl = URL.createObjectURL(file);
+            localStorage.setItem('currentAudioUrl', objectUrl);
+
+            const currentFile = file; // Captured for use in the fetch
+            fileInput.value = ""; // Reset for next selection
+
+            // 1. Get the snapshot of the toggle state RIGHT NOW
+            const diarizationValue = document.getElementById('diarization-toggle')?.checked || false;
+
+            // UI Feedback
+            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = "Processing..."; }
+            if (statusTxt) { statusTxt.innerText = "Uploading..."; statusTxt.style.display = "block"; }
+
+            try {
+                // 1. Get the Signed URL from Python
+                const signRes = await fetch('/api/sign-s3', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        filename: currentFile.name,
+                        filetype: currentFile.type,
+                        diarization: diarizationValue
+                    })
+                });
+
+                const result = await signRes.json();
+
+                
+                if (!result.data) {
+                    throw new Error("Failed to get S3 signature from server.");
+                }
+
+                const { url, s3Key, jobId } = result.data;
+
+                // 2. 💾 PARK THE KEYS IMMEDIATELY
+                // This ensures recovery works 
+                localStorage.setItem('lastS3Key', s3Key);
+                localStorage.setItem('pendingS3Key', s3Key);
+                localStorage.setItem('lastJobId', jobId);
+                console.log("💾 Keys parked for recovery:", s3Key);
+
+                // 3. Start Socket communication
+                if (typeof socket !== 'undefined') {
+                    socket.emit('join', { room: jobId });
+                }
+
+                // 4. Proceed with S3 Upload (XHR for progress tracking)
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', url, true);
+                xhr.setRequestHeader('Content-Type', currentFile.type);
+
+                xhr.onload = async () => {
+                    if (xhr.status === 200 || xhr.status === 201) {
+                        console.log("✅ File uploaded to S3. Triggering processing...");
+                        window.isTriggering = true;
+
+                        // 5. Trigger GPU/RunPod
+                        await fetch('/api/trigger_processing', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                s3Key: s3Key,
+                                jobId: jobId,
+                                diarization: diarizationValue
+                            })
+                        });
+
+                        if (typeof startFakeProgress === 'function') startFakeProgress();
+                    } else {
+                        console.error("S3 Upload Failed:", xhr.statusText);
+                        window.isTriggering = false;
+                        if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
+                    }
+                };
+
+                xhr.onerror = () => {
+                    console.error("XHR Network Error during upload.");
+                    window.isTriggering = false;
+                };
+
+                xhr.send(currentFile);
+
+            }
+            catch (err) {
+                console.error("Upload Error:", err);
+                window.isTriggering = false;
+                if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
+                // Use our new toast notification for a professional feel
+                if (typeof showStatus === 'function') showStatus("Error starting upload.", true);
+            }
+        })
+    }
+});
+
 // ----------------- Video + Subtitle Frontend Helpers -----------------
 function parseSRT(srtText) {
     if (!srtText) return [];
@@ -1050,16 +1320,23 @@ function parseSRT(srtText) {
     for (const block of blocks) {
         const lines = block.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
         if (lines.length < 2) continue;
-        // First line may be index
-        let timeLine = lines[1];
-        if (lines[0].match(/^\d+$/) && lines.length >= 3) timeLine = lines[1];
-        else if (!lines[0].match(/-->/)) timeLine = lines[1] || lines[0];
+        // Find the line with the timestamp (contains -->)
+        let timeLine = null;
+        let textStartIdx = 0;
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('-->')) {
+                timeLine = lines[i];
+                textStartIdx = i + 1;
+                break;
+            }
+        }
+        if (!timeLine) continue;
 
         const m = timeLine.match(/(\d{2}:\d{2}:\d{2}[.,]\d{1,3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{1,3})/);
         if (!m) continue;
         const start = toSeconds(m[1]);
         const end = toSeconds(m[2]);
-        const text = lines.slice(2).join('\n') || lines.slice(1).slice(1).join('\n') || lines.slice(1).join(' ');
+        const text = lines.slice(textStartIdx).join('\n');
         cues.push({ start, end, text });
     }
     return cues;
@@ -1105,27 +1382,11 @@ function renderTranscriptFromCues(cues) {
         return `
         <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="margin-bottom:12px; direction: rtl; text-align: right;">
             <div style="font-size:0.85em; color:#6b7280; margin-bottom:4px;">[${formatTime(Math.floor(c.start))}]</div>
-            <p contenteditable="true" data-idx="${idx}" style="margin:0; line-height:1.6;">${wordSpans}</p>
+            <p data-idx="${idx}" style="margin:0; line-height:1.6;">${wordSpans}</p>
         </div>`;
     }).join('');
 
     container.innerHTML = html;
-
-    // Update model when edited (rebuild text from spans)
-    container.querySelectorAll('p[contenteditable]').forEach(p => {
-        p.addEventListener('input', (e) => {
-            const i = parseInt(p.getAttribute('data-idx'));
-            if (!isNaN(i) && window.currentSegments[i]) {
-                // rebuild text by joining span/text nodes
-                const texts = [];
-                p.childNodes.forEach(node => {
-                    if (node.nodeType === Node.TEXT_NODE) texts.push(node.textContent);
-                    else if (node.nodeType === Node.ELEMENT_NODE) texts.push(node.innerText);
-                });
-                window.currentSegments[i].text = texts.join('').trim();
-            }
-        });
-    });
 }
 
 async function handleSubtitleFile(file) {
@@ -1134,8 +1395,15 @@ async function handleSubtitleFile(file) {
     // If VTT, strip header
     const isVtt = text.trim().startsWith('WEBVTT');
     const srtText = isVtt ? text.replace(/^WEBVTT.*\n+/,'') : text;
-    const cues = parseSRT(srtText);
+    
+    let cues = parseSRT(srtText);
+    
+    // NEW: Pass local subtitle uploads through the Chopper too!
+    if (typeof splitLongSegments === 'function') {
+        cues = splitLongSegments(cues, 55);
+    }
     renderTranscriptFromCues(cues);
+    
     // Make the transcript editable immediately so users can edit loaded subtitles
     try {
         const container = document.getElementById('transcript-window');
@@ -1147,28 +1415,24 @@ async function handleSubtitleFile(file) {
     } catch (e) { console.warn('Could not enable inline editing:', e); }
     // Also attach a VTT track to the video for live preview
     try {
-        // If the original file is a VTT file, attach it directly to avoid re-serialization issues
-        let vttUrl = null;
-        if (file && file.name && /\.vtt$/i.test(file.name)) {
-            vttUrl = URL.createObjectURL(file);
-        } else {
-            const vttLines = ['WEBVTT\n'];
-            const fmt = (s) => {
-                const ms = Math.floor((s - Math.floor(s)) * 1000);
-                const hh = Math.floor(s / 3600);
-                const mm = Math.floor((s % 3600) / 60);
-                const ss = Math.floor(s % 60);
-                const pad = (n) => String(n).padStart(2, '0');
-                return `${pad(hh)}:${pad(mm)}:${pad(ss)}.${String(ms).padStart(3,'0')}`;
-            };
-            for (const c of cues) {
-                vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}`);
-                vttLines.push(c.text.replace(/<[^>]+>/g, ''));
-                vttLines.push('');
-            }
-            const vttBlob = new Blob([vttLines.join('\n')], { type: 'text/vtt' });
-            vttUrl = URL.createObjectURL(vttBlob);
+        // Always use the split cues to create VTT, even for original VTT files
+        // This ensures the 55-character limit is applied
+        const vttLines = ['WEBVTT\n'];
+        const fmt = (s) => {
+            const ms = Math.floor((s - Math.floor(s)) * 1000);
+            const hh = Math.floor(s / 3600);
+            const mm = Math.floor((s % 3600) / 60);
+            const ss = Math.floor(s % 60);
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${pad(hh)}:${pad(mm)}:${pad(ss)}.${String(ms).padStart(3,'0')}`;
+        };
+        for (const c of cues) {
+            vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}`);
+            vttLines.push(c.text.replace(/<[^>]+>/g, ''));
+            vttLines.push('');
         }
+        const vttBlob = new Blob([vttLines.join('\n')], { type: 'text/vtt' });
+        const vttUrl = URL.createObjectURL(vttBlob);
 
         const video = document.getElementById('main-video');
             if (video) {
@@ -1185,14 +1449,8 @@ async function handleSubtitleFile(file) {
             const setShowing = () => {
                 try {
                     const tt = video.textTracks;
-                    console.log('Subtitle textTracks length:', tt.length);
                     for (let i = 0; i < tt.length; i++) {
-                        console.log('textTrack', i, 'mode(before)=', tt[i].mode, 'cues=', tt[i].cues ? tt[i].cues.length : 'n/a');
                         tt[i].mode = 'showing';
-                        console.log('textTrack', i, 'mode(after)=', tt[i].mode, 'cues=', tt[i].cues ? tt[i].cues.length : 'n/a');
-                        if (tt[i].cues && tt[i].cues.length > 0) {
-                            console.log('First cue text:', tt[i].cues[0].text);
-                        }
                     }
                 } catch (e) {
                     console.warn('Failed to set textTracks mode', e);
@@ -1367,100 +1625,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (downloadBtn) downloadBtn.addEventListener('click', () => downloadSRT());
     if (burnBtn) burnBtn.addEventListener('click', () => createBurnedInVideo());
-});
-
-
-            // CREATE A LOCAL PREVIEW URL
-            const objectUrl = URL.createObjectURL(file);
-            localStorage.setItem('currentAudioUrl', objectUrl);
-
-            const currentFile = file; // Captured for use in the fetch
-            fileInput.value = ""; // Reset for next selection
-
-            // 1. Get the snapshot of the toggle state RIGHT NOW
-            const diarizationValue = document.getElementById('diarization-toggle')?.checked || false;
-
-            // UI Feedback
-            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = "Processing..."; }
-            if (statusTxt) { statusTxt.innerText = "Uploading..."; statusTxt.style.display = "block"; }
-
-            try {
-                // 1. Get the Signed URL from Python
-                const signRes = await fetch('/api/sign-s3', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        filename: currentFile.name,
-                        filetype: currentFile.type,
-                        diarization: diarizationValue
-                    })
-                });
-
-                const result = await signRes.json();
-
-                // Safety check for Dana's app logic
-                if (!result.data) {
-                    throw new Error("Failed to get S3 signature from server.");
-                }
-
-                const { url, s3Key, jobId } = result.data;
-
-                // 2. 💾 PARK THE KEYS IMMEDIATELY
-                // This ensures recovery works for shlomico1234@gmail.com after login
-                localStorage.setItem('lastS3Key', s3Key);
-                localStorage.setItem('pendingS3Key', s3Key);
-                localStorage.setItem('lastJobId', jobId);
-                console.log("💾 Keys parked for recovery:", s3Key);
-
-                // 3. Start Socket communication
-                if (typeof socket !== 'undefined') {
-                    socket.emit('join', { room: jobId });
-                }
-
-                // 4. Proceed with S3 Upload (XHR for progress tracking)
-                const xhr = new XMLHttpRequest();
-                xhr.open('PUT', url, true);
-                xhr.setRequestHeader('Content-Type', currentFile.type);
-
-                xhr.onload = async () => {
-                    if (xhr.status === 200 || xhr.status === 201) {
-                        console.log("✅ File uploaded to S3. Triggering processing...");
-                        window.isTriggering = true;
-
-                        // 5. Trigger GPU/RunPod
-                        await fetch('/api/trigger_processing', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                s3Key: s3Key,
-                                jobId: jobId,
-                                diarization: diarizationValue
-                            })
-                        });
-
-                        if (typeof startFakeProgress === 'function') startFakeProgress();
-                    } else {
-                        console.error("S3 Upload Failed:", xhr.statusText);
-                        window.isTriggering = false;
-                        if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
-                    }
-                };
-
-                xhr.onerror = () => {
-                    console.error("XHR Network Error during upload.");
-                    window.isTriggering = false;
-                };
-
-                xhr.send(currentFile);
-
-            }
-            catch (err) {
-                console.error("Upload Error:", err);
-                window.isTriggering = false;
-                if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
-                // Use our new toast notification for a professional feel
-                if (typeof showStatus === 'function') showStatus("Error starting upload.", true);
-            }
-        })
-    }
 });

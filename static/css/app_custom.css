@@ -48,6 +48,29 @@ audio {
     height: 40px;
 }
 
+/* --- VIDEO PLAYER --- */
+#video-player-container {
+    flex: 0 0 auto;
+    margin-bottom: 12px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #fff;
+    width: 100%;
+    max-height: 280px;
+    overflow: hidden;
+}
+
+#main-video {
+    max-width: 100%;
+    max-height: 280px;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    background: #fff;
+    display: block;
+}
+
 /* --- HORIZONTAL CONTROLS BAR --- */
 .controls-bar {
     flex: 0 0 auto;

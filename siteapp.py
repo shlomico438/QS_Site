@@ -126,6 +126,7 @@ import time  # Ensure time is imported at the top of your file
 
 
 def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
+    data = []
     """Initiates the RunPod Serverless task with 5 parameters and retry logic."""
     if not RUNPOD_API_KEY or not RUNPOD_ENDPOINT_ID:
         error_text = "RunPod keys not found in environment variables."
