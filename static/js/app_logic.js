@@ -133,53 +133,197 @@ function showStatus(message, isError = false) {
 }
 async function setupNavbarAuth() {
     const navBtn = document.getElementById('nav-auth-btn');
+    const navSettingsLink = document.getElementById('nav-settings-link');
     if (!navBtn) return;
 
     const { data: { user } } = await supabase.auth.getUser();
 
     if (user) {
-        // Get name from Google or Manual Signup
-        const firstName = user.user_metadata?.full_name?.split(' ')[0] || "Dana";
-
-        // User is logged in: Show Name + Log Out
-        navBtn.innerHTML = `Welcome, ${firstName} | <span style="font-weight:400; font-size:0.9em;">Log Out</span>`;
+        const { displayName } = getAuthUserDisplayInfo(user);
+        navBtn.innerHTML = `<span class="nav-user-name">${escapeHtml(displayName)}</span> <span class="nav-auth-divider">|</span> <span class="nav-logout">Log Out</span>`;
         navBtn.style.color = "#1e3a8a";
+        navBtn.href = "#";
         navBtn.onclick = async (e) => {
             e.preventDefault();
             await supabase.auth.signOut();
             window.location.reload();
         };
+        if (navSettingsLink) navSettingsLink.style.display = '';
     } else {
-        // User is logged out: Show "Sign In"
-        navBtn.innerText = "Sign In";
+        navBtn.innerHTML = 'Sign In';
         navBtn.style.color = "#5d5dff";
+        navBtn.href = "#";
         navBtn.onclick = (e) => {
             e.preventDefault();
-            window.toggleModal(true);
+            if (typeof window.toggleModal === 'function') window.toggleModal(true);
         };
+        if (navSettingsLink) navSettingsLink.style.display = 'none';
     }
 }
 
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
 
-async function startJobExport({ type, s3Key }) {
+/** Get display name and email from user, including Google OAuth (identity_data). */
+function getAuthUserDisplayInfo(user) {
+    if (!user) return { displayName: 'Account', email: '' };
+    const meta = user.user_metadata || {};
+    const identity = (user.identities && user.identities[0]) ? user.identities[0] : null;
+    const idData = (identity && identity.identity_data) ? identity.identity_data : {};
+    const merged = { ...meta, ...idData };
+    const fullName = (merged.full_name || merged.name || '').trim()
+        || [merged.given_name, merged.family_name].filter(Boolean).join(' ').trim()
+        || (merged.given_name || '').trim();
+    const displayName = fullName
+        || (user.email ? user.email.replace(/@.*$/, '').replace(/^(\w)/, (m) => m.toUpperCase()) : null)
+        || 'Account';
+    const email = (user.email || merged.email || '').trim();
+    return { displayName, email };
+}
+
+async function initSettingsPage() {
+    const guestMsg = document.getElementById('settings-guest-msg');
+    const formWrap = document.getElementById('settings-form-wrap');
+    const form = document.getElementById('settings-form');
+    const nameInput = document.getElementById('settings-name');
+    const emailInput = document.getElementById('settings-email');
+    const messageEl = document.getElementById('settings-message');
+    const saveBtn = document.getElementById('settings-save');
+    if (!formWrap || !form) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+        if (guestMsg) guestMsg.style.display = 'block';
+        return;
+    }
+    formWrap.style.display = 'block';
+    const { displayName, email } = getAuthUserDisplayInfo(user);
+    nameInput.value = displayName === 'Account' ? '' : displayName;
+    emailInput.value = email;
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const newName = (nameInput.value || '').trim();
+        const newEmail = (emailInput.value || '').trim();
+        if (!newEmail) {
+            messageEl.textContent = 'Email is required.';
+            messageEl.style.color = '#b91c1c';
+            return;
+        }
+        saveBtn.disabled = true;
+        messageEl.textContent = '';
+        try {
+            const updates = { data: { full_name: newName || undefined } };
+            if (newEmail !== (user.email || '')) updates.email = newEmail;
+            const { data, error } = await supabase.auth.updateUser(updates);
+            if (error) throw error;
+            messageEl.textContent = 'Saved. ' + (updates.email ? 'Check your new email for a confirmation link.' : '');
+            messageEl.style.color = '#15803d';
+            if (typeof setupNavbarAuth === 'function') await setupNavbarAuth();
+        } catch (err) {
+            messageEl.textContent = err.message || 'Failed to save.';
+            messageEl.style.color = '#b91c1c';
+        }
+        saveBtn.disabled = false;
+    });
+}
+
+// Job lifecycle: only when user is signed in. pending → uploaded → processed → exported | completed | failed
+// jobs.id is UUID (auto-generated). We store the returned id as lastJobDbId for updates.
+
+async function createJobOnUpload({ jobId, s3Key }) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const { data, error } = await supabase
-        .from('jobs')
-        .insert([
-            {
-                user_id: user.id,
-                type: type, // This will now save as 'copy', 'txt', etc.
-                status: 'completed',
-                input_s3_key: s3Key,
-                // Add metadata if you want to track Shlomi's specific workshop
-                metadata: { client_name: "Shlomi Cohen", exported_at: new Date() }
-            }
-        ]);
+    const info = getAuthUserDisplayInfo(user);
+    const user_name = info.displayName === 'Account' ? null : info.displayName;
+    const user_email = info.email || null;
 
-    if (error) throw error;
-    console.log(`✅ Success! ${type} event saved for ${user.email}`);
+    const row = {
+        user_id: user.id,
+        type: 'transcription',
+        status: 'pending',
+        input_s3_key: s3Key,
+        user_name,
+        user_email,
+        metadata: { job_id: jobId }
+    };
+    const { data, error } = await supabase.from('jobs').insert([row]).select('id').single();
+    if (error) {
+        console.error('createJobOnUpload:', error);
+        return;
+    }
+    if (data && data.id) localStorage.setItem('lastJobDbId', data.id);
+}
+
+async function updateJobStatus(dbId, status) {
+    if (!dbId) return;
+    const { error } = await supabase
+        .from('jobs')
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq('id', dbId);
+    if (error) console.error('updateJobStatus:', error);
+}
+
+/** On export: update existing job to exported/completed, or create one if user signed in after upload. */
+async function ensureJobRecordOnExport() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const dbId = localStorage.getItem('lastJobDbId');
+    if (dbId) {
+        const { data: updated, error } = await supabase
+            .from('jobs')
+            .update({ status: 'exported', updated_at: new Date().toISOString() })
+            .eq('id', dbId)
+            .select('id', 'status');
+        if (error) {
+            const { data: d2, error: err2 } = await supabase
+                .from('jobs')
+                .update({ status: 'completed', updated_at: new Date().toISOString() })
+                .eq('id', dbId)
+                .select('id', 'status');
+            if (err2) console.error('ensureJobRecordOnExport update:', err2);
+            else if (d2 && d2.length) console.log('Job status -> completed');
+        } else if (updated && updated.length) {
+            console.log('Job status -> exported');
+        } else {
+            console.warn('Job update: no row matched. Add an RLS UPDATE policy on jobs, e.g. "allow update where auth.uid() = user_id"');
+        }
+        return;
+    }
+
+    const s3Key = localStorage.getItem('lastS3Key');
+    const jobId = localStorage.getItem('lastJobId');
+    if (!s3Key) return;
+
+    const info = getAuthUserDisplayInfo(user);
+    const user_name = info.displayName === 'Account' ? null : info.displayName;
+    const user_email = info.email || null;
+    const row = {
+        user_id: user.id,
+        type: 'transcription',
+        status: 'exported',
+        input_s3_key: s3Key,
+        user_name,
+        user_email,
+        metadata: { job_id: jobId || null }
+    };
+    let { data, error } = await supabase.from('jobs').insert([row]).select('id').single();
+    if (error && error.code === '22P02') {
+        row.status = 'completed';
+        const res = await supabase.from('jobs').insert([row]).select('id').single();
+        data = res.data;
+        error = res.error;
+    }
+    if (error) {
+        console.error('ensureJobRecordOnExport insert:', error);
+        return;
+    }
+    if (data && data.id) localStorage.setItem('lastJobDbId', data.id);
 }
     function createDocxParagraphs(group, showTime, showSpeaker) {
         const { Paragraph, TextRun, AlignmentType } = docx;
@@ -218,6 +362,51 @@ async function startJobExport({ type, s3Key }) {
 
 window.downloadFile = async function(type, bypassUser = null) {
     if (!window.currentSegments.length) return alert("No transcript available to export.");
+    const baseName = (window.originalFileName && window.originalFileName.split('.').slice(0, -1).join('.')) || "transcript";
+
+    if (type === 'movie') {
+        const { data: { user: movieUser } } = await supabase.auth.getUser();
+        if (!movieUser) {
+            alert("Please sign in to download the movie.");
+            window.pendingExportType = 'movie';
+            localStorage.setItem('pendingExportType', 'movie');
+            if (typeof window.toggleModal === 'function') window.toggleModal(true);
+            return;
+        }
+        const video = document.getElementById('main-video');
+        const videoUrl = video ? (video.currentSrc || video.src || (video.querySelector('source') && video.querySelector('source').src) || '') : '';
+        if (!video || !videoUrl || videoUrl.startsWith('data:')) return alert("Load a video first, then use Styled Subtitles before downloading the movie.");
+        try {
+            const simRes = await fetch('/api/simulation_mode');
+            const simJson = simRes.ok ? await simRes.json() : {};
+            if (simJson.simulation === true) {
+                // Simulation: download video + SRT (edited transcript) as separate files, no burn
+                if (typeof showStatus === 'function') showStatus("Downloading video and subtitles...", false);
+                const videoBlob = await fetch(videoUrl).then(r => r.blob());
+                if (typeof saveAs !== 'undefined') saveAs(videoBlob, (baseName || 'video') + '.mp4');
+                const segments = window.currentSegments || [];
+                let srt = '';
+                segments.forEach((seg, i) => {
+                    const ts = (s) => {
+                        const d = new Date(0); d.setMilliseconds(s * 1000);
+                        return d.toISOString().substr(11, 12).replace('.', ',');
+                    };
+                    srt += `${i + 1}\n${ts(seg.start)} --> ${ts(seg.end)}\n${(seg.text || '').trim()}\n\n`;
+                });
+                if (typeof saveAs !== 'undefined') saveAs(new Blob([srt], { type: 'text/plain;charset=utf-8' }), (baseName || 'video') + '.srt');
+                if (typeof showStatus === 'function') showStatus("Video and SRT downloaded", false);
+                return;
+            }
+            if (typeof showStatus === 'function') showStatus("Burning subtitles (browser)...", false);
+            await window.downloadMovieWithBurnedSubtitles(baseName);
+            if (typeof showStatus === 'function') showStatus("Movie downloaded", false);
+        } catch (e) {
+            if (typeof showStatus === 'function') showStatus("Movie burn failed: " + (e.message || e), true);
+            alert("Failed to burn subtitles: " + (e.message || e));
+        }
+        return;
+    }
+
     const { data: { user: activeUser } } = bypassUser ? { data: { user: bypassUser } } : await supabase.auth.getUser();
     if (!activeUser) {
         console.log("💾 Parking export type:", type);
@@ -227,26 +416,17 @@ window.downloadFile = async function(type, bypassUser = null) {
         window.toggleModal(true); // Open the sign-in modal
         return; // <--- CRITICAL: This stops the function here so the file doesn't download
     }
-    const baseName = window.originalFileName.split('.').slice(0, -1).join('.') || "transcript";
     const showTime = document.getElementById('toggle-time')?.checked;
     const showSpeaker = document.getElementById('toggle-speaker')?.checked;
 
-    //SAVE TO DATABASE ---
+    // Update job to exported, or create job if user signed in after upload
     try {
-        const fileDetails = {
-            type: 'transcription', // or 'render' depending on your logic
-            s3Key: localStorage.getItem('lastS3Key') // We need to store this during upload
-        };
-
-        // Call your Supabase function
-        await startJobExport(fileDetails);
-        console.log("Job record synced to Supabase.");
+        if (typeof ensureJobRecordOnExport === 'function') {
+            await ensureJobRecordOnExport();
+        }
     } catch (err) {
-        console.error("Failed to sync job to database:", err);
-        // We don't block the download if the DB fails,
-        // but we log it for debugging.
+        console.error("Failed to update job status:", err);
     }
-    // -----------------------------
 
     if (type === 'docx' && typeof docx === 'undefined') return alert("Error: DOCX library not loaded.");
     if (typeof saveAs === 'undefined') return alert("Error: FileSaver library not loaded.");
@@ -312,6 +492,12 @@ document.getElementById('toggle-auth-mode').addEventListener('click', (e) => {
 document.addEventListener('DOMContentLoaded', async () => {
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
+
+    // Settings page: load user and handle form
+    if (typeof window.location !== 'undefined' && (window.location.pathname === '/settings' || window.location.pathname.endsWith('/settings'))) {
+        initSettingsPage();
+    }
+
     const transcriptWindow = document.getElementById('transcript-window');
     const mainAudio = document.getElementById('main-audio');
 
@@ -456,31 +642,37 @@ document.addEventListener('DOMContentLoaded', async () => {
             mainVideoEl._qs_listeners_attached = true;
         }
 
-        // 5. DATABASE SYNC (Your existing logic)
+        // 5. RESTORE TRANSCRIPT FROM LOCALSTORAGE (so export works after refresh / auth)
         const savedTranscript = localStorage.getItem('pendingTranscript');
+        if (savedTranscript) {
+            try {
+                const parsed = JSON.parse(savedTranscript);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    window.currentSegments = parsed;
+                    if (typeof window.render === 'function') window.render();
+                }
+            } catch (e) { console.warn('Restore transcript:', e); }
+        }
+
         const savedS3Key = localStorage.getItem('pendingS3Key');
         if (savedS3Key) {
             localStorage.setItem('lastS3Key', savedS3Key);
-            try {
-                await startJobExport({ type: 'transcription', s3Key: savedS3Key });
-            } catch (err) { console.error("Export failed:", err); }
+            // Don't insert a job here — we insert once when user actually exports (download/copy)
         }
-
 
         //const type = window.pendingExportType; // 'docx', 'srt', or 'vtt'
         const savedExportType = localStorage.getItem('pendingExportType') || window.pendingExportType;
 
         if (savedExportType) {
-            const user = session.user; // Use the user from the session we just fetched
-            console.log(`🚀 Auto-resuming pending ${savedExportType} export...`);
-
-            // Trigger the download instantly
-            window.downloadFile(savedExportType, user);
-
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                console.log(`🚀 Auto-resuming pending ${savedExportType} export...`);
+                window.downloadFile(savedExportType, user);
+            }
             // Reset the pending type so it doesn't loop
             window.pendingExportType = null;
             localStorage.removeItem('pendingExportType');
-            showStatus(`Exporting your ${savedExportType.toUpperCase()} file...`, false);
+            if (user && typeof showStatus === 'function') showStatus(`Exporting your ${savedExportType.toUpperCase()} file...`, false);
         }
 
 
@@ -731,6 +923,9 @@ document.addEventListener('DOMContentLoaded', () => {
     syncSpeakerControls();
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
     window.handleJobUpdate = function(rawResult) {
+        const dbId = localStorage.getItem('lastJobDbId');
+        if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'processed');
+
         // 1. CLEAR OVERLAYS & STOP PROGRESS
         window.isTriggering = false;
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
@@ -747,25 +942,33 @@ document.addEventListener('DOMContentLoaded', () => {
         const preparingScreen = document.getElementById('preparing-screen');
         if (preparingScreen) preparingScreen.style.display = 'none';
 
-        // 1. UNHIDE THE PLAYER
+        // 1. UNHIDE AUDIO PLAYER (default view after transcription - no video yet)
         const playerContainer = document.getElementById('audio-player-container');
         if (playerContainer) playerContainer.style.display = 'block';
 
+        // Hide video wrapper so user sees transcript + audio first
+        const videoWrapper = document.getElementById('video-wrapper');
+        if (videoWrapper) {
+            videoWrapper.classList.remove('visible');
+            videoWrapper.style.display = 'none';
+        }
+
         // 2. LOAD THE AUDIO
-        // Retrieve the local URL we stored during the 'change' event
         const audioSource = document.getElementById('audio-source');
         const mainAudio = document.getElementById('main-audio');
         const savedUrl = localStorage.getItem('currentAudioUrl');
 
         if (audioSource && mainAudio && savedUrl) {
             audioSource.src = savedUrl;
-            mainAudio.load(); // Force the player to recognize the new file
+            mainAudio.load();
         }
 
-        // 2. UNHIDE CORE COMPONENTS
+        // 3. UNHIDE CORE COMPONENTS; show Styled Subtitles button only when MP4 was uploaded
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
         const audioPlayer = document.getElementById('audio-player-container');
         if (audioPlayer) audioPlayer.style.display = 'block';
+        const btnStyled = document.getElementById('btn-styled-subtitles');
+        if (btnStyled) btnStyled.style.display = (window.uploadWasVideo === true) ? 'inline-block' : 'none';
 
         const mainBtn = document.getElementById('main-btn');
         if (mainBtn) {
@@ -773,12 +976,10 @@ document.addEventListener('DOMContentLoaded', () => {
             mainBtn.innerText = "Upload and Process";
         }
 
-        // 3. PROCESS DATA
-        // 3. PROCESS DATA
+        // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
         const output = rawResult.result || rawResult.output || rawResult;
-        
-        // ADDED THIS LINE: We must grab the segments from the output first!
-        let segments = output.segments || []; 
+        let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
+        if (!Array.isArray(segments)) segments = [];
         segments = splitLongSegments(segments, 55);
         window.currentSegments = segments;
         
@@ -803,6 +1004,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const transcriptWindow = document.getElementById('transcript-window');
         if (transcriptWindow) {
             window.render();
+            // Show subtitle style selector when subtitles are available
+            window.showSubtitleStyleSelector();
             // NEW: Live Preview for Subtitles
             transcriptWindow.addEventListener('input', (e) => {
                 // Only run if we are actively in edit mode
@@ -923,6 +1126,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         }).join('');
 
         transcriptWindow.innerHTML = html;
+        transcriptWindow.contentEditable = 'false';
     };
     }
     // --- 3. UI HELPERS ---
@@ -1006,10 +1210,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // --- NEW: Add the 'copy' type here ---
             const currentS3Key = localStorage.getItem('lastS3Key');
             try {
-                await startJobExport({
-                    type: 'copy', // Distinguishes from 'txt' or 'docx'
-                    s3Key: currentS3Key
-                });
+                if (typeof ensureJobRecordOnExport === 'function') {
+                    await ensureJobRecordOnExport();
+                }
             } catch (err) {
                 console.error("Failed to log copy event:", err);
             }
@@ -1056,6 +1259,49 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         if (editActions) editActions.style.display = 'none';
     };
 
+    // --- SUBTITLE STYLE MANAGEMENT ---
+    window.currentSubtitleStyle = localStorage.getItem('subtitleStyle') || 'tiktok';
+    
+    window.applySubtitleStyle = function(style) {
+        const video = document.getElementById('main-video');
+        if (!video) return;
+        
+        // Remove all style classes
+        video.classList.remove('subtitle-style-tiktok', 'subtitle-style-clean', 'subtitle-style-cinematic');
+        
+        // Apply selected style
+        if (style) {
+            video.classList.add(`subtitle-style-${style}`);
+            window.currentSubtitleStyle = style;
+            localStorage.setItem('subtitleStyle', style);
+        }
+        
+        // Update card selection
+        document.querySelectorAll('.subtitle-style-card').forEach(card => {
+            card.classList.remove('active');
+            if (card.dataset.style === style) {
+                card.classList.add('active');
+            }
+        });
+    };
+    
+    window.showSubtitleStyleSelector = function() {
+        const selector = document.getElementById('subtitle-style-selector');
+        const video = document.getElementById('main-video');
+        if (selector && video && window.currentSegments && window.currentSegments.length > 0) {
+            selector.style.display = 'block';
+            // Apply saved style
+            window.applySubtitleStyle(window.currentSubtitleStyle);
+        }
+    };
+    
+    window.hideSubtitleStyleSelector = function() {
+        const selector = document.getElementById('subtitle-style-selector');
+        if (selector) {
+            selector.style.display = 'none';
+        }
+    };
+
     // --- NEW: The VTT Cache Buster ---
     window.refreshVideoSubtitles = function() {
         const video = document.getElementById('main-video');
@@ -1096,8 +1342,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         track.addEventListener('load', () => {
             try {
                 Array.from(video.textTracks).forEach(tt => tt.mode = 'showing');
+                // Reapply subtitle style after track loads
+                window.applySubtitleStyle(window.currentSubtitleStyle);
             } catch (e) { console.warn("Track mode error:", e); }
         });
+        
+        // Show style selector
+        window.showSubtitleStyleSelector();
     };
 
     window.toggleEditMode = function() {
@@ -1168,17 +1419,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const file = this.files[0];
             if (!file) return;
 
-            // If the user selected a local video (mp4/webm), load it into the preview
+            // Track whether this upload is video (mp4) so we show Styled Subtitles button only for video
+            window.uploadWasVideo = false;
             try {
                 const isVideo = (file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov)$/i.test(file.name);
                 if (isVideo) {
+                    window.uploadWasVideo = true;
                     const url = URL.createObjectURL(file);
                     window.originalFileName = file.name.replace(/\.[^.]+$/, '');
                     const src = document.getElementById('video-source');
                     const video = document.getElementById('main-video');
                     if (src) src.src = url;
                     if (video) {
-                        // Bring to front and ensure controls are usable
                         video.style.position = 'relative';
                         video.style.zIndex = '1002';
                         video.controls = true;
@@ -1186,10 +1438,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         video.pause();
                         try { video.focus(); } catch (e) {}
                     }
-                    showStatus('Video loaded locally', false);
-                    // reset the file input so it can be used again
-                    fileInput.value = '';
-                    return; // skip upload flow when previewing locally
+                    // Continue to upload and process (do not return) so transcription runs for video too
                 }
                 // If the user selected a subtitle file (srt/vtt/text), handle it locally
                 const isSubtitle = (file.type && (file.type.includes('vtt') || file.type.includes('text'))) || /\.(srt|vtt|txt)$/i.test(file.name);
@@ -1243,12 +1492,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 const { url, s3Key, jobId } = result.data;
 
-                // 2. 💾 PARK THE KEYS IMMEDIATELY
-                // This ensures recovery works 
+                // 2. 💾 PARK THE KEYS IMMEDIATELY + create job record (status: pending)
                 localStorage.setItem('lastS3Key', s3Key);
                 localStorage.setItem('pendingS3Key', s3Key);
                 localStorage.setItem('lastJobId', jobId);
                 console.log("💾 Keys parked for recovery:", s3Key);
+                if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId, s3Key });
 
                 // 3. Start Socket communication
                 if (typeof socket !== 'undefined') {
@@ -1264,21 +1513,29 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     if (xhr.status === 200 || xhr.status === 201) {
                         console.log("✅ File uploaded to S3. Triggering processing...");
                         window.isTriggering = true;
+                        const dbId = localStorage.getItem('lastJobDbId');
+                        if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
 
-                        // 5. Trigger GPU/RunPod
-                        await fetch('/api/trigger_processing', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                s3Key: s3Key,
-                                jobId: jobId,
-                                diarization: diarizationValue
-                            })
-                        });
-
-                        if (typeof startFakeProgress === 'function') startFakeProgress();
+                        try {
+                            await fetch('/api/trigger_processing', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    s3Key: s3Key,
+                                    jobId: jobId,
+                                    diarization: diarizationValue
+                                })
+                            });
+                            if (typeof startFakeProgress === 'function') startFakeProgress();
+                        } catch (err) {
+                            const dbId = localStorage.getItem('lastJobDbId');
+                            if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
+                            throw err;
+                        }
                     } else {
                         console.error("S3 Upload Failed:", xhr.statusText);
+                        const dbId = localStorage.getItem('lastJobDbId');
+                        if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                         window.isTriggering = false;
                         if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                     }
@@ -1286,6 +1543,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 xhr.onerror = () => {
                     console.error("XHR Network Error during upload.");
+                    const dbId = localStorage.getItem('lastJobDbId');
+                    if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                     window.isTriggering = false;
                 };
 
@@ -1387,6 +1646,7 @@ function renderTranscriptFromCues(cues) {
     }).join('');
 
     container.innerHTML = html;
+    container.contentEditable = 'false';
 }
 
 async function handleSubtitleFile(file) {
@@ -1404,15 +1664,14 @@ async function handleSubtitleFile(file) {
     }
     renderTranscriptFromCues(cues);
     
-    // Make the transcript editable immediately so users can edit loaded subtitles
+    // Keep transcript read-only until user presses Edit; ensure controls and player visible
     try {
         const container = document.getElementById('transcript-window');
-        if (container) container.setAttribute('contenteditable', 'true');
-        // Ensure the controls bar and player are visible for local previews
+        if (container) container.setAttribute('contenteditable', 'false');
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
         const video = document.getElementById('main-video');
         if (video) video.style.display = 'block';
-    } catch (e) { console.warn('Could not enable inline editing:', e); }
+    } catch (e) { console.warn('Subtitle load UI:', e); }
     // Also attach a VTT track to the video for live preview
     try {
         // Always use the split cues to create VTT, even for original VTT files
@@ -1482,6 +1741,7 @@ async function handleSubtitleFile(file) {
                                 }
                                 if (cuesArr.length) {
                                     renderTranscriptFromCues(cuesArr);
+                                    window.showSubtitleStyleSelector();
                                 }
                                 break;
                             }
@@ -1491,6 +1751,9 @@ async function handleSubtitleFile(file) {
                     console.warn('Failed to read cues from video.textTracks fallback', e);
                 }
             }, 300);
+            
+            // Show style selector after VTT is attached
+            window.showSubtitleStyleSelector();
         }
     } catch (e) {
         console.warn('Failed to attach VTT track', e);
@@ -1625,4 +1888,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (downloadBtn) downloadBtn.addEventListener('click', () => downloadSRT());
     if (burnBtn) burnBtn.addEventListener('click', () => createBurnedInVideo());
+    
+    // Styled Subtitles button: show video player + style cards
+    const btnStyledSubtitles = document.getElementById('btn-styled-subtitles');
+    if (btnStyledSubtitles) {
+        btnStyledSubtitles.addEventListener('click', function() {
+            const audioContainer = document.getElementById('audio-player-container');
+            const videoWrapper = document.getElementById('video-wrapper');
+            if (audioContainer) audioContainer.style.display = 'none';
+            if (videoWrapper) {
+                videoWrapper.style.display = 'flex';
+                videoWrapper.classList.add('visible');
+            }
+            if (window.currentSegments && window.currentSegments.length > 0) {
+                if (typeof window.refreshVideoSubtitles === 'function') {
+                    window.refreshVideoSubtitles();
+                }
+                if (typeof window.showSubtitleStyleSelector === 'function') {
+                    window.showSubtitleStyleSelector();
+                }
+            }
+        });
+    }
+    
+    // Subtitle style selector event listeners (use event delegation since cards might be hidden initially)
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('.subtitle-style-card')) {
+            const card = e.target.closest('.subtitle-style-card');
+            const style = card.dataset.style;
+            if (style) {
+                window.applySubtitleStyle(style);
+            }
+        }
+    });
 });

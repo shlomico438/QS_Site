@@ -33,6 +33,7 @@
             <a href="/about" class="nav-item">About Us</a>
             <a href="/blog" class="nav-item">Blog</a>
             <a href="/contact" class="nav-item">Contact</a>
+            <a href="/settings" class="nav-item" id="nav-settings-link" style="display: none;">Settings</a>
             <a href="#" class="nav-item" id="nav-auth-btn" style="color: #5d5dff; font-weight: 800;">Sign In</a>
         </div>
     </header>
@@ -40,10 +41,6 @@
     <main class="main-content" style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;">
         {% block content %}{% endblock %}
     </main>
-
-    <footer class="footer">
-        <p>&copy; 2026 QuickScribe AI. Built on AWS Infrastructure.</p>
-    </footer>
 
     <script>
         const socket = io({

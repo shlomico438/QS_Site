@@ -76,6 +76,21 @@ html, body {
     color: #4f46e5; /* Indigo Highlight */
 }
 
+/* Logged-in user name (prominent) and Log Out */
+.nav-user-name {
+    font-weight: 800;
+    font-size: 1.05rem;
+}
+.nav-auth-divider {
+    margin: 0 6px;
+    font-weight: 400;
+    opacity: 0.7;
+}
+.nav-logout {
+    font-weight: 400;
+    font-size: 0.9em;
+}
+
 /* Hide Hamburger on Desktop */
 .hamburger-menu {
     display: none;

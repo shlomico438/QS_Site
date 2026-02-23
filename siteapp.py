@@ -120,6 +120,11 @@ def blog(): return render_template('blog.html')
 def contact():
     return render_template('contact.html')
 
+
+@app.route('/settings')
+def settings():
+    return render_template('settings.html')
+
 # --- UPLOAD & TRIGGER API ---
 import time  # Ensure time is imported at the top of your file
 
@@ -463,6 +468,76 @@ def trigger_processing():
         import traceback
         traceback.print_exc()  # This will show the exact line of the crash in Koyeb logs
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# --- SIMULATION MODE (for frontend) ---
+@app.route('/api/simulation_mode', methods=['GET'])
+def get_simulation_mode():
+    """Return whether server is in simulation mode so frontend can show subtitle upload hint."""
+    return jsonify({"simulation": SIMULATION_MODE}), 200
+
+
+# --- BURN SUBTITLES INTO VIDEO ---
+@app.route('/api/burn_subtitles', methods=['POST'])
+def burn_subtitles():
+    """Accept video file + segments JSON; burn subtitles with ffmpeg; return the video file."""
+    try:
+        video_file = request.files.get('video')
+        segments_json = request.form.get('segments')
+        if not video_file or not segments_json:
+            return jsonify({"error": "Missing video or segments"}), 400
+        segments = json.loads(segments_json)
+        if not segments:
+            return jsonify({"error": "No segments"}), 400
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = os.path.join(tmpdir, 'input.mp4')
+            video_file.save(video_path)
+
+            # Build VTT content (VTT uses HH:MM:SS.mmm)
+            def to_vtt_ts(s):
+                h = int(s // 3600)
+                m = int((s % 3600) // 60)
+                sec = s % 60
+                return f"{h:02d}:{m:02d}:{sec:06.3f}"
+
+            vtt_path = os.path.join(tmpdir, 'subs.vtt')
+            with open(vtt_path, 'w', encoding='utf-8') as f:
+                f.write("WEBVTT\n\n")
+                for seg in segments:
+                    start = seg.get('start', 0)
+                    end = seg.get('end', start + 1)
+                    text = (seg.get('text') or '').replace('\n', ' ')
+                    f.write(f"{to_vtt_ts(start)} --> {to_vtt_ts(end)}\n{text}\n\n")
+
+            out_path = os.path.join(tmpdir, 'output.mp4')
+            # subtitles filter: use file path; on Windows avoid backslash in filter
+            vtt_norm = os.path.normpath(vtt_path)
+            if os.name == 'nt':
+                vtt_norm = vtt_norm.replace('\\', '/').replace(':', '\\:')
+            cmd = [
+                'ffmpeg', '-y', '-i', video_path,
+                '-vf', f"subtitles={vtt_norm}",
+                '-c:a', 'copy',
+                out_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                return jsonify({"error": "ffmpeg failed", "stderr": result.stderr}), 500
+            if not os.path.exists(out_path):
+                return jsonify({"error": "ffmpeg did not produce output"}), 500
+
+            from flask import send_file
+            from io import BytesIO
+            with open(out_path, 'rb') as f:
+                out_data = BytesIO(f.read())
+            out_data.seek(0)
+            return send_file(out_data, as_attachment=True, download_name='video_with_subtitles.mp4', mimetype='video/mp4')
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Processing timed out"}), 500
+    except Exception as e:
+        logging.exception("burn_subtitles failed")
+        return jsonify({"error": str(e)}), 500
 
 
 # --- CONTROL ROUTES FOR SIMULATION / PROCESS START ---

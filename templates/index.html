@@ -43,11 +43,35 @@
                 </p>
             </div>
         </div>
-        <div id="video-player-container">
-            <video id="main-video" controls crossorigin="anonymous">
-                <source id="video-source" src="" type="video/mp4">
-                Your browser does not support the video tag.
-            </video>
+        <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
+            <audio id="main-audio" controls style="width: 100%; max-width: 100%;">
+                <source id="audio-source" src="" type="audio/mpeg">
+                Your browser does not support the audio tag.
+            </audio>
+        </div>
+        <div id="video-wrapper" style="display: none; gap: 12px; margin-bottom: 12px; align-items: flex-start;">
+            <div id="subtitle-style-selector" style="display: none; flex-shrink: 0; width: 140px;">
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <button class="subtitle-style-card" data-style="tiktok" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
+                        <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;">TikTok Bold</div>
+                        <div style="font-size: 0.65rem; color: #6b7280;">Big • Bold</div>
+                    </button>
+                    <button class="subtitle-style-card" data-style="clean" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
+                        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;">Clean Pro</div>
+                        <div style="font-size: 0.65rem; color: #6b7280;">Minimal • Soft</div>
+                    </button>
+                    <button class="subtitle-style-card" data-style="cinematic" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
+                        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;">Cinematic</div>
+                        <div style="font-size: 0.65rem; color: #6b7280;">Serif • Caps</div>
+                    </button>
+                </div>
+            </div>
+            <div id="video-player-container" style="flex: 1;">
+                <video id="main-video" controls crossorigin="anonymous">
+                    <source id="video-source" src="" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
         </div>
 
         <div class="transcription-wrapper">
@@ -57,12 +81,14 @@
                     <label><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span>Speaker</span></label>
                 </div>
                 <div class="toolbar-group">
+                    <button class="btn-styled-subtitles" id="btn-styled-subtitles" title="edit and style subtitles" style="display: none;" type="button"><img src="{{ url_for('static', filename='images/styled-subtitles-btn.png') }}" alt="Style" class="btn-styled-subtitles-img"></button>
                     <div style="position: relative;">
                         <button class="btn-icon" id="btn-download" title="Download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>
                         <div class="dropdown-menu" id="download-menu">
                             <button class="dropdown-item" data-type="docx">Word (.docx)</button>
                             <button class="dropdown-item" data-type="srt">Subtitles (.srt)</button>
                             <button class="dropdown-item" data-type="vtt">Web VTT (.vtt)</button>
+                            <button class="dropdown-item" data-type="movie">Movie download</button>
                         </div>
                     </div>
                     <button class="btn-icon" onclick="window.copyTranscript()" title="Copy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
@@ -83,7 +109,7 @@
                     </div>
                 </div>
             </div>
-            <div id="transcript-window">
+            <div id="transcript-window" contenteditable="false">
                 <p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:80px;">Upload a file to start</p>
             </div>
         </div>
