@@ -33,10 +33,20 @@
             <a href="/about" class="nav-item">About Us</a>
             <a href="/blog" class="nav-item">Blog</a>
             <a href="/contact" class="nav-item">Contact</a>
-            <a href="/settings" class="nav-item" id="nav-settings-link" style="display: none;">Settings</a>
             <a href="#" class="nav-item" id="nav-auth-btn" style="color: #5d5dff; font-weight: 800;">Sign In</a>
         </div>
     </header>
+
+    <div id="user-menu-panel" class="user-menu-panel" aria-hidden="true">
+        <div class="user-menu-header">
+            <span class="user-menu-title">My files</span>
+            <a href="/settings" class="user-menu-settings-link" title="Settings" aria-label="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </a>
+        </div>
+        <div id="user-menu-files" class="user-menu-files"></div>
+        <p id="user-menu-empty" class="user-menu-empty" style="display: none;">No files yet. Upload on the home page to get started.</p>
+    </div>
 
     <main class="main-content" style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;">
         {% block content %}{% endblock %}

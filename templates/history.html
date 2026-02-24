@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="content-page">
+    <h1>My transcriptions</h1>
+    <p id="history-guest-msg" style="display: none; color: #6b7280;">Sign in to see your files and transcriptions.</p>
+    <div id="history-list-wrap" style="display: none;">
+        <p id="history-empty-msg" style="display: none; color: #6b7280;">No transcriptions yet. Upload a file on the home page to get started.</p>
+        <ul id="history-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+    </div>
+</div>
+{% endblock %}

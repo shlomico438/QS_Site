@@ -133,22 +133,27 @@ function showStatus(message, isError = false) {
 }
 async function setupNavbarAuth() {
     const navBtn = document.getElementById('nav-auth-btn');
-    const navSettingsLink = document.getElementById('nav-settings-link');
     if (!navBtn) return;
 
     const { data: { user } } = await supabase.auth.getUser();
 
     if (user) {
         const { displayName } = getAuthUserDisplayInfo(user);
-        navBtn.innerHTML = `<span class="nav-user-name">${escapeHtml(displayName)}</span> <span class="nav-auth-divider">|</span> <span class="nav-logout">Log Out</span>`;
+        navBtn.innerHTML = `<span class="nav-user-name" id="nav-user-name-trigger" role="button" tabindex="0">${escapeHtml(displayName)}</span> <span class="nav-auth-divider">|</span> <span class="nav-logout" id="nav-logout-btn">Log Out</span>`;
         navBtn.style.color = "#1e3a8a";
         navBtn.href = "#";
-        navBtn.onclick = async (e) => {
+        navBtn.onclick = (e) => {
             e.preventDefault();
-            await supabase.auth.signOut();
-            window.location.reload();
+            if (e.target.id === 'nav-logout-btn' || e.target.closest('#nav-logout-btn')) {
+                supabase.auth.signOut().then(() => window.location.reload());
+                return;
+            }
+            toggleUserMenu();
         };
-        if (navSettingsLink) navSettingsLink.style.display = '';
+        const nameTrigger = document.getElementById('nav-user-name-trigger');
+        if (nameTrigger) {
+            nameTrigger.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleUserMenu(); } };
+        }
     } else {
         navBtn.innerHTML = 'Sign In';
         navBtn.style.color = "#5d5dff";
@@ -157,7 +162,108 @@ async function setupNavbarAuth() {
             e.preventDefault();
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
         };
-        if (navSettingsLink) navSettingsLink.style.display = 'none';
+    }
+    closeUserMenu();
+}
+
+function closeUserMenuOnClickOutside(e) {
+    const panel = document.getElementById('user-menu-panel');
+    const trigger = document.getElementById('nav-user-name-trigger');
+    if (!panel || !panel.classList.contains('is-open')) return;
+    if (panel.contains(e.target) || (trigger && trigger.contains(e.target))) return;
+    closeUserMenu();
+}
+
+function closeUserMenu() {
+    const panel = document.getElementById('user-menu-panel');
+    if (panel) {
+        panel.classList.remove('is-open');
+        panel.setAttribute('aria-hidden', 'true');
+        document.removeEventListener('click', closeUserMenuOnClickOutside);
+    }
+}
+
+async function toggleUserMenu() {
+    const panel = document.getElementById('user-menu-panel');
+    if (!panel) return;
+    const isOpen = panel.classList.toggle('is-open');
+    panel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+    if (isOpen) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user && !panel.dataset.loaded) loadUserMenuFiles(user);
+        document.addEventListener('click', closeUserMenuOnClickOutside);
+    } else {
+        document.removeEventListener('click', closeUserMenuOnClickOutside);
+    }
+}
+
+async function loadUserMenuFiles(user) {
+    const panel = document.getElementById('user-menu-panel');
+    const filesEl = document.getElementById('user-menu-files');
+    const emptyEl = document.getElementById('user-menu-empty');
+    if (!panel || !filesEl) return;
+
+    const { data: jobs, error } = await supabase
+        .from('jobs')
+        .select('id, status, input_s3_key, created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+    panel.dataset.loaded = '1';
+    filesEl.innerHTML = '';
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    if (error || !jobs || jobs.length === 0) {
+        if (emptyEl) emptyEl.style.display = 'block';
+        return;
+    }
+
+    function filenameFromKey(key) {
+        if (!key) return 'file';
+        const parts = key.split('/');
+        return parts[parts.length - 1] || key;
+    }
+    function formatDate(iso) {
+        try {
+            const d = new Date(iso);
+            return d.toLocaleDateString(undefined, { dateStyle: 'short' }) + ' ' + d.toLocaleTimeString(undefined, { timeStyle: 'short' });
+        } catch (_) { return iso || ''; }
+    }
+
+    for (const job of jobs) {
+        const item = document.createElement('div');
+        item.className = 'user-menu-file-item';
+        const label = document.createElement('span');
+        label.className = 'user-menu-file-label';
+        label.textContent = filenameFromKey(job.input_s3_key) + ' — ' + (job.status || '') + ' · ' + formatDate(job.created_at);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'user-menu-file-get';
+        btn.textContent = 'Get file';
+        if (!job.input_s3_key) {
+            btn.disabled = true;
+            btn.title = 'No file key';
+        } else {
+            btn.onclick = async () => {
+                btn.disabled = true;
+                try {
+                    const res = await fetch('/api/get_presigned_url', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ s3Key: job.input_s3_key, userId: user.id })
+                    });
+                    const json = await res.json();
+                    if (json.url) window.open(json.url, '_blank');
+                    else showStatus(json.error || 'Failed to get link', true);
+                } catch (e) {
+                    showStatus(e.message || 'Failed', true);
+                }
+                btn.disabled = false;
+            };
+        }
+        item.appendChild(label);
+        item.appendChild(btn);
+        filesEl.appendChild(item);
     }
 }
 
@@ -220,15 +326,93 @@ async function initSettingsPage() {
             if (newEmail !== (user.email || '')) updates.email = newEmail;
             const { data, error } = await supabase.auth.updateUser(updates);
             if (error) throw error;
-            messageEl.textContent = 'Saved. ' + (updates.email ? 'Check your new email for a confirmation link.' : '');
-            messageEl.style.color = '#15803d';
             if (typeof setupNavbarAuth === 'function') await setupNavbarAuth();
+            window.location.href = '/';
         } catch (err) {
             messageEl.textContent = err.message || 'Failed to save.';
             messageEl.style.color = '#b91c1c';
         }
         saveBtn.disabled = false;
     });
+}
+
+async function initHistoryPage() {
+    const guestMsg = document.getElementById('history-guest-msg');
+    const listWrap = document.getElementById('history-list-wrap');
+    const emptyMsg = document.getElementById('history-empty-msg');
+    const listEl = document.getElementById('history-list');
+    if (!listEl) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+        if (guestMsg) guestMsg.style.display = 'block';
+        return;
+    }
+
+    listWrap.style.display = 'block';
+    const { data: jobs, error } = await supabase
+        .from('jobs')
+        .select('id, status, input_s3_key, created_at, type')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        if (emptyMsg) { emptyMsg.textContent = 'Could not load list. ' + (error.message || ''); emptyMsg.style.display = 'block'; }
+        return;
+    }
+    if (!jobs || jobs.length === 0) {
+        if (emptyMsg) emptyMsg.style.display = 'block';
+        return;
+    }
+
+    function filenameFromKey(key) {
+        if (!key) return 'file';
+        const parts = key.split('/');
+        return parts[parts.length - 1] || key;
+    }
+    function formatDate(iso) {
+        try {
+            const d = new Date(iso);
+            return d.toLocaleDateString(undefined, { dateStyle: 'short' }) + ' ' + d.toLocaleTimeString(undefined, { timeStyle: 'short' });
+        } catch (_) { return iso || ''; }
+    }
+
+    listEl.innerHTML = '';
+    for (const job of jobs) {
+        const li = document.createElement('li');
+        li.style.cssText = 'padding:12px 0; border-bottom:1px solid #e5e7eb; display:flex; align-items:center; gap:12px; flex-wrap:wrap;';
+        const label = document.createElement('span');
+        label.style.flex = '1 1 200px';
+        label.textContent = filenameFromKey(job.input_s3_key) + ' — ' + (job.status || '') + ' · ' + formatDate(job.created_at);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Get file';
+        btn.style.cssText = 'padding:6px 12px; background:#1e3a8a; color:white; border:none; border-radius:6px; cursor:pointer; font-size:0.875rem;';
+        if (!job.input_s3_key) {
+            btn.disabled = true;
+            btn.title = 'No file key';
+        } else {
+            btn.onclick = async () => {
+                btn.disabled = true;
+                try {
+                    const res = await fetch('/api/get_presigned_url', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ s3Key: job.input_s3_key, userId: user.id })
+                    });
+                    const json = await res.json();
+                    if (json.url) window.open(json.url, '_blank');
+                    else showStatus(json.error || 'Failed to get link', true);
+                } catch (e) {
+                    showStatus(e.message || 'Failed', true);
+                }
+                btn.disabled = false;
+            };
+        }
+        li.appendChild(label);
+        li.appendChild(btn);
+        listEl.appendChild(li);
+    }
 }
 
 // Job lifecycle: only when user is signed in. pending → uploaded → processed → exported | completed | failed
@@ -268,7 +452,7 @@ async function updateJobStatus(dbId, status) {
     if (error) console.error('updateJobStatus:', error);
 }
 
-/** On export: update existing job to exported/completed, or create one if user signed in after upload. */
+/** On export: update existing job to exported/completed, or create one if no row or wrong user (e.g. signed in as different user). */
 async function ensureJobRecordOnExport() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -280,20 +464,22 @@ async function ensureJobRecordOnExport() {
             .update({ status: 'exported', updated_at: new Date().toISOString() })
             .eq('id', dbId)
             .select('id', 'status');
+        if (updated && updated.length) {
+            console.log('Job status -> exported');
+            return;
+        }
         if (error) {
             const { data: d2, error: err2 } = await supabase
                 .from('jobs')
                 .update({ status: 'completed', updated_at: new Date().toISOString() })
                 .eq('id', dbId)
                 .select('id', 'status');
-            if (err2) console.error('ensureJobRecordOnExport update:', err2);
-            else if (d2 && d2.length) console.log('Job status -> completed');
-        } else if (updated && updated.length) {
-            console.log('Job status -> exported');
-        } else {
-            console.warn('Job update: no row matched. Add an RLS UPDATE policy on jobs, e.g. "allow update where auth.uid() = user_id"');
+            if (d2 && d2.length) {
+                console.log('Job status -> completed');
+                return;
+            }
         }
-        return;
+        // No row matched (stale lastJobDbId or RLS) — create a new job for current user below
     }
 
     const s3Key = localStorage.getItem('lastS3Key');
@@ -370,6 +556,8 @@ window.downloadFile = async function(type, bypassUser = null) {
             alert("Please sign in to download the movie.");
             window.pendingExportType = 'movie';
             localStorage.setItem('pendingExportType', 'movie');
+            localStorage.setItem('pendingS3Key', localStorage.getItem('lastS3Key') || '');
+            localStorage.setItem('pendingJobId', localStorage.getItem('lastJobId') || '');
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
             return;
         }
@@ -377,6 +565,10 @@ window.downloadFile = async function(type, bypassUser = null) {
         const videoUrl = video ? (video.currentSrc || video.src || (video.querySelector('source') && video.querySelector('source').src) || '') : '';
         if (!video || !videoUrl || videoUrl.startsWith('data:')) return alert("Load a video first, then use Styled Subtitles before downloading the movie.");
         try {
+            // Mark job as exported (or create job if user signed in after upload)
+            if (typeof ensureJobRecordOnExport === 'function') {
+                await ensureJobRecordOnExport();
+            }
             const simRes = await fetch('/api/simulation_mode');
             const simJson = simRes.ok ? await simRes.json() : {};
             if (simJson.simulation === true) {
@@ -412,6 +604,8 @@ window.downloadFile = async function(type, bypassUser = null) {
         console.log("💾 Parking export type:", type);
         window.pendingExportType = type;
         localStorage.setItem('pendingExportType', type);
+        localStorage.setItem('pendingS3Key', localStorage.getItem('lastS3Key') || '');
+        localStorage.setItem('pendingJobId', localStorage.getItem('lastJobId') || '');
 
         window.toggleModal(true); // Open the sign-in modal
         return; // <--- CRITICAL: This stops the function here so the file doesn't download
@@ -462,32 +656,34 @@ window.downloadFile = async function(type, bypassUser = null) {
 };
 
 
-// Google Login Handler
-document.getElementById('google-login').addEventListener('click', async () => {
-    if (window.currentSegments.length > 0) {
+// Google Login Handler (only on pages that have the auth modal, e.g. index)
+const googleLoginBtn = document.getElementById('google-login');
+if (googleLoginBtn) {
+    googleLoginBtn.addEventListener('click', async () => {
+        if (window.currentSegments && window.currentSegments.length > 0) {
             localStorage.setItem('pendingTranscript', JSON.stringify(window.currentSegments));
         }
-    const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-            // This ensures they come back to your current page after logging in
-            redirectTo: window.location.origin
-        }
+        const { error } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: { redirectTo: window.location.origin }
+        });
+        if (error) alert("Google Login Error: " + error.message);
     });
-    if (error) alert("Google Login Error: " + error.message);
-});
+}
 
-// Update your Toggle Mode logic to be cleaner
-document.getElementById('toggle-auth-mode').addEventListener('click', (e) => {
-    e.preventDefault();
-    isSignUpMode = !isSignUpMode;
-
-    document.getElementById('modal-title').innerText = isSignUpMode ? "Get Started" : "Welcome Back";
-    document.getElementById('signup-fields').style.display = isSignUpMode ? "block" : "none";
-    document.getElementById('auth-submit-btn').innerText = isSignUpMode ? "Sign Up & Export" : "Log In & Export";
-    document.getElementById('auth-switch-text').innerText = isSignUpMode ? "Already have an account?" : "Need an account?";
-    document.getElementById('toggle-auth-mode').innerText = isSignUpMode ? "Log In" : "Sign Up";
-});
+// Toggle auth mode (Sign Up / Log In) — only on pages that have the auth modal
+const toggleAuthBtn = document.getElementById('toggle-auth-mode');
+if (toggleAuthBtn) {
+    toggleAuthBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        isSignUpMode = !isSignUpMode;
+        document.getElementById('modal-title').innerText = isSignUpMode ? "Get Started" : "Welcome Back";
+        document.getElementById('signup-fields').style.display = isSignUpMode ? "block" : "none";
+        document.getElementById('auth-submit-btn').innerText = isSignUpMode ? "Sign Up & Export" : "Log In & Export";
+        document.getElementById('auth-switch-text').innerText = isSignUpMode ? "Already have an account?" : "Need an account?";
+        document.getElementById('toggle-auth-mode').innerText = isSignUpMode ? "Log In" : "Sign Up";
+    });
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
     // 1. Always setup the Navbar first
@@ -496,6 +692,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Settings page: load user and handle form
     if (typeof window.location !== 'undefined' && (window.location.pathname === '/settings' || window.location.pathname.endsWith('/settings'))) {
         initSettingsPage();
+    }
+
+    // History / My files page: list user's jobs and allow downloading originals from S3
+    if (typeof window.location !== 'undefined' && (window.location.pathname === '/history' || window.location.pathname.endsWith('/history'))) {
+        initHistoryPage();
     }
 
     const transcriptWindow = document.getElementById('transcript-window');
@@ -657,10 +858,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const savedS3Key = localStorage.getItem('pendingS3Key');
         if (savedS3Key) {
             localStorage.setItem('lastS3Key', savedS3Key);
-            // Don't insert a job here — we insert once when user actually exports (download/copy)
+        }
+        const savedJobId = localStorage.getItem('pendingJobId');
+        if (savedJobId) {
+            localStorage.setItem('lastJobId', savedJobId);
         }
 
-        //const type = window.pendingExportType; // 'docx', 'srt', or 'vtt'
         const savedExportType = localStorage.getItem('pendingExportType') || window.pendingExportType;
 
         if (savedExportType) {
@@ -679,6 +882,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Clean up LocalStorage so it doesn't run again on next refresh
         localStorage.removeItem('pendingTranscript');
         localStorage.removeItem('pendingS3Key');
+        localStorage.removeItem('pendingJobId');
     }
 );
 
@@ -1290,11 +1494,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const video = document.getElementById('main-video');
         if (selector && video && window.currentSegments && window.currentSegments.length > 0) {
             selector.style.display = 'block';
-            // Apply saved style
             window.applySubtitleStyle(window.currentSubtitleStyle);
         }
     };
-    
+
     window.hideSubtitleStyleSelector = function() {
         const selector = document.getElementById('subtitle-style-selector');
         if (selector) {
@@ -1472,14 +1675,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (statusTxt) { statusTxt.innerText = "Uploading..."; statusTxt.style.display = "block"; }
 
             try {
-                // 1. Get the Signed URL from Python
+                const { data: { user: uploadUser } } = await supabase.auth.getUser();
+                const userId = uploadUser ? uploadUser.id : null;
+
+                // 1. Get the Signed URL from Python (key will be under users/{userId}/ or users/anonymous/)
                 const signRes = await fetch('/api/sign-s3', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         filename: currentFile.name,
                         filetype: currentFile.type,
-                        diarization: diarizationValue
+                        diarization: diarizationValue,
+                        userId: userId
                     })
                 });
 
@@ -1911,7 +2118,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    // Subtitle style selector event listeners (use event delegation since cards might be hidden initially)
+    // Subtitle style selector event listeners
     document.addEventListener('click', function(e) {
         if (e.target.closest('.subtitle-style-card')) {
             const card = e.target.closest('.subtitle-style-card');

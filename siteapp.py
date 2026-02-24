@@ -54,33 +54,39 @@ logging.basicConfig(level=logging.INFO)
 @app.route('/api/get_presigned_url', methods=['POST'])
 def get_presigned_url():
     try:
-        data = request.json
+        data = request.json or {}
         s3_key = data.get('s3Key')
+        user_id = data.get('userId') or data.get('user_id')
 
         if not s3_key:
             return jsonify({"error": "No s3Key provided"}), 400
 
-        # Initialize S3 client with your specific credentials
+        # Per-user keys: only allow access to users/{user_id}/...
+        if s3_key.startswith("users/"):
+            if not user_id:
+                return jsonify({"error": "userId required for user-scoped keys"}), 400
+            if not s3_key.startswith(f"users/{user_id}/"):
+                return jsonify({"error": "Access denied: key does not belong to user"}), 403
+
         s3_client = boto3.client(
             's3',
             aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=os.environ.get('AWS_REGION')
         )
-        # The correct way to access the region in boto3
         url = s3_client.generate_presigned_url(
             'get_object',
             Params={
                 'Bucket': os.environ.get('S3_BUCKET'),
                 'Key': s3_key
             },
-            ExpiresIn=3600  # Link valid for 1 hour
+            ExpiresIn=3600
         )
 
         return jsonify({"url": url})
 
     except Exception as e:
-        print(f"S3 Error: {str(e)}")  # This will show up in your terminal/logs
+        print(f"S3 Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # --- MOCK ROUTE FOR LOCAL DEBUGGING ---
@@ -124,6 +130,11 @@ def contact():
 @app.route('/settings')
 def settings():
     return render_template('settings.html')
+
+
+@app.route('/history')
+def history():
+    return render_template('history.html')
 
 # --- UPLOAD & TRIGGER API ---
 import time  # Ensure time is imported at the top of your file
@@ -339,12 +350,12 @@ def sign_s3():
     from threading import Thread
 
     data = request.json or {}
+    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
+    user_prefix = f"users/{user_id}"
 
     if SIMULATION_MODE:
         job_id = f"job_sim_{int(time.time())}"
-        # We use a consistent key for simulation recovery
-        # If you have a specific test file, name it simulation_audio in S3
-        s3_key = 'simulation_audio'
+        s3_key = f"{user_prefix}/simulation_audio"
 
         is_diarization_requested = data.get('diarization', False)
 
@@ -380,7 +391,7 @@ def sign_s3():
 
         base_name, extension = os.path.splitext(filename)
         job_id = f"job_{int(time.time())}_{base_name}"
-        s3_key = f"input/{job_id}{extension}"
+        s3_key = f"{user_prefix}/input/{job_id}{extension}"
 
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
