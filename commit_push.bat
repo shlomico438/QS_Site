@@ -74,10 +74,11 @@ if %errorlevel% neq 0 (
     exit /b %errorlevel%
 )
 
-echo.
 echo -----------------------------------------
-echo [4/5] Merging to master and pushing...
+echo [4/5] Updating master branch...
 echo -----------------------------------------
+for /f "delims=" %%i in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set CURRENT_BRANCH=%%i
+
 if "%CURRENT_BRANCH%"=="master" (
     echo [INFO] Already on master.
 ) else (
@@ -87,22 +88,27 @@ if "%CURRENT_BRANCH%"=="master" (
         pause
         exit /b 1
     )
-    git merge %CURRENT_BRANCH% -m "Merge %CURRENT_BRANCH% into master"
+
+    :: Check if master and dev share history
+    git merge --no-commit --no-ff %CURRENT_BRANCH% >nul 2>&1
     if %errorlevel% neq 0 (
-        echo [ERROR] Merge failed!
-        git checkout %CURRENT_BRANCH%
-        pause
-        exit /b 1
+        echo [WARNING] Histories are unrelated. Force updating master to match dev.
+        git reset --hard %CURRENT_BRANCH%
+    ) else (
+        git merge %CURRENT_BRANCH% -m "Merge %CURRENT_BRANCH% into master"
     )
-    git push origin master
+
+    :: Push master forcefully
+    git push -f origin master
     if %errorlevel% neq 0 (
         echo [ERROR] Push to master failed!
         git checkout %CURRENT_BRANCH%
         pause
         exit /b %errorlevel%
     )
+
     git checkout %CURRENT_BRANCH%
-    echo [SUCCESS] Merged %CURRENT_BRANCH% into master and pushed.
+    echo [SUCCESS] Master updated from %CURRENT_BRANCH% and pushed.
 )
 
 echo.
