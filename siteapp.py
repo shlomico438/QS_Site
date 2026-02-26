@@ -204,7 +204,44 @@ def legal():
 # --- UPLOAD & TRIGGER API ---
 import time  # Ensure time is imported at the top of your file
 
+# Job is queued until GPU warmup finishes, then we trigger RunPod. Frontend polls trigger_status.
+pending_trigger = {}  # job_id -> "queued" | "triggered" | "failed"
 
+def get_runpod_endpoint_status(pod_id):
+    """GET RunPod endpoint/pod status. Returns dict with 'status' (e.g. 'running') or empty."""
+    if not RUNPOD_API_KEY or not pod_id:
+        return {}
+    url = f"https://api.runpod.ai/v2/{pod_id.strip()}"
+    headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return r.json() or {}
+    except Exception as e:
+        logging.warning("get_runpod_endpoint_status: %s", e)
+    return {}
+
+def gpu_warmup(pod_id, timeout_sec=300, interval_sec=5):
+    """Block until RunPod endpoint reports status 'running' (or timeout). Set RUNPOD_SKIP_WARMUP=1 to skip."""
+    if str(os.environ.get("RUNPOD_SKIP_WARMUP", "")).lower() in ("1", "true", "yes"):
+        print("RUNPOD_SKIP_WARMUP set; skipping warmup.")
+        return
+    start = time.time()
+    while (time.time() - start) < timeout_sec:
+        pod_info = get_runpod_endpoint_status(pod_id)
+        status = (pod_info.get("status") or pod_info.get("state") or "").lower()
+        if status == "running":
+            print("Pod is ready!")
+            return
+        workers = pod_info.get("workers") or pod_info.get("worker") or []
+        if workers and isinstance(workers, list):
+            for w in workers:
+                if (w.get("status") or w.get("state") or "").lower() == "running":
+                    print("Pod is ready (worker running)!")
+                    return
+        print("Waiting for pod to warm up...")
+        time.sleep(interval_sec)
+    print("Warmup timeout; proceeding to trigger.")
 
 def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
     data = []
@@ -476,6 +513,34 @@ def sign_s3():
             }
         })
 
+def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
+    """Background: warmup GPU then POST /run. Updates pending_trigger[job_id]."""
+    global pending_trigger
+    try:
+        gpu_warmup(endpoint_id, timeout_sec=300, interval_sec=5)
+        clean_id = str(endpoint_id).strip()
+        endpoint_url = f"https://api.runpod.ai/v2/{clean_id}/run"
+        headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
+        response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
+        if response.status_code in (200, 201):
+            pending_trigger[job_id] = "triggered"
+            print(f"🚀 RunPod triggered for job {job_id}")
+        else:
+            pending_trigger[job_id] = "failed"
+            print(f"❌ RunPod API Error ({response.status_code}): {response.text}")
+    except Exception as e:
+        pending_trigger[job_id] = "failed"
+        logging.exception("warmup_and_trigger failed for %s", job_id)
+
+@app.route('/api/trigger_status', methods=['GET'])
+def trigger_status():
+    """Frontend polls this until status is 'triggered', then starts progress bar."""
+    job_id = request.args.get('job_id')
+    if not job_id:
+        return jsonify({"error": "job_id required"}), 400
+    status = pending_trigger.get(job_id, "unknown")
+    return jsonify({"job_id": job_id, "status": status}), 200
+
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
@@ -486,7 +551,6 @@ def trigger_processing():
         data = request.json
         print(f"📩 Received Trigger Request: {data}")
 
-        # --- 1. GET CREDENTIALS & CHECK THEM ---
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
         api_key = os.environ.get('RUNPOD_API_KEY')
 
@@ -495,7 +559,6 @@ def trigger_processing():
         if not endpoint_id or not api_key:
             return jsonify({"status": "error", "message": "RunPod Env Vars missing on server"}), 500
 
-        # --- PREPARE DATA ---
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
         task = data.get('task', 'transcribe')
@@ -504,10 +567,9 @@ def trigger_processing():
 
         try:
             speaker_count = int(data.get('speakerCount', 2))
-        except:
+        except Exception:
             speaker_count = 2
 
-        # --- BUILD PAYLOAD ---
         payload = {
             "input": {
                 "s3Key": s3_key,
@@ -519,30 +581,20 @@ def trigger_processing():
             }
         }
 
-        # Clean the ID to prevent URL errors
-        clean_id = str(endpoint_id).strip()
-        endpoint_url = f"https://api.runpod.ai/v2/{clean_id}/run"
+        pending_trigger[job_id] = "queued"
+        t = threading.Thread(
+            target=_do_warmup_and_trigger,
+            args=(job_id, payload, endpoint_id, api_key)
+        )
+        t.daemon = True
+        t.start()
 
-        headers = {
-            "Authorization": f"Bearer {api_key.strip()}",
-            "Content-Type": "application/json"
-        }
-
-        print(f"🚀 Connecting to RunPod URL: {endpoint_url}")
-
-        # Timeout added to prevent the 500 error from a hanging connection
-        response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
-
-        if response.status_code != 200:
-            print(f"❌ RunPod API Error ({response.status_code}): {response.text}")
-            return jsonify({"status": "error", "message": f"RunPod API Rejected Request: {response.status_code}"}), 500
-
-        return jsonify({"status": "started", "runpod_id": response.json().get('id')})
+        return jsonify({"status": "queued", "job_id": job_id}), 202
 
     except Exception as e:
         print(f"❌ trigger_processing CRASHED: {str(e)}")
         import traceback
-        traceback.print_exc()  # This will show the exact line of the crash in Koyeb logs
+        traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 

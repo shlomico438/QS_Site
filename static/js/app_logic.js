@@ -2090,7 +2090,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
 
                         try {
-                            await fetch('/api/trigger_processing', {
+                            const triggerRes = await fetch('/api/trigger_processing', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
@@ -2100,10 +2100,37 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     language: 'he'
                                 })
                             });
-                            if (typeof startFakeProgress === 'function') startFakeProgress();
+                            const triggerData = triggerRes.ok ? await triggerRes.json() : {};
+
+                            if (triggerRes.status === 202 && triggerData.status === 'queued') {
+                                const queuedMsg = typeof window.t === 'function' ? window.t('job_queued_waiting_gpu') : "Job queued. Waiting for GPU…";
+                                if (statusTxt) statusTxt.innerText = queuedMsg;
+                                const pollInterval = 2000;
+                                const maxWait = 360000;
+                                const start = Date.now();
+                                let ts = { status: '' };
+                                while (ts.status !== 'triggered' && ts.status !== 'failed' && (Date.now() - start) < maxWait) {
+                                    await new Promise(r => setTimeout(r, pollInterval));
+                                    const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
+                                    ts = stRes.ok ? await stRes.json() : {};
+                                }
+                                if (ts.status === 'failed') {
+                                    const dbId2 = localStorage.getItem('lastJobDbId');
+                                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                                    window.isTriggering = false;
+                                    if (mainBtn) mainBtn.disabled = false;
+                                    if (typeof showStatus === 'function') showStatus("GPU trigger failed.", true);
+                                    return;
+                                }
+                                if (ts.status === 'triggered' && typeof startFakeProgress === 'function') startFakeProgress();
+                            } else if (triggerRes.ok && (triggerData.status === 'started' || triggerData.status === 'queued')) {
+                                if (typeof startFakeProgress === 'function') startFakeProgress();
+                            }
                         } catch (err) {
-                            const dbId = localStorage.getItem('lastJobDbId');
-                            if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
+                            const dbId2 = localStorage.getItem('lastJobDbId');
+                            if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                            window.isTriggering = false;
+                            if (mainBtn) mainBtn.disabled = false;
                             throw err;
                         }
                     } else {
