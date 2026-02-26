@@ -79,7 +79,7 @@ window.translations = {
         exporting_file: "מייצא את קובץ ה-",
         exporting_file_suffix: "…",
         processing: "מעבד...",
-        job_queued_waiting_gpu: "המשרה בתור. מחמם GPU…",
+        job_queued_waiting_gpu: "מחכה בתור",
         error_starting_upload: "שגיאה בהתחלת ההעלאה.",
         could_not_load_list: "לא ניתן לטעון את הרשימה. ",
         failed_to_get_link: "לא ניתן לקבל קישור",

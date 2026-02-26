@@ -269,22 +269,30 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
     # 3. Build RunPod Payload
     payload = {
         "input": {
-            "jobId": data.get('jobId'),  # Match 'job_id = job_input.get("jobId")'
-            "s3Key": data.get('s3Key'),  # Match 's3_key = job_input.get("s3Key")'
+            "jobId": data.get('jobId'),
+            "s3Key": data.get('s3Key'),
             "task": data.get('task', 'transcribe'),
             "language": data.get('language', 'he'),
             "num_speakers": int(data.get('speakerCount', 2)),
-            "diarization": data.get('diarization', False)
+            "diarization": data.get('diarization', False),
+            
+            # --- NEW CONTROLS FOR SONGS ---
+            "vad_onset": 0.5,               # Higher = needs clearer speech to start a subtitle
+            "vad_offset": 0.363,            # Standard offset for ending a segment
+            "min_silence_duration_ms": 750, # Ignore silence/music gaps shorter than 1 sec
+            "chunk_size": 30,               # Standard 30s chunks help alignment
+            "word_timestamps": True,        # Vital for precise burning of subtitles
+            "max_line_width": 50,           # Limits each line to ~50 characters
+            "max_line_count": 2,            # Usually best to keep to 1 or 2 lines
         }
     }
-
     max_retries = 3
     last_error = ""
 
     for attempt in range(1, max_retries + 1):
         try:
             print(f"DEBUG: Triggering GPU Attempt {attempt}/{max_retries} for {job_id}...")
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
 
             if response.status_code in [200, 201]:
                 print(f"GPU TRIGGERED SUCCESSFULLY: {response.json()}")
