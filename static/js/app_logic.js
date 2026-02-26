@@ -801,8 +801,10 @@ window.downloadFile = async function(type, bypassUser = null) {
     const baseName = (window.originalFileName && window.originalFileName.split('.').slice(0, -1).join('.')) || "transcript";
 
     if (type === 'movie') {
+        console.log('[movie export] Start');
         const { data: { user: movieUser } } = await supabase.auth.getUser();
         if (!movieUser) {
+            console.log('[movie export] No user – show sign-in');
             alert("Please sign in to download the movie.");
             window.pendingExportType = 'movie';
             localStorage.setItem('pendingExportType', 'movie');
@@ -811,30 +813,46 @@ window.downloadFile = async function(type, bypassUser = null) {
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
             return;
         }
+        console.log('[movie export] User OK');
         const video = document.getElementById('main-video');
         const videoUrl = video ? (video.currentSrc || video.src || (video.querySelector('source') && video.querySelector('source').src) || '') : '';
-        if (!video || !videoUrl || videoUrl.startsWith('data:')) return alert("Load a video first, then use Styled Subtitles before downloading the movie.");
+        if (!video || !videoUrl || videoUrl.startsWith('data:')) {
+            console.log('[movie export] No video/URL');
+            return alert("Load a video first, then use Styled Subtitles before downloading the movie.");
+        }
 
         const durationSec = (video.duration && Number.isFinite(video.duration)) ? video.duration : 0;
         const widthPx = (video.videoWidth && video.videoWidth > 0) ? video.videoWidth : 0;
+        console.log('[movie export] Video OK – duration', durationSec, 's, width', widthPx);
         const limitMsg = typeof window.t === 'function' ? window.t('burn_limits_msg') : "The current system supports files under 10 minutes and 1080p resolution for this feature.";
         if (durationSec > 600 || (widthPx > 0 && widthPx > 1080)) {
+            console.log('[movie export] Over limits – abort');
             if (typeof showStatus === 'function') showStatus(limitMsg, true);
             return alert(limitMsg);
         }
 
         const inputS3Key = localStorage.getItem('lastS3Key');
         if (!inputS3Key || !inputS3Key.startsWith('users/')) {
+            console.log('[movie export] No/invalid lastS3Key:', inputS3Key ? inputS3Key.substring(0, 30) + '…' : 'null');
             if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed: ", true);
             return alert("Video must be from your uploads (save and use Styled Subtitles from an uploaded video).");
         }
+        console.log('[movie export] S3 key OK');
 
         try {
-            if (typeof ensureJobRecordOnExport === 'function') await ensureJobRecordOnExport();
+            if (typeof showStatus === 'function') showStatus("Preparing export…", false);
+            if (typeof ensureJobRecordOnExport === 'function') {
+                console.log('[movie export] Ensuring job record…');
+                await ensureJobRecordOnExport();
+                console.log('[movie export] Job record done');
+            }
+            console.log('[movie export] Fetching simulation_mode…');
             const simRes = await fetch('/api/simulation_mode');
             const simJson = simRes.ok ? await simRes.json() : {};
+            console.log('[movie export] Simulation mode:', simJson.simulation);
             if (simJson.simulation === true) {
                 if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('downloading_video_srt') : "Downloading video and subtitles..."), false);
+                console.log('[movie export] Simulation branch – downloading video+SRT');
                 const videoBlob = await fetch(videoUrl).then(r => r.blob());
                 if (typeof saveAs !== 'undefined') saveAs(videoBlob, (baseName || 'video') + '.mp4');
                 const segments = window.currentSegments || [];
@@ -851,8 +869,12 @@ window.downloadFile = async function(type, bypassUser = null) {
                 return;
             }
 
-            if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('burning_subtitles') : "Burning subtitles on server..."), false);
+            const burnTakesMsg = typeof window.t === 'function' ? window.t('burn_takes_minutes') : "This usually takes 2–5 minutes. We'll email you when your video is ready.";
+            const encodingMsg = typeof window.t === 'function' ? window.t('burn_encoding_in_progress') : "Encoding in progress… We'll email you when it's ready.";
+            if (typeof showStatus === 'function') showStatus(burnTakesMsg, false);
+            console.log('[movie export] Calling burn_subtitles_server…');
             const segments = (window.currentSegments || []).map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }));
+            const subtitleStyle = (typeof window.currentSubtitleStyle === 'string' && window.currentSubtitleStyle) ? window.currentSubtitleStyle : 'tiktok';
             const burnRes = await fetch('/api/burn_subtitles_server', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -861,30 +883,44 @@ window.downloadFile = async function(type, bypassUser = null) {
                     segments,
                     duration_seconds: durationSec || undefined,
                     width_px: widthPx || undefined,
-                    userId: movieUser.id
+                    userId: movieUser.id,
+                    subtitle_style: subtitleStyle,
+                    notify_email: movieUser.email || undefined,
+                    job_id: localStorage.getItem('lastJobId') || undefined
                 })
             });
             const burnData = burnRes.ok ? await burnRes.json() : {};
+            console.log('[movie export] Burn response:', burnRes.status, burnData);
             if (!burnRes.ok) {
                 const err = burnData.error || burnRes.statusText;
                 throw new Error(err);
             }
             const taskId = burnData.task_id;
             if (!taskId) throw new Error("No task_id");
+            console.log('[movie export] Task id:', taskId);
 
             const pollInterval = 2500;
             const maxWait = 600000;
             const start = Date.now();
             let statusJson = { status: 'processing' };
+            let pollCount = 0;
             while (statusJson.status === 'processing' && (Date.now() - start) < maxWait) {
                 await new Promise(r => setTimeout(r, pollInterval));
+                pollCount++;
+                if (pollCount === 1 || pollCount % 10 === 0) {
+                    if (typeof showStatus === 'function') showStatus(encodingMsg + (pollCount > 1 ? ` (${pollCount})` : ''), false);
+                    console.log('[movie export] Poll', pollCount, '…');
+                }
                 const statusRes = await fetch(`/api/burn_subtitles_status?task_id=${encodeURIComponent(taskId)}`);
                 statusJson = statusRes.ok ? await statusRes.json() : {};
             }
             if (statusJson.status === 'failed') {
+                console.log('[movie export] Failed:', statusJson.error);
                 throw new Error(statusJson.error || "Burn failed");
             }
             if (statusJson.status === 'completed' && statusJson.output_url) {
+                console.log('[movie export] Completed – downloading');
+                if (typeof showStatus === 'function') showStatus("Downloading…", false);
                 const outName = (baseName || 'video') + '_with_subtitles.mp4';
                 if (typeof saveAs !== 'undefined') {
                     const blob = await fetch(statusJson.output_url).then(r => r.blob());
@@ -898,9 +934,11 @@ window.downloadFile = async function(type, bypassUser = null) {
                 }
                 if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('movie_downloaded') : "Movie downloaded"), false);
             } else {
+                console.log('[movie export] Timeout or no output_url:', statusJson);
                 throw new Error("Burn did not complete in time");
             }
         } catch (e) {
+            console.error('[movie export] Error:', e);
             if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed: ") + (e.message || e), true);
             alert("Failed to burn subtitles: " + (e.message || e));
         }

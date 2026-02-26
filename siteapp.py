@@ -598,8 +598,75 @@ def _probe_video_with_ffmpeg(ffmpeg_path, video_path):
             width = max(width, w)
     return (duration, width)
 
-def _run_burn_task(task_id, input_s3_key, segments, user_id):
-    """Background task: download from S3, check limits (via ffmpeg -i), burn subtitles with ffmpeg, upload output."""
+def _ass_ts(s):
+    """ASS time: H:MM:SS.cc (centiseconds)."""
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = s % 60
+    cs = int(round((sec % 1) * 100))
+    return f"{h}:{m:02d}:{int(sec):02d}.{cs:02d}"
+
+def _build_ass(segments, style='tiktok'):
+    """Build ASS content. style: tiktok (bold yellow centered), clean, cinematic."""
+    # PlayRes chosen for scale; ffmpeg will scale
+    play_res_x, play_res_y = 384, 288
+    if style == 'tiktok':
+        # Bold, large, yellow #ffd700, black outline, center. ASS colour &HAABBGGRR
+        style_line = "Style: Default,Arial,28,&H0000D7FF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,10,10,40,1"
+    elif style == 'cinematic':
+        style_line = "Style: Default,Times New Roman,22,&H00F5F5F5,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
+    else:
+        # clean
+        style_line = "Style: Default,Arial,18,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {play_res_x}",
+        f"PlayResY: {play_res_y}",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        style_line,
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+    ]
+    for seg in segments:
+        start = seg.get('start', 0)
+        end = seg.get('end', start + 1)
+        text = (seg.get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+        lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
+    return "\r\n".join(lines) + "\r\n"
+
+def _send_burn_ready_email(to_email, download_url, base_name):
+    """Send 'your video is ready' email via SendGrid if SENDGRID_API_KEY is set."""
+    api_key = os.environ.get('SENDGRID_API_KEY')
+    if not api_key or not to_email:
+        return
+    try:
+        from_email = os.environ.get('SENDGRID_FROM', 'noreply@getquickscribe.com')
+        payload = {
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "from": {"email": from_email, "name": "QuickScribe"},
+            "subject": "Your video with subtitles is ready",
+            "content": [{
+                "type": "text/plain",
+                "value": f"Your video '{base_name}' with burned-in subtitles is ready.\n\nDownload (link valid 24 hours):\n{download_url}\n\n— QuickScribe"
+            }]
+        }
+        r = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=10
+        )
+        if r.status_code >= 400:
+            logging.warning("SendGrid send failed: %s %s", r.status_code, r.text[:200])
+    except Exception as e:
+        logging.warning("Send burn-ready email failed: %s", e)
+
+def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, notify_email=None, job_id=None):
+    """Background task: download from S3, check limits, burn subtitles (SRT or ASS by style), upload to S3, optional email."""
     bucket = os.environ.get('S3_BUCKET')
     s3_client = boto3.client(
         's3',
@@ -631,25 +698,30 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id):
                 burn_tasks[task_id] = {'status': 'failed', 'error': 'Video exceeds limits (max 10 min, 1080p)'}
                 return
 
-            # SRT file
-            def to_srt_ts(s):
-                h = int(s // 3600)
-                m = int((s % 3600) // 60)
-                sec = s % 60
-                return f"{h:02d}:{m:02d}:{int(sec):02d},{int((sec % 1) * 1000):03d}"
-            srt_path = os.path.join(tmpdir, 'subtitles.srt')
-            with open(srt_path, 'w', encoding='utf-8') as f:
-                for i, seg in enumerate(segments):
-                    start = seg.get('start', 0)
-                    end = seg.get('end', start + 1)
-                    text = (seg.get('text') or '').replace('\n', ' ')
-                    f.write(f"{i + 1}\n{to_srt_ts(start)} --> {to_srt_ts(end)}\n{text}\n\n")
+            use_ass = subtitle_style in ('tiktok', 'clean', 'cinematic')
+            if use_ass:
+                ass_content = _build_ass(segments, subtitle_style or 'tiktok')
+                subs_path = os.path.join(tmpdir, 'subtitles.ass')
+                with open(subs_path, 'w', encoding='utf-8') as f:
+                    f.write(ass_content)
+            else:
+                def to_srt_ts(s):
+                    h = int(s // 3600)
+                    m = int((s % 3600) // 60)
+                    sec = s % 60
+                    return f"{h:02d}:{m:02d}:{int(sec):02d},{int((sec % 1) * 1000):03d}"
+                subs_path = os.path.join(tmpdir, 'subtitles.srt')
+                with open(subs_path, 'w', encoding='utf-8') as f:
+                    for i, seg in enumerate(segments):
+                        start = seg.get('start', 0)
+                        end = seg.get('end', start + 1)
+                        text = (seg.get('text') or '').replace('\n', ' ')
+                        f.write(f"{i + 1}\n{to_srt_ts(start)} --> {to_srt_ts(end)}\n{text}\n\n")
 
             out_path = os.path.join(tmpdir, 'output.mp4')
-            # Path for ffmpeg subtitles filter: forward slashes, escape ' and :
-            srt_escaped = srt_path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
-            # Scale to max 1080, then burn subtitles; escape comma so it's not a filter separator
-            vf = f"scale=min(1080\\,iw):-2,subtitles='{srt_escaped}'"
+            subs_escaped = subs_path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
+            filter_name = 'ass' if use_ass else 'subtitles'
+            vf = f"scale=min(1080\\,iw):-2,{filter_name}='{subs_escaped}'"
             cmd = [
                 ffmpeg_path, '-y', '-i', video_path,
                 '-vf', vf,
@@ -666,10 +738,31 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id):
                 burn_tasks[task_id] = {'status': 'failed', 'error': 'No output file'}
                 return
 
-            # Upload to S3
-            out_key = f"users/{user_id}/output/burn_{task_id}.mp4"
-            s3_client.upload_file(out_path, bucket, out_key, ExtraArgs={'ContentType': 'video/mp4'})
+            # Friendly base name from input key (e.g. job_123_video.mp4 -> job_123_video)
+            base_name = "video"
+            if input_s3_key:
+                base_name = os.path.splitext(os.path.basename(input_s3_key))[0] or "video"
+            safe_name = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_'))[:80].strip() or "video"
+            out_key_friendly = f"users/{user_id}/output/{safe_name}_with_subtitles.mp4"
+            out_key_fallback = f"users/{user_id}/output/burn_{task_id}.mp4"
+            try:
+                s3_client.upload_file(out_path, bucket, out_key_friendly, ExtraArgs={'ContentType': 'video/mp4'})
+                out_key = out_key_friendly
+            except Exception:
+                out_key = out_key_fallback
+                s3_client.upload_file(out_path, bucket, out_key, ExtraArgs={'ContentType': 'video/mp4'})
             burn_tasks[task_id] = {'status': 'completed', 'output_s3_key': out_key}
+
+            if notify_email:
+                try:
+                    presigned = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': bucket, 'Key': out_key},
+                        ExpiresIn=86400
+                    )
+                    _send_burn_ready_email(notify_email, presigned, safe_name)
+                except Exception as e:
+                    logging.warning("Notify email failed: %s", e)
     except Exception as e:
         logging.exception("burn task failed")
         burn_tasks[task_id] = {'status': 'failed', 'error': str(e)}
@@ -685,6 +778,9 @@ def burn_subtitles_server():
         duration_seconds = data.get('duration_seconds')
         width_px = data.get('width_px')
         user_id = data.get('userId') or data.get('user_id')
+        subtitle_style = (data.get('subtitle_style') or 'tiktok').strip() or 'tiktok'
+        notify_email = (data.get('notify_email') or '').strip() or None
+        job_id = data.get('job_id')
         if not input_s3_key or not segments or not user_id:
             return jsonify({"error": "input_s3_key, segments, and userId required"}), 400
         if duration_seconds is not None and (duration_seconds > BURN_MAX_DURATION_SEC or duration_seconds <= 0):
@@ -696,7 +792,11 @@ def burn_subtitles_server():
 
         task_id = str(uuid.uuid4())
         burn_tasks[task_id] = {'status': 'processing'}
-        t = threading.Thread(target=_run_burn_task, args=(task_id, input_s3_key, segments, user_id))
+        t = threading.Thread(
+            target=_run_burn_task,
+            args=(task_id, input_s3_key, segments, user_id),
+            kwargs={'subtitle_style': subtitle_style, 'notify_email': notify_email, 'job_id': job_id}
+        )
         t.daemon = True
         t.start()
         return jsonify({"task_id": task_id, "status": "processing"}), 202
