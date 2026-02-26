@@ -15,6 +15,8 @@ import sys
 import tempfile
 import threading
 import uuid
+import pathlib
+import subprocess
 
 # python-docx imports for server-side RTL post-processing
 from docx import Document as DocxDocument
@@ -22,13 +24,14 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+
 # --- CONFIGURATION ---
 # Read simulation flag from environment so someone can set it before running
 SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'false')).lower() in ('1', 'true', 'yes')
 
 S3_BUCKET = os.environ.get("S3_BUCKET")
 
-app = Flask(__name__)
+app = Flask(__name__) 
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
@@ -36,6 +39,20 @@ app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.environ.get('RUNPOD_ENDPOINT_ID')
 BUCKET_NAME = "quickscribe-v2-12345"
+
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+
+ffmpeg_path = BASE_DIR / "bin" / "ffmpeg"
+ffprobe_path = BASE_DIR / "bin" / "ffprobe"
+
+# Ensure executable permissions (Windows strips them)
+os.chmod(ffmpeg_path, 0o755)
+os.chmod(ffprobe_path, 0o755)
+
+subprocess.run(
+    [str(ffmpeg_path), "-version"],
+    check=True
+)
 
 # Strict settings to keep connections alive
 socketio = SocketIO(app,
@@ -544,8 +561,22 @@ BURN_MAX_WIDTH = 1080
 burn_tasks = {}  # task_id -> { status, output_s3_key?, error? }
 
 def _resolve_ffmpeg():
-    """Return path to ffmpeg executable (from PATH)."""
-    return shutil.which('ffmpeg') or 'ffmpeg'
+    """Return path to ffmpeg: env FFMPEG_PATH, then project bin/, then PATH, then common paths."""
+    path = os.environ.get('FFMPEG_PATH', '').strip()
+    if path and os.path.isfile(path):
+        return path
+    if shutil.which('ffmpeg'):
+        return shutil.which('ffmpeg')
+    # Project bin folder (e.g. QuickScribe/Site/bin/)
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    bin_dir = os.path.join(app_dir, 'bin')
+    for name in ('ffmpeg', 'ffmpeg.exe'):
+        candidate = os.path.join(bin_dir, name)
+        if os.path.isfile(candidate):
+            return candidate
+    if sys.platform != 'win32' and os.path.isfile('/usr/bin/ffmpeg'):
+        return '/usr/bin/ffmpeg'
+    return 'ffmpeg'
 
 def _probe_video_with_ffmpeg(ffmpeg_path, video_path):
     """Get (duration_sec, max_width) by running ffmpeg -i and parsing stderr. No ffprobe needed."""
@@ -589,8 +620,8 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id):
             s3_client.download_file(bucket, input_s3_key, video_path)
 
             ffmpeg_path = _resolve_ffmpeg()
-            if not shutil.which(ffmpeg_path):
-                burn_tasks[task_id] = {'status': 'failed', 'error': 'ffmpeg not found. Install ffmpeg and add it to PATH.'}
+            if not (os.path.isfile(ffmpeg_path) or shutil.which(ffmpeg_path)):
+                burn_tasks[task_id] = {'status': 'failed', 'error': 'ffmpeg not found. Install ffmpeg, set FFMPEG_PATH, or add it to PATH.'}
                 return
             try:
                 duration, width = _probe_video_with_ffmpeg(ffmpeg_path, video_path)
