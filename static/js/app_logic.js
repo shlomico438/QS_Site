@@ -71,9 +71,21 @@ window.toggleModal = function(show) {
 };
 
 // --- SUBTITLE CHUNKER ---
-function splitLongSegments(segments, maxChars = 55) {
+function splitLongSegments(segments, maxChars = 45) {
     const result = [];
-    
+
+    function pushChunk(chunks, text) {
+        const t = text.trim();
+        if (!t) return;
+        if (t.length <= maxChars) {
+            chunks.push(t);
+            return;
+        }
+        for (let i = 0; i < t.length; i += maxChars) {
+            chunks.push(t.slice(i, i + maxChars));
+        }
+    }
+
     for (const seg of segments) {
         // If it's already short enough, just keep it
         if (!seg.text || seg.text.length <= maxChars) {
@@ -88,18 +100,26 @@ function splitLongSegments(segments, maxChars = 55) {
 
         // Group words into chunks that fit the maxChars limit
         for (const word of words) {
+            // Single word longer than limit: flush current line, then split the word by chars
+            if (word.length > maxChars) {
+                pushChunk(chunks, currentText);
+                currentText = '';
+                for (let i = 0; i < word.length; i += maxChars) {
+                    chunks.push(word.slice(i, i + maxChars));
+                }
+                continue;
+            }
+
             // Check if adding this word (with space) would exceed the limit
             const testText = currentText + word + ' ';
             if (testText.length > maxChars && currentText.length > 0) {
-                chunks.push(currentText.trim());
+                pushChunk(chunks, currentText);
                 currentText = word + ' ';
             } else {
                 currentText += word + ' ';
             }
         }
-        if (currentText.trim()) {
-            chunks.push(currentText.trim());
-        }
+        pushChunk(chunks, currentText);
 
         // Assign proportional timeframes to the new chunks
         const totalDuration = (seg.end || seg.start + 5) - seg.start;
