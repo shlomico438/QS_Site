@@ -47,14 +47,21 @@ const formatTime = (s) => {
     return d.toISOString().substr(14, 5);
 };
 
-/** Get character offset of the caret within an element (for contenteditable). */
+/** Get character offset of the caret within an element (for contenteditable). Uses focus position and Range so RTL works. */
 function getCaretCharacterOffsetWithin(el) {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return 0;
-    const range = sel.getRangeAt(0).cloneRange();
-    range.selectNodeContents(el);
-    range.setEnd(sel.anchorNode, sel.anchorOffset);
-    return range.toString().length;
+    const focusNode = sel.focusNode;
+    const focusOffset = sel.focusOffset;
+    if (!focusNode || !el.contains(focusNode)) return 0;
+    try {
+        const range = document.createRange();
+        range.setStart(el, 0);
+        range.setEnd(focusNode, focusOffset);
+        return range.toString().length;
+    } catch (err) {
+        return 0;
+    }
 }
 
 const getSpeakerColor = (id) => {
@@ -81,7 +88,7 @@ window.toggleModal = function(show) {
 };
 
 // --- SUBTITLE CHUNKER ---
-function splitLongSegments(segments, maxChars = 45) {
+function splitLongSegments(segments, maxChars = 40) {
     const result = [];
 
     function pushChunk(chunks, text) {
@@ -1800,6 +1807,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     }
     // --- BUTTON HANDLERS ---
     window.jumpTo = function(seconds) {
+        const win = document.getElementById('transcript-window');
+        if (win && win.contentEditable === 'true') return;
         const video = document.querySelector('video');
         const audio = document.querySelector('audio');
         const player = video || audio;
@@ -1881,6 +1890,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         win.contentEditable = 'false';
         win.style.border = "1px solid #e2e8f0";
         win.style.backgroundColor = "transparent";
+        win.classList.remove('transcript-editing');
 
         if (editActions) editActions.style.display = 'none';
         console.log("✅ Edits saved and subtitles re-synced.");
@@ -1899,6 +1909,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         win.contentEditable = 'false';
         win.style.border = "1px solid #e2e8f0";
         win.style.backgroundColor = "transparent";
+        win.classList.remove('transcript-editing');
         if (editActions) editActions.style.display = 'none';
     };
 
@@ -2012,6 +2023,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             win.contentEditable = 'true';
             win.style.border = "2px solid #1e3a8a";
             win.style.backgroundColor = "#fff";
+            win.classList.add('transcript-editing');
 
             // Save a backup in case the user cancels
             window.transcriptBackup = win.innerHTML;
@@ -2033,9 +2045,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const sel = window.getSelection();
             if (!sel || sel.rangeCount === 0) return;
 
-            const p = sel.anchorNode && sel.anchorNode.nodeType === Node.ELEMENT_NODE
-                ? sel.anchorNode.closest('p[data-idx]')
-                : sel.anchorNode ? sel.anchorNode.parentElement && sel.anchorNode.parentElement.closest('p[data-idx]') : null;
+            const focusNode = sel.focusNode;
+            const p = focusNode && (focusNode.nodeType === Node.ELEMENT_NODE ? focusNode.closest('p[data-idx]') : focusNode.parentElement && focusNode.parentElement.closest('p[data-idx]'));
             if (!p || !p.hasAttribute('data-idx')) return;
 
             const idx = parseInt(p.getAttribute('data-idx'), 10);

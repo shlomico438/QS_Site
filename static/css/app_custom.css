@@ -353,6 +353,11 @@ input:checked + .slider:before { transform: translateX(16px); }
     /* Visual Fixes */
     display: block;
 }
+/* While editing: text cursor (I-beam), no jump on click */
+#transcript-window.transcript-editing,
+#transcript-window.transcript-editing .paragraph-row p {
+    cursor: text;
+}
 .paragraph-row {
     display: flex;
     gap: 15px;
