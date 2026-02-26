@@ -47,18 +47,23 @@ const formatTime = (s) => {
     return d.toISOString().substr(14, 5);
 };
 
-/** Get character offset of the caret within an element (for contenteditable). Uses focus position and Range so RTL works. */
+/** Get character offset of the caret within an element (for contenteditable). Returns offset in [0, textLength]. */
 function getCaretCharacterOffsetWithin(el) {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return 0;
     const focusNode = sel.focusNode;
     const focusOffset = sel.focusOffset;
     if (!focusNode || !el.contains(focusNode)) return 0;
+    const textLength = (el.textContent || '').length;
+    if (textLength === 0) return 0;
     try {
         const range = document.createRange();
         range.setStart(el, 0);
         range.setEnd(focusNode, focusOffset);
-        return range.toString().length;
+        let offset = range.toString().length;
+        const isRtl = window.getComputedStyle(el).direction === 'rtl' || (el.closest('[dir="rtl"]') && true);
+        if (isRtl) offset = textLength - offset;
+        return Math.max(0, Math.min(textLength, offset));
     } catch (err) {
         return 0;
     }
@@ -2090,9 +2095,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             e.preventDefault();
             const start = seg.start;
-            const end = seg.end != null ? seg.end : seg.start + 1;
-            const ratio = offset / len;
-            const splitTime = start + ratio * (end - start);
+            let end = seg.end != null ? seg.end : seg.start + 1;
+            if (end <= start) end = start + 1;
+            const ratio = Math.max(0, Math.min(1, offset / len));
+            const duration = end - start;
+            const splitTime = start + ratio * duration;
             const beforeText = text.slice(0, offset).trimEnd();
             const afterText = text.slice(offset).trimStart();
 
