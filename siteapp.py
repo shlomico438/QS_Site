@@ -16,7 +16,6 @@ import tempfile
 import threading
 import uuid
 import pathlib
-import subprocess
 
 # python-docx imports for server-side RTL post-processing
 from docx import Document as DocxDocument
