@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuickScribe - Legal</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333; }
+        .legal-container { max-width: 900px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .tabs { margin-bottom: 30px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .tab-btn { padding: 10px 20px; cursor: pointer; border: none; background: #5d5dff; color: white; border-radius: 4px; font-weight: bold; margin-left: 10px; }
+        .tab-btn.secondary { background: #e0e0e0; color: #333; }
+        h1 { color: #1e3a8a; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+        h2 { color: #2563eb; margin-top: 30px; }
+        h3 { color: #374151; margin-top: 20px; }
+        p { margin-bottom: 15px; line-height: 1.8; }
+        ul { margin-bottom: 20px; }
+        li { margin-bottom: 8px; }
+        .date { font-style: italic; color: #666; margin-bottom: 20px; display: block; }
+        .document { display: none; }
+        .active { display: block; }
+        .en-dir { direction: ltr; text-align: left; }
+    </style>
+</head>
+<body>
+
+<div class="legal-container">
+    <div class="tabs">
+        <button class="tab-btn" onclick="showDoc('he')">עברית</button>
+        <button class="tab-btn secondary" id="btn-en" onclick="showDoc('en')">English</button>
+    </div>
+
+    <div id="doc-he" class="document active">
+        <h1>מדיניות פרטיות ותנאי שימוש</h1>
+        <span class="date">עדכון אחרון: 25 בפברואר, 2026</span>
+
+        <h2>1. מדיניות פרטיות</h2>
+        <p>ב-QuickScribe, העיקרון המנחה שלנו הוא לאסוף רק את המידע הנחוץ לנו כדי לספק לך את השירות.</p>
+
+        <h3>א. איסוף מידע ושימוש בו</h3>
+        <ul>
+            <li><strong>מידע אישי:</strong> בעת ההרשמה, אנו מבקשים מידע מזהה כגון שמך, כתובת דוא"ל או מספר טלפון. מידע זה נועד לספק את פונקציונליות המוצר ולשלוח עדכוני מוצר או מידע חיוני אחר.</li>
+            <li><strong>תוכן משתמש:</strong> אנו מאחסנים בשרתים שלנו את התוכן שאתה מעלה, מקבל או מתחזק בחשבונות המוצר שלך.</li>
+            <li><strong>מידע אנליטי:</strong> אנו אוספים מידע על פעילות הגלישה שלך למטרות אנליטיות וסטטיסטיות.</li>
+        </ul>
+
+        <h3>ב. עוגיות (Cookies)</h3>
+        <p>אנו משתמשים בעוגיות קבועות מצד ראשון ובעוגיות צד שלישי לאחסון העדפות מסוימות ולהקל עליך את השימוש באפליקציות שלנו.</p>
+
+        <h3>ג. שמירת נתונים ומחיקתם</h3>
+        <p>אנו עשויים לשמור על התוכן שלך כל עוד חשבונך פעיל. אם תמחק את חשבונך, הגישה תיחסם באופן מיידי. בהתחשב בגיבויי מסד הנתונים, המידע יימחק לצמיתות תוך 90 יום.</p>
+
+        <h2>2. תנאי שימוש</h2>
+        <h3>א. תנאי חשבון</h3>
+        <ul>
+            <li>אתה אחראי לשמירה על אבטחת החשבון שלך. החברה אינה אחראית לכל נזק שייגרם בשל אי עמידה בחובת אבטחה זו.</li>
+            <li>אינך רשאי להשתמש בשירותים למטרה בלתי חוקית, בלתי אתית או בלתי מוסרית.</li>
+            <li>עליך להיות בן אדם. חשבונות הנרשמים על ידי "בוטים" אינם מורשים.</li>
+        </ul>
+
+        <h3>ב. תשלומים וביטולים</h3>
+        <p>עבור שירותים בתשלום המציעים תקופת ניסיון, אורך הניסיון יוסבר בעת ההרשמה. לאחר מכן, המשך השירות מחייב תשלום.</p>
+        <p>כל הרכישות אינן ניתנות להחזר. עם זאת, החברה שומרת לעצמה את הזכות (על פי שיקול דעתה) לבצע החזרים במקרים חריגים של תקלות טכניות מתמשכות.</p>
+    </div>
+
+    <div id="doc-en" class="document en-dir">
+        <h1>Privacy Policy & Terms of Service</h1>
+        <span class="date">Last Updated: February 25, 2026</span>
+
+        <h2>1. Privacy Policy</h2>
+        <p>At QuickScribe, our guiding principle is to collect only what we need.</p>
+
+        <h3>A. Information Collection</h3>
+        <p>When you register, we ask for identifying information such as your name, email address, or phone number. This is used to provide essential product functionality and to send you vital updates.</p>
+
+        <h3>B. Cookies</h3>
+        <p>We use first-party persistent cookies and some third-party cookies to store certain preferences and make it easier for you to use our applications.</p>
+
+        <h3>C. Data Retention and Deletion</h3>
+        <p>We may maintain your content as long as your account is active. If you delete your account, access is blocked immediately. Given database backups, your account information will be permanently deleted from our systems within 90 days.</p>
+
+        <h2>2. Terms of Service</h2>
+        <h3>A. Account Security</h3>
+        <p>You are responsible for maintaining the security of your account. The Company is not liable for any loss resulting from a security failure on your part.</p>
+
+        <h3>B. Payments & Refunds</h3>
+        <p>For paid services offering a free trial, the length of the trial is explained during signup. After the trial, payment is required to continue.</p>
+        <p>All purchases are non-refundable. However, at our sole discretion, refunds may be issued in exceptional cases of persistent technical failures.</p>
+        <p>Taxes and levies imposed by taxing authorities are the user's sole responsibility.</p>
+    </div>
+</div>
+
+<script>
+    function showDoc(lang) {
+        document.getElementById('doc-he').classList.remove('active');
+        document.getElementById('doc-en').classList.remove('active');
+        
+        if (lang === 'he') {
+            document.getElementById('doc-he').classList.add('active');
+            document.body.dir = 'rtl';
+        } else {
+            document.getElementById('doc-en').classList.add('active');
+            document.body.dir = 'ltr';
+        }
+    }
+</script>
+
+</body>
+</html>

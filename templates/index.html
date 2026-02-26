@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}">
+<script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+<script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
+
+<div class="app-mode">
+    <div class="main-app-container">
+         <div id="auth-modal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center; backdrop-filter: blur(4px);">
+            <div style="background: white; padding: 32px; border-radius: 16px; width: 380px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
+                <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
+                <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
+
+                <button id="google-login" style="width:100%; padding: 12px; border: 1px solid #e5e7eb; background: white; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 500; color: #374151; transition: background 0.2s;">
+                    <img src="https://www.google.com/favicon.ico" width="18" alt="Google">
+                    <span data-i18n="continue_google">Continue with Google</span>
+                </button>
+
+                <div style="display: flex; align-items: center; margin: 20px 0;">
+                    <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
+                    <span style="margin: 0 12px; color: #9ca3af; font-size: 0.75rem; font-weight: 600;" data-i18n="or_email">OR EMAIL</span>
+                    <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
+                </div>
+
+                <div id="signup-fields">
+                    <input type="text" id="auth-name" data-i18n-placeholder="full_name" placeholder="Full Name (optional)" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+                </div>
+                <input type="email" id="auth-email" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:20px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+
+                <button id="auth-submit-btn" style="width:100%; padding:14px; background:#1e3a8a; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1rem; transition: opacity 0.2s;" data-i18n="send_magic_link">Send me a link</button>
+
+                <p style="margin-top:20px; font-size: 0.875rem; color: #4b5563;">
+                    <span id="auth-switch-text" data-i18n="already_have">Already have an account?</span>
+                    <a href="#" id="toggle-auth-mode" style="color:#1e3a8a; font-weight:600; text-decoration: none; margin-left: 4px;" data-i18n="log_in">Log In</a>
+                </p>
+            </div>
+        </div>
+        <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
+            <audio id="main-audio" controls style="width: 100%; max-width: 100%;">
+                <source id="audio-source" src="" type="audio/mpeg">
+                Your browser does not support the audio tag.
+            </audio>
+        </div>
+        <div id="video-wrapper" style="display: none; gap: 12px; margin-bottom: 12px; align-items: flex-start;">
+            <div id="subtitle-style-selector" style="display: none; flex-shrink: 0; width: 140px;">
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <button class="subtitle-style-card" data-style="tiktok" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
+                        <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;" data-i18n="tiktok_bold">TikTok Bold</div>
+                        <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="tiktok_desc">Big • Bold</div>
+                    </button>
+                    <button class="subtitle-style-card" data-style="clean" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
+                        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="clean_pro">Clean Pro</div>
+                        <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="clean_desc">Minimal • Soft</div>
+                    </button>
+                    <button class="subtitle-style-card" data-style="cinematic" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
+                        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="cinematic">Cinematic</div>
+                        <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="cinematic_desc">Serif • Caps</div>
+                    </button>
+                </div>
+            </div>
+            <div id="video-player-container" style="flex: 1;">
+                <video id="main-video" controls crossorigin="anonymous" playsinline webkit-playsinline>
+                    <source id="video-source" src="" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+        </div>
+
+        <div class="transcription-wrapper">
+            <div class="controls-bar">
+                <div class="toggles-group">
+                    <label><div class="toggle-switch"><input type="checkbox" id="toggle-time" checked onchange="document.getElementById('transcript-window').classList.toggle('hide-time', !this.checked)"><span class="slider"></span></div><span data-i18n="time">Time</span></label>
+                    <label><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
+                </div>
+                <div class="toolbar-group">
+                    <button class="btn-styled-subtitles" id="btn-styled-subtitles" data-i18n-title="style_subtitles" title="Edit and style subtitles" style="display: none;" type="button"><img src="{{ url_for('static', filename='images/styled-subtitles-btn.png') }}" alt="Style" class="btn-styled-subtitles-img"></button>
+                    <div style="position: relative;">
+                        <button class="btn-icon" id="btn-download" data-i18n-title="download" title="Download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>
+                        <div class="dropdown-menu" id="download-menu">
+                            <button class="dropdown-item" data-type="docx" data-i18n="word_docx">Word (.docx)</button>
+                            <button class="dropdown-item" data-type="srt" data-i18n="subtitles_srt">Subtitles (.srt)</button>
+                            <button class="dropdown-item" data-type="vtt" data-i18n="web_vtt">Web VTT (.vtt)</button>
+                            <button class="dropdown-item" data-type="movie" data-i18n="movie_download">Movie download</button>
+                        </div>
+                    </div>
+                    <button class="btn-icon" onclick="window.copyTranscript()" data-i18n-title="copy" title="Copy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
+                    <button class="btn-icon" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>
+                    <div class="action-buttons" id="edit-actions" style="display:none; gap: 10px;">
+                        <button class="btn-icon" onclick="window.saveEdits()" style="color:green;" data-i18n-title="save" title="Save">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                        </button>
+
+                        <button class="btn-icon" onclick="window.cancelEdits()" style="color:red;" data-i18n-title="cancel" title="Cancel">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div id="transcript-window" contenteditable="false">
+                <p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:80px;" data-i18n="upload_placeholder">Upload a file to start</p>
+            </div>
+        </div>
+
+        <div class="upload-zone">
+            <div class="upload-controls-row">
+                <div class="upload-control-left control-item" style="display:flex; align-items:center; gap:8px;">
+                    <label class="toggle-switch" style="position: relative; display: inline-block; width: 40px; height: 22px;">
+                        <input type="checkbox" id="diarization-toggle" onchange="toggleSpeakerInput()">
+                        <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px;"></span>
+                        <style>
+                            .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+                            .switch input { opacity: 0; width: 0; height: 0; }
+                            .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: .4s; border-radius: 34px; }
+                            .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+                            input:checked + .slider { background-color: #5d5dff !important; }
+                            input:checked + .slider:before { transform: translateX(20px); }
+                            input:disabled + .slider { background-color: #e2e8f0; opacity: 0.6; cursor: not-allowed; }
+                        </style>
+                    </label>
+                    <span class="control-label" data-i18n="detect_speakers">Detect Speakers</span>
+                    <input type="number" id="speaker-count" value="2" min="1" max="10" class="styled-input" style="display:none; width:50px; padding: 5px;">
+                </div>
+                <input type="file" id="fileInput" hidden>
+                <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()" data-i18n="upload_and_process">Upload and Process</button>
+                <p id="upload-status" class="upload-status" data-i18n="ready">Ready</p>
+            </div>
+            <div class="progress-container" id="p-container" style="display:none;">
+                <div id="progress-bar"></div>
+            </div>
+            <script>
+                function toggleSpeakerInput() {
+                    var isChecked = document.getElementById('diarization-toggle').checked;
+                    var speakerInput = document.getElementById('speaker-count');
+                    if(speakerInput) speakerInput.style.display = isChecked ? 'block' : 'none';
+                }
+            </script>
+        </div>
+    </div>
+</div>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Remove legacy "Source: Hebrew" dropdown if present (e.g. from cached HTML) — product uses Hebrew only
+        var audioLang = document.getElementById('audio-lang');
+        if (audioLang && audioLang.closest) {
+            var wrap = audioLang.closest('.control-item');
+            if (wrap) wrap.remove();
+        }
+
+        var dBtn = document.getElementById('btn-download');
+        var dMenu = document.getElementById('download-menu');
+        if (dBtn && dMenu) {
+            dBtn.onclick = function(e) {
+                e.stopPropagation();
+                dMenu.style.display = dMenu.style.display === 'none' ? 'block' : 'none';
+            };
+        }
+        document.addEventListener('click', function() {
+            if (dMenu) dMenu.style.display = 'none';
+        });
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuickScribe - Precision AI Transcription</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+
+    <script src="{{ url_for('static', filename='js/translations.js') }}"></script>
+    <script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
+    <link rel="icon" href="data:,">
+</head>
+
+<body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
+
+    <header class="navbar">
+        <div class="lang-switcher-wrap" id="lang-switcher-wrap">
+            <div class="lang-switcher-trigger" id="lang-switcher-trigger" title="Language">
+                <svg class="lang-globe" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <span class="lang-initials" id="lang-initials">He</span>
+            </div>
+            <div class="lang-switcher-menu" id="lang-switcher-menu">
+                <button type="button" class="lang-option" data-lang="he">עברית</button>
+                <button type="button" class="lang-option" data-lang="en">English</button>
+            </div>
+        </div>
+        <div class="hamburger-menu" onclick="toggleMenu()">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+
+        <a href="/" class="nav-logo">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 60px; width: auto;">
+        </a>
+
+        <div class="nav-menu" id="nav-menu">
+            <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
+            <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
+            <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
+            <a href="#" class="nav-item" id="nav-auth-btn" style="color: #5d5dff; font-weight: 800;" data-i18n="nav_sign_in">Sign In</a>
+        </div>
+    </header>
+
+    <div id="user-menu-panel" class="user-menu-panel" aria-hidden="true">
+        <div class="user-menu-header">
+            <span class="user-menu-title" data-i18n="my_files">My files</span>
+            <a href="/settings" class="user-menu-settings-link" title="Settings" aria-label="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </a>
+        </div>
+        <div id="user-menu-files" class="user-menu-files"></div>
+        <p id="user-menu-empty" class="user-menu-empty" style="display: none;" data-i18n="no_files_yet">No files yet. Upload on the home page to get started.</p>
+    </div>
+
+    <main class="main-content" style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <a href="/legal" data-i18n="footer_legal">Legal</a>
+    </footer>
+
+    <script>
+        const socket = io({
+            transports: ['websocket'],
+            upgrade: false,
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000
+        });
+    </script>
+    <script>
+        function toggleMenu() {
+            document.getElementById('nav-menu').classList.toggle('active');
+            document.querySelector('.hamburger-menu').classList.toggle('open');
+        }
+        (function() {
+            var locale = localStorage.getItem('locale') || 'he';
+            document.documentElement.lang = locale === 'he' ? 'he' : 'en';
+            document.documentElement.dir = locale === 'he' ? 'rtl' : 'ltr';
+            var initials = document.getElementById('lang-initials');
+            if (initials) initials.textContent = locale === 'he' ? 'He' : 'En';
+            var wrap = document.getElementById('lang-switcher-wrap');
+            var menu = document.getElementById('lang-switcher-menu');
+            var trigger = document.getElementById('lang-switcher-trigger');
+            function closeLangMenu() { if (menu) menu.classList.remove('open'); }
+            function openLangMenu() { if (menu) menu.classList.toggle('open'); }
+            if (trigger && menu) {
+                trigger.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    openLangMenu();
+                });
+            }
+            document.querySelectorAll('.lang-option').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var code = this.getAttribute('data-lang');
+                    if (window.setLocale) window.setLocale(code);
+                    closeLangMenu();
+                });
+            });
+            document.addEventListener('click', function() { closeLangMenu(); });
+            if (wrap) wrap.addEventListener('click', function(e) { e.stopPropagation(); });
+            document.addEventListener('DOMContentLoaded', function() {
+                var loc = localStorage.getItem('locale') || 'he';
+                window.currentLocale = loc;
+                document.documentElement.lang = loc === 'he' ? 'he' : 'en';
+                document.documentElement.dir = loc === 'he' ? 'rtl' : 'ltr';
+                if (typeof window.applyTranslations === 'function') window.applyTranslations();
+                setTimeout(function() { if (typeof window.applyTranslations === 'function') window.applyTranslations(); }, 0);
+            });
+        })();
+    </script>
+
+
+</body>
+</html>

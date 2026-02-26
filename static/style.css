@@ -1,0 +1,419 @@
+/* =========================
+   ROOT & GLOBAL
+========================= */
+:root {
+    --nav-height: 80px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: 'Inter', sans-serif;
+    background: #fcfcfc;
+}
+
+/* =========================
+   LANGUAGE SWITCHER (in navbar, top-left)
+========================= */
+.lang-switcher-wrap {
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1002;
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    padding-bottom: 6px; /* small bridge so mouse can reach dropdown without closing */
+}
+.lang-switcher-trigger {
+    position: relative; /* so dropdown is positioned just below trigger */
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.lang-switcher-trigger:hover {
+    border-color: #5d5dff;
+    box-shadow: 0 2px 8px rgba(93, 93, 255, 0.15);
+}
+.lang-globe {
+    color: #6b7280;
+    flex-shrink: 0;
+}
+.lang-initials {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #374151;
+    min-width: 1.4em;
+}
+.lang-switcher-menu {
+    display: none;
+    position: absolute;
+    left: 0;
+    top: 100%; /* just below trigger (wrap height = trigger + 6px, so this sits right under trigger) */
+    margin-top: 4px;
+    min-width: 120px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+    padding: 4px 0;
+    z-index: 10;
+}
+.lang-switcher-menu.open {
+    display: block;
+}
+.lang-option {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    border: none;
+    background: none;
+    text-align: left;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #374151;
+    cursor: pointer;
+    font-family: inherit;
+}
+.lang-option:hover {
+    background: #f0f7ff;
+    color: #1e3a8a;
+}
+
+/* =========================
+   NAVBAR (DESKTOP DEFAULT)
+========================= */
+.navbar {
+    position: sticky;
+    top: 0;
+    height: var(--nav-height);
+    background: white;
+    border-bottom: 1px solid #eee;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    padding: 0 40px;
+    overflow: visible; /* don't clip globe or language dropdown */
+
+    /* 1. Center the Container */
+    justify-content: center;
+    position: relative; /* Anchor for absolute positioning */
+}
+
+.nav-logo {
+    /* 2. Force Logo to Dead Center */
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+
+    /* Logo Styles */
+    display: flex;
+    align-items: center;
+    text-decoration: none;
+    z-index: 1001;
+}
+
+/* If you are using an image, ensure it fits */
+.nav-logo img {
+    height: 50px;
+    width: auto;
+}
+
+.nav-menu {
+    /* 3. Pin Menu Links to the Right */
+    position: absolute;
+    right: 40px;
+
+    display: flex;
+    align-items: center;
+    gap: 30px; /* Space between links */
+}
+
+/* 4. Style the Links (So they don't look like plain text) */
+.nav-item {
+    text-decoration: none;
+    color: #374151; /* Dark Grey */
+    font-weight: 600;
+    font-size: 1rem;
+    transition: color 0.2s ease;
+}
+
+.nav-item:hover {
+    color: #4f46e5; /* Indigo Highlight */
+}
+
+/* Logged-in user name (prominent) and Log Out */
+.nav-user-name {
+    font-weight: 800;
+    font-size: 1.05rem;
+}
+.nav-auth-divider {
+    margin: 0 6px;
+    font-weight: 400;
+    opacity: 0.7;
+}
+.nav-logout {
+    font-weight: 400;
+    font-size: 0.9em;
+}
+
+/* User menu panel (dropdown when clicking name) */
+.user-menu-panel {
+    display: none;
+    position: fixed;
+    top: var(--nav-height);
+    right: 20px;
+    width: min(400px, calc(100vw - 40px));
+    max-height: min(70vh, 400px);
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.12);
+    border: 1px solid #e5e7eb;
+    z-index: 1002;
+    overflow: hidden;
+    flex-direction: column;
+}
+.user-menu-panel.is-open {
+    display: flex;
+}
+.user-menu-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid #e5e7eb;
+    flex-shrink: 0;
+}
+.user-menu-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #111827;
+}
+.user-menu-settings-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    color: #6b7280;
+    transition: color 0.2s, background 0.2s;
+}
+.user-menu-settings-link:hover {
+    color: #1e3a8a;
+    background: #f0f7ff;
+}
+.user-menu-files {
+    overflow-y: auto;
+    padding: 8px 0;
+}
+.user-menu-files .user-menu-file-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 0.875rem;
+    flex-wrap: wrap;
+}
+.user-menu-files .user-menu-file-item:last-child {
+    border-bottom: none;
+}
+.user-menu-files .user-menu-file-label {
+    flex: 1 1 180px;
+    min-width: 0;
+    color: #374151;
+}
+.user-menu-files .user-menu-file-get {
+    padding: 6px 12px;
+    background: #1e3a8a;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+.user-menu-files .user-menu-file-get:hover:not(:disabled) {
+    background: #1e40af;
+}
+.user-menu-files .user-menu-file-get:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+.user-menu-files .user-menu-file-open {
+    padding: 6px 12px;
+    background: #059669;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+.user-menu-files .user-menu-file-open:hover:not(:disabled) {
+    background: #047857;
+}
+.user-menu-files .user-menu-file-open:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+.user-menu-empty {
+    padding: 16px;
+    margin: 0;
+    font-size: 0.875rem;
+    color: #6b7280;
+}
+
+/* Hide Hamburger on Desktop */
+.hamburger-menu {
+    display: none;
+}
+
+/* =========================
+   CONTENT PAGES
+========================= */
+.content-page {
+    max-width: 850px;
+    margin: 60px auto;
+    padding: 40px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    border: 1px solid #eee;
+}
+
+/* =========================
+   FOOTER
+========================= */
+.footer {
+    flex-shrink: 0;
+    text-align: center;
+    padding: 20px;
+    background: #f1f1f1;
+}
+
+/* =========================
+   MOBILE RESPONSIVENESS
+========================= */
+@media screen and (max-width: 768px) {
+
+    .navbar {
+        padding: 0 20px;
+    }
+
+    /* 1. Keep Logo Centered */
+    .nav-logo {
+        left: 50%;
+        transform: translateX(-50%);
+    }
+
+    /* 2. Hamburger Icon (Right Side) */
+    .hamburger-menu {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        width: 30px;
+        height: 21px;
+        cursor: pointer;
+
+        position: absolute;
+        right: 20px;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 1002;
+    }
+
+    .hamburger-menu span {
+        display: block;
+        height: 3px;
+        width: 100%;
+        background: #333;
+        border-radius: 3px;
+        transition: 0.3s;
+    }
+
+    /* Animation for X */
+    .hamburger-menu.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 6px); }
+    .hamburger-menu.open span:nth-child(2) { opacity: 0; }
+    .hamburger-menu.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -6px); }
+
+    /* 3. Mobile Dropdown Menu */
+    .nav-menu {
+        display: none; /* Hidden by default */
+        position: absolute;
+        top: 100%; /* Push below navbar */
+        left: 0;
+        right: 0; /* Full width */
+
+        background: white;
+        flex-direction: column;
+        align-items: center;
+        padding: 10px 0;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        border-top: 1px solid #eee;
+    }
+
+    /* Show links when Javascript adds 'active' class */
+    .nav-menu.active {
+        display: flex;
+    }
+
+    .nav-item {
+        margin: 10px 0;
+        padding: 15px;
+        width: 100%;
+        text-align: center;
+        border-bottom: 1px solid #f9f9f9;
+    }
+    /* Prevent selecting the transcript text */
+    #transcript-window {
+    -webkit-user-select: none;  /* Safari */
+    -moz-user-select: none;     /* Firefox */
+    -ms-user-select: none;      /* IE/Edge */
+    user-select: none;          /* Standard */
+    cursor: default;
+    }
+    /* Allow selection ONLY when in Edit Mode */
+    #transcript-window[contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+        cursor: text;
+    }
+    .toast-notification {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #059669; /* Nice Emerald Green */
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 9999;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+    }
+
+    .toast-notification.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(-10px);
+    }
+
+    .toast-error {
+        background-color: #dc2626; /* Soft Red for errors */
+    }
+}

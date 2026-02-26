@@ -1,0 +1,129 @@
+<div class="legal-container" style="max-width: 800px; margin: auto; font-family: sans-serif; line-height: 1.6; color: #333; direction: rtl;">
+    <h1>מדיניות פרטיות ותנאי שימוש</h1>
+    
+    <div class="tabs">
+        <button onclick="showDoc('he')">עברית</button>
+        <button onclick="showDoc('en')">English</button>
+    </div>
+
+    <div id="doc-he" class="document">
+        <h2>מדיניות פרטיות</h2>
+        <p>עדכון אחרון: 25 בפברואר, 2026
+
+            ב-QuickScribe, העיקרון המנחה שלנו הוא לאסוף רק את המידע הנחוץ לנו כדי לספק לך את השירות.
+            
+            א. איסוף מידע ושימוש בו
+            מידע אישי: בעת ההרשמה, אנו מבקשים מידע מזהה כגון שמך, כתובת דוא"ל או מספר טלפון. מידע זה נועד לספק את פונקציונליות המוצר ולשלוח עדכוני מוצר או מידע חיוני אחר.
+            
+            תוכן משתמש: אנו מאחסנים בשרתים שלנו את התוכן שאתה מעלה, מקבל או מתחזק בחשבונך.
+            
+            מידע אנליטי: אנו אוספים מידע על פעילות הגלישה שלך למטרות אנליטיות וסטטיסטיות לשיפור השירות.
+            
+            ב. עוגיות (Cookies)
+            אנו משתמשים בעוגיות קבועות מצד ראשון ובעוגיות צד שלישי כדי לאחסן העדפות משתמש ולהקל על השימוש באפליקציות שלנו.
+            
+            ג. שמירת נתונים ומחיקתם
+            תקופת אחסון: התוכן נשמר כל עוד חשבונך פעיל, אלא אם נמחק על ידך.
+            
+            סגירת חשבון: עם מחיקת החשבון, הגישה אליו תיחסם באופן מיידי.
+            
+            מחיקה לצמיתות: בשל תהליכי גיבוי, החשבון והתוכן יימחקו לחלוטין ממערכותינו תוך 90 יום.
+            
+            ד. עדכונים
+            אנו עשויים לעדכן מדיניות זו כדי לעמוד בתקנות הרלוונטיות.
+            
+            2. תנאי שימוש (Terms of Service)
+            עדכון אחרון: 25 בפברואר, 2026
+            
+            השימוש בשירותי QuickScribe, כעת או בעתיד, מהווה הסכמה לתנאי השירות העדכניים ביותר.
+            
+            א. תנאי חשבון
+            אבטחה: אתה אחראי לשמירה על אבטחת החשבון שלך. החברה לא תהיה אחראית לכל אובדן או נזק שייגרם בשל אי עמידה בחובת אבטחה זו.
+            
+            שימוש חוקי: אינך רשאי להשתמש בשירותים למטרה בלתי חוקית, בלתי אתית או בלתי מוסרית.
+            
+            אחריות לתוכן: אתה אחראי לכל פעילות והתוכן המפורסם תחת חשבונך (כולל על ידי אחרים עם גישה לפרטיך).
+            
+            זיהוי: חשבונות הנרשמים על ידי "בוטים" אינם מורשים.
+            
+            ב. תשלומים, חיובים וביטולים
+            תקופת ניסיון: אורך תקופת הניסיון (אם קיימת) יובהר בעת ההרשמה. לאחר מכן, המשך השירות כרוך בתשלום.
+            
+            שדרוג חשבון: במעבר לתוכנית בתשלום, החיוב יתבצע מיידית ומחזור החיוב יחל ביום השדרוג.
+            
+            מסים: התשלומים אינם כוללים מסים או היטלים המוטלים על ידי רשויות המס; אלו באחריות המשתמש בלבד.
+            
+            מדיניות החזרים: ככלל, הרכישות אינן ניתנות להחזר. עם זאת, החברה שומרת לעצמה את הזכות הבלעדית (על פי שיקול דעתה בלבד) לבצע החזרים במקרים חריגים של תקלות טכניות מתמשכות שמנעו את השימוש בשירות.
+            
+            ביטול: ניתן לבטל את השירות בכל עת דרך ממשק החשבון. עם הביטול, התוכן יהיה בלתי נגיש מיידית ויימחק לצמיתות מהמערכות תוך 7 ימים ומגיבויים תוך 90 יום.
+            
+            ג. זמינות ובעלות
+            זמינות: השירות ניתן על בסיס "As-Is" ו-"As-Available". אנו שומרים את הזכות להשבית זמנית חשבונות עם שימוש חריג שעלול לפגוע בביצועי המערכת.
+            
+            בעלות: כל החומרים המועלים לשירות נשארים בבעלותך המלאה. התוכן חייב לעמוד בחוק זכויות היוצרים.</p>
+    </div>
+
+    <div id="doc-en" class="document" style="display:none; direction: ltr;">
+        <h2>Privacy Policy</h2>
+        <p>Last Updated: February 25, 2026
+
+            At QuickScribe, our guiding principle is to collect only what we need.
+            
+            A. Information Collection and Use
+            Personal Information: When you register, we ask for identifying information such as your name, email address, or phone number. This is used to provide essential product functionality and to send you product updates and other vital information.
+            
+            User Content: We store the content you upload, receive, or maintain in your product accounts on our servers.
+            
+            Analytics: We collect information about your browsing activity for analytical and statistical purposes to improve our services.
+            
+            B. Cookies
+            We use first-party persistent cookies and some third-party cookies to store certain preferences and make it easier for you to use our applications.
+            
+            C. Data Retention and Deletion
+            Retention: We may maintain your content as long as your account is active, unless you delete it.
+            
+            Account Deletion: If you delete your account, access is blocked immediately.
+            
+            Permanent Removal: Given database backups, your account will be fully deleted from our systems within 90 days.
+            
+            D. Updates
+            We may update this policy as needed to comply with relevant regulations.
+            
+            2. Terms of Service (English)
+            Last Updated: February 25, 2026
+            
+            By using our services, now or in the future, you agree to the latest Terms of Service.
+            
+            A. Account Terms
+            Security: You are responsible for maintaining the security of your account. The Company cannot and will not be liable for any loss or damage from your failure to comply with this security obligation.
+            
+            Lawful Use: You may not use the services for any illegal, unethical, or immoral purpose.
+            
+            Responsibility: You are responsible for all content posted and activity that occurs under your account.
+            
+            Human Use: You must be a human. Accounts registered by "bots" or other automated methods are not permitted.
+            
+            B. Payments, Billing, and Cancellations
+            Trial Period: For paid services offering a free trial, the length of the trial is explained during signup. After the trial, payment is required to continue.
+            
+            Upgrades: If you upgrade from a free plan to a paid plan, we will charge your card immediately and your billing cycle begins on the day of the upgrade.
+            
+            Taxes: All fees are exclusive of all taxes, levies, or duties imposed by taxing authorities; these are the user's sole responsibility.
+            
+            Refund Policy: All purchases are non-refundable. However, the Company reserves the sole right, at its own discretion, to issue refunds in exceptional cases of persistent technical failures that prevented the use of the service.
+            
+            Cancellation: You are solely responsible for properly canceling your account. Content becomes inaccessible immediately upon cancellation and is permanently deleted within 7 days from active systems and 90 days from backups.
+            
+            C. Availability and Ownership
+            Service Basis: Our services are provided on an "as is" and "as available" basis. We reserve the right to temporarily disable accounts with significantly high usage that impacts service performance for others.
+            
+            Copyright: All content posted must comply with copyright law. We claim no intellectual property rights over the material you provide; all uploaded materials remain yours.</p>
+    </div>
+</div>
+
+<script>
+function showDoc(lang) {
+    document.getElementById('doc-he').style.display = lang === 'he' ? 'block' : 'none';
+    document.getElementById('doc-en').style.display = lang === 'en' ? 'block' : 'none';
+}
+</script>

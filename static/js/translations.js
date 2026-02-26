@@ -1,0 +1,324 @@
+/**
+ * App translations. Add new languages by adding a new key (e.g. "ar") with the same string keys.
+ * Default: Hebrew (he).
+ */
+window.translations = {
+    he: {
+        // Nav (base)
+        nav_about: "אודות",
+        nav_blog: "בלוג",
+        nav_contact: "צור קשר",
+        nav_sign_in: "התחבר",
+        nav_logout: "התנתק",
+        footer_legal: "תנאים ומדיניות",
+        // User menu
+        my_files: "הקבצים שלי",
+        no_files_yet: "אין עדיין תמלולים. העלה קובץ בעמוד הבית להתחלה.",
+        get_file: "קבל קובץ",
+        open_in_app: "פתח באפליקציה",
+        open_in_app_tt: "פתח באפליקציה עם התמלול",
+        // Auth modal (index)
+        get_started: "התחל",
+        sign_in_to_save: "התחבר כדי לשמור את היסטוריית התמלולים.",
+        continue_google: "המשך עם Google",
+        or_email: "או אימייל",
+        full_name: "שם מלא",
+        email_address: "כתובת אימייל",
+        password: "סיסמה",
+        forgot_password: "שכחת סיסמה?",
+        sign_up_export: "הרשם וייצא",
+        already_have: "כבר יש לך חשבון?",
+        need_account: "צריך חשבון?",
+        log_in: "התחבר",
+        log_in_export: "התחבר וייצא",
+        sign_up: "הרשם",
+        welcome_back: "ברוך שוב",
+        send_magic_link: "שלח לי קישור",
+        enter_email: "הזן את כתובת האימייל.",
+        sending_link: "שולח קישור...",
+        check_email_link: "בדוק את האימייל שלך לקישור ההתחברות.",
+        link_sent: "נשלח! בדוק את האימייל.",
+        // Subtitle styles
+        tiktok_bold: "TikTok Bold",
+        tiktok_desc: "גדול • מודגש",
+        clean_pro: "Clean Pro",
+        clean_desc: "מינימלי • רך",
+        cinematic: "Cinematic",
+        cinematic_desc: "סריף • אותיות גדולות",
+        // Toolbar
+        time: "זמן",
+        speaker: "דובר",
+        download: "הורד",
+        copy: "העתק",
+        edit: "ערוך",
+        save: "שמור",
+        cancel: "ביטול",
+        style_subtitles: "ערוך ועצב כתוביות",
+        // Download menu
+        word_docx: "Word (.docx)",
+        subtitles_srt: "כתוביות (.srt)",
+        web_vtt: "Web VTT (.vtt)",
+        movie_download: "הורדת סרטון",
+        // Upload zone
+        detect_speakers: "זיהוי דוברים",
+        ready: "מוכן",
+        upload_and_process: "העלה ועבד",
+        upload_placeholder: "העלה קובץ להתחלה",
+        // Status / toasts
+        transcription_complete: "התמלול הושלם",
+        downloading_video_srt: "מוריד וידאו וכתוביות...",
+        video_srt_downloaded: "הוידאו והכתוביות הורדו",
+        burning_subtitles: "שורף כתוביות (דפדפן)...",
+        movie_downloaded: "הסרטון הורד",
+        movie_burn_failed: "שריפת סרטון נכשלה: ",
+        burn_limits_msg: "המערכת הנוכחית תומכת בקבצים עד 10 דקות ורזולוציה 1080p לתכונה זו.",
+        simulation_started: "הסימולציה החלה",
+        simulation_failed: "לא הצלחנו להפעיל סימולציה",
+        exporting_file: "מייצא את קובץ ה-",
+        exporting_file_suffix: "…",
+        processing: "מעבד...",
+        error_starting_upload: "שגיאה בהתחלת ההעלאה.",
+        could_not_load_list: "לא ניתן לטעון את הרשימה. ",
+        failed_to_get_link: "לא ניתן לקבל קישור",
+        // Settings
+        settings: "הגדרות",
+        settings_guest: "התחבר לעדכן את שמך ואימייל.",
+        display_name: "שם לתצוגה",
+        your_name: "השם שלך",
+        email: "אימייל",
+        email_placeholder: "your@email.com",
+        email_change_note: "שינוי אימייל ישלח קישור אימות לכתובת החדשה.",
+        save_changes: "שמור שינויים",
+        saved: "נשמר. ",
+        email_confirm_note: "בדוק את האימייל החדש שלך לקישור אימות.",
+        save_failed: "שגיאה בשמירה.",
+        email_required: "נדרש אימייל.",
+        // History
+        my_transcriptions: "התמלולים שלי",
+        history_guest: "התחבר כדי לראות את הקבצים והתמלולים שלך.",
+        no_transcriptions_yet: "אין עדיין תמלולים. העלה קובץ בעמוד הבית להתחלה.",
+        uploading: "מעלה...",
+        analyzing_content: "מנתח תוכן...",
+        copied_to_clipboard: "הועתק ללוח",
+        subtitle_loaded: "כתוביות נטענו",
+        subtitle_load_failed: "טעינת כתוביות נכשלה",
+        no_subtitles_to_download: "אין כתוביות להורדה",
+        load_video_first: "טען קובץ וידאו קודם",
+        load_subtitles_first: "טען כתוביות קודם",
+        video_created: "וידאו עם כתוביות נוצר",
+        rendering_video: "מייצר וידאו — המתן עד שההשמעה תסתיים",
+        video_loaded: "הוידאו נטען",
+        // About page
+        about_title: "אודות QuickScribe",
+        about_intro1: "QuickScribe היא פלטפורמת תמלול מבוססת AI, בנויה לשפות עשירות בהקשר ולדיוק קריטי.",
+        about_intro2: "באמצעות מודולי מומחים ספציפיים לשפה במקום מודלים גנריים, אנחנו מספקים דיוק ברמת ארגון בסביבות שבהן ממשקי API סטנדרטיים בדרך כלל נכשלים.",
+        about_team: "הצוות",
+        about_shlomi_name: "שלומי כהן",
+        about_shlomi_role: "מייסד ומנכ\"ל",
+        about_shlomi_bio: "ותיק בתחום ה-Voice AI עם מומחיות עמוקה בהתאמת טכנולוגיות דיבור לשווקים גלובליים ובאופטימיזציה של תהליכי אינפרנס המואצים באמצעות GPU.",
+        // Contact page
+        contact_title: "צור קשר עם QuickScribe",
+        contact_intro: "ממוקמים בנתניה, ישראל, אנחנו בונים את המתומלל המקצועי המדויק ביותר בעולם.",
+        contact_email: "אימייל:",
+        contact_linkedin: "LinkedIn:",
+        contact_linkedin_link: "עקבו אחר ההתקדמות שלנו",
+        // Blog page
+        blog_title: "תובנות והנדסה",
+        blog_subtitle: "חוקרים את חזית התמלול המקצועי ב-AI.",
+        blog_post1_meta: "14 בפברואר 2026 | ציוני ביצועים",
+        blog_post1_title: "שוברים את הביצועים: 94.36% דיוק",
+        blog_post1_p1: "בתמלול, המבדל החשוב ביותר הוא דיוק. לאחרונה השווינו את QuickScribe למודלים הגנריים המובילים בתעשייה, והתוצאות מדברות בעד עצמן. לא רק שהשגנו 94.36% דיוק, אלא ששונות המילים נשארה מיושרת כמעט באופן מושלם לבסיס האנושי.",
+        blog_post2_meta: "13 בינואר 2026 | מאת שלומי כהן, מייסד",
+        blog_post2_title: "ההשראה: למה בניתי את QuickScribe",
+        blog_post2_p1: "הרעיון ל-QuickScribe לא התחיל במעבדה; הוא התחיל עם גיסתי, ד\"ר שרית ברזילי. בזמן שכתבה את הספר האחרון שלה, היא ראיינה נבדקים דרך Zoom והשתמשה בכלי AI סטנדרטיים לתמלול. היא ציינה שהתוצאות היו כה גרועות עד שנאלצה לשכור עורכים אנושיים כדי לתקן את הטעויות ידנית.",
+        blog_post2_p2: "ב-2025, עם כל יכולות ה-AI שלנו, היה קשה להאמין שתמלול ברמה מקצועית עדיין לא אמין. לאחר חיפוש בשוק ומציאת פתרונות גנריים בלבד, החלטתי לרתום את ניסיוני ב-Voice AI וארכיטקטורת ענן כדי לבנות פלטפורמה שבאמת עובדת לאודיו בעולם האמיתי.",
+        blog_post3_meta: "צלילה טכנית | ניתוב חכם",
+        blog_post3_title: "התגברות על 'קללת הרב-לשוניות'",
+        blog_post3_p1: "רוב ממשקי התמלול הסטנדרטיים מסתמכים על מודלים ענקיים שאומנו על עשרות שפות במקביל. אולם מחקר באקוסטיקה עצבית מאשר אתגר בשם 'קללת הרב-לשוניות': ככל שתחום השפות של המודל מתרחב, הקיבולת העצבית מדוללת, ומובילה לרמת דיוק קבועה עבור כל שפה. על ידי אילוץ המודל לחלוק פרמטרים בין פונטיקות שונות מאוד, ניואנסים של שפות ספציפיות לעיתים אובדים.",
+        blog_post3_p2: "QuickScribe פותר זאת באמצעות אסטרטגיית ניתוב דו-שלבית. אנחנו משתמשים בשכבת זיהוי מהירה כדי לזהות את שפת האודיו, ואז מנתבים דינמית למנוע מומחה ספציפי לשפה. באמצעות מנועים מתמחים במקום מודלים כלליים, אנחנו מבטלים פשרות דיוק ומספקים דיוק שפלטפורמות גנריות לא יכולות להשיג.",
+        blog_post4_meta: "מצוינות הנדסית | עיבוד אותות",
+        blog_post4_title: "שיפור אותות מתקדם לאודיו בעולם האמיתי",
+        blog_post4_p1: "דיוק אינו רק המודל; זה גם איכות הקלט. בתרחישים אמיתיים—אולמות הרצאה, משרדים רועשים, שיחות עם מיקרופונים גרועים—המהום וההד הסביבתיים פועלים כ'רצפות רעש' שמבלבלות טרנספורמרים של AI. מודלים ברמת מעבדה לעיתים נכשלים מול משתנים אקוסטיים בלתי צפויים אלה.",
+        blog_post4_p2: "אנחנו מעבדים את האודיו לפני שהוא מגיע למנוע הליבה. QuickScribe משתמש בשכבת התאמה סביבתית ייחודית שמחילה אלגוריתמי DSP מתקדמים לבידוד דיבור אנושי מהפרעות. על ידי שיפור יחס האות-לרעש הקולי, המודלים שלנו מתמקדים בתוכן לשוני בלבד, ומבטיחים דיוק גבוה גם בתנאים אקוסטיים תת-אופטימליים תוך שמירה על יעילות תפעולית גבוהה.",
+        blog_table_engine: "מנוע",
+        blog_table_accuracy: "דיוק",
+        blog_table_wer: "WER",
+        blog_table_word_var: "שונות מילים",
+        blog_winner: "🏆 זוכה",
+        lang_hebrew: "עברית",
+        lang_english: "English"
+    },
+    en: {
+        nav_about: "About Us",
+        nav_blog: "Blog",
+        nav_contact: "Contact",
+        nav_sign_in: "Sign In",
+        nav_logout: "Log Out",
+        footer_legal: "Legal",
+        my_files: "My files",
+        no_files_yet: "No files yet. Upload on the home page to get started.",
+        get_file: "Get file",
+        open_in_app: "Open in app",
+        open_in_app_tt: "Open in app with transcript",
+        get_started: "Get Started",
+        sign_in_to_save: "Sign in to save your transcript history.",
+        continue_google: "Continue with Google",
+        or_email: "OR EMAIL",
+        full_name: "Full Name",
+        email_address: "Email Address",
+        password: "Password",
+        forgot_password: "Forgot Password?",
+        sign_up_export: "Sign Up & Export",
+        already_have: "Already have an account?",
+        need_account: "Need an account?",
+        log_in: "Log In",
+        log_in_export: "Log In & Export",
+        sign_up: "Sign Up",
+        welcome_back: "Welcome Back",
+        send_magic_link: "Send me a link",
+        enter_email: "Please enter your email address.",
+        sending_link: "Sending link...",
+        check_email_link: "Check your email for the login link.",
+        link_sent: "Link sent! Check your email.",
+        tiktok_bold: "TikTok Bold",
+        tiktok_desc: "Big • Bold",
+        clean_pro: "Clean Pro",
+        clean_desc: "Minimal • Soft",
+        cinematic: "Cinematic",
+        cinematic_desc: "Serif • Caps",
+        time: "Time",
+        speaker: "Speaker",
+        download: "Download",
+        copy: "Copy",
+        edit: "Edit",
+        save: "Save",
+        cancel: "Cancel",
+        style_subtitles: "Edit and style subtitles",
+        word_docx: "Word (.docx)",
+        subtitles_srt: "Subtitles (.srt)",
+        web_vtt: "Web VTT (.vtt)",
+        movie_download: "Movie download",
+        detect_speakers: "Detect Speakers",
+        ready: "Ready",
+        upload_and_process: "Upload and Process",
+        upload_placeholder: "Upload a file to start",
+        transcription_complete: "Transcription Complete",
+        downloading_video_srt: "Downloading video and subtitles...",
+        video_srt_downloaded: "Video and SRT downloaded",
+        burning_subtitles: "Burning subtitles (browser)...",
+        movie_downloaded: "Movie downloaded",
+        movie_burn_failed: "Movie burn failed: ",
+        burn_limits_msg: "The current system supports files under 10 minutes and 1080p resolution for this feature.",
+        simulation_started: "Simulation started",
+        simulation_failed: "Failed to start simulation",
+        exporting_file: "Exporting your ",
+        exporting_file_suffix: " file…",
+        processing: "Processing...",
+        error_starting_upload: "Error starting upload.",
+        could_not_load_list: "Could not load list. ",
+        failed_to_get_link: "Failed to get link",
+        settings: "Settings",
+        settings_guest: "Sign in to update your name and email.",
+        display_name: "Display name",
+        your_name: "Your name",
+        email: "Email",
+        email_placeholder: "your@email.com",
+        email_change_note: "Changing email will send a confirmation link to the new address.",
+        save_changes: "Save changes",
+        saved: "Saved. ",
+        email_confirm_note: "Check your new email for a confirmation link.",
+        save_failed: "Failed to save.",
+        email_required: "Email is required.",
+        my_transcriptions: "My transcriptions",
+        history_guest: "Sign in to see your files and transcriptions.",
+        no_transcriptions_yet: "No transcriptions yet. Upload a file on the home page to get started.",
+        uploading: "Uploading...",
+        analyzing_content: "Analyzing content...",
+        copied_to_clipboard: "Copied to clipboard!",
+        subtitle_loaded: "Subtitle loaded locally",
+        subtitle_load_failed: "Failed to load subtitle locally",
+        no_subtitles_to_download: "No subtitles to download",
+        load_video_first: "Load a video file first",
+        load_subtitles_first: "Load subtitles first",
+        video_created: "Video with subtitles created",
+        rendering_video: "Rendering video — please wait until playback finishes",
+        video_loaded: "Video loaded locally",
+        // About page
+        about_title: "About QuickScribe",
+        about_intro1: "QuickScribe is an AI-native transcription platform built for high-context languages and mission-critical accuracy.",
+        about_intro2: "By utilizing language-specific expert modules rather than generic global models, we deliver enterprise-grade precision in environments where standard APIs typically fail.",
+        about_team: "The Team",
+        about_shlomi_name: "Shlomi Cohen",
+        about_shlomi_role: "Founder & CEO",
+        about_shlomi_bio: "A Voice AI veteran with deep expertise in adapting speech technology for global markets and optimizing GPU-accelerated inference pipelines.",
+        // Contact page
+        contact_title: "Contact QuickScribe",
+        contact_intro: "Based in Netanya, Israel, we are building the world's most accurate specialized transcriber.",
+        contact_email: "Email:",
+        contact_linkedin: "LinkedIn:",
+        contact_linkedin_link: "Follow our Progress",
+        // Blog page
+        blog_title: "Insights & Engineering",
+        blog_subtitle: "Exploring the frontier of specialized AI transcription.",
+        blog_post1_meta: "February 14, 2026 | Performance Benchmarks",
+        blog_post1_title: "Breaking the Benchmark: 94.36% Accuracy",
+        blog_post1_p1: "When it comes to transcription, the most important differentiator is accuracy. We recently benchmarked QuickScribe against the industry's leading generic models, and the results speak for themselves. Not only did we achieve a staggering 94.36% accuracy, but our word variance stayed almost perfectly aligned with the human baseline.",
+        blog_post2_meta: "January 13, 2026 | By Shlomi Cohen, Founder",
+        blog_post2_title: "The Spark: Why I Built QuickScribe",
+        blog_post2_p1: "The idea for QuickScribe didn't start in a lab; it started with my sister-in-law, Dr. Sarit Barzilay. While writing her latest book, she was interviewing subjects via Zoom and relying on standard AI tools for transcription. She mentioned the results were so poor that she actually had to hire human editors to fix the mistakes manually.",
+        blog_post2_p2: "In 2025, with all our AI capabilities, I found it hard to believe that professional-grade transcription was still this unreliable. After searching the market and finding only generic, one-size-fits-all solutions, I decided to leverage my experience in Voice AI and Cloud Architecture to build a platform that actually works for high-stakes, real-world audio.",
+        blog_post3_meta: "Technical Deep Dive | Intelligent Routing",
+        blog_post3_title: "Overcoming the 'Curse of Multilinguality'",
+        blog_post3_p1: "Most standard transcription APIs rely on massive models trained on dozens of languages simultaneously. However, research in neural acoustics confirms a challenge known as the 'Curse of Multilinguality.' As a model's linguistic scope expands, its neural capacity is diluted, leading to a plateau in accuracy for any single language. By forcing a model to share its parameters across vastly different phonetics, the nuances of specific languages often get lost.",
+        blog_post3_p2: "QuickScribe solves this through a Dual-Stage Routing strategy. We use a high-speed detection layer to identify the audio's language, then dynamically route the task to a Language-Specific Expert Module. By utilizing specialized engines rather than generalist models, we eliminate accuracy trade-offs and deliver precision that generic platforms cannot match.",
+        blog_post4_meta: "Engineering Excellence | Signal Processing",
+        blog_post4_title: "Advanced Signal Enhancement for Real-World Audio",
+        blog_post4_p1: "Accuracy isn't just about the model; it's about the input quality. In real-world scenarios—lecture halls, noisy offices, or calls with poor microphones—environmental hum and reverberation act as 'noise floors' that confuse AI transformers. Laboratory-grade models often fail when faced with these unpredictable acoustic variables.",
+        blog_post4_p2: "We treat the audio before it ever reaches the core engine. QuickScribe utilizes a proprietary Environment Adaptation layer that applies advanced Digital Signal Processing (DSP) algorithms to isolate human speech from interference. By enhancing the vocal signal-to-noise ratio, our models focus entirely on linguistic content, ensuring high precision even in suboptimal acoustic conditions while maintaining high operational efficiency.",
+        blog_table_engine: "Engine",
+        blog_table_accuracy: "Accuracy",
+        blog_table_wer: "WER",
+        blog_table_word_var: "Word Variance",
+        blog_winner: "🏆 Winner",
+        lang_hebrew: "עברית",
+        lang_english: "English"
+    }
+};
+
+// Default: Hebrew
+window.currentLocale = localStorage.getItem('locale') || 'he';
+
+/** Returns translated string for key; fallback to key if missing. */
+window.t = function(key) {
+    const dict = window.translations[window.currentLocale];
+    return (dict && dict[key]) || window.translations.he[key] || key;
+};
+
+/** Set app language and refresh UI. Call after changing window.currentLocale. */
+window.setLocale = async function(code) {
+    if (!window.translations[code]) return;
+    window.currentLocale = code;
+    localStorage.setItem('locale', code);
+    document.documentElement.lang = code === 'he' ? 'he' : 'en';
+    document.documentElement.dir = code === 'he' ? 'rtl' : 'ltr';
+    if (typeof window.applyTranslations === 'function') window.applyTranslations();
+    const initialsEl = document.getElementById('lang-initials');
+    if (initialsEl) initialsEl.textContent = code === 'he' ? 'He' : 'En';
+    if (typeof window.setupNavbarAuth === 'function') await window.setupNavbarAuth();
+};
+
+/** Apply translations to all elements with data-i18n. Run after DOM ready and on language change. */
+window.applyTranslations = function() {
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (key) el.textContent = window.t(key);
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        const key = el.getAttribute('data-i18n-placeholder');
+        if (key) el.placeholder = window.t(key);
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        if (key) el.title = window.t(key);
+    });
+};

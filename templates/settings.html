@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="content-page">
+    <h1 data-i18n="settings">Settings</h1>
+    <p id="settings-guest-msg" style="display: none; color: #6b7280;" data-i18n="settings_guest">Sign in to update your name and email.</p>
+    <div id="settings-form-wrap" style="display: none;">
+        <form id="settings-form" style="max-width: 420px;">
+            <div style="margin-bottom: 20px;">
+                <label for="settings-name" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;" data-i18n="display_name">Display name</label>
+                <input type="text" id="settings-name" name="name" data-i18n-placeholder="your_name" placeholder="Your name" style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 1rem;">
+            </div>
+            <div style="margin-bottom: 20px;">
+                <label for="settings-email" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;" data-i18n="email">Email</label>
+                <input type="email" id="settings-email" name="email" data-i18n-placeholder="email_placeholder" placeholder="your@email.com" style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 1rem;">
+                <p style="font-size: 0.8rem; color: #6b7280; margin-top: 6px;" data-i18n="email_change_note">Changing email will send a confirmation link to the new address.</p>
+            </div>
+            <div id="settings-message" style="margin-bottom: 16px; min-height: 24px; font-size: 0.9rem;"></div>
+            <button type="submit" id="settings-save" style="padding: 12px 24px; background: #1e3a8a; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer;" data-i18n="save_changes">Save changes</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
