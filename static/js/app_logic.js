@@ -1537,7 +1537,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const output = rawResult.result || rawResult.output || rawResult;
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
         if (!Array.isArray(segments)) segments = [];
-        segments = splitLongSegments(segments, 55);
+        segments = splitLongSegments(segments, 40);
         window.currentSegments = segments;
 
         // Persist transcript: save JSON to S3 and store only result_s3_key in DB (or fallback to result.segments)
