@@ -648,8 +648,8 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id):
             out_path = os.path.join(tmpdir, 'output.mp4')
             # Path for ffmpeg subtitles filter: forward slashes, escape ' and :
             srt_escaped = srt_path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
-            # Scale to max 1080, then burn subtitles; user's params
-            vf = f"scale=min(1080,iw):-2,subtitles='{srt_escaped}'"
+            # Scale to max 1080, then burn subtitles; escape comma so it's not a filter separator
+            vf = f"scale=min(1080\\,iw):-2,subtitles='{srt_escaped}'"
             cmd = [
                 ffmpeg_path, '-y', '-i', video_path,
                 '-vf', vf,
