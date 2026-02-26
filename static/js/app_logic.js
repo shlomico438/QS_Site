@@ -47,6 +47,16 @@ const formatTime = (s) => {
     return d.toISOString().substr(14, 5);
 };
 
+/** Get character offset of the caret within an element (for contenteditable). */
+function getCaretCharacterOffsetWithin(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return 0;
+    const range = sel.getRangeAt(0).cloneRange();
+    range.selectNodeContents(el);
+    range.setEnd(sel.anchorNode, sel.anchorOffset);
+    return range.toString().length;
+}
+
 const getSpeakerColor = (id) => {
     const colors = ['#5d5dff', '#9333ea', '#059669', '#d97706'];
     const num = id ? parseInt(id.match(/\d+/)) : 0;
@@ -1276,6 +1286,72 @@ if (authSubmitBtn) {
     });
 }
 
+/** Reset the main screen to initial state (as on first load) — e.g. when user clicks Upload to start a new file. */
+function resetScreenToInitial() {
+    window.isTriggering = false;
+    if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+    window.fakeProgressInterval = null;
+    window.currentSegments = [];
+
+    const placeholder = document.getElementById('placeholder');
+    const transcriptWindow = document.getElementById('transcript-window');
+    const pContainer = document.getElementById('p-container');
+    const progressBar = document.getElementById('progress-bar');
+    const statusTxt = document.getElementById('upload-status');
+    const mainBtn = document.getElementById('main-btn');
+    const preparingScreen = document.getElementById('preparing-screen');
+    const audioPlayerContainer = document.getElementById('audio-player-container');
+    const audioSource = document.getElementById('audio-source');
+    const mainAudio = document.getElementById('main-audio');
+    const videoWrapper = document.getElementById('video-wrapper');
+    const mainVideo = document.getElementById('main-video');
+    const videoSource = document.getElementById('video-source');
+    const btnStyled = document.getElementById('btn-styled-subtitles');
+    const editActions = document.getElementById('edit-actions');
+
+    if (preparingScreen) preparingScreen.style.display = 'none';
+    if (pContainer) pContainer.style.display = 'none';
+    if (progressBar) progressBar.style.width = '0%';
+    if (statusTxt) {
+        statusTxt.style.display = 'block';
+        statusTxt.innerText = typeof window.t === 'function' ? window.t('ready') : 'Ready';
+    }
+    if (mainBtn) {
+        mainBtn.disabled = false;
+        mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload and Process';
+    }
+
+    if (transcriptWindow) {
+        const placeholderText = typeof window.t === 'function' ? window.t('upload_placeholder') : 'Upload a file to start';
+        transcriptWindow.innerHTML = `<p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:80px;" data-i18n="upload_placeholder">${placeholderText}</p>`;
+    }
+    if (placeholder && !transcriptWindow.querySelector('#placeholder')) {
+        placeholder.style.display = 'block';
+    }
+
+    if (audioPlayerContainer) audioPlayerContainer.style.display = 'none';
+    if (audioSource) audioSource.removeAttribute('src');
+    if (mainAudio) mainAudio.load();
+
+    if (videoWrapper) {
+        videoWrapper.style.display = 'none';
+        videoWrapper.classList.remove('visible');
+    }
+    if (mainVideo) {
+        mainVideo.style.display = 'none';
+        if (mainVideo.src) mainVideo.removeAttribute('src');
+        const vs = mainVideo.querySelector('source');
+        if (vs) vs.removeAttribute('src');
+    }
+    if (videoSource) videoSource.removeAttribute('src');
+
+    if (btnStyled) btnStyled.style.display = 'none';
+    if (editActions) editActions.style.display = 'none';
+
+    document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
+    if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
     const fileInput = document.getElementById('fileInput');
@@ -1285,6 +1361,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const diarizationToggle = document.getElementById('diarization-toggle');
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
+
+    // When user clicks main upload button, reset screen to initial state then open file picker
+    if (mainBtn) {
+        mainBtn.addEventListener('click', () => {
+            resetScreenToInitial();
+        });
+    }
 
     // Ensure toggles refresh the view immediately
     document.getElementById('toggle-time')?.addEventListener('change', () => render());
@@ -1940,6 +2023,110 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             window.saveEdits();
         }
     };
+
+    // When user presses Enter in the middle of a line in edit mode: split segment and insert new row with computed time
+    (function attachEnterSplitInTranscript() {
+        const win = document.getElementById('transcript-window');
+        if (!win) return;
+        win.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter' || win.contentEditable !== 'true') return;
+            const sel = window.getSelection();
+            if (!sel || sel.rangeCount === 0) return;
+
+            const p = sel.anchorNode && sel.anchorNode.nodeType === Node.ELEMENT_NODE
+                ? sel.anchorNode.closest('p[data-idx]')
+                : sel.anchorNode ? sel.anchorNode.parentElement && sel.anchorNode.parentElement.closest('p[data-idx]') : null;
+            if (!p || !p.hasAttribute('data-idx')) return;
+
+            const idx = parseInt(p.getAttribute('data-idx'), 10);
+            if (isNaN(idx) || !window.currentSegments || !window.currentSegments[idx]) return;
+
+            const offset = getCaretCharacterOffsetWithin(p);
+            const seg = window.currentSegments[idx];
+            const text = (seg.text || '').trim();
+            const len = text.length;
+            if (offset <= 0) { e.preventDefault(); return; }
+            if (offset >= len) {
+                e.preventDefault();
+                const end = seg.end != null ? seg.end : seg.start + 1;
+                const newSeg = { start: end, end: end + 0.1, text: '', speaker: seg.speaker || 'SPEAKER_00' };
+                window.currentSegments.splice(idx + 1, 0, newSeg);
+                const isTimeVisible = document.getElementById('toggle-time')?.checked;
+                const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
+                const row = p.closest('.paragraph-row');
+                const newRowHtml = `
+                <div class="paragraph-row" style="margin-bottom: 20px;">
+                    <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+                        <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
+                            ${formatTime(newSeg.start)}
+                        </span>
+                        <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(seg.speaker)}">
+                            ${isTimeVisible ? '| ' : ''}${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
+                        </span>
+                    </div>
+                    <p data-idx="${idx + 1}" style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${newSeg.start})"><br></p>
+                </div>`;
+                const div = document.createElement('div');
+                div.innerHTML = newRowHtml.trim();
+                const newNode = div.firstChild;
+                row.parentNode.insertBefore(newNode, row.nextSibling);
+                win.querySelectorAll('p[data-idx]').forEach((el, i) => { el.setAttribute('data-idx', i); });
+                win.querySelectorAll('.paragraph-row').forEach((r, i) => { r.id = 'seg-row-' + i; });
+                const newP = newNode.querySelector('p');
+                if (newP) { newP.focus(); sel.collapse(newP, 0); }
+                return;
+            }
+
+            e.preventDefault();
+            const start = seg.start;
+            const end = seg.end != null ? seg.end : seg.start + 1;
+            const ratio = offset / len;
+            const splitTime = start + ratio * (end - start);
+            const beforeText = text.slice(0, offset).trimEnd();
+            const afterText = text.slice(offset).trimStart();
+
+            seg.end = splitTime;
+            seg.text = beforeText;
+            const newSeg = { start: splitTime, end: end, text: afterText, speaker: seg.speaker || 'SPEAKER_00' };
+            window.currentSegments.splice(idx + 1, 0, newSeg);
+
+            p.innerText = beforeText;
+
+            const isTimeVisible = document.getElementById('toggle-time')?.checked;
+            const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
+            const row = p.closest('.paragraph-row');
+            const newRowHtml = `
+            <div class="paragraph-row" style="margin-bottom: 20px;">
+                <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+                    <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
+                        ${formatTime(splitTime)}
+                    </span>
+                    <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(seg.speaker)}">
+                        ${isTimeVisible ? '| ' : ''}${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
+                    </span>
+                </div>
+                <p data-idx="${idx + 1}" style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${splitTime})"></p>
+            </div>`;
+            const div = document.createElement('div');
+            div.innerHTML = newRowHtml.trim();
+            const newNode = div.firstChild;
+            const newP = newNode.querySelector('p');
+            if (newP) newP.textContent = afterText;
+            row.parentNode.insertBefore(newNode, row.nextSibling);
+
+            win.querySelectorAll('p[data-idx]').forEach((el, i) => { el.setAttribute('data-idx', i); });
+            win.querySelectorAll('.paragraph-row').forEach((r, i) => { r.id = 'seg-row-' + i; });
+
+            if (newP) {
+                newP.focus();
+                const range = document.createRange();
+                range.setStart(newP.firstChild || newP, 0);
+                range.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        });
+    })();
 
     function buildGroupHTML(group) {
         const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
