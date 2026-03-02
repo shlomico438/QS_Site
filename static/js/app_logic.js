@@ -1769,36 +1769,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
 
-    const UPLOAD_DISCLAIMER_KEY = 'upload_disclaimer_accepted';
-    const disclaimerModal = document.getElementById('upload-disclaimer-modal');
-    const disclaimerText = document.getElementById('upload-disclaimer-text');
-    const disclaimerAccept = document.getElementById('upload-disclaimer-accept');
-
     function openFilePickerAfterDisclaimer() {
         resetScreenToInitial();
         if (fileInput) fileInput.click();
     }
 
-    if (disclaimerModal && disclaimerText && disclaimerAccept) {
-        disclaimerAccept.addEventListener('click', () => {
-            try { sessionStorage.setItem(UPLOAD_DISCLAIMER_KEY, '1'); } catch (_) {}
-            disclaimerModal.style.display = 'none';
-            openFilePickerAfterDisclaimer();
-        });
-    }
-
     if (mainBtn) {
         mainBtn.addEventListener('click', () => {
-            if (disclaimerModal && disclaimerText && disclaimerAccept) {
-                try {
-                    if (!sessionStorage.getItem(UPLOAD_DISCLAIMER_KEY)) {
-                        disclaimerText.textContent = (typeof window.t === 'function' ? window.t('upload_disclaimer_text') : '') || 'התמלולים שלכם מעובדים בצורה מאובטחת, אך עשויים לעבור דרך שרתי פיתוח של צד שלישי.\n\nאנו מבקשים: אנא הימנעו מהעלאת חומרים בעלי רגישות גבוהה (כגון חסיון עורך דין-לקוח, סודיות רפואית, או פרטים מזהים רגישים).\n\nעם סיום תקופת הבטא והמעבר לשירות בתשלום, המערכת תעבור למודל פרטיות סגור ומחמיר לחלוטין.';
-                        disclaimerAccept.textContent = (typeof window.t === 'function' ? window.t('upload_disclaimer_accept') : 'הבנתי') || 'הבנתי';
-                        disclaimerModal.style.display = 'flex';
-                        return;
-                    }
-                } catch (_) {}
-            }
             openFilePickerAfterDisclaimer();
         });
     }

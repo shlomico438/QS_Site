@@ -562,16 +562,22 @@ def gpu_callback():
     data = request.json or {}
     job_id = data.get('jobId')
     result = data.get('result') or {}
-    segments = result.get('segments') or []
+    # Support both callback shapes:
+    # 1) { result: { segments: [...] } }
+    # 2) { segments: [...] }
+    segments = result.get('segments') or data.get('segments') or []
 
     # Post-process: add correction via GPT (Node script)
     if segments:
         callback_lang = data.get('language') or (data.get('input') or {}).get('language') or 'he'
         segments, tmeta = translate_segments(segments, target_lang=callback_lang)
         data = dict(data)
-        data['result'] = dict(result)
+        data['result'] = dict(result) if isinstance(result, dict) else {}
         data['result']['segments'] = segments
         data['result']['translation_meta'] = tmeta
+        # Keep top-level fields in sync for clients that read this shape.
+        data['segments'] = segments
+        data['translation_meta'] = tmeta
 
     # Store in cache for persistence
     job_results_cache[job_id] = data
