@@ -1274,8 +1274,33 @@ window.downloadMovieWithBurnedSubtitles = async function(baseName) {
     }
 };
 
+function extractSegmentsFromJobPayload(payload) {
+    const output = (payload && (payload.result || payload.output)) || payload || {};
+    const segments = (output && output.segments) || payload?.segments || (payload?.data && payload.data.segments) || [];
+    return Array.isArray(segments) ? segments : [];
+}
+
+async function tryRecoverSegmentsForExport() {
+    if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return true;
+    const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId');
+    if (!jobId) return false;
+    try {
+        const res = await fetch(`/api/check_status/${encodeURIComponent(jobId)}`);
+        if (!res.ok) return false;
+        const data = await res.json();
+        const recovered = extractSegmentsFromJobPayload(data);
+        if (recovered.length > 0) {
+            window.currentSegments = recovered;
+            if (typeof window.render === 'function') window.render();
+            return true;
+        }
+    } catch (e) {
+        console.warn('[export recover] Failed to recover segments from check_status:', e);
+    }
+    return Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+}
+
 window.downloadFile = async function(type, bypassUser = null) {
-    if (!window.currentSegments.length) return alert("No transcript available to export.");
     const baseName = (window.originalFileName && window.originalFileName.split('.').slice(0, -1).join('.')) || "transcript";
 
     if (type === 'movie') {
@@ -1283,7 +1308,7 @@ window.downloadFile = async function(type, bypassUser = null) {
         const { data: { user: movieUser } } = await supabase.auth.getUser();
         if (!movieUser) {
             console.log('[movie export] No user – show sign-in');
-            alert("Please sign in to download the movie.");
+            if (typeof showStatus === 'function') showStatus("Please sign in to download the movie.", true);
             window.pendingExportType = 'movie';
             localStorage.setItem('pendingExportType', 'movie');
             localStorage.setItem('pendingS3Key', localStorage.getItem('lastS3Key') || '');
@@ -1292,11 +1317,19 @@ window.downloadFile = async function(type, bypassUser = null) {
             return;
         }
         console.log('[movie export] User OK');
+        if (!window.currentSegments.length) {
+            await tryRecoverSegmentsForExport();
+        }
+        if (!window.currentSegments.length) {
+            if (typeof showStatus === 'function') showStatus("No transcript available to export.", true);
+            return;
+        }
         const video = document.getElementById('main-video');
         const videoUrl = video ? (video.currentSrc || video.src || (video.querySelector('source') && video.querySelector('source').src) || '') : '';
         if (!video || !videoUrl || videoUrl.startsWith('data:')) {
             console.log('[movie export] No video/URL');
-            return alert("Load a video first, then use Styled Subtitles before downloading the movie.");
+            if (typeof showStatus === 'function') showStatus("Load a video first, then use Styled Subtitles before downloading the movie.", true);
+            return;
         }
 
         const durationSec = (video.duration && Number.isFinite(video.duration)) ? video.duration : 0;
@@ -1306,14 +1339,16 @@ window.downloadFile = async function(type, bypassUser = null) {
         if (durationSec > 600 || (widthPx > 0 && widthPx > 1080)) {
             console.log('[movie export] Over limits – abort');
             if (typeof showStatus === 'function') showStatus(limitMsg, true);
-            return alert(limitMsg);
+            if (typeof showStatus === 'function') showStatus(limitMsg, true);
+            return;
         }
 
         const inputS3Key = localStorage.getItem('lastS3Key');
         if (!inputS3Key || !inputS3Key.startsWith('users/')) {
             console.log('[movie export] No/invalid lastS3Key:', inputS3Key ? inputS3Key.substring(0, 30) + '…' : 'null');
             if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed: ", true);
-            return alert("Video must be from your uploads (save and use Styled Subtitles from an uploaded video).");
+            if (typeof showStatus === 'function') showStatus("Video must be from your uploads (save and use Styled Subtitles from an uploaded video).", true);
+            return;
         }
         console.log('[movie export] S3 key OK');
 
@@ -1420,7 +1455,7 @@ window.downloadFile = async function(type, bypassUser = null) {
         } catch (e) {
             console.error('[movie export] Error:', e);
             if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed: ") + (e.message || e), true);
-            alert("Failed to burn subtitles: " + (e.message || e));
+            if (typeof showStatus === 'function') showStatus("Failed to burn subtitles: " + (e.message || e), true);
         }
         return;
     }
@@ -1436,6 +1471,13 @@ window.downloadFile = async function(type, bypassUser = null) {
         window.toggleModal(true); // Open the sign-in modal
         return; // <--- CRITICAL: This stops the function here so the file doesn't download
     }
+    if (!window.currentSegments.length) {
+        await tryRecoverSegmentsForExport();
+    }
+    if (!window.currentSegments.length) {
+        if (typeof showStatus === 'function') showStatus("No transcript available to export.", true);
+        return;
+    }
     const showTime = document.getElementById('toggle-time')?.checked;
     const showSpeaker = document.getElementById('toggle-speaker')?.checked;
 
@@ -1448,8 +1490,14 @@ window.downloadFile = async function(type, bypassUser = null) {
         console.error("Failed to update job status:", err);
     }
 
-    if (type === 'docx' && typeof docx === 'undefined') return alert("Error: DOCX library not loaded.");
-    if (typeof saveAs === 'undefined') return alert("Error: FileSaver library not loaded.");
+    if (type === 'docx' && typeof docx === 'undefined') {
+        if (typeof showStatus === 'function') showStatus("Error: DOCX library not loaded.", true);
+        return;
+    }
+    if (typeof saveAs === 'undefined') {
+        if (typeof showStatus === 'function') showStatus("Error: FileSaver library not loaded.", true);
+        return;
+    }
 
     if (type === 'docx') {
         const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
@@ -1494,7 +1542,9 @@ if (googleLoginBtn) {
             provider: 'google',
             options: { redirectTo: window.location.origin }
         });
-        if (error) alert("Google Login Error: " + error.message);
+        if (error) {
+            if (typeof showStatus === 'function') showStatus("Google Login Error: " + error.message, true);
+        }
     });
 }
 
@@ -1666,7 +1716,10 @@ const authSubmitBtn = document.getElementById('auth-submit-btn');
 if (authSubmitBtn) {
     authSubmitBtn.addEventListener('click', async () => {
         const email = document.getElementById('auth-email').value?.trim();
-        if (!email) return alert(typeof window.t === 'function' ? window.t('enter_email') : "Please enter your email address.");
+        if (!email) {
+            if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('enter_email') : "Please enter your email address.", true);
+            return;
+        }
 
         authSubmitBtn.disabled = true;
         authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('sending_link') : "Sending link...";
