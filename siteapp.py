@@ -432,6 +432,104 @@ def check_job_status(job_id):
     return jsonify({"status": "processing"}), 202
 
 # --- GPU FEEDBACK API ---
+def _translate_segments_via_python_openai(segments, target_lang='he'):
+    """Fallback path when Node.js is unavailable: call OpenAI directly from Python."""
+    api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
+    model = (os.environ.get('GPT_MODEL') or 'gpt-4.1').strip()
+    chunk_size = int(os.environ.get('GPT_CHUNK_SIZE', '30') or 30)
+    timeout_sec = int(os.environ.get('GPT_TIMEOUT_SEC', '90') or 90)
+
+    out = []
+    ok_count = 0
+    empty_count = 0
+    error_count = 0
+    changed_count = 0
+    first_error = ''
+
+    def _extract_json_text(s):
+        t = str(s or '').strip()
+        t = re.sub(r'^```json\s*', '', t, flags=re.IGNORECASE)
+        t = re.sub(r'^```\s*', '', t)
+        t = re.sub(r'```$', '', t)
+        return t.strip()
+
+    def _process_chunk(items):
+        nonlocal ok_count, empty_count, error_count, changed_count, first_error
+        batch_input = {
+            "results": [{"id": i, "text": str(seg.get("text") or "").strip()} for i, seg in enumerate(items)]
+        }
+        system_prompt = (
+            "You are an expert transcript correction engine. "
+            "Return ONLY valid JSON with this exact shape: {\"results\":[{\"id\":number,\"text\":string}]}. "
+            "Do not add extra keys. Do not translate. Preserve original language and writing direction (RTL/LTR). "
+            "Do not add explanations. Fix obvious transcription errors only."
+        )
+        user_prompt = (
+            f"Target language hint: {target_lang or 'he'}.\n\n"
+            "Fix the text values and return the exact same JSON structure with same ids.\n\n"
+            f"{json.dumps(batch_input, ensure_ascii=False)}"
+        )
+        payload = {
+            "model": model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=timeout_sec,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+            parsed = json.loads(_extract_json_text(content))
+            results = parsed.get("results") if isinstance(parsed, dict) else None
+            if not isinstance(results, list):
+                raise ValueError("OpenAI returned no results array")
+        except Exception as e:
+            if not first_error:
+                first_error = str(e)
+            error_count += len(items)
+            for seg in items:
+                out.append({**seg, "translated_text": "", "translation_status": "error"})
+            return
+
+        for i, seg in enumerate(items):
+            corrected = next((r for r in results if isinstance(r, dict) and r.get("id") == i), None)
+            original_text = str(seg.get("text") or "")
+            new_text = str((corrected or {}).get("text") or "").strip()
+            copy = {**seg, "translated_text": new_text, "translation_status": "ok" if new_text else "empty"}
+            out.append(copy)
+            if new_text:
+                ok_count += 1
+                if new_text.strip() != original_text.strip():
+                    changed_count += 1
+            else:
+                empty_count += 1
+
+    for i in range(0, len(segments), max(1, chunk_size)):
+        _process_chunk(segments[i:i + max(1, chunk_size)])
+
+    return out, {
+        "total": len(segments),
+        "ok_count": ok_count,
+        "empty_count": empty_count,
+        "error_count": error_count,
+        "changed_count": changed_count,
+        "first_error": first_error,
+        "model": model,
+    }
+
+
 # --- TRANSLATE SEGMENTS (GPT via Node script from package.json) ---
 def translate_segments(segments, target_lang='he'):
     """Run Node translate script to add translated_text to each segment.
@@ -446,11 +544,15 @@ def translate_segments(segments, target_lang='he'):
     if not api_key or not str(api_key).strip():
         logging.warning("GPT_API_KEY not set; skipping translation")
         return segments, {"total": len(segments), "ok_count": 0, "empty_count": 0, "error_count": len(segments), "changed_count": 0, "first_error": "GPT_API_KEY missing"}
+    node_exe = shutil.which("node")
+    if not node_exe:
+        logging.warning("Node.js not found in PATH; using Python OpenAI fallback")
+        return _translate_segments_via_python_openai(segments, target_lang=target_lang)
     try:
         logging.info("GPT translate: start segments=%s target=%s", len(segments), target_lang)
         payload = json.dumps({"segments": segments, "targetLang": target_lang}).encode("utf-8")
         proc = subprocess.run(
-            ["node", str(TRANSLATE_SCRIPT)],
+            [node_exe, str(TRANSLATE_SCRIPT)],
             input=payload,
             capture_output=True,
             timeout=300,
