@@ -90,6 +90,17 @@ html, body {
     background: #f0f7ff;
     color: #1e3a8a;
 }
+.nav-legal-link {
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: #6b7280;
+    text-decoration: none;
+    white-space: nowrap;
+}
+.nav-legal-link:hover {
+    color: #4f46e5;
+    text-decoration: underline;
+}
 
 /* =========================
    NAVBAR (DESKTOP DEFAULT)
@@ -276,6 +287,85 @@ html, body {
     color: #6b7280;
 }
 
+.user-menu-profile {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.user-menu-profile-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #374151;
+}
+.user-menu-profile-input {
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 0.9rem;
+}
+.user-menu-profile-note {
+    margin: 4px 0 0 0;
+    font-size: 0.8rem;
+    color: #6b7280;
+}
+.user-menu-profile-message {
+    margin: 0;
+    font-size: 0.85rem;
+}
+.user-menu-profile-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+}
+.user-menu-cancel-btn {
+    padding: 10px 16px;
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.user-menu-cancel-btn:hover {
+    background: #e5e7eb;
+}
+.user-menu-save-btn {
+    padding: 10px 16px;
+    background: #1e3a8a;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.user-menu-save-btn:hover:not(:disabled) {
+    background: #1e40af;
+}
+.user-menu-save-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.user-menu-profile-erase {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+}
+.user-menu-erase-btn {
+    background: none;
+    border: none;
+    color: #b91c1c;
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 4px 0;
+}
+.user-menu-erase-btn:hover {
+    text-decoration: underline;
+}
+
 /* Hide Hamburger on Desktop */
 .hamburger-menu {
     display: none;
@@ -311,6 +401,9 @@ html, body {
 
     .navbar {
         padding: 0 20px;
+    }
+    .nav-legal-link {
+        display: none;
     }
 
     /* 1. Keep Logo Centered */
@@ -385,12 +478,13 @@ html, body {
     user-select: none;          /* Standard */
     cursor: default;
     }
-    /* Allow selection ONLY when in Edit Mode */
-    #transcript-window[contenteditable="true"] {
+   
+    #transcript-window:where([contenteditable]:not([contenteditable="false"])) {
         -webkit-user-select: text;
         user-select: text;
         cursor: text;
     }
+
     .toast-notification {
     position: fixed;
     bottom: 20px;

@@ -7,6 +7,7 @@
     <title>QuickScribe - Precision AI Transcription</title>
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
     <script src="{{ url_for('static', filename='js/translations.js') }}"></script>
@@ -29,6 +30,7 @@
                 <button type="button" class="lang-option" data-lang="he">עברית</button>
                 <button type="button" class="lang-option" data-lang="en">English</button>
             </div>
+            <a href="/legal" class="nav-legal-link" data-i18n="footer_legal">תנאים ומדיניות</a>
         </div>
         <div class="hamburger-menu" onclick="toggleMenu()">
             <span></span>
@@ -44,36 +46,51 @@
             <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
             <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
             <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
+            <a href="/personal" class="nav-item nav-personal-link" id="nav-personal-link" style="display: none;" data-i18n="nav_personal">איזור אישי</a>
             <a href="#" class="nav-item" id="nav-auth-btn" style="color: #5d5dff; font-weight: 800;" data-i18n="nav_sign_in">Sign In</a>
         </div>
     </header>
 
     <div id="user-menu-panel" class="user-menu-panel" aria-hidden="true">
         <div class="user-menu-header">
-            <span class="user-menu-title" data-i18n="my_files">My files</span>
-            <a href="/settings" class="user-menu-settings-link" title="Settings" aria-label="Settings">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </a>
+            <span class="user-menu-title" data-i18n="profile">Profile</span>
         </div>
-        <div id="user-menu-files" class="user-menu-files"></div>
-        <p id="user-menu-empty" class="user-menu-empty" style="display: none;" data-i18n="no_files_yet">No files yet. Upload on the home page to get started.</p>
+        <div id="user-menu-profile" class="user-menu-profile">
+            <label class="user-menu-profile-label" for="user-menu-name" data-i18n="display_name">Display name</label>
+            <input type="text" id="user-menu-name" class="user-menu-profile-input" placeholder="" autocomplete="name">
+            <label class="user-menu-profile-label" for="user-menu-email" data-i18n="email">Email</label>
+            <input type="email" id="user-menu-email" class="user-menu-profile-input" placeholder="" autocomplete="email">
+            <p class="user-menu-profile-note" data-i18n="email_change_note">Changing email will send a confirmation link to the new address.</p>
+            <p id="user-menu-profile-message" class="user-menu-profile-message" style="display: none;"></p>
+            <div class="user-menu-profile-actions">
+                <button type="button" id="user-menu-cancel" class="user-menu-cancel-btn" data-i18n="cancel">Cancel</button>
+                <button type="button" id="user-menu-save" class="user-menu-save-btn" data-i18n="save">Save</button>
+            </div>
+            <div class="user-menu-profile-erase">
+                <button type="button" id="user-menu-erase-account" class="user-menu-erase-btn" data-i18n="erase_account">Erase account</button>
+            </div>
+        </div>
     </div>
 
     <main class="main-content" style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden;">
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="footer">
-        <a href="/legal" data-i18n="footer_legal">Legal</a>
-    </footer>
-
     <script>
         const socket = io({
             transports: ['websocket'],
             upgrade: false,
             reconnection: true,
-            reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000
+            reconnectionAttempts: 10,
+            reconnectionDelay: 2000,
+            reconnectionDelayMax: 10000
+        });
+        let socketWarned = false;
+        socket.on('connect_error', () => {
+            if (!socketWarned) {
+                socketWarned = true;
+                console.warn('QuickScribe: WebSocket unavailable. Start the app with Socket.IO (e.g. python siteapp.py) for live job updates.');
+            }
         });
     </script>
     <script>

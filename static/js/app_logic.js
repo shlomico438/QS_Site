@@ -20,6 +20,55 @@ supabase.auth.onAuthStateChange((event, session) => {
     }
 });
 
+/** Global confirm dialog (same look as personal). Returns Promise<boolean>. */
+function ensureGlobalConfirmDialog() {
+    let overlay = document.getElementById('global-confirm-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'global-confirm-overlay';
+        overlay.className = 'personal-dialog-overlay';
+        overlay.innerHTML = `
+            <div class="personal-dialog" role="dialog" aria-modal="true">
+                <p class="personal-dialog-message"></p>
+                <div class="personal-dialog-actions">
+                    <button type="button" class="personal-dialog-btn cancel"></button>
+                    <button type="button" class="personal-dialog-btn primary danger"></button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+    }
+    return overlay;
+}
+function showGlobalConfirm(message, options = {}) {
+    const overlay = ensureGlobalConfirmDialog();
+    const msgEl = overlay.querySelector('.personal-dialog-message');
+    const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
+    const okBtn = overlay.querySelector('.personal-dialog-btn.primary');
+    if (!msgEl || !cancelBtn || !okBtn) return Promise.resolve(false);
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    msgEl.textContent = message || '';
+    cancelBtn.textContent = options.cancelText || T('cancel') || 'Cancel';
+    okBtn.textContent = options.confirmText || T('confirm') || 'Confirm';
+    overlay.classList.add('is-open');
+    return new Promise((resolve) => {
+        const cleanup = (val) => {
+            overlay.classList.remove('is-open');
+            cancelBtn.onclick = null;
+            okBtn.onclick = null;
+            overlay.onclick = null;
+            window.removeEventListener('keydown', onKey);
+            resolve(val);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') cleanup(false);
+        };
+        window.addEventListener('keydown', onKey);
+        cancelBtn.onclick = () => cleanup(false);
+        okBtn.onclick = () => cleanup(true);
+        overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
+    });
+}
+
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
@@ -47,26 +96,27 @@ const formatTime = (s) => {
     return d.toISOString().substr(14, 5);
 };
 
-/** Get character offset of the caret within an element (for contenteditable). Returns offset in [0, textLength]. */
+/** Parse displayed time (e.g. "00:12" or "1:30:00") to seconds. Returns NaN if invalid. */
+function parseTimeDisplay(str) {
+    if (!str || typeof str !== 'string') return NaN;
+    const parts = str.trim().split(':').map(p => parseFloat(p.replace(/,/g, '.')));
+    if (parts.some(n => isNaN(n))) return NaN;
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return parts.length === 1 ? parts[0] : NaN;
+}
+
+// Get character offset of the caret within an element (for contenteditable). Returns offset in [0, textLength].
 function getCaretCharacterOffsetWithin(el) {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return 0;
-    const focusNode = sel.focusNode;
-    const focusOffset = sel.focusOffset;
-    if (!focusNode || !el.contains(focusNode)) return 0;
-    const textLength = (el.textContent || '').length;
-    if (textLength === 0) return 0;
-    try {
-        const range = document.createRange();
-        range.setStart(el, 0);
-        range.setEnd(focusNode, focusOffset);
-        let offset = range.toString().length;
-        const isRtl = window.getComputedStyle(el).direction === 'rtl' || (el.closest('[dir="rtl"]') && true);
-        if (isRtl) offset = textLength - offset;
-        return Math.max(0, Math.min(textLength, offset));
-    } catch (err) {
-        return 0;
-    }
+
+    const range = sel.getRangeAt(0);
+    const preRange = range.cloneRange();
+    preRange.selectNodeContents(el);
+    preRange.setEnd(range.endContainer, range.endOffset);
+
+    return preRange.toString().length;
 }
 
 const getSpeakerColor = (id) => {
@@ -143,22 +193,24 @@ function splitLongSegments(segments, maxChars = 40) {
         }
         pushChunk(chunks, currentText);
 
-        // Assign proportional timeframes to the new chunks
+        // Assign proportional timeframes to the new chunks; enforce minimum duration so no 33ms segments
         const totalDuration = (seg.end || seg.start + 5) - seg.start;
-        const totalChars = seg.text.length;
+        const totalChars = Math.max(1, seg.text.length);
+        const MIN_CHUNK_DUR = 0.5;
+        const rawDurations = chunks.map(chunk => Math.max(MIN_CHUNK_DUR, (chunk.length / totalChars) * totalDuration));
+        const sum = rawDurations.reduce((a, b) => a + b, 0);
+        const scale = sum > 0 && totalDuration < sum ? totalDuration / sum : 1;
+        const durations = rawDurations.map(d => d * scale);
         let currentTime = seg.start;
 
-        for (const chunk of chunks) {
-            // Calculate how much time this chunk takes based on its character length
-            const chunkDuration = (chunk.length / totalChars) * totalDuration;
-            
+        for (let i = 0; i < chunks.length; i++) {
+            const chunkDuration = durations[i];
             result.push({
                 start: currentTime,
                 end: currentTime + chunkDuration,
-                text: chunk,
+                text: chunks[i],
                 speaker: seg.speaker
             });
-            
             currentTime += chunkDuration;
         }
     }
@@ -184,13 +236,16 @@ function showStatus(message, isError = false) {
         toast.classList.remove('show');
     }, 4000);
 }
-async function setupNavbarAuth() {
+/** @param {object} [userOverride] - If provided (e.g. from updateUser), use this user instead of getUser() so the UI shows fresh data. */
+async function setupNavbarAuth(userOverride) {
     const navBtn = document.getElementById('nav-auth-btn');
     if (!navBtn) return;
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = userOverride != null ? userOverride : (await supabase.auth.getUser()).data?.user;
 
+    const personalLink = document.getElementById('nav-personal-link');
     if (user) {
+        if (personalLink) personalLink.style.display = '';
         const { displayName } = getAuthUserDisplayInfo(user);
         const logoutText = (typeof window.t === 'function' ? window.t('nav_logout') : 'Log Out');
         navBtn.innerHTML = `<span class="nav-user-name" id="nav-user-name-trigger" role="button" tabindex="0">${escapeHtml(displayName)}</span> <span class="nav-auth-divider">|</span> <span class="nav-logout" id="nav-logout-btn">${escapeHtml(logoutText)}</span>`;
@@ -209,6 +264,7 @@ async function setupNavbarAuth() {
             nameTrigger.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleUserMenu(); } };
         }
     } else {
+        if (personalLink) personalLink.style.display = 'none';
         navBtn.innerHTML = typeof window.t === 'function' ? window.t('nav_sign_in') : 'Sign In';
         navBtn.style.color = "#5d5dff";
         navBtn.href = "#";
@@ -244,13 +300,120 @@ async function toggleUserMenu() {
     panel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
     if (isOpen) {
         const { data: { user } } = await supabase.auth.getUser();
-        if (user && !panel.dataset.loaded) loadUserMenuFiles(user);
+        if (user) loadUserMenuProfile(user);
         document.addEventListener('click', closeUserMenuOnClickOutside);
     } else {
         document.removeEventListener('click', closeUserMenuOnClickOutside);
     }
 }
 
+/** Populate user menu panel with name + email (editable), note, Save and Cancel. */
+async function loadUserMenuProfile(user) {
+    const nameInput = document.getElementById('user-menu-name');
+    const emailInput = document.getElementById('user-menu-email');
+    const messageEl = document.getElementById('user-menu-profile-message');
+    const saveBtn = document.getElementById('user-menu-save');
+    const cancelBtn = document.getElementById('user-menu-cancel');
+    if (!nameInput || !emailInput) return;
+
+    const { displayName, email } = getAuthUserDisplayInfo(user);
+    const currentName = displayName === 'Account' ? '' : displayName;
+    const currentEmail = email || '';
+    nameInput.value = currentName;
+    emailInput.value = currentEmail;
+    if (messageEl) { messageEl.style.display = 'none'; messageEl.textContent = ''; }
+
+    if (cancelBtn) {
+        cancelBtn.onclick = () => {
+            nameInput.value = currentName;
+            emailInput.value = currentEmail;
+            if (messageEl) { messageEl.style.display = 'none'; messageEl.textContent = ''; }
+            closeUserMenu();
+        };
+    }
+
+    if (!saveBtn) return;
+    saveBtn.onclick = async () => {
+        const newName = (nameInput.value || '').trim();
+        const newEmail = (emailInput.value || '').trim();
+        if (!newEmail) {
+            if (messageEl) {
+                messageEl.style.display = 'block';
+                messageEl.textContent = (typeof window.t === 'function' ? window.t('email_required') : 'Email is required.');
+                messageEl.style.color = '#b91c1c';
+            }
+            return;
+        }
+        saveBtn.disabled = true;
+        if (messageEl) { messageEl.style.display = 'block'; messageEl.textContent = ''; }
+        try {
+            const existingMeta = user.user_metadata || {};
+            const updates = { data: { ...existingMeta, full_name: newName || null } };
+            if (newEmail !== (user.email || '')) updates.email = newEmail;
+            const { data: updated, error } = await supabase.auth.updateUser(updates);
+            if (error) throw error;
+            const userToShow = updated?.user || user;
+            if (typeof setupNavbarAuth === 'function') await setupNavbarAuth(userToShow);
+            if (messageEl) {
+                messageEl.textContent = (typeof window.t === 'function' ? window.t('changes_saved') : 'Changes saved');
+                messageEl.style.color = '#059669';
+            }
+            const { displayName: d, email: em } = getAuthUserDisplayInfo(userToShow);
+            nameInput.value = d === 'Account' ? '' : d;
+            emailInput.value = em || '';
+        } catch (e) {
+            if (messageEl) {
+                const msg = (e && (e.message || e.error_description || e.msg)) || (typeof window.t === 'function' ? window.t('save_failed') : 'Save failed');
+                messageEl.textContent = msg;
+                messageEl.style.color = '#b91c1c';
+            }
+            console.error('Profile save failed:', e);
+        } finally {
+            saveBtn.disabled = false;
+        }
+    };
+
+    const eraseBtn = document.getElementById('user-menu-erase-account');
+    if (eraseBtn) {
+        eraseBtn.onclick = async () => {
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            closeUserMenu();
+            const warning = T('erase_account_warning');
+            const approved = await showGlobalConfirm(warning, {
+                confirmText: T('erase_account_confirm'),
+                cancelText: T('cancel')
+            });
+            if (!approved) return;
+            let session;
+            try {
+                const { data } = await supabase.auth.getSession();
+                session = data?.session;
+            } catch (_) {}
+            if (!session?.access_token) {
+                if (typeof showStatus === 'function') showStatus(T('save_failed') || 'Session expired. Please sign in again.', true);
+                return;
+            }
+            try {
+                const res = await fetch('/api/delete_account', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` }
+                });
+                const data = res.ok ? await res.json().catch(() => ({})) : {};
+                if (!res.ok) {
+                    const msg = data.error || res.statusText || (T('save_failed') || 'Failed');
+                    if (typeof showStatus === 'function') showStatus(msg, true);
+                    return;
+                }
+                await supabase.auth.signOut();
+                window.location.reload();
+            } catch (e) {
+                if (typeof showStatus === 'function') showStatus(e?.message || (T('save_failed') || 'Failed'), true);
+            }
+        };
+    }
+}
+
+/** @deprecated File list moved to personal area; kept for reference. */
 async function loadUserMenuFiles(user) {
     const panel = document.getElementById('user-menu-panel');
     const filesEl = document.getElementById('user-menu-files');
@@ -352,13 +515,13 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-/** Get display name and email from user, including Google OAuth (identity_data). */
+/** Get display name and email from user. Prefer user_metadata (saved in app) over identity_data (OAuth) so name edits persist. */
 function getAuthUserDisplayInfo(user) {
     if (!user) return { displayName: 'Account', email: '' };
     const meta = user.user_metadata || {};
     const identity = (user.identities && user.identities[0]) ? user.identities[0] : null;
     const idData = (identity && identity.identity_data) ? identity.identity_data : {};
-    const merged = { ...meta, ...idData };
+    const merged = { ...idData, ...meta };
     const fullName = (merged.full_name || merged.name || '').trim()
         || [merged.given_name, merged.family_name].filter(Boolean).join(' ').trim()
         || (merged.given_name || '').trim();
@@ -367,58 +530,6 @@ function getAuthUserDisplayInfo(user) {
         || 'Account';
     const email = (user.email || merged.email || '').trim();
     return { displayName, email };
-}
-
-async function initSettingsPage() {
-    const guestMsg = document.getElementById('settings-guest-msg');
-    const formWrap = document.getElementById('settings-form-wrap');
-    const form = document.getElementById('settings-form');
-    const nameInput = document.getElementById('settings-name');
-    const emailInput = document.getElementById('settings-email');
-    const messageEl = document.getElementById('settings-message');
-    const saveBtn = document.getElementById('settings-save');
-    if (!formWrap || !form) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-        if (guestMsg) guestMsg.style.display = 'block';
-        return;
-    }
-    formWrap.style.display = 'block';
-    const { displayName, email } = getAuthUserDisplayInfo(user);
-    nameInput.value = displayName === 'Account' ? '' : displayName;
-    emailInput.value = email;
-
-    form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const newName = (nameInput.value || '').trim();
-        const newEmail = (emailInput.value || '').trim();
-        if (!newEmail) {
-            messageEl.textContent = (typeof window.t === 'function' ? window.t('email_required') : 'Email is required.');
-            messageEl.style.color = '#b91c1c';
-            return;
-        }
-        saveBtn.disabled = true;
-        messageEl.textContent = '';
-        try {
-            const updates = { data: { full_name: newName || null } };
-            if (newEmail !== (user.email || '')) updates.email = newEmail;
-            const { data: updated, error } = await supabase.auth.updateUser(updates);
-            if (error) throw error;
-            if (typeof setupNavbarAuth === 'function') await setupNavbarAuth();
-            messageEl.textContent = (typeof window.t === 'function' ? window.t('saved') : 'Saved.');
-            messageEl.style.color = '#059669';
-            if (updated && updated.user) {
-                const { displayName: d, email: em } = getAuthUserDisplayInfo(updated.user);
-                nameInput.value = d === 'Account' ? '' : d;
-                emailInput.value = em;
-            }
-        } catch (err) {
-            messageEl.textContent = err.message || (typeof window.t === 'function' ? window.t('save_failed') : 'Failed to save.');
-            messageEl.style.color = '#b91c1c';
-        }
-        saveBtn.disabled = false;
-    });
 }
 
 async function initHistoryPage() {
@@ -520,6 +631,331 @@ async function initHistoryPage() {
         li.appendChild(dlBtn);
         listEl.appendChild(li);
     }
+}
+
+const PERSONAL_DISPLAY_NAMES_KEY = 'qs_personal_display_names';
+
+async function initPersonalPage() {
+    const guestMsg = document.getElementById('personal-guest-msg');
+    const tableWrap = document.getElementById('personal-table-wrap');
+    const emptyMsg = document.getElementById('personal-empty-msg');
+    const tableContainer = document.getElementById('personal-table-container');
+    const tbody = document.getElementById('personal-files-tbody');
+    if (!tbody) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+        if (guestMsg) guestMsg.style.display = 'block';
+        if (tableWrap) tableWrap.style.display = 'block';
+        return;
+    }
+
+    tableWrap.style.display = 'block';
+    const { data: jobs, error } = await supabase
+        .from('jobs')
+        .select('id, status, input_s3_key, created_at, type, result_s3_key')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        if (emptyMsg) { emptyMsg.textContent = (typeof window.t === 'function' ? window.t('could_not_load_list') : 'Could not load list. ') + (error.message || ''); emptyMsg.style.display = 'block'; }
+        return;
+    }
+    if (!jobs || jobs.length === 0) {
+        if (emptyMsg) emptyMsg.style.display = 'block';
+        return;
+    }
+
+    tableContainer.style.display = 'block';
+    function displayNameFromKey(key) {
+        if (!key) return 'file';
+        const raw = key.split('/').pop() || key;
+        return raw.replace(/^job_\d+_/, '') || raw;
+    }
+    const UPLOADED_TIME_OFFSET_HOURS = -2;
+    function formatDate(iso) {
+        try {
+            let d = new Date(iso);
+            if (isNaN(d.getTime())) return iso || '';
+            if (UPLOADED_TIME_OFFSET_HOURS !== 0) {
+                d = new Date(d.getTime() + UPLOADED_TIME_OFFSET_HOURS * 60 * 60 * 1000);
+            }
+            return d.toLocaleDateString(undefined, { dateStyle: 'short' }) + ' ' + d.toLocaleTimeString(undefined, { timeStyle: 'short' });
+        } catch (_) { return iso || ''; }
+    }
+    function statusLabel(s) {
+        const t = typeof window.t === 'function' ? window.t : (k) => k;
+        if (s === 'processed' || s === 'completed') return t('status_processed') || 'הושלם';
+        if (s === 'processing') return t('status_processing') || 'מעבד';
+        if (s === 'failed') return t('status_failed') || 'נכשל';
+        if (s === 'uploaded') return t('status_uploaded') || 'הועלה';
+        return s || '—';
+    }
+    let displayNames = {};
+    try {
+        const stored = localStorage.getItem(PERSONAL_DISPLAY_NAMES_KEY);
+        if (stored) displayNames = JSON.parse(stored);
+    } catch (_) {}
+
+    const T = (k) => (typeof window.t === 'function' ? window.t(k) : k);
+
+    const personalDialogMarkup = `
+        <div class="personal-dialog" role="dialog" aria-modal="true">
+            <p class="personal-dialog-message"></p>
+            <input class="personal-dialog-input" type="text" />
+            <div class="personal-dialog-actions">
+                <button type="button" class="personal-dialog-btn cancel"></button>
+                <button type="button" class="personal-dialog-btn primary"></button>
+            </div>
+        </div>`;
+    function ensurePersonalDialog() {
+        let overlay = document.getElementById('personal-dialog-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'personal-dialog-overlay';
+            overlay.className = 'personal-dialog-overlay';
+            overlay.innerHTML = personalDialogMarkup;
+            document.body.appendChild(overlay);
+        } else if (!overlay.querySelector('.personal-dialog-message')) {
+            overlay.innerHTML = personalDialogMarkup;
+        }
+        return overlay;
+    }
+
+    function personalPrompt(message, defaultValue) {
+        const overlay = ensurePersonalDialog();
+        const msgEl = overlay.querySelector('.personal-dialog-message');
+        const inputEl = overlay.querySelector('.personal-dialog-input');
+        const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
+        const okBtn = overlay.querySelector('.personal-dialog-btn.primary');
+        if (!msgEl || !inputEl || !cancelBtn || !okBtn) {
+            return Promise.resolve(prompt(message || '', defaultValue || '') || null);
+        }
+
+        msgEl.textContent = message || '';
+        inputEl.style.display = '';
+        inputEl.value = defaultValue || '';
+        cancelBtn.textContent = T('cancel') || 'ביטול';
+        okBtn.textContent = T('save') || 'שמור';
+        okBtn.classList.remove('danger');
+        okBtn.classList.add('primary');
+
+        overlay.style.display = 'flex';
+        inputEl.focus();
+        inputEl.select();
+
+        return new Promise((resolve) => {
+            const cleanup = (value) => {
+                overlay.style.display = 'none';
+                cancelBtn.onclick = null;
+                okBtn.onclick = null;
+                overlay.onclick = null;
+                window.removeEventListener('keydown', onKey);
+                resolve(value);
+            };
+            const onKey = (e) => {
+                if (e.key === 'Escape') cleanup(null);
+                if (e.key === 'Enter') cleanup(inputEl.value);
+            };
+            window.addEventListener('keydown', onKey);
+            cancelBtn.onclick = () => cleanup(null);
+            okBtn.onclick = () => cleanup(inputEl.value);
+            overlay.onclick = (e) => {
+                if (e.target === overlay) cleanup(null);
+            };
+        });
+    }
+
+    function personalConfirm(message) {
+        const overlay = ensurePersonalDialog();
+        const msgEl = overlay.querySelector('.personal-dialog-message');
+        const inputEl = overlay.querySelector('.personal-dialog-input');
+        const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
+        const okBtn = overlay.querySelector('.personal-dialog-btn.primary');
+        if (!msgEl || !cancelBtn || !okBtn) {
+            return Promise.resolve(confirm(message || ''));
+        }
+
+        msgEl.textContent = message || '';
+        if (inputEl) inputEl.style.display = 'none';
+        cancelBtn.textContent = T('cancel') || 'ביטול';
+        okBtn.textContent = T('confirm') || T('personal_action_delete') || 'אישור';
+        okBtn.classList.remove('primary');
+        okBtn.classList.add('danger');
+
+        overlay.style.display = 'flex';
+
+        return new Promise((resolve) => {
+            const cleanup = (val) => {
+                overlay.style.display = 'none';
+                cancelBtn.onclick = null;
+                okBtn.onclick = null;
+                overlay.onclick = null;
+                window.removeEventListener('keydown', onKey);
+                resolve(val);
+            };
+            const onKey = (e) => {
+                if (e.key === 'Escape') cleanup(false);
+                if (e.key === 'Enter') cleanup(true);
+            };
+            window.addEventListener('keydown', onKey);
+            cancelBtn.onclick = () => cleanup(false);
+            okBtn.onclick = () => cleanup(true);
+            overlay.onclick = (e) => {
+                if (e.target === overlay) cleanup(false);
+            };
+        });
+    }
+
+    const actionsLabel = T('personal_actions_btn') || 'פעולות';
+    const actionsBtnHtml = `<span class="personal-dropdown-btn-text">${escapeHtml(actionsLabel)}</span><span class="personal-dropdown-chevron" aria-hidden="true">▼</span>`;
+    tbody.innerHTML = '';
+    for (const job of jobs) {
+        const name = displayNames[job.id] != null ? displayNames[job.id] : displayNameFromKey(job.input_s3_key);
+        const hasTranscript = Boolean(job.result_s3_key);
+        const tr = document.createElement('tr');
+        const pad = '\u00A0\u00A0\u00A0\u00A0';
+        tr.innerHTML = `
+            <td class="personal-cell-name">${escapeHtml(name)}${pad}</td>
+            <td>${escapeHtml(formatDate(job.created_at))}${pad}</td>
+            <td>${escapeHtml(statusLabel(job.status))}${pad}</td>
+            <td class="personal-row-actions">
+                <button type="button" class="personal-dropdown-btn" data-job-id="${escapeHtml(job.id)}" aria-haspopup="true" aria-expanded="false" aria-label="${escapeHtml(actionsLabel)}">${actionsBtnHtml}</button>
+                <div class="personal-dropdown-menu" role="menu">
+                    <button type="button" role="menuitem" data-action="open" ${hasTranscript ? '' : 'disabled'} class="${hasTranscript ? '' : 'personal-action-disabled'}">${T('personal_action_open') || 'פתיחת המדיה והתמליל'}</button>
+                    <button type="button" role="menuitem" data-action="export" ${hasTranscript ? '' : 'disabled'} class="${hasTranscript ? '' : 'personal-action-disabled'}">${T('personal_action_export') || 'יצוא התמליל'}</button>
+                    <button type="button" role="menuitem" data-action="download">${T('personal_action_download_media') || 'הורדת המדיה'}</button>
+                    <button type="button" role="menuitem" data-action="rename">${T('personal_action_rename') || 'שינוי שם הקובץ'}</button>
+                    <button type="button" role="menuitem" data-action="delete">${T('personal_action_delete') || 'מחיקת הקובץ'}</button>
+                </div>
+            </td>`;
+        const btn = tr.querySelector('.personal-dropdown-btn');
+        const menu = tr.querySelector('.personal-dropdown-menu');
+        const cellName = tr.querySelector('.personal-cell-name');
+        menu.classList.remove('open');
+        menu.style.display = 'none';
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            document.querySelectorAll('.personal-dropdown-menu.open').forEach(m => {
+                m.classList.remove('open');
+                m.style.display = 'none';
+                const otherBtn = m.closest('tr')?.querySelector('.personal-dropdown-btn');
+                if (otherBtn) otherBtn.setAttribute('aria-expanded', 'false');
+            });
+            const willOpen = !menu.classList.contains('open');
+            if (willOpen) {
+                menu.classList.add('open');
+                menu.style.display = 'block';
+                btn.setAttribute('aria-expanded', 'true');
+            } else {
+                menu.classList.remove('open');
+                menu.style.display = 'none';
+                btn.setAttribute('aria-expanded', 'false');
+            }
+        });
+        menu.querySelectorAll('button[data-action]').forEach(b => {
+            b.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                menu.classList.remove('open');
+                menu.style.display = 'none';
+                btn.setAttribute('aria-expanded', 'false');
+                const action = b.getAttribute('data-action');
+                if (action === 'open') {
+                    window.location.href = '/?open=' + encodeURIComponent(job.id);
+                    return;
+                }
+                if (action === 'download') {
+                    if (!job.input_s3_key) { showStatus(T('failed_to_get_link'), true); return; }
+                    try {
+                        const res = await fetch('/api/get_presigned_url', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ s3Key: job.input_s3_key, userId: user.id })
+                        });
+                        const json = await res.json();
+                        if (json.url) {
+                            const blob = await fetch(json.url).then(r => r.blob());
+                            const fname = decodeURIComponent((job.input_s3_key || '').split('/').pop() || 'download');
+                            if (typeof saveAs !== 'undefined') saveAs(blob, fname);
+                            else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; a.click(); URL.revokeObjectURL(a.href); }
+                            showStatus(T('copied_to_clipboard') || 'הורדה התחילה', false);
+                        } else showStatus(json.error || T('failed_to_get_link'), true);
+                    } catch (err) { showStatus(err.message || 'Failed', true); }
+                    return;
+                }
+                if (action === 'export') {
+                    const path = (job.input_s3_key || '').replace(/\/input\//, '/output/');
+                    const dot = path.lastIndexOf('.');
+                    const base = dot >= 0 ? path.slice(0, dot) : path;
+                    const resultKey = base ? base + '.json' : null;
+                    if (!resultKey || !resultKey.startsWith('users/' + user.id + '/')) { showStatus(T('no_subtitles_to_download') || 'אין תמליל לייצא', true); return; }
+                    try {
+                        const res = await fetch('/api/get_presigned_url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ s3Key: resultKey, userId: user.id }) });
+                        const json = await res.json();
+                        if (!json.url) { showStatus(json.error || 'Failed', true); return; }
+                        const fetchRes = await fetch(json.url);
+                        const data = await fetchRes.json();
+                        const segments = (data && data.segments) ? data.segments : [];
+                        if (segments.length === 0) { showStatus(T('no_subtitles_to_download') || 'אין תמליל לייצא', true); return; }
+                        const srt = typeof srtFromCues === 'function' ? srtFromCues(segments) : '';
+                        const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
+                        if (typeof saveAs !== 'undefined') saveAs(blob, (displayNameFromKey(job.input_s3_key) || 'transcript').replace(/\.[^.]*$/, '') + '.srt');
+                        else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (displayNameFromKey(job.input_s3_key) || 'transcript').replace(/\.[^.]*$/, '') + '.srt'; a.click(); URL.revokeObjectURL(a.href); }
+                        showStatus(T('copied_to_clipboard') || 'הייבוא הושלם', false);
+                    } catch (err) { showStatus(err.message || 'Export failed', true); }
+                    return;
+                }
+                if (action === 'rename') {
+                    const newName = await personalPrompt(T('personal_rename_prompt') || 'הזן שם חדש לקובץ:', name);
+                    if (newName == null || newName.trim() === '') return;
+                    const trimmed = newName.trim();
+                    try {
+                        const { error: updateErr } = await supabase.from('jobs').update({ display_name: trimmed }).eq('id', job.id).eq('user_id', user.id);
+                        if (updateErr) { /* column may not exist; keep localStorage only */ }
+                    } catch (_) { /* DB may not have display_name column */ }
+                    displayNames[job.id] = trimmed;
+                    try { localStorage.setItem(PERSONAL_DISPLAY_NAMES_KEY, JSON.stringify(displayNames)); } catch (_) {}
+                    cellName.textContent = trimmed;
+                    showStatus(T('personal_renamed') || 'השם עודכן', false);
+                    return;
+                }
+                if (action === 'delete') {
+                    const ok = await personalConfirm(T('personal_delete_confirm') || 'למחוק את הקובץ? פעולה זו לא ניתנת לביטול.');
+                    if (!ok) return;
+                    const { data: deleted, error: delErr } = await supabase.from('jobs').delete().eq('id', job.id).eq('user_id', user.id).select('id');
+                    if (delErr) { showStatus(delErr.message || 'Delete failed', true); return; }
+                    if (!deleted || deleted.length === 0) {
+                        const res = await fetch('/api/delete_job', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ jobId: job.id, userId: user.id })
+                        });
+                        const json = res.ok ? await res.json() : {};
+                        if (json.deleted) {
+                            tr.remove();
+                            showStatus(T('personal_deleted') || 'הקובץ נמחק', false);
+                        } else {
+                            showStatus(json.error || (T('personal_delete_failed') || 'לא ניתן למחוק. ייתכן שאין הרשאה.'), true);
+                        }
+                        return;
+                    }
+                    tr.remove();
+                    showStatus(T('personal_deleted') || 'הקובץ נמחק', false);
+                }
+            });
+        });
+        tbody.appendChild(tr);
+    }
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.personal-dropdown-btn') && !e.target.closest('.personal-dropdown-menu')) {
+            document.querySelectorAll('.personal-dropdown-menu.open').forEach(m => {
+                m.classList.remove('open');
+                m.style.display = 'none';
+                const otherBtn = m.closest('tr')?.querySelector('.personal-dropdown-btn');
+                if (otherBtn) otherBtn.setAttribute('aria-expanded', 'false');
+            });
+        }
+    });
 }
 
 /** Load a job in the app when user clicks "Open in app" (/?open=jobId). Loads file URL + transcript JSON. */
@@ -649,7 +1085,7 @@ async function initOpenInApp(jobId) {
 
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
     const mainBtn = document.getElementById('main-btn');
-    if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload and Process'); }
+    if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (typeof window.render === 'function') window.render();
     if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
@@ -899,7 +1335,8 @@ window.downloadFile = async function(type, bypassUser = null) {
                 if (typeof saveAs !== 'undefined') saveAs(videoBlob, (baseName || 'video') + '.mp4');
                 const segments = window.currentSegments || [];
                 let srt = '';
-                segments.forEach((seg, i) => {
+                const normSegs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(segments, 0.5) : segments;
+                normSegs.forEach((seg, i) => {
                     const ts = (s) => {
                         const d = new Date(0); d.setMilliseconds(s * 1000);
                         return d.toISOString().substr(11, 12).replace('.', ',');
@@ -915,7 +1352,8 @@ window.downloadFile = async function(type, bypassUser = null) {
             const encodingMsg = typeof window.t === 'function' ? window.t('burn_encoding_in_progress') : "Encoding in progress… We'll email you when it's ready.";
             if (typeof showStatus === 'function') showStatus(burnTakesMsg, false);
             console.log('[movie export] Calling burn_subtitles_server…');
-            const segments = (window.currentSegments || []).map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }));
+            const rawSegments = (window.currentSegments || []).map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }));
+            const segments = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(rawSegments, 0.5) : rawSegments;
             const subtitleStyle = (typeof window.currentSubtitleStyle === 'string' && window.currentSubtitleStyle) ? window.currentSubtitleStyle : 'tiktok';
             const burnRes = await fetch('/api/burn_subtitles_server', {
                 method: 'POST',
@@ -1030,7 +1468,8 @@ window.downloadFile = async function(type, bypassUser = null) {
         Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
     } else {
         let content = type === 'vtt' ? "WEBVTT\n\n" : "";
-        window.currentSegments.forEach((seg, i) => {
+        const segs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(window.currentSegments, 0.5) : window.currentSegments;
+        segs.forEach((seg, i) => {
             const ts = (s) => {
                 let d = new Date(0); d.setMilliseconds(s * 1000);
                 let iso = d.toISOString().substr(11, 12);
@@ -1090,14 +1529,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Settings page: load user and handle form
-    if (typeof window.location !== 'undefined' && (window.location.pathname === '/settings' || window.location.pathname.endsWith('/settings'))) {
-        initSettingsPage();
-    }
-
     // History / My files page: list user's jobs and allow downloading originals from S3
     if (typeof window.location !== 'undefined' && (window.location.pathname === '/history' || window.location.pathname.endsWith('/history'))) {
         initHistoryPage();
+    }
+
+    // Personal area (איזור אישי): table view with dropdown actions
+    if (typeof window.location !== 'undefined' && (window.location.pathname === '/personal' || window.location.pathname.endsWith('/personal'))) {
+        initPersonalPage();
     }
 
     const transcriptWindow = document.getElementById('transcript-window');
@@ -1140,25 +1579,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 });
 
-                // When the user presses Play, set a simulation flag and request the server
-                mainAudio.addEventListener('play', async () => {
-                    window.simulationFlag = true;
-                    try {
-                        await fetch('/api/set_simulation', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ run: true })
-                        });
-
-                        // Start a background python process (for local development)
-                        await fetch('/api/start_process', { method: 'POST' });
-
-                        if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('simulation_started') : 'Simulation started', false);
-                    } catch (err) {
-                        console.error('Failed to start simulation:', err);
-                        if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('simulation_failed') : 'Failed to start simulation', true);
-                    }
-                });
+                // Legacy simulation-start-on-play removed (caused duplicate/stale process behavior).
 
                 mainAudio._qs_listeners_attached = true;
             }
@@ -1190,36 +1611,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             });
 
-            mainVideoEl.addEventListener('play', async () => {
-                window.simulationFlag = true;
-                try {
-                    await fetch('/api/set_simulation', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ run: true })
-                    });
-                    await fetch('/api/start_process', { method: 'POST' });
-                    if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('simulation_started') : 'Simulation started', false);
-                } catch (err) {
-                    console.error('Failed to start simulation:', err);
-                    if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('simulation_failed') : 'Failed to start simulation', true);
-                }
-            });
+            // Legacy simulation-start-on-play removed (caused duplicate/stale process behavior).
 
             mainVideoEl._qs_listeners_attached = true;
         }
 
-        // 5. RESTORE TRANSCRIPT FROM LOCALSTORAGE (so export works after refresh / auth)
-        const savedTranscript = localStorage.getItem('pendingTranscript');
-        if (savedTranscript) {
-            try {
-                const parsed = JSON.parse(savedTranscript);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    window.currentSegments = parsed;
-                    if (typeof window.render === 'function') window.render();
-                }
-            } catch (e) { console.warn('Restore transcript:', e); }
-        }
+        // Do not auto-restore pendingTranscript here: it can show stale old transcripts.
 
         const savedS3Key = localStorage.getItem('pendingS3Key');
         if (savedS3Key) {
@@ -1318,7 +1715,6 @@ function resetScreenToInitial() {
     const videoWrapper = document.getElementById('video-wrapper');
     const mainVideo = document.getElementById('main-video');
     const videoSource = document.getElementById('video-source');
-    const btnStyled = document.getElementById('btn-styled-subtitles');
     const editActions = document.getElementById('edit-actions');
 
     if (preparingScreen) preparingScreen.style.display = 'none';
@@ -1330,7 +1726,7 @@ function resetScreenToInitial() {
     }
     if (mainBtn) {
         mainBtn.disabled = false;
-        mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload and Process';
+        mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload';
     }
 
     if (transcriptWindow) {
@@ -1357,7 +1753,6 @@ function resetScreenToInitial() {
     }
     if (videoSource) videoSource.removeAttribute('src');
 
-    if (btnStyled) btnStyled.style.display = 'none';
     if (editActions) editActions.style.display = 'none';
 
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
@@ -1374,10 +1769,37 @@ document.addEventListener('DOMContentLoaded', () => {
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
 
-    // When user clicks main upload button, reset screen to initial state then open file picker
+    const UPLOAD_DISCLAIMER_KEY = 'upload_disclaimer_accepted';
+    const disclaimerModal = document.getElementById('upload-disclaimer-modal');
+    const disclaimerText = document.getElementById('upload-disclaimer-text');
+    const disclaimerAccept = document.getElementById('upload-disclaimer-accept');
+
+    function openFilePickerAfterDisclaimer() {
+        resetScreenToInitial();
+        if (fileInput) fileInput.click();
+    }
+
+    if (disclaimerModal && disclaimerText && disclaimerAccept) {
+        disclaimerAccept.addEventListener('click', () => {
+            try { sessionStorage.setItem(UPLOAD_DISCLAIMER_KEY, '1'); } catch (_) {}
+            disclaimerModal.style.display = 'none';
+            openFilePickerAfterDisclaimer();
+        });
+    }
+
     if (mainBtn) {
         mainBtn.addEventListener('click', () => {
-            resetScreenToInitial();
+            if (disclaimerModal && disclaimerText && disclaimerAccept) {
+                try {
+                    if (!sessionStorage.getItem(UPLOAD_DISCLAIMER_KEY)) {
+                        disclaimerText.textContent = (typeof window.t === 'function' ? window.t('upload_disclaimer_text') : '') || 'התמלולים שלכם מעובדים בצורה מאובטחת, אך עשויים לעבור דרך שרתי פיתוח של צד שלישי.\n\nאנו מבקשים: אנא הימנעו מהעלאת חומרים בעלי רגישות גבוהה (כגון חסיון עורך דין-לקוח, סודיות רפואית, או פרטים מזהים רגישים).\n\nעם סיום תקופת הבטא והמעבר לשירות בתשלום, המערכת תעבור למודל פרטיות סגור ומחמיר לחלוטין.';
+                        disclaimerAccept.textContent = (typeof window.t === 'function' ? window.t('upload_disclaimer_accept') : 'הבנתי') || 'הבנתי';
+                        disclaimerModal.style.display = 'flex';
+                        return;
+                    }
+                } catch (_) {}
+            }
+            openFilePickerAfterDisclaimer();
         });
     }
 
@@ -1433,25 +1855,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
-        // When the user presses Play, set a simulation flag and request the server
-        mainAudio.addEventListener('play', async () => {
-            window.simulationFlag = true;
-            try {
-                await fetch('/api/set_simulation', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ run: true })
-                });
-
-                // Start a background python process (for local development)
-                await fetch('/api/start_process', { method: 'POST' });
-
-                if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('simulation_started') : 'Simulation started', false);
-            } catch (err) {
-                console.error('Failed to start simulation:', err);
-                if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('simulation_failed') : 'Failed to start simulation', true);
-            }
-        });
+        // Legacy simulation-start-on-play removed (caused duplicate/stale process behavior).
     }
     // If the user flips the "Show" switch, we just re-render
     if (speakerToggle) {
@@ -1502,14 +1906,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const savedUrl = localStorage.getItem('currentAudioUrl');
 
         if (window.uploadWasVideo === true) {
-            // Video: keep audio bar in place (will show video when user clicks Styled Subtitles)
+            // Video: show mp4 viewer immediately so user can edit transcript (no separate "edit video" step)
             if (playerContainer && videoWrapper && videoPlayer && playerContainer.parentNode === videoPlayer) {
                 videoWrapper.parentNode.insertBefore(playerContainer, videoWrapper);
             }
-            if (playerContainer) playerContainer.style.display = 'block';
-            if (videoWrapper) { videoWrapper.classList.remove('visible'); videoWrapper.style.display = 'none'; }
+            if (playerContainer) playerContainer.style.display = 'none';
+            if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
             if (mainVideo) mainVideo.style.display = '';
-            if (audioSource && mainAudio && savedUrl) { audioSource.src = savedUrl; mainAudio.load(); }
+            const videoSrc = document.getElementById('video-source');
+            if (videoSrc && savedUrl) { videoSrc.src = savedUrl; videoSrc.type = (localStorage.getItem('currentAudioMime') || 'video/mp4'); }
+            if (mainVideo) {
+                mainVideo.controls = true;
+                mainVideo.load();
+                mainVideo.pause();
+                if (window.currentSegments && window.currentSegments.length > 0) {
+                    const attachSubtitles = () => {
+                        if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                        if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
+                    };
+                    mainVideo.addEventListener('loadedmetadata', attachSubtitles, { once: true });
+                    if (mainVideo.readyState >= 1) attachSubtitles();
+                }
+            }
+            if (videoPlayer) videoPlayer.style.display = 'block';
         } else {
             // Audio only (m4a, mp3, etc.): use audio player only, no video
             if (playerContainer && videoWrapper && videoPlayer && playerContainer.parentNode === videoPlayer) {
@@ -1527,15 +1946,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // 2. UNHIDE CORE COMPONENTS; show Styled Subtitles button only when MP4 was uploaded
+        // 2. UNHIDE CORE COMPONENTS (Styled Subtitles button removed; video is shown immediately for video uploads)
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
-        const btnStyled = document.getElementById('btn-styled-subtitles');
-        if (btnStyled) btnStyled.style.display = (window.uploadWasVideo === true) ? 'inline-block' : 'none';
 
         const mainBtn = document.getElementById('main-btn');
         if (mainBtn) {
             mainBtn.disabled = false;
-            mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : "Upload and Process";
+            mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : "Upload";
         }
 
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
@@ -1543,6 +1960,26 @@ document.addEventListener('DOMContentLoaded', () => {
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
         if (!Array.isArray(segments)) segments = [];
         segments = splitLongSegments(segments, 40);
+        // If backend added translated_text, show GPT output as the main transcript text.
+        const translationMeta = (output && output.translation_meta) || rawResult.translation_meta || null;
+        const translatedCount = segments.filter(s => String(s.translated_text || '').trim().length > 0).length;
+        const changedCount = segments.filter(s => {
+            const t = String(s.translated_text || '').trim();
+            const o = String(s.text || '').trim();
+            return t.length > 0 && t !== o;
+        }).length;
+        if (translatedCount > 0) {
+            segments = segments.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
+            console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
+            const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
+            const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
+            console.log(`GPT debug: translated ${translatedCount}/${segments.length}, changed ${changedCount}/${segments.length}${extraModel}${extraErr}`);
+        } else {
+            const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
+            const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
+            console.warn('[GPT] No translated_text found in job result. meta=', translationMeta);
+            console.warn(`GPT debug: no translated_text found in result${extraModel}${extraErr}`);
+        }
         window.currentSegments = segments;
 
         // Persist transcript: save JSON to S3 and store only result_s3_key in DB (or fallback to result.segments)
@@ -1751,10 +2188,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     <span style="display: ${showLabel ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(g.speaker)}">
                         ${isTimeVisible ? '| ' : ''}${g.speaker.replace('SPEAKER_', 'דובר ')}
                     </span>
-                </div>
-                <p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${g.start})">
-                    ${g.text}
-                </p>
+                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${g.start})">${g.text}</p>
             </div>`;
         }).join('');
 
@@ -1858,13 +2292,89 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
 
-        // 1. EXTRACT FROM SCREEN: Update the master array ONLY on save
-        win.querySelectorAll('p[data-idx]').forEach(p => {
-            const i = parseInt(p.getAttribute('data-idx'));
-            if (!isNaN(i) && window.currentSegments[i]) {
-                window.currentSegments[i].text = p.innerText.trim();
-            }
+        // 1. EXTRACT FROM SCREEN: paragraphs in DOM order, normalized text + timestamp per row
+        const pEls = Array.from(win.querySelectorAll('p[data-idx]')).sort((a, b) => {
+            const ia = parseInt(a.getAttribute('data-idx'), 10);
+            const ib = parseInt(b.getAttribute('data-idx'), 10);
+            return (isNaN(ia) ? 0 : ia) - (isNaN(ib) ? 0 : ib);
         });
+        const parr = pEls.map(el => {
+            const row = el.closest('.paragraph-row');
+            const tsEl = row ? row.querySelector('.timestamp') : null;
+            const timeStr = tsEl ? (tsEl.textContent || '').trim() : '';
+            const startSec = typeof parseTimeDisplay === 'function' ? parseTimeDisplay(timeStr) : NaN;
+            return {
+                text: (el.innerText || '').trim().replace(/\s+/g, ' '),
+                startSec: (startSec >= 0 && Number.isFinite(startSec)) ? startSec : null
+            };
+        });
+        const segs = window.currentSegments || [];
+
+        if (parr.length < segs.length) {
+            // User merged rows (e.g. backspace): merge segments so one segment per non-empty paragraph
+            const nonEmpty = parr.filter(p => p.text.length > 0);
+            const newSegs = [];
+            let segIdx = 0;
+            for (const p of nonEmpty) {
+                const pText = p.text;
+                if (segIdx >= segs.length) break;
+                let combined = '';
+                const startIdx = segIdx;
+                while (segIdx < segs.length) {
+                    const part = (segs[segIdx].text || '').trim();
+                    combined = (combined ? combined + ' ' + part : part).replace(/\s+/g, ' ');
+                    if (combined === pText) { segIdx++; break; }
+                    if (combined.length > pText.length) break;
+                    segIdx++;
+                }
+                const endIdx = segIdx - 1;
+                if (endIdx >= startIdx) {
+                    const start = p.startSec != null ? p.startSec : segs[startIdx].start;
+                    const end = segs[endIdx].end;
+                    newSegs.push({
+                        start: start,
+                        end: end,
+                        text: pText,
+                        speaker: segs[startIdx].speaker || 'SPEAKER_00'
+                    });
+                }
+            }
+            while (segIdx < segs.length) {
+                const last = newSegs[newSegs.length - 1];
+                if (last) {
+                    last.text = (last.text + ' ' + (segs[segIdx].text || '').trim()).trim().replace(/\s+/g, ' ');
+                    last.end = segs[segIdx].end;
+                } else {
+                    newSegs.push({ ...segs[segIdx] });
+                }
+                segIdx++;
+            }
+            window.currentSegments = newSegs;
+            if (typeof window.render === 'function') window.render();
+        } else {
+            // 1:1: update each segment's text and start (from edited timestamp) from the paragraph row
+            parr.forEach((p, i) => {
+                if (segs[i]) {
+                    segs[i].text = p.text;
+                    if (p.startSec != null) {
+                        const duration = (segs[i].end != null ? segs[i].end : segs[i].start + 1) - segs[i].start;
+                        segs[i].start = p.startSec;
+                        segs[i].end = p.startSec + Math.max(0.1, duration);
+                    }
+                }
+            });
+        }
+
+        // Make end times contiguous: each segment ends when the next one starts (so SRT has no gaps/overlaps)
+        const finalSegs = window.currentSegments;
+        for (let i = 0; i < finalSegs.length; i++) {
+            if (i < finalSegs.length - 1) {
+                finalSegs[i].end = finalSegs[i + 1].start;
+            } else {
+                const last = finalSegs[i];
+                if (last.end == null || last.end <= last.start) last.end = last.start + 1;
+            }
+        }
 
         // 2. ELIMINATE CACHE: Force the video to use the fresh edits
         window.refreshVideoSubtitles();
@@ -1886,6 +2396,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (data.result_s3_key) {
                             updateJobStatus(dbId, 'processed', { result_s3_key: data.result_s3_key });
                         }
+                        if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('changes_saved') : 'Changes saved', false);
                     }
                 } catch (_) { /* ignore */ }
             })();
@@ -1981,13 +2492,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         };
 
         // Center cues only for TikTok style; clean/cinematic keep default (bottom) positioning
-        const cueSettings = (window.currentSubtitleStyle === 'tiktok') ? ' line:50% position:50% align:middle' : '';
-        const maxCharsPerLine = 42; // Force ~2 lines on PC (mobile wraps naturally)
+        const isTiktok = window.currentSubtitleStyle === 'tiktok';
+        const cueSettings = isTiktok ? ' line:50% position:50% align:middle' : '';
+        const maxCharsPerLine = isTiktok ? 28 : 42; // TikTok bold: 2 lines at 28 chars; others ~2 lines at 42
         for (const c of window.currentSegments) {
             vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}${cueSettings}`);
             let text = (c.text || '').replace(/<[^>]+>/g, '').trim();
             if (text.length > maxCharsPerLine) {
-                const mid = Math.floor(text.length / 2);
+                const mid = Math.min(maxCharsPerLine, Math.floor(text.length / 2));
                 const spaceBefore = text.lastIndexOf(' ', mid + 1);
                 const breakAt = spaceBefore > 0 ? spaceBefore : mid;
                 text = text.slice(0, breakAt).trim() + '\n' + text.slice(breakAt).trim();
@@ -2035,6 +2547,22 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             // Show the Save/Cancel buttons
             if (editActions) editActions.style.display = 'flex';
+
+            // Focus first paragraph so caret is inside a <p>, not between time div and <p> (avoids stray <br> on first edit)
+            requestAnimationFrame(() => {
+                const firstP = win.querySelector('p[data-idx]');
+                if (firstP) {
+                    const sel = window.getSelection();
+                    if (sel) {
+                        const range = document.createRange();
+                        range.setStart(firstP.firstChild || firstP, 0);
+                        range.collapse(true);
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    }
+                    win.focus();
+                }
+            });
         } else {
             // If they click the "Pencil" again, we treat it as Save
             window.saveEdits();
@@ -2046,6 +2574,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const win = document.getElementById('transcript-window');
         if (!win) return;
         win.addEventListener('keydown', function(e) {
+            
             if (e.key !== 'Enter' || win.contentEditable !== 'true') return;
             const sel = window.getSelection();
             if (!sel || sel.rangeCount === 0) return;
@@ -2057,14 +2586,21 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const idx = parseInt(p.getAttribute('data-idx'), 10);
             if (isNaN(idx) || !window.currentSegments || !window.currentSegments[idx]) return;
 
+            e.preventDefault();
+
             const offset = getCaretCharacterOffsetWithin(p);
             const seg = window.currentSegments[idx];
-            const text = (seg.text || '').trim();
+            const text = p.textContent || '';
             const len = text.length;
-            if (offset <= 0) { e.preventDefault(); return; }
-            if (offset >= len) {
+            const offsetClamped = Math.min(offset, len);
+            if (offsetClamped <= 0) return;
+            if (offsetClamped >= len) {
                 e.preventDefault();
-                const end = seg.end != null ? seg.end : seg.start + 1;
+                if (p.innerHTML === '<br>' || p.innerHTML === '') {
+                    p.innerHTML = '';
+                }
+                let end = seg.end != null ? seg.end : seg.start + 1;
+                if (end <= seg.start) end = seg.start + 1;
                 const newSeg = { start: end, end: end + 0.1, text: '', speaker: seg.speaker || 'SPEAKER_00' };
                 window.currentSegments.splice(idx + 1, 0, newSeg);
                 const isTimeVisible = document.getElementById('toggle-time')?.checked;
@@ -2093,15 +2629,17 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 return;
             }
 
-            e.preventDefault();
             const start = seg.start;
             let end = seg.end != null ? seg.end : seg.start + 1;
             if (end <= start) end = start + 1;
-            const ratio = Math.max(0, Math.min(1, offset / len));
             const duration = end - start;
-            const splitTime = start + ratio * duration;
-            const beforeText = text.slice(0, offset).trimEnd();
-            const afterText = text.slice(offset).trimStart();
+            const MIN_DUR = 0.5;
+            let splitTime = start + Math.max(0, Math.min(1, offsetClamped / len)) * duration;
+            if (duration >= 2 * MIN_DUR) {
+                splitTime = Math.max(start + MIN_DUR, Math.min(end - MIN_DUR, splitTime));
+            }
+            const beforeText = text.slice(0, offsetClamped).trimEnd();
+            const afterText = text.slice(offsetClamped).trimStart();
 
             seg.end = splitTime;
             seg.text = beforeText;
@@ -2143,7 +2681,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 sel.removeAllRanges();
                 sel.addRange(range);
             }
-        });
+        },true);
     })();
 
     function buildGroupHTML(group) {
@@ -2153,6 +2691,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const rawSpeaker = group.speaker || "SPEAKER_00";
         const speakerDisplay = rawSpeaker.replace('SPEAKER_', 'דובר ');
         const fullText = group.sentences.map(s => s.text).join(" ");
+        const translatedParts = group.sentences.map(s => s.translated_text).filter(Boolean);
+        const translatedLine = translatedParts.length ? translatedParts.join(" ").replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
 
         return `
         <div class="paragraph-row" style="display: flex; justify-content: flex-end; width: 100%; margin-bottom: 25px; direction: rtl;">
@@ -2168,6 +2708,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 <p style="margin: 0; cursor: pointer; line-height: 1.7; font-size: 1.1em;" onclick="window.jumpTo(${group.start})">
                     ${fullText}
                 </p>
+                ${translatedLine ? `<p class="translated-line" style="margin: 4px 0 0 0; font-size: 0.9em; color: #6b7280; direction: ltr; text-align: left;">${translatedLine}</p>` : ''}
             </div>
         </div>`;
     }
@@ -2196,13 +2737,24 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             var placeholderEl = document.getElementById('placeholder');
             if (placeholderEl) placeholderEl.style.display = 'none';
 
-            // Track whether this upload is video so we show Styled Subtitles button only for video. Treat m4a/mp3 etc. as audio.
-            window.uploadWasVideo = false;
             try {
+                // Subtitle file: handle locally and keep existing media state (media + SRT workflow).
+                const isSubtitle = (file.type && (file.type.includes('vtt') || file.type.includes('text'))) || /\.(srt|vtt|txt)$/i.test(file.name);
+                if (isSubtitle) {
+                    try {
+                        await handleSubtitleFile(file);
+                    } catch (e) {
+                        console.warn('Local subtitle load failed', e);
+                        showStatus(typeof window.t === 'function' ? window.t('subtitle_load_failed') : 'Failed to load subtitle locally', true);
+                    }
+                    fileInput.value = '';
+                    return;
+                }
+
                 const isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
                 const isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
+                window.uploadWasVideo = !!isVideo;
                 if (isVideo) {
-                    window.uploadWasVideo = true;
                     const url = URL.createObjectURL(file);
                     window.originalFileName = file.name.replace(/\.[^.]+$/, '');
                     const src = document.getElementById('video-source');
@@ -2217,19 +2769,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         try { video.focus(); } catch (e) {}
                     }
                     // Continue to upload and process (do not return) so transcription runs for video too
-                }
-                // If the user selected a subtitle file (srt/vtt/text), handle it locally
-                const isSubtitle = (file.type && (file.type.includes('vtt') || file.type.includes('text'))) || /\.(srt|vtt|txt)$/i.test(file.name);
-                if (isSubtitle) {
-                    try {
-                        await handleSubtitleFile(file);
-                        showStatus(typeof window.t === 'function' ? window.t('subtitle_loaded') : 'Subtitle loaded locally', false);
-                    } catch (e) {
-                        console.warn('Local subtitle load failed', e);
-                        showStatus(typeof window.t === 'function' ? window.t('subtitle_load_failed') : 'Failed to load subtitle locally', true);
-                    }
-                    fileInput.value = '';
-                    return;
                 }
             } catch (e) {
                 console.warn('Video preview failed', e);
@@ -2322,10 +2861,20 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     s3Key: s3Key,
                                     jobId: jobId,
                                     diarization: diarizationValue,
-                                    language: 'he'
+                                    language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
                                 })
                             });
-                            const triggerData = triggerRes.ok ? await triggerRes.json() : {};
+                            let triggerData = {};
+                            try { triggerData = await triggerRes.json(); } catch (_) {}
+                            if (!triggerRes.ok) {
+                                const msg = triggerData.message || triggerData.error || `Server error (${triggerRes.status})`;
+                                if (typeof showStatus === 'function') showStatus(msg, true);
+                                const dbId2 = localStorage.getItem('lastJobDbId');
+                                if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                                window.isTriggering = false;
+                                if (mainBtn) mainBtn.disabled = false;
+                                return;
+                            }
 
                             if (triggerRes.status === 202 && triggerData.status === 'queued') {
                                 const queuedMsg = typeof window.t === 'function' ? window.t('job_queued_waiting_gpu') : "Job queued. Waiting for GPU…";
@@ -2394,8 +2943,13 @@ function parseSRT(srtText) {
     const blocks = srtText.trim().split(/\r?\n\r?\n/);
     const cues = [];
     const toSeconds = (t) => {
-        // Accept 00:00:05,123 or 00:00:05.123
-        const parts = t.replace(',', '.').split(':');
+        // Accept MM:SS,mmm or HH:MM:SS,mmm (comma or dot)
+        const parts = t.replace(',', '.').split(':').map(p => p.trim());
+        if (parts.length === 2) {
+            const m = parseFloat(parts[0] || 0);
+            const s = parseFloat(parts[1] || 0);
+            return m * 60 + s;
+        }
         const h = parseFloat(parts[0] || 0);
         const m = parseFloat(parts[1] || 0);
         const s = parseFloat(parts[2] || 0);
@@ -2417,7 +2971,13 @@ function parseSRT(srtText) {
         }
         if (!timeLine) continue;
 
-        const m = timeLine.match(/(\d{2}:\d{2}:\d{2}[.,]\d{1,3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{1,3})/);
+        // Accept:
+        // - MM:SS
+        // - MM:SS,mmm / MM:SS.mmm
+        // - HH:MM:SS
+        // - HH:MM:SS,mmm / HH:MM:SS.mmm
+        const ts = '(?:\\d{1,2}:)?\\d{2}:\\d{2}(?:[.,]\\d{1,3})?';
+        const m = timeLine.match(new RegExp(`(${ts})\\s*-->\\s*(${ts})`));
         if (!m) continue;
         const start = toSeconds(m[1]);
         const end = toSeconds(m[2]);
@@ -2427,8 +2987,33 @@ function parseSRT(srtText) {
     return cues;
 }
 
+function getUserTargetLang() {
+    const locale = (window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    if (locale.startsWith('en')) return 'en';
+    if (locale.startsWith('he')) return 'he';
+    return locale;
+}
+
+/** Enforce minimum duration per segment and no overlaps. Returns new array; does not mutate. */
+function normalizeSegmentDurations(segments, minDuration = 0.5) {
+    if (!segments || segments.length === 0) return segments;
+    const out = segments.map(s => ({
+        ...s,
+        start: s.start,
+        end: Math.max(s.end != null ? s.end : s.start + 1, s.start + minDuration)
+    }));
+    for (let i = 1; i < out.length; i++) {
+        const prevEnd = out[i - 1].end;
+        if (out[i].start < prevEnd) out[i].start = prevEnd;
+        const dur = out[i].end - out[i].start;
+        if (dur < minDuration) out[i].end = out[i].start + minDuration;
+    }
+    return out;
+}
+
 function srtFromCues(cues) {
-    return cues.map((c, i) => {
+    const normalized = normalizeSegmentDurations(cues, 0.5);
+    return normalized.map((c, i) => {
         const pad = (n) => String(Math.floor(n)).padStart(2, '0');
         const fmt = (s) => {
             const ms = Math.floor((s - Math.floor(s)) * 1000);
@@ -2445,48 +3030,124 @@ function renderTranscriptFromCues(cues) {
     window.currentSegments = cues;
     const container = document.getElementById('transcript-window');
     if (!container) return;
+    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const textDirection = isRtl ? 'rtl' : 'ltr';
+    const textAlign = isRtl ? 'right' : 'left';
     if (!cues || cues.length === 0) {
         container.innerHTML = '<p style="color:#9ca3af; text-align:center; margin-top:40px;">No subtitles loaded</p>';
         return;
     }
     const html = cues.map((c, idx) => {
-        // split into words and assign approximate per-word timings
-        const words = String(c.text || '').split(/(\s+)/).filter(Boolean);
+        // Prefer GPT text; fall back to original text if GPT returned empty.
+        const mainText = String(c.translated_text || c.text || '').trim();
+        const words = mainText.split(/(\s+)/).filter(Boolean);
         const dur = Math.max(0.001, (c.end || (c.start + 0.5)) - c.start);
         let acc = 0;
         const wordSpans = words.map((w, wi) => {
-            // treat whitespace tokens as raw text (no timing)
             if (/^\s+$/.test(w)) return w.replace(/ /g, '&nbsp;');
-            const start = c.start + (acc * dur / words.length);
-            const end = c.start + ((acc + 1) * dur / words.length);
+            const start = c.start + (acc * dur / Math.max(1, words.length));
+            const end = c.start + ((acc + 1) * dur / Math.max(1, words.length));
             acc++;
             const safe = w.replace(/</g, '&lt;').replace(/>/g, '&gt;');
             return `<span class="word-token" data-idx="${idx}" data-start="${start}" data-end="${end}">${safe}</span>`;
         }).join('');
-
         return `
-        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="margin-bottom:12px; direction: rtl; text-align: right;">
+        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="margin-bottom:12px; direction: ${textDirection}; text-align: ${textAlign};">
             <div style="font-size:0.85em; color:#6b7280; margin-bottom:4px;">[${formatTime(Math.floor(c.start))}]</div>
             <p data-idx="${idx}" style="margin:0; line-height:1.6;">${wordSpans}</p>
         </div>`;
     }).join('');
 
     container.innerHTML = html;
+    container.style.direction = textDirection;
+    container.style.textAlign = textAlign;
     container.contentEditable = 'false';
+}
+
+async function readSubtitleTextFile(file) {
+    const buf = await file.arrayBuffer();
+    let text = '';
+    try {
+        text = new TextDecoder('utf-8').decode(buf);
+    } catch (_) {
+        text = '';
+    }
+    // Many exported SRT files are UTF-16LE; detect null-byte pattern and decode accordingly.
+    if (text.includes('\u0000')) {
+        try { text = new TextDecoder('utf-16le').decode(buf); } catch (_) {}
+    }
+    return String(text || '').replace(/^\uFEFF/, '');
 }
 
 async function handleSubtitleFile(file) {
     if (!file) return;
-    const text = await file.text();
+    const text = await readSubtitleTextFile(file);
     // If VTT, strip header
     const isVtt = text.trim().startsWith('WEBVTT');
     const srtText = isVtt ? text.replace(/^WEBVTT.*\n+/,'') : text;
     
     let cues = parseSRT(srtText);
+    if (!Array.isArray(cues) || cues.length === 0) {
+        if (typeof showStatus === 'function') {
+            showStatus('No subtitle cues detected in this file. Please use a standard .srt/.vtt format.', true);
+        }
+        renderTranscriptFromCues([]);
+        return;
+    }
     
     // NEW: Pass local subtitle uploads through the Chopper too!
     if (typeof splitLongSegments === 'function') {
         cues = splitLongSegments(cues, 55);
+    }
+    console.log('[SRT] parsed cues:', cues.length, 'file:', file.name);
+    // Run correction via backend (GPT)
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const mainBtn = document.getElementById('main-btn');
+    if (mainBtn) {
+        mainBtn.disabled = true;
+        mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
+    }
+    try {
+        const userLang = getUserTargetLang();
+        const res = await fetch('/api/translate_segments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ segments: cues, targetLang: userLang })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const translatedSegments = Array.isArray(data.segments) ? data.segments : [];
+            if (translatedSegments.length) {
+                const translatedCount = translatedSegments.filter(s => String(s.translated_text || '').trim().length > 0).length;
+                const changedCount = translatedSegments.filter(s => {
+                    const t = String(s.translated_text || '').trim();
+                    const o = String(s.text || '').trim();
+                    return t.length > 0 && t !== o;
+                }).length;
+                // Use GPT output as transcript text; keep original text as fallback if GPT is empty.
+                cues = translatedSegments.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
+                console.log('[GPT] SRT translate success:', translatedCount + '/' + translatedSegments.length, 'changed:', changedCount + '/' + translatedSegments.length, 'meta:', data.meta || null);
+                const extraModel = data.meta && data.meta.model ? ` | model: ${data.meta.model}` : '';
+                const extraErr = data.meta && data.meta.first_error ? ` | err: ${data.meta.first_error}` : '';
+                console.log(`GPT debug: translated ${translatedCount}/${translatedSegments.length}, changed ${changedCount}/${translatedSegments.length}${extraModel}${extraErr}`);
+            } else {
+                const extraModel = data.meta && data.meta.model ? ` | model: ${data.meta.model}` : '';
+                const extraErr = data.meta && data.meta.first_error ? ` | err: ${data.meta.first_error}` : '';
+                console.warn('[GPT] SRT translate returned no segments. meta=', data.meta || null);
+                console.warn(`GPT debug: no translated segments returned (using original SRT)${extraModel}${extraErr}`);
+            }
+        } else {
+            console.error('[GPT] SRT translate API failed:', res.status);
+            console.error(`GPT debug: translate API failed (${res.status}) - using original SRT`);
+        }
+    } catch (e) {
+        console.warn('Translation skipped:', e);
+        console.warn(`GPT debug: translation skipped (${e && e.message ? e.message : 'unknown'}) - using original SRT`);
+    }
+    if (mainBtn) {
+        mainBtn.disabled = false;
+        mainBtn.innerText = T('upload_and_process') || 'העלה';
     }
     renderTranscriptFromCues(cues);
     
@@ -2496,7 +3157,27 @@ async function handleSubtitleFile(file) {
         if (container) container.setAttribute('contenteditable', 'false');
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
         const video = document.getElementById('main-video');
-        if (video) video.style.display = 'block';
+        const videoWrapper = document.getElementById('video-wrapper');
+        const videoSrc = document.getElementById('video-source');
+        const audioContainer = document.getElementById('audio-player-container');
+        const audioSource = document.getElementById('audio-source');
+        const mainAudio = document.getElementById('main-audio');
+        // Keep previously loaded media visible (media + SRT workflow).
+        const hasVideoLoaded = !!(
+            (video && (video.currentSrc || video.src)) ||
+            (videoSrc && (videoSrc.src || videoSrc.getAttribute('src')))
+        );
+        const hasAudioLoaded = !!(audioSource && audioSource.src);
+        if (hasVideoLoaded) {
+            if (audioContainer) audioContainer.style.display = 'none';
+            if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+            if (video) video.style.display = 'block';
+        } else if (hasAudioLoaded) {
+            if (videoWrapper) { videoWrapper.style.display = 'none'; videoWrapper.classList.remove('visible'); }
+            if (video) video.style.display = 'none';
+            if (audioContainer) audioContainer.style.display = 'block';
+            if (mainAudio) mainAudio.load();
+        }
     } catch (e) { console.warn('Subtitle load UI:', e); }
     // Also attach a VTT track to the video for live preview
     try {
@@ -2513,7 +3194,8 @@ async function handleSubtitleFile(file) {
         };
         for (const c of cues) {
             vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}`);
-            vttLines.push(c.text.replace(/<[^>]+>/g, ''));
+            const vttText = (c.translated_text && String(c.translated_text).trim()) ? c.translated_text : (c.text || '');
+            vttLines.push(String(vttText).replace(/<[^>]+>/g, ''));
             vttLines.push('');
         }
         const vttBlob = new Blob([vttLines.join('\n')], { type: 'text/vtt' });
@@ -2584,7 +3266,6 @@ async function handleSubtitleFile(file) {
     } catch (e) {
         console.warn('Failed to attach VTT track', e);
     }
-    showStatus('Subtitles loaded', false);
 }
 
 function downloadSRT() {
@@ -2714,28 +3395,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (downloadBtn) downloadBtn.addEventListener('click', () => downloadSRT());
     if (burnBtn) burnBtn.addEventListener('click', () => createBurnedInVideo());
-    
-    // Styled Subtitles button: show video player + style cards
-    const btnStyledSubtitles = document.getElementById('btn-styled-subtitles');
-    if (btnStyledSubtitles) {
-        btnStyledSubtitles.addEventListener('click', function() {
-            const audioContainer = document.getElementById('audio-player-container');
-            const videoWrapper = document.getElementById('video-wrapper');
-            if (audioContainer) audioContainer.style.display = 'none';
-            if (videoWrapper) {
-                videoWrapper.style.display = 'flex';
-                videoWrapper.classList.add('visible');
-            }
-            if (window.currentSegments && window.currentSegments.length > 0) {
-                if (typeof window.refreshVideoSubtitles === 'function') {
-                    window.refreshVideoSubtitles();
-                }
-                if (typeof window.showSubtitleStyleSelector === 'function') {
-                    window.showSubtitleStyleSelector();
-                }
-            }
-        });
-    }
     
     // Subtitle style selector event listeners
     document.addEventListener('click', function(e) {

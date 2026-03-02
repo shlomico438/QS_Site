@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="content-page personal-area-page">
+    <h1 data-i18n="personal_area_title">איזור אישי</h1>
+    <p id="personal-guest-msg" style="display: none; color: #6b7280;" data-i18n="personal_guest">התחבר כדי לראות את הקבצים שלך.</p>
+    <div id="personal-table-wrap" class="personal-table-wrap" style="display: none;">
+        <p id="personal-empty-msg" style="display: none; color: #6b7280;" data-i18n="personal_empty">אין עדיין קבצים. העלה קובץ בעמוד הבית להתחלה.</p>
+        <div id="personal-table-container" class="personal-table-container" style="display: none;">
+            <table class="personal-files-table" id="personal-files-table" role="table">
+                <thead>
+                    <tr>
+                        <th data-i18n="personal_th_name">שם</th>
+                        <th data-i18n="personal_th_uploaded">הועלה ב (תאריך)</th>
+                        <th data-i18n="personal_th_status">סטטוס</th>
+                        <th data-i18n="personal_th_actions">פעולות</th>
+                    </tr>
+                </thead>
+                <tbody id="personal-files-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -37,6 +37,12 @@
                 </p>
             </div>
         </div>
+        <div id="upload-disclaimer-modal" class="upload-disclaimer-overlay" style="display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+            <div class="upload-disclaimer-box" style="background: white; padding: 24px; border-radius: 12px; max-width: 480px; width: 90%; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 40px rgba(0,0,0,0.15); text-align: right; direction: rtl;">
+                <p id="upload-disclaimer-text" class="upload-disclaimer-text" style="margin: 0 0 20px; font-size: 0.95rem; line-height: 1.6; color: #374151; white-space: pre-line;"></p>
+                <button type="button" id="upload-disclaimer-accept" class="btn btn-primary" data-i18n="upload_disclaimer_accept" style="width: 100%; padding: 12px;">הבנתי</button>
+            </div>
+        </div>
         <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
             <audio id="main-audio" controls style="width: 100%; max-width: 100%;">
                 <source id="audio-source" src="" type="audio/mpeg">
@@ -75,7 +81,6 @@
                     <label><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
                 </div>
                 <div class="toolbar-group">
-                    <button class="btn-styled-subtitles" id="btn-styled-subtitles" data-i18n-title="style_subtitles" title="Edit and style subtitles" style="display: none;" type="button"><img src="{{ url_for('static', filename='images/styled-subtitles-btn.png') }}" alt="Style" class="btn-styled-subtitles-img"></button>
                     <div style="position: relative;">
                         <button class="btn-icon" id="btn-download" data-i18n-title="download" title="Download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>
                         <div class="dropdown-menu" id="download-menu">
@@ -128,7 +133,7 @@
                     <input type="number" id="speaker-count" value="2" min="1" max="10" class="styled-input" style="display:none; width:50px; padding: 5px;">
                 </div>
                 <input type="file" id="fileInput" hidden>
-                <button class="btn btn-primary" id="main-btn" onclick="document.getElementById('fileInput').click()" data-i18n="upload_and_process">Upload and Process</button>
+                <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">Upload and Process</button>
                 <p id="upload-status" class="upload-status" data-i18n="ready">Ready</p>
             </div>
             <div class="progress-container" id="p-container" style="display:none;">

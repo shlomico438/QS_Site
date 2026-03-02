@@ -1,5 +1,13 @@
 from gevent import monkey
 monkey.patch_all()
+
+# Load .env so GPT_API_KEY (and others) are available for simulation and translate_segments
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, join_room
 import json
@@ -26,7 +34,11 @@ from docx.oxml.ns import qn
 
 # --- CONFIGURATION ---
 # Read simulation flag from environment so someone can set it before running
-SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'false')).lower() in ('1', 'true', 'yes')
+SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'true')).lower() in ('1', 'true', 'yes')
+
+# App root (for Node translate script)
+APP_ROOT = pathlib.Path(__file__).resolve().parent
+TRANSLATE_SCRIPT = APP_ROOT / 'scripts' / 'translate.js'
 
 S3_BUCKET = os.environ.get("S3_BUCKET")
 
@@ -39,19 +51,7 @@ RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.environ.get('RUNPOD_ENDPOINT_ID')
 BUCKET_NAME = "quickscribe-v2-12345"
 
-BASE_DIR = pathlib.Path(__file__).resolve().parent
 
-ffmpeg_path = BASE_DIR / "bin" / "ffmpeg"
-ffprobe_path = BASE_DIR / "bin" / "ffprobe"
-
-# Ensure executable permissions (Windows strips them)
-os.chmod(ffmpeg_path, 0o755)
-os.chmod(ffprobe_path, 0o755)
-
-subprocess.run(
-    [str(ffmpeg_path), "-version"],
-    check=True
-)
 
 # Strict settings to keep connections alive
 socketio = SocketIO(app,
@@ -62,13 +62,28 @@ socketio = SocketIO(app,
     ping_interval=20,
     manage_session=False
 )
-print("--- STEP 11: socket io ---")
 
 # --- GLOBAL CACHE ---
 job_results_cache = {}
 
 logging.basicConfig(level=logging.INFO)
 
+if SIMULATION_MODE is False:
+    print("SIMULATION_MODE is True")
+else:
+    BASE_DIR = pathlib.Path(__file__).resolve().parent
+
+    ffmpeg_path = BASE_DIR / "bin" / "ffmpeg"
+    ffprobe_path = BASE_DIR / "bin" / "ffprobe"
+
+    # Ensure executable permissions (Windows strips them)
+    os.chmod(ffmpeg_path, 0o755)
+    os.chmod(ffprobe_path, 0o755)
+
+    subprocess.run(
+        [str(ffmpeg_path), "-version"],
+        check=True
+    )
 
 
 @app.route('/api/get_presigned_url', methods=['POST'])
@@ -147,6 +162,97 @@ def save_job_result():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/delete_job', methods=['POST'])
+def delete_job():
+    """Delete a job from the DB by id and user_id. Uses Supabase service role so delete succeeds even if RLS blocks client."""
+    try:
+        data = request.json or {}
+        job_id = data.get('jobId') or data.get('job_id')
+        user_id = data.get('userId') or data.get('user_id')
+        if not job_id or not user_id:
+            return jsonify({"error": "jobId and userId required", "deleted": False}), 400
+        supabase_url = os.environ.get('SUPABASE_URL', '').rstrip('/')
+        service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+        if not supabase_url or not service_key:
+            return jsonify({"error": "Server not configured for delete (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)", "deleted": False}), 503
+        url = f"{supabase_url}/rest/v1/jobs?id=eq.{job_id}&user_id=eq.{user_id}"
+        headers = {
+            "apikey": service_key,
+            "Authorization": f"Bearer {service_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
+        r = requests.delete(url, headers=headers, timeout=10)
+        if r.status_code in (200, 204):
+            deleted = []
+            if r.text:
+                try:
+                    deleted = r.json()
+                except Exception:
+                    pass
+            if isinstance(deleted, list) and len(deleted) > 0:
+                return jsonify({"deleted": True})
+            if r.status_code == 204:
+                return jsonify({"deleted": True})
+            return jsonify({"error": "No row deleted", "deleted": False}), 404
+        return jsonify({"error": r.text or f"HTTP {r.status_code}", "deleted": False}), r.status_code
+    except Exception as e:
+        logging.exception("delete_job failed")
+        return jsonify({"error": str(e), "deleted": False}), 500
+
+
+@app.route('/api/delete_account', methods=['POST'])
+def delete_account():
+    """Erase the current user's account: delete all their jobs, then delete the user from Auth. Requires Authorization: Bearer <access_token>."""
+    try:
+        auth_header = request.headers.get('Authorization') or ''
+        token = auth_header.replace('Bearer ', '').strip() if auth_header.startswith('Bearer ') else (request.json or {}).get('access_token', '').strip()
+        if not token:
+            return jsonify({"error": "Authorization required (Bearer token or access_token in body)"}), 401
+        supabase_url = os.environ.get('SUPABASE_URL', '').rstrip('/')
+        service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+        if not supabase_url or not service_key:
+            return jsonify({"error": "Server not configured for account deletion"}), 503
+        # Validate token and get user id
+        r_user = requests.get(
+            f"{supabase_url}/auth/v1/user",
+            headers={"Authorization": f"Bearer {token}", "apikey": service_key},
+            timeout=10
+        )
+        if r_user.status_code != 200:
+            return jsonify({"error": "Invalid or expired token"}), 401
+        try:
+            user_data = r_user.json()
+            user_id = (user_data.get('id') or user_data.get('user', {}).get('id') or '').strip()
+        except Exception:
+            return jsonify({"error": "Invalid user response"}), 401
+        if not user_id:
+            return jsonify({"error": "User id not found"}), 401
+        # Delete all jobs for this user
+        jobs_url = f"{supabase_url}/rest/v1/jobs?user_id=eq.{user_id}"
+        requests.delete(
+            jobs_url,
+            headers={
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=30
+        )
+        # Delete user from Auth (admin)
+        r_del = requests.delete(
+            f"{supabase_url}/auth/v1/admin/users/{user_id}",
+            headers={"Authorization": f"Bearer {service_key}", "apikey": service_key},
+            timeout=10
+        )
+        if r_del.status_code not in (200, 204):
+            return jsonify({"error": r_del.text or f"Failed to delete user ({r_del.status_code})"}), r_del.status_code
+        return jsonify({"deleted": True}), 200
+    except Exception as e:
+        logging.exception("delete_account failed")
+        return jsonify({"error": str(e)}), 500
+
+
 # --- MOCK ROUTE FOR LOCAL DEBUGGING ---
 @app.route('/api/mock-upload', methods=['PUT'])
 def mock_upload():
@@ -187,14 +293,14 @@ def contact():
     return render_template('contact.html')
 
 
-@app.route('/settings')
-def settings():
-    return render_template('settings.html')
-
-
 @app.route('/history')
 def history():
     return render_template('history.html')
+
+
+@app.route('/personal')
+def personal():
+    return render_template('personal.html')
 
 
 @app.route('/legal')
@@ -315,39 +421,8 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
 
 @app.route('/api/check_status/<job_id>', methods=['GET'])
 def check_job_status(job_id):
-    if SIMULATION_MODE:
-        # Return a fake completed response immediately
-        return jsonify({
-            "status": "completed",
-            "result": {
-                "segments": [
-                    {"start": 0.0, "end": 2.5, "text": "砖诇讜诐 讞讘讬讘转讬. 讗讝 讝讗转 讛住驻专讬讬讛 砖诇讱? 讻谉. 诪讛 砖诇讜诪讱? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "诪转讜住讻诇转, 讗谞讬 诇讗 诪讜爪讗转 讗转 讛住驻专 砖谞转转 诇讬 讛诪谞爪讞, 讗讬讱 讝讛 谞拽专讗? 住讜讚 讛住讬驻讜专 讛诪谞爪讞? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "讻谉, 诇讗 讞砖讜讘, 讗谞讬 讗诪爪讗 讗讜转讜, 讗谞讬 讗诪爪讗 讗讜转讜. 诇讗, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 诪诇讗. 讗讘诇 讻讘专 谞转转讬, 讗讘诇 讻讘专 谞转转讬 ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "诇讻诪讛 讗转 讛住驻专 砖诇讱 讬讜爪讗讜转 诪讙讚专谉, 讜砖诪讞讛 专讘讛. 讗讬讝讛 讻讬祝, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 讛诪讜谉 讘住驻专讬讬讛", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "砖诇讜诐 讞讘讬讘转讬. 讗讝 讝讗转 讛住驻专讬讬讛 砖诇讱? 讻谉. 诪讛 砖诇讜诪讱? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "诪转讜住讻诇转, 讗谞讬 诇讗 诪讜爪讗转 讗转 讛住驻专 砖谞转转 诇讬 讛诪谞爪讞, 讗讬讱 讝讛 谞拽专讗? 住讜讚 讛住讬驻讜专 讛诪谞爪讞? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "讻谉, 诇讗 讞砖讜讘, 讗谞讬 讗诪爪讗 讗讜转讜, 讗谞讬 讗诪爪讗 讗讜转讜. 诇讗, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 诪诇讗. 讗讘诇 讻讘专 谞转转讬, 讗讘诇 讻讘专 谞转转讬 ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "诇讻诪讛 讗转 讛住驻专 砖诇讱 讬讜爪讗讜转 诪讙讚专谉, 讜砖诪讞讛 专讘讛. 讗讬讝讛 讻讬祝, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 讛诪讜谉 讘住驻专讬讬讛", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "砖诇讜诐 讞讘讬讘转讬. 讗讝 讝讗转 讛住驻专讬讬讛 砖诇讱? 讻谉. 诪讛 砖诇讜诪讱? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "诪转讜住讻诇转, 讗谞讬 诇讗 诪讜爪讗转 讗转 讛住驻专 砖谞转转 诇讬 讛诪谞爪讞, 讗讬讱 讝讛 谞拽专讗? 住讜讚 讛住讬驻讜专 讛诪谞爪讞? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "讻谉, 诇讗 讞砖讜讘, 讗谞讬 讗诪爪讗 讗讜转讜, 讗谞讬 讗诪爪讗 讗讜转讜. 诇讗, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 诪诇讗. 讗讘诇 讻讘专 谞转转讬, 讗讘诇 讻讘专 谞转转讬 ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "诇讻诪讛 讗转 讛住驻专 砖诇讱 讬讜爪讗讜转 诪讙讚专谉, 讜砖诪讞讛 专讘讛. 讗讬讝讛 讻讬祝, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 讛诪讜谉 讘住驻专讬讬讛", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "砖诇讜诐 讞讘讬讘转讬. 讗讝 讝讗转 讛住驻专讬讬讛 砖诇讱? 讻谉. 诪讛 砖诇讜诪讱? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "诪转讜住讻诇转, 讗谞讬 诇讗 诪讜爪讗转 讗转 讛住驻专 砖谞转转 诇讬 讛诪谞爪讞, 讗讬讱 讝讛 谞拽专讗? 住讜讚 讛住讬驻讜专 讛诪谞爪讞? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "讻谉, 诇讗 讞砖讜讘, 讗谞讬 讗诪爪讗 讗讜转讜, 讗谞讬 讗诪爪讗 讗讜转讜. 诇讗, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 诪诇讗. 讗讘诇 讻讘专 谞转转讬, 讗讘诇 讻讘专 谞转转讬 ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "诇讻诪讛 讗转 讛住驻专 砖诇讱 讬讜爪讗讜转 诪讙讚专谉, 讜砖诪讞讛 专讘讛. 讗讬讝讛 讻讬祝, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 讛诪讜谉 讘住驻专讬讬讛", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "砖诇讜诐 讞讘讬讘转讬. 讗讝 讝讗转 讛住驻专讬讬讛 砖诇讱? 讻谉. 诪讛 砖诇讜诪讱? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "诪转讜住讻诇转, 讗谞讬 诇讗 诪讜爪讗转 讗转 讛住驻专 砖谞转转 诇讬 讛诪谞爪讞, 讗讬讱 讝讛 谞拽专讗? 住讜讚 讛住讬驻讜专 讛诪谞爪讞? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "讻谉, 诇讗 讞砖讜讘, 讗谞讬 讗诪爪讗 讗讜转讜, 讗谞讬 讗诪爪讗 讗讜转讜. 诇讗, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 诪诇讗. 讗讘诇 讻讘专 谞转转讬, 讗讘诇 讻讘专 谞转转讬 ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "诇讻诪讛 讗转 讛住驻专 砖诇讱 讬讜爪讗讜转 诪讙讚专谉, 讜砖诪讞讛 专讘讛. 讗讬讝讛 讻讬祝, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 讛诪讜谉 讘住驻专讬讬讛", "speaker": "SPEAKER_01"},
-                    {"start": 0.0, "end": 2.5, "text": "砖诇讜诐 讞讘讬讘转讬. 讗讝 讝讗转 讛住驻专讬讬讛 砖诇讱? 讻谉. 诪讛 砖诇讜诪讱? ", "speaker": "SPEAKER_00"},
-                    {"start": 3.0, "end": 6.0, "text": "诪转讜住讻诇转, 讗谞讬 诇讗 诪讜爪讗转 讗转 讛住驻专 砖谞转转 诇讬 讛诪谞爪讞, 讗讬讱 讝讛 谞拽专讗? 住讜讚 讛住讬驻讜专 讛诪谞爪讞? ", "speaker": "SPEAKER_01"},
-                    {"start": 7.0, "end": 10.0, "text": "讻谉, 诇讗 讞砖讜讘, 讗谞讬 讗诪爪讗 讗讜转讜, 讗谞讬 讗诪爪讗 讗讜转讜. 诇讗, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 诪诇讗. 讗讘诇 讻讘专 谞转转讬, 讗讘诇 讻讘专 谞转转讬 ", "speaker": "SPEAKER_00"},
-                    {"start": 10.5, "end": 15.0, "text": "诇讻诪讛 讗转 讛住驻专 砖诇讱 讬讜爪讗讜转 诪讙讚专谉, 讜砖诪讞讛 专讘讛. 讗讬讝讛 讻讬祝, 讗谞讬 讗讘讬讗 诇讱, 讬砖 诇讬 讛诪讜谉 讘住驻专讬讬讛", "speaker": "SPEAKER_01"}
-                ]
-            }
-        })
+    # Never return a hard-coded fake transcript here.
+    # check_status should only return actual cached result if available.
     # Check the global cache we created earlier
     if job_id in job_results_cache:
         print(f"馃攷 Client checked status for {job_id} -> Found completed result!")
@@ -357,6 +432,126 @@ def check_job_status(job_id):
     return jsonify({"status": "processing"}), 202
 
 # --- GPU FEEDBACK API ---
+# --- TRANSLATE SEGMENTS (GPT via Node script from package.json) ---
+def translate_segments(segments, target_lang='he'):
+    """Run Node translate script to add translated_text to each segment.
+    Returns (segments, meta). On failure, returns original segments + error meta.
+    """
+    if not segments or not isinstance(segments, list):
+        return segments, {"total": 0, "ok_count": 0, "empty_count": 0, "error_count": 0, "changed_count": 0, "first_error": ""}
+    if not TRANSLATE_SCRIPT.exists():
+        logging.warning("Translate script not found at %s", TRANSLATE_SCRIPT)
+        return segments, {"total": len(segments), "ok_count": 0, "empty_count": 0, "error_count": len(segments), "changed_count": 0, "first_error": "translate.js not found"}
+    api_key = os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY')
+    if not api_key or not str(api_key).strip():
+        logging.warning("GPT_API_KEY not set; skipping translation")
+        return segments, {"total": len(segments), "ok_count": 0, "empty_count": 0, "error_count": len(segments), "changed_count": 0, "first_error": "GPT_API_KEY missing"}
+    try:
+        logging.info("GPT translate: start segments=%s target=%s", len(segments), target_lang)
+        payload = json.dumps({"segments": segments, "targetLang": target_lang}).encode("utf-8")
+        proc = subprocess.run(
+            ["node", str(TRANSLATE_SCRIPT)],
+            input=payload,
+            capture_output=True,
+            timeout=300,
+            cwd=str(APP_ROOT),
+            env=os.environ.copy(),
+        )
+
+        stderr_text = (proc.stderr or b"").decode("utf-8", errors="replace")
+        if stderr_text:
+            logging.info("GPT translate stderr: %s", stderr_text[:500])
+
+        if proc.returncode != 0:
+            return segments, {
+                "total": len(segments),
+                "ok_count": 0,
+                "empty_count": 0,
+                "error_count": len(segments),
+                "changed_count": 0,
+                "first_error": f"node exit {proc.returncode}: {stderr_text[:300]}",
+                "model": "",
+            }
+
+        out_text = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+        if not out_text:
+            return segments, {
+                "total": len(segments),
+                "ok_count": 0,
+                "empty_count": 0,
+                "error_count": len(segments),
+                "changed_count": 0,
+                "first_error": "empty stdout from translate.js",
+                "model": "",
+            }
+
+        data = json.loads(out_text)
+        translated = data.get("segments", segments)
+        meta = data.get("meta") or {}
+        if not isinstance(translated, list):
+            return segments, {
+                "total": len(segments),
+                "ok_count": 0,
+                "empty_count": 0,
+                "error_count": len(segments),
+                "changed_count": 0,
+                "first_error": "translate.js returned non-list segments",
+                "model": str(meta.get("model") or ""),
+            }
+
+        result_meta = {
+            "total": int(meta.get("total") or len(translated)),
+            "ok_count": int(meta.get("ok_count") or 0),
+            "empty_count": int(meta.get("empty_count") or 0),
+            "error_count": int(meta.get("error_count") or 0),
+            "changed_count": int(meta.get("changed_count") or 0),
+            "first_error": str(meta.get("first_error") or ""),
+            "model": str(meta.get("model") or ""),
+        }
+        logging.info(
+            "GPT translate: ok=%s/%s changed=%s/%s empty=%s error=%s model=%s first_error=%s",
+            result_meta["ok_count"], result_meta["total"],
+            result_meta["changed_count"], result_meta["total"],
+            result_meta["empty_count"], result_meta["error_count"],
+            result_meta["model"], result_meta["first_error"][:180]
+        )
+        return translated, result_meta
+    except subprocess.TimeoutExpired:
+        logging.warning("Translate script timed out")
+        return segments, {
+            "total": len(segments),
+            "ok_count": 0,
+            "empty_count": 0,
+            "error_count": len(segments),
+            "changed_count": 0,
+            "first_error": "timeout",
+            "model": "",
+        }
+    except Exception as e:
+        logging.warning("Translate segments error: %s", e)
+        return segments, {
+            "total": len(segments),
+            "ok_count": 0,
+            "empty_count": 0,
+            "error_count": len(segments),
+            "changed_count": 0,
+            "first_error": str(e),
+            "model": "",
+        }
+
+
+@app.route('/api/translate_segments', methods=['POST'])
+def api_translate_segments():
+    """Accept segments JSON, run GPT correction, return segments with translated_text. Used by SRT/VTT upload and any client."""
+    data = request.json or {}
+    segments = data.get('segments') or []
+    target_lang = data.get('targetLang') or data.get('target_lang') or 'he'
+    if not isinstance(segments, list):
+        return jsonify({"error": "segments must be an array"}), 400
+    translated, meta = translate_segments(segments, target_lang=target_lang)
+    return jsonify({"segments": translated, "meta": meta})
+
+
 # --- 1. Add Global Cache at the top ---
 job_results_cache = {}
 
@@ -364,8 +559,19 @@ job_results_cache = {}
 # Inside siteapp.py -> gpu_callback
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
-    data = request.json
+    data = request.json or {}
     job_id = data.get('jobId')
+    result = data.get('result') or {}
+    segments = result.get('segments') or []
+
+    # Post-process: add correction via GPT (Node script)
+    if segments:
+        callback_lang = data.get('language') or (data.get('input') or {}).get('language') or 'he'
+        segments, tmeta = translate_segments(segments, target_lang=callback_lang)
+        data = dict(data)
+        data['result'] = dict(result)
+        data['result']['segments'] = segments
+        data['result']['translation_meta'] = tmeta
 
     # Store in cache for persistence
     job_results_cache[job_id] = data
@@ -399,28 +605,12 @@ def simulate_completion(jid, run_diarization):
     time.sleep(1)
     segments = []
 
-    # Use a real transcript snippet for the simulation
+    # Simulation sample text (kept generic; old fixed Hebrew snippet removed)
     transcript_text = [
-        "כזה של אהבה וענווה, המון ענווה, המון תחושה שהן...",
-        "אבל ראית כמה שונות אחת מהשנייה?",
-        "ראית גם את השוני?",
-        "שונות ואוהבות, ראיתי שונות ואוהבות."
-        "כזה של אהבה וענווה, המון ענווה, המון תחושה שהן...",
-        "אבל ראית כמה שונות אחת מהשנייה?",
-        "ראית גם את השוני?",
-        "שונות ואוהבות, ראיתי שונות ואוהבות."
-        "כזה של אהבה וענווה, המון ענווה, המון תחושה שהן...",
-        "אבל ראית כמה שונות אחת מהשנייה?",
-        "ראית גם את השוני?",
-        "שונות ואוהבות, ראיתי שונות ואוהבות."
-        "כזה של אהבה וענווה, המון ענווה, המון תחושה שהן...",
-        "אבל ראית כמה שונות אחת מהשנייה?",
-        "ראית גם את השוני?",
-        "שונות ואוהבות, ראיתי שונות ואוהבות."
-        "כזה של אהבה וענווה, המון ענווה, המון תחושה שהן...",
-        "אבל ראית כמה שונות אחת מהשנייה?",
-        "ראית גם את השוני?",
-        "שונות ואוהבות, ראיתי שונות ואוהבות."
+        "Simulation segment one.",
+        "Simulation segment two.",
+        "Simulation segment three.",
+        "Simulation segment four."
     ]
 
     for i, text in enumerate(transcript_text):
@@ -438,10 +628,13 @@ def simulate_completion(jid, run_diarization):
 
         segments.append(segment)
 
+    # Post-process: add correction via GPT (Node script)
+    segments, tmeta = translate_segments(segments, target_lang='he')
+
     mock_data = {
         "jobId": jid,
         "status": "completed",
-        "result": {"segments": segments}
+        "result": {"segments": segments, "translation_meta": tmeta}
     }
 
     global job_results_cache
@@ -552,26 +745,36 @@ def trigger_status():
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
     try:
-        if SIMULATION_MODE:
-            print("🔮 SIMULATION: Skipping RunPod Trigger")
-            return jsonify({"status": "started", "runpod_id": "sim_id_123"})
-
-        data = request.json
+        data = request.json if request.is_json else {}
+        if not data:
+            data = {}
         print(f"📩 Received Trigger Request: {data}")
 
-        endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
-        api_key = os.environ.get('RUNPOD_API_KEY')
-
-        print(f"🔑 checking keys... Endpoint ID exists? {bool(endpoint_id)} | API Key exists? {bool(api_key)}")
-
-        if not endpoint_id or not api_key:
-            return jsonify({"status": "error", "message": "RunPod Env Vars missing on server"}), 500
+        if SIMULATION_MODE:
+            print("🔮 SIMULATION: Skipping RunPod Trigger")
+            return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
 
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
+        if not s3_key or not job_id:
+            return jsonify({"status": "error", "message": "s3Key and jobId required"}), 400
+
+        endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
+        api_key = os.environ.get('RUNPOD_API_KEY')
+        print(f"🔑 checking keys... Endpoint ID exists? {bool(endpoint_id)} | API Key exists? {bool(api_key)}")
+
         task = data.get('task', 'transcribe')
         language = data.get('language', 'he')
         diarization = data.get('diarization', False)
+
+        if not endpoint_id or not api_key:
+            print("🔮 RunPod not configured: falling back to simulation (mock result in ~1s)")
+            # Only start simulation here when not in SIMULATION_MODE (sign-s3 already starts it when SIMULATION_MODE)
+            if not SIMULATION_MODE:
+                t = threading.Thread(target=simulate_completion, args=(job_id, diarization))
+                t.daemon = True
+                t.start()
+            return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
 
         try:
             speaker_count = int(data.get('speakerCount', 2))
@@ -691,10 +894,25 @@ def _build_ass(segments, style='tiktok'):
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     ]
+    # TikTok bold: wrap to 2 lines at 28 chars per line; ASS newline is \N
+    max_chars_per_line = 28 if style == 'tiktok' else 9999
     for seg in segments:
         start = seg.get('start', 0)
         end = seg.get('end', start + 1)
         text = (seg.get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+        if style == 'tiktok' and len(text) > max_chars_per_line:
+            parts = []
+            rest = text
+            while rest:
+                if len(rest) <= max_chars_per_line:
+                    parts.append(rest.strip())
+                    break
+                chunk = rest[: max_chars_per_line + 1]
+                last_space = chunk.rfind(' ')
+                split_at = last_space if last_space > 0 else max_chars_per_line
+                parts.append(rest[:split_at].strip())
+                rest = rest[split_at:].lstrip()
+            text = '\\N'.join(parts)
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 

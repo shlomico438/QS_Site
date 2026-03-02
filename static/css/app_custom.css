@@ -7,6 +7,68 @@ main.main-content {
     overflow: hidden !important;
     padding: 0 !important;
 }
+/* Personal area: allow main to scroll so user can see all files */
+main.main-content:has(.personal-area-page) {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+
+/* Global confirm dialog: always a fixed centered popup (e.g. erase account) on any page */
+#global-confirm-overlay {
+    position: fixed !important;
+    inset: 0 !important;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.5);
+    backdrop-filter: blur(6px);
+    z-index: 10000 !important;
+}
+#global-confirm-overlay.is-open {
+    display: flex !important;
+}
+#global-confirm-overlay .personal-dialog {
+    background: #fff;
+    padding: 24px;
+    border-radius: 20px;
+    width: min(420px, 92vw);
+    box-shadow: 0 20px 48px rgba(15, 23, 42, 0.2);
+    animation: globalDialogIn 160ms ease;
+}
+@keyframes globalDialogIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+}
+#global-confirm-overlay .personal-dialog-message {
+    margin: 0 0 20px 0;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: #0f172a;
+}
+#global-confirm-overlay .personal-dialog-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+#global-confirm-overlay .personal-dialog-btn {
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+}
+#global-confirm-overlay .personal-dialog-btn.cancel {
+    background: #f1f5f9;
+    color: #475569;
+}
+#global-confirm-overlay .personal-dialog-btn.primary.danger {
+    background: #dc2626;
+    color: #fff;
+}
+#global-confirm-overlay .personal-dialog-btn.primary.danger:hover {
+    background: #b91c1c;
+}
 
 .app-mode {
     flex: 1;
@@ -805,4 +867,231 @@ html[dir="rtl"] .upload-status {
         background-color: #f0f7ff !important;
         border-left: 4px solid #1e3a8a !important;
     }
+}
+:root {
+    --bg-page: #f8fafc;
+    --bg-surface: #ffffff;
+    --bg-surface-soft: #f9fafb;
+    --bg-hover: #f3f4f6;
+  
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+  
+    --border-soft: #e2e8f0;
+    --border-subtle: #f1f5f9;
+  
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 8px 24px rgba(15,23,42,0.08);
+    --shadow-lg: 0 20px 48px rgba(15,23,42,0.16);
+  
+    --radius-sm: 8px;
+    --radius-md: 14px;
+    --radius-lg: 20px;
+  
+    --transition-fast: 120ms ease;
+    --transition-base: 180ms ease;
+  }
+  .personal-area-page {
+    padding: 32px 20px;
+    max-width: 1100px;
+    margin-inline: auto;
+    background: var(--bg-page);
+  }
+  
+  .personal-area-page h1 {
+    font-size: 1.75rem;
+    font-weight: 650;
+    color: var(--text-primary);
+    margin-bottom: 24px;
+    letter-spacing: -0.02em;
+  }
+  .personal-table-container {
+    max-height: calc(100vh - 240px);
+    overflow: auto;
+    background: var(--bg-surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+  }
+  .personal-files-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.95rem;
+  }
+  
+  .personal-files-table th,
+  .personal-files-table td {
+    padding: 14px 18px;
+    text-align: start;
+  }
+  
+  .personal-files-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .personal-files-table tbody tr {
+    transition: background var(--transition-fast);
+  }
+  
+  .personal-files-table tbody tr:not(:last-child) td {
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  
+  .personal-files-table tbody tr:hover {
+    background: var(--bg-hover);
+  }
+  .personal-dropdown-btn {
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: var(--bg-surface-soft);
+    border: 1px solid var(--border-soft);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+  
+  .personal-dropdown-btn:hover {
+    background: var(--bg-hover);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+  }
+  
+    /* Smooth Slide-down animation */
+    @keyframes dropdownSlide {
+        from { opacity: 0; transform: translateY(-5px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    .personal-dropdown-menu {
+        position: absolute;
+        top: calc(100% + 8px);
+        inset-inline-end: 0;   /* RTL safe */
+      
+        min-width: 220px;
+        padding: 8px;
+      
+        background: #ffffff;
+        border-radius: 18px;
+      
+        box-shadow:
+          0 10px 30px rgba(0, 0, 0, 0.12);
+      
+        opacity: 0;
+        transform: translateY(-6px) scale(0.98);
+        pointer-events: none;
+      
+        transition: all 160ms cubic-bezier(.2,.8,.2,1);
+      
+        z-index: 999;
+      }
+    
+
+    .personal-dropdown-menu.open {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        pointer-events: auto;
+      }
+
+ /* The items inside the list */
+ .personal-dropdown-menu button {
+    display: block;
+    width: 100%;
+  
+    padding: 10px 14px;
+    border: none;
+    background: transparent;
+  
+    border-radius: 12px;
+  
+    font-size: 0.9rem;
+    font-weight: 500;
+  
+    text-align: start;
+    color: #334155;
+  
+    cursor: pointer;
+    transition: background 120ms ease, transform 120ms ease;
+  }
+  
+    /* Edge-to-edge hover effect */
+    .personal-dropdown-menu button:hover {
+        background: #f1f5f9;
+        transform: translateX(3px);
+    }
+
+    .personal-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(6px);
+  }
+  .personal-dialog {
+    background: var(--bg-surface);
+    padding: 24px;
+    border-radius: var(--radius-lg);
+    width: min(420px, 92%);
+    box-shadow: var(--shadow-lg);
+    animation: dialogIn 160ms ease;
+  }
+  @keyframes dialogIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .personal-dialog-btn {
+    padding: 8px 16px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: transform var(--transition-fast);
+  }
+  
+  .personal-dialog-btn:hover {
+    transform: translateY(-1px);
+  }
+  .personal-dialog-btn.primary {
+    background: #2563eb;
+    color: white;
+  }
+  .personal-dropdown-menu button.danger {
+    color: #dc2626;
+  }
+  
+  .personal-dropdown-menu button.danger:hover {
+    background: rgba(220,38,38,0.08);
+  }
+  .
+  .personal-dropdown-menu {
+    backdrop-filter: blur(10px);
+  }
+
+  .personal-dialog-btn.danger {
+    background: #dc2626;
+    color: white;
+  }
+  
+  .personal-dialog-btn.cancel {
+    background: var(--bg-surface-soft);
+    color: var(--text-secondary);
+  }
+  .personal-row-actions {
+    position: relative;
+    display: inline-block;
+  }
+ }
+
+[dir="ltr"] .upload-disclaimer-box {
+    text-align: left;
+    direction: ltr;
 }
