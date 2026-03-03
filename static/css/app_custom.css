@@ -734,6 +734,26 @@ html[dir="rtl"] .upload-status {
 /* --- MOBILE RESPONSIVENESS --- */
 @media (max-width: 768px) {
 
+    /* Keep CTA visible on mobile: compact SEO text block */
+    .seo-home-content {
+        max-height: 170px;
+        overflow-y: auto;
+        margin-bottom: 8px;
+        padding: 12px;
+    }
+    .seo-home-content h1 {
+        font-size: 1.35rem;
+        line-height: 1.25;
+        margin-bottom: 6px;
+    }
+    .seo-home-content .seo-hero-subtitle {
+        font-size: 0.9rem;
+        margin-bottom: 0;
+    }
+    .seo-home-content section {
+        display: none;
+    }
+
     /* Upload row: keep one row, compact — more space for transcript */
     .upload-controls-row {
         gap: 8px;
