@@ -828,19 +828,26 @@ html[dir="rtl"] .upload-status {
     /* Mobile transcript toolbar: no horizontal scrolling, compact layout */
     .controls-bar {
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
         align-items: center;
         gap: 8px 10px;
         justify-content: stretch;
+        width: 100%;
+        max-width: 100%;
         overflow-x: hidden;
+        overflow-x: clip;
+        box-sizing: border-box;
+        touch-action: pan-y;
     }
     .toggles-group {
         flex-direction: column;
         align-items: flex-start;
         justify-content: center;
         gap: 6px;
-        width: auto;
+        width: 100%;
+        max-width: 100%;
         margin: 0;
+        min-width: 0;
     }
     .toggles-group label {
         font-size: 0.78rem;
@@ -853,6 +860,13 @@ html[dir="rtl"] .upload-status {
         gap: 8px;
         min-width: 0;
         flex-wrap: wrap;
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden;
+        overflow-x: clip;
+    }
+    .toolbar-group > * {
+        flex: 0 0 auto;
     }
     .toolbar-group .btn-icon {
         width: 34px;
@@ -901,6 +915,7 @@ html[dir="rtl"] .upload-status {
     #transcript-window {
         height: auto !important;
         max-height: none !important; /* Let the wrapper handle the height */
+        overflow-x: hidden !important;
     }
 
     /* 5. FIXED BOTTOM CONTROLS (Upload Zone) */

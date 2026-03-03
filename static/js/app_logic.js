@@ -1445,8 +1445,8 @@ window.downloadFile = async function(type, bypassUser = null) {
         const durationSec = (video.duration && Number.isFinite(video.duration)) ? video.duration : 0;
         const widthPx = (video.videoWidth && video.videoWidth > 0) ? video.videoWidth : 0;
         console.log('[movie export] Video OK – duration', durationSec, 's, width', widthPx);
-        const limitMsg = typeof window.t === 'function' ? window.t('burn_limits_msg') : "The current system supports files under 10 minutes and 1080p resolution for this feature.";
-        if (durationSec > 600 || (widthPx > 0 && widthPx > 1080)) {
+        const limitMsg = typeof window.t === 'function' ? window.t('burn_limits_msg') : "Movie creation is limited to short videos up to 10 minutes.";
+        if (durationSec > 600) {
             console.log('[movie export] Over limits – abort');
             if (typeof showGlobalAlert === 'function') await showGlobalAlert(limitMsg);
             return;
@@ -1986,12 +1986,14 @@ function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const copyBtn = document.getElementById('btn-copy') || document.querySelector('.toolbar-group button[onclick="window.copyTranscript()"]');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
+    const togglesGroup = document.querySelector('.controls-bar .toggles-group');
     const editActions = document.getElementById('edit-actions');
     const downloadMenu = document.getElementById('download-menu');
 
     [downloadBtn, copyBtn, editBtn].forEach((el) => {
         if (el) el.style.display = visible ? '' : 'none';
     });
+    if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
     if (!visible) {
         if (editActions) editActions.style.display = 'none';
         if (downloadMenu) downloadMenu.style.display = 'none';
@@ -3015,7 +3017,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const pContainer = document.getElementById('p-container');
             if (pContainer) { pContainer.style.display = "block"; }
             if (progressBar) { progressBar.style.width = "0%"; }
-            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = (typeof window.t === 'function' ? window.t('processing') : "Processing..."); }
+            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = (typeof window.t === 'function' ? window.t('uploading') : "Uploading..."); }
             if (statusTxt) { statusTxt.innerText = (typeof window.t === 'function' ? window.t('uploading') : "Uploading..."); statusTxt.style.display = "block"; }
             setTranscriptActionButtonsVisible(false);
             var placeholderEl = document.getElementById('placeholder');

@@ -26,7 +26,12 @@ function getApiKey() {
 
 function getModel() {
   // Higher-quality default for transcript correction; override with GPT_MODEL if needed.
-  return (process.env.GPT_MODEL || 'gpt-4.1').trim();
+  return (process.env.GPT_MODEL || 'gpt-5').trim();
+}
+
+function getFallbackModel(primaryModel) {
+  const fallback = (process.env.GPT_FALLBACK_MODEL || 'gpt-4o').trim();
+  return fallback && fallback !== primaryModel ? fallback : '';
 }
 
 function sanitizeJsonText(raw) {
@@ -56,7 +61,14 @@ async function callOpenAIChat(apiKey, model, messages) {
     });
     const raw = await response.text();
     if (!response.ok) {
-      throw new Error(`OpenAI API ${response.status}: ${preview(raw)}`);
+      const errMsg = `OpenAI API ${response.status}: ${preview(raw)}`;
+      const fallbackModel = getFallbackModel(model);
+      const modelError = /model|not found|does not exist|unsupported|access|permission/i.test(raw || '');
+      if (fallbackModel && (response.status === 400 || response.status === 404 || response.status === 403 || modelError)) {
+        debugLog(`primary model failed (${model}), retrying with fallback (${fallbackModel})`);
+        return callOpenAIChat(apiKey, fallbackModel, messages);
+      }
+      throw new Error(errMsg);
     }
     debugLog('response chars:', raw.length);
     return JSON.parse(raw);

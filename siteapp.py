@@ -435,7 +435,8 @@ def check_job_status(job_id):
 def _translate_segments_via_python_openai(segments, target_lang='he'):
     """Fallback path when Node.js is unavailable: call OpenAI directly from Python."""
     api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
-    model = (os.environ.get('GPT_MODEL') or 'gpt-4.1').strip()
+    model = (os.environ.get('GPT_MODEL') or 'gpt-5').strip()
+    fallback_model = (os.environ.get('GPT_FALLBACK_MODEL') or 'gpt-4o').strip()
     chunk_size = int(os.environ.get('GPT_CHUNK_SIZE', '30') or 30)
     timeout_sec = int(os.environ.get('GPT_TIMEOUT_SEC', '90') or 90)
 
@@ -445,6 +446,7 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
     error_count = 0
     changed_count = 0
     first_error = ''
+    model_used = model
 
     def _extract_json_text(s):
         t = str(s or '').strip()
@@ -469,16 +471,16 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
             "Fix the text values and return the exact same JSON structure with same ids.\n\n"
             f"{json.dumps(batch_input, ensure_ascii=False)}"
         )
-        payload = {
-            "model": model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-        try:
+        def _request_with_model(model_name):
+            payload = {
+                "model": model_name,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            }
             resp = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
@@ -492,16 +494,48 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
             data = resp.json()
             content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
             parsed = json.loads(_extract_json_text(content))
-            results = parsed.get("results") if isinstance(parsed, dict) else None
-            if not isinstance(results, list):
+            results_local = parsed.get("results") if isinstance(parsed, dict) else None
+            if not isinstance(results_local, list):
                 raise ValueError("OpenAI returned no results array")
+            return results_local
+
+        try:
+            results = _request_with_model(model)
+            model_used = model
         except Exception as e:
-            if not first_error:
-                first_error = str(e)
-            error_count += len(items)
-            for seg in items:
-                out.append({**seg, "translated_text": "", "translation_status": "error"})
-            return
+            err_text = str(e)
+            should_try_fallback = (
+                fallback_model
+                and fallback_model != model
+                and (
+                    "404" in err_text
+                    or "403" in err_text
+                    or "model" in err_text.lower()
+                    or "unsupported" in err_text.lower()
+                    or "not found" in err_text.lower()
+                    or "does not exist" in err_text.lower()
+                    or "permission" in err_text.lower()
+                )
+            )
+            if should_try_fallback:
+                try:
+                    logging.warning("Primary GPT model failed (%s). Retrying with fallback (%s).", model, fallback_model)
+                    results = _request_with_model(fallback_model)
+                    model_used = fallback_model
+                except Exception as e2:
+                    if not first_error:
+                        first_error = str(e2)
+                    error_count += len(items)
+                    for seg in items:
+                        out.append({**seg, "translated_text": "", "translation_status": "error"})
+                    return
+            else:
+                if not first_error:
+                    first_error = str(e)
+                error_count += len(items)
+                for seg in items:
+                    out.append({**seg, "translated_text": "", "translation_status": "error"})
+                return
 
         for i, seg in enumerate(items):
             corrected = next((r for r in results if isinstance(r, dict) and r.get("id") == i), None)
@@ -526,7 +560,7 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
         "error_count": error_count,
         "changed_count": changed_count,
         "first_error": first_error,
-        "model": model,
+        "model": model_used,
     }
 
 
