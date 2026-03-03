@@ -639,28 +639,28 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 /* Single row: [Detect Speakers] [Upload and Process] [Status] — more space for transcript */
 .upload-controls-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
-    flex-wrap: wrap;
     margin-bottom: 10px;
     direction: rtl;
+    width: 100%;
 }
 .upload-control-left {
-    flex: 0 0 auto;
+    justify-self: start;
     min-width: 0;
 }
 .upload-controls-row .btn.btn-primary {
-    flex: 0 0 auto;
+    justify-self: center;
 }
 .upload-status {
-    flex: 0 0 auto;
+    justify-self: end;
     margin: 0;
     font-size: 0.9rem;
     color: #666;
     min-width: 0;
-    text-align: left;
+    text-align: end;
     direction: ltr;
 }
 html[dir="rtl"] .upload-status {
@@ -752,6 +752,7 @@ html[dir="rtl"] .upload-status {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        justify-self: end;
     }
 
     /* 1. Stack the controls vertically (legacy controls-row) */
