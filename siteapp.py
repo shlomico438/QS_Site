@@ -490,7 +490,12 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
                 json=payload,
                 timeout=timeout_sec,
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Keep response body in the error to understand model/endpoint incompatibilities.
+                body_preview = (resp.text or "").strip()
+                if len(body_preview) > 700:
+                    body_preview = body_preview[:700] + "...[truncated]"
+                raise RuntimeError(f"OpenAI API {resp.status_code}: {body_preview}")
             data = resp.json()
             content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
             parsed = json.loads(_extract_json_text(content))
@@ -508,7 +513,8 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
                 fallback_model
                 and fallback_model != model
                 and (
-                    "404" in err_text
+                    "400" in err_text
+                    or "404" in err_text
                     or "403" in err_text
                     or "model" in err_text.lower()
                     or "unsupported" in err_text.lower()
