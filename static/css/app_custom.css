@@ -12,6 +12,61 @@ main.main-content:has(.personal-area-page) {
     overflow-y: auto !important;
     overflow-x: hidden !important;
 }
+/* Blog page: allow vertical scrolling for long posts */
+main.main-content:has(.blog-page) {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+
+/* Initial homepage SEO content (visible before upload starts) */
+.seo-home-content {
+    max-width: 900px;
+    margin: 0 auto 18px;
+    padding: 16px 18px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+}
+.seo-home-content h1 {
+    margin: 0 0 10px;
+    font-size: 1.8rem;
+    line-height: 1.35;
+    color: #4f46e5; /* Fallback if gradient text clipping is unsupported */
+    background: linear-gradient(90deg, #3b82f6 0%, #7c3aed 55%, #ec4899 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.seo-home-content .seo-hero-subtitle {
+    margin: 0 0 16px;
+    color: #4b5563;
+    font-size: 1rem;
+}
+.seo-home-content section {
+    margin-top: 14px;
+}
+.seo-home-content h2 {
+    margin: 0 0 6px;
+    font-size: 1.1rem;
+    color: #1f2937;
+}
+.seo-home-content p {
+    margin: 0;
+    color: #374151;
+    line-height: 1.65;
+}
+.seo-home-content details {
+    margin-top: 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: #f9fafb;
+}
+.seo-home-content summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #111827;
+}
 
 /* Global confirm dialog: always a fixed centered popup (e.g. erase account) on any page */
 #global-confirm-overlay {
@@ -68,6 +123,43 @@ main.main-content:has(.personal-area-page) {
 }
 #global-confirm-overlay .personal-dialog-btn.primary.danger:hover {
     background: #b91c1c;
+}
+
+/* Burn video progress overlay */
+#burn-progress-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.3);
+    z-index: 11000;
+}
+.burn-progress-card {
+    width: min(520px, 92vw);
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 20px 48px rgba(15, 23, 42, 0.2);
+    padding: 16px 18px;
+}
+.burn-progress-text {
+    font-size: 0.95rem;
+    color: #111827;
+    margin-bottom: 10px;
+}
+.burn-progress-track {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    background: #e5e7eb;
+    overflow: hidden;
+}
+.burn-progress-fill {
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #2563eb, #60a5fa);
+    transition: width 300ms ease;
 }
 
 .app-mode {
@@ -905,6 +997,34 @@ html[dir="rtl"] .upload-status {
     margin-bottom: 24px;
     letter-spacing: -0.02em;
   }
+  .personal-area-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .personal-area-header-row h1 {
+    margin-bottom: 0;
+  }
+  .personal-close-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border-soft);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+  }
+  .personal-close-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
   .personal-table-container {
     max-height: calc(100vh - 240px);
     overflow: auto;
@@ -1071,7 +1191,6 @@ html[dir="rtl"] .upload-status {
   .personal-dropdown-menu button.danger:hover {
     background: rgba(220,38,38,0.08);
   }
-  .
   .personal-dropdown-menu {
     backdrop-filter: blur(10px);
   }

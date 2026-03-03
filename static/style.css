@@ -211,6 +211,21 @@ html, body {
     font-size: 0.95rem;
     color: #111827;
 }
+.user-menu-close-btn {
+    border: none;
+    background: transparent;
+    color: #6b7280;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.user-menu-close-btn:hover {
+    background: #f3f4f6;
+    color: #111827;
+}
 .user-menu-settings-link {
     display: flex;
     align-items: center;

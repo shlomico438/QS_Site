@@ -931,21 +931,54 @@ BURN_MAX_WIDTH = 1080
 burn_tasks = {}  # task_id -> { status, output_s3_key?, error? }
 
 def _resolve_ffmpeg():
-    """Return path to ffmpeg: env FFMPEG_PATH, then project bin/, then PATH, then common paths."""
+    """Return an executable ffmpeg path.
+    Order: env FFMPEG_PATH, PATH, project bin/, common system path.
+    If a local binary exists but lacks execute bits, try chmod on non-Windows.
+    """
+    def _ensure_exec(path):
+        if not path or not os.path.isfile(path):
+            return None
+        if sys.platform == 'win32':
+            return path
+        if os.access(path, os.X_OK):
+            return path
+        try:
+            os.chmod(path, 0o755)
+            if os.access(path, os.X_OK):
+                return path
+        except Exception:
+            pass
+        return None
+
+    def _can_run(path):
+        """Verify binary can execute in this environment (avoids noexec mounts)."""
+        if not path:
+            return False
+        try:
+            result = subprocess.run([path, '-version'], capture_output=True, text=True, timeout=10)
+            return result.returncode == 0
+        except Exception:
+            return False
+
     path = os.environ.get('FFMPEG_PATH', '').strip()
-    if path and os.path.isfile(path):
-        return path
-    if shutil.which('ffmpeg'):
-        return shutil.which('ffmpeg')
+    env_exec = _ensure_exec(path)
+    if env_exec and _can_run(env_exec):
+        return env_exec
+
+    which_ffmpeg = shutil.which('ffmpeg')
+    if which_ffmpeg and _can_run(which_ffmpeg):
+        return which_ffmpeg
     # Project bin folder (e.g. QuickScribe/Site/bin/)
     app_dir = os.path.dirname(os.path.abspath(__file__))
     bin_dir = os.path.join(app_dir, 'bin')
     for name in ('ffmpeg', 'ffmpeg.exe'):
         candidate = os.path.join(bin_dir, name)
-        if os.path.isfile(candidate):
-            return candidate
-    if sys.platform != 'win32' and os.path.isfile('/usr/bin/ffmpeg'):
-        return '/usr/bin/ffmpeg'
+        candidate_exec = _ensure_exec(candidate)
+        if candidate_exec and _can_run(candidate_exec):
+            return candidate_exec
+    sys_ffmpeg = _ensure_exec('/usr/bin/ffmpeg') if sys.platform != 'win32' else None
+    if sys_ffmpeg and _can_run(sys_ffmpeg):
+        return sys_ffmpeg
     return 'ffmpeg'
 
 def _probe_video_with_ffmpeg(ffmpeg_path, video_path):

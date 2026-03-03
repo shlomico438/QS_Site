@@ -7,9 +7,9 @@
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333; }
         .legal-container { max-width: 900px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .tabs { margin-bottom: 30px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        .tab-btn { padding: 10px 20px; cursor: pointer; border: none; background: #5d5dff; color: white; border-radius: 4px; font-weight: bold; margin-left: 10px; }
-        .tab-btn.secondary { background: #e0e0e0; color: #333; }
+        .top-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .back-btn { padding: 10px 16px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #111827; text-decoration: none; font-weight: 600; display: inline-block; }
+        .back-btn:hover { background: #f3f4f6; }
         h1 { color: #1e3a8a; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
         h2 { color: #2563eb; margin-top: 30px; }
         h3 { color: #374151; margin-top: 20px; }
@@ -25,9 +25,8 @@
 <body>
 
 <div class="legal-container">
-    <div class="tabs">
-        <button class="tab-btn" onclick="showDoc('he')">עברית</button>
-        <button class="tab-btn secondary" id="btn-en" onclick="showDoc('en')">English</button>
+    <div class="top-actions">
+        <a href="/" class="back-btn" id="back-home-link">חזרה לעמוד הראשי</a>
     </div>
 
     <div id="doc-he" class="document active">
@@ -98,11 +97,26 @@
         if (lang === 'he') {
             document.getElementById('doc-he').classList.add('active');
             document.body.dir = 'rtl';
+            document.documentElement.lang = 'he';
+            var back = document.getElementById('back-home-link');
+            if (back) back.textContent = 'חזרה לעמוד הראשי';
         } else {
             document.getElementById('doc-en').classList.add('active');
             document.body.dir = 'ltr';
+            document.documentElement.lang = 'en';
+            var backEn = document.getElementById('back-home-link');
+            if (backEn) backEn.textContent = 'Back to Home';
         }
     }
+
+    // Auto-select language from globe preference (saved in localStorage by the app)
+    (function initLegalLanguage() {
+        var preferred = 'he';
+        try {
+            preferred = (localStorage.getItem('locale') || 'he').toLowerCase();
+        } catch (_) {}
+        showDoc(preferred.startsWith('en') ? 'en' : 'he');
+    })();
 </script>
 
 </body>

@@ -8,6 +8,65 @@
 
 <div class="app-mode">
     <div class="main-app-container">
+        <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content">
+            <h1>
+                <span class="seo-he">תמלול אוטומטי בעברית ויצירת כתוביות לסרטונים</span>
+                <span class="seo-en">AI Transcription &amp; Automatic Subtitle Generator</span>
+            </h1>
+            <p class="seo-hero-subtitle">
+                <span class="seo-he">העלו קובץ וידאו או אודיו וקבלו תמלול מדויק וכתוביות SRT תוך דקות.</span>
+                <span class="seo-en">Upload a video or audio file and get accurate transcription and SRT subtitles in minutes.</span>
+            </p>
+
+            <section>
+                <h2>
+                    <span class="seo-he">תמלול הרצאות ושיעורים מוקלטים לסטודנטים</span>
+                    <span class="seo-en">Lecture Transcription for Students</span>
+                </h2>
+                <p>
+                    <span class="seo-he">QuickScribe מתאים לסטודנטים שצריכים <strong>תמלול הרצאות</strong>, <strong>תמלול זום</strong>, <strong>סיכום הרצאה</strong> ו<strong>תמלול בעברית</strong> במהירות ודיוק גבוה.</span>
+                    <span class="seo-en">QuickScribe helps students convert lectures, Zoom classes, and recorded lessons into clear text for faster review and study summaries.</span>
+                </p>
+            </section>
+
+            <section>
+                <h2>
+                    <span class="seo-he">יצירת כתוביות אוטומטיות ליוטיוב ולרשתות חברתיות</span>
+                    <span class="seo-en">Automatic Subtitles for YouTube and Social Media</span>
+                </h2>
+                <p>
+                    <span class="seo-he">ליוצרי תוכן: <strong>כתוביות ליוטיוב</strong>, <strong>יצירת קובץ SRT</strong>, <strong>תמלול לפודקאסט</strong>, <strong>המרת וידאו לטקסט</strong> וגם <strong>צריבת כתוביות ישירות לתוך קבצי וידאו</strong> בזרימת עבודה אחת.</span>
+                    <span class="seo-en">For creators: generate YouTube subtitles, export SRT files, transcribe podcasts, and convert video to text in one workflow.</span>
+                </p>
+            </section>
+
+            <section>
+                <h2>
+                    <span class="seo-he">חינמי בשלב ה בטא - ללא התחייבות וללא כרטיס אשראי</span>
+                    <span class="seo-en">Free for 3 Months — No Commitment, No Credit Card</span>
+                </h2>
+            </section>
+
+            <section>
+                <h2>FAQ</h2>
+                <details>
+                    <summary><span class="seo-he">איך מבצעים תמלול אוטומטי?</span><span class="seo-en">How does automatic transcription work?</span></summary>
+                    <p class="seo-he">מעלים קובץ וידאו או אודיו, והמערכת מפיקה תמלול וכתוביות אוטומטית לעריכה והורדה.</p>
+                    <p class="seo-en">Upload a video or audio file, and the system generates editable transcription and subtitles automatically.</p>
+                </details>
+                <details>
+                    <summary><span class="seo-he">האם ניתן להוריד קובץ SRT?</span><span class="seo-en">Can I download an SRT file?</span></summary>
+                    <p class="seo-he">כן. ניתן לייצא כתוביות בפורמט SRT ולהשתמש בהן ביוטיוב, ברשתות חברתיות ובפלטפורמות נוספות.</p>
+                    <p class="seo-en">Yes. You can export subtitles as SRT and use them on YouTube, social platforms, and more.</p>
+                </details>
+                <details>
+                    <summary><span class="seo-he">האם זה מתאים לסטודנטים?</span><span class="seo-en">Is it suitable for students?</span></summary>
+                    <p class="seo-he">בהחלט. הכלי נבנה כדי לחסוך זמן בתמלול שיעורים, הרצאות ומפגשי זום.</p>
+                    <p class="seo-en">Absolutely. It is built to save time on lecture, class, and Zoom transcription.</p>
+                </details>
+            </section>
+        </section>
+
          <div id="auth-modal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center; backdrop-filter: blur(4px);">
             <div style="background: white; padding: 32px; border-radius: 16px; width: 380px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
                 <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
@@ -145,24 +204,25 @@
 </div>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
+        const syncSeoLanguage = () => {
+            const isHebrew = (document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+            document.querySelectorAll('.seo-he').forEach(el => { el.style.display = isHebrew ? '' : 'none'; });
+            document.querySelectorAll('.seo-en').forEach(el => { el.style.display = isHebrew ? 'none' : ''; });
+        };
+        syncSeoLanguage();
+        const originalSetLocale = window.setLocale;
+        if (typeof originalSetLocale === 'function') {
+            window.setLocale = async function(code) {
+                await originalSetLocale(code);
+                syncSeoLanguage();
+            };
+        }
         // Remove legacy "Source: Hebrew" dropdown if present (e.g. from cached HTML) — product uses Hebrew only
         var audioLang = document.getElementById('audio-lang');
         if (audioLang && audioLang.closest) {
             var wrap = audioLang.closest('.control-item');
             if (wrap) wrap.remove();
         }
-
-        var dBtn = document.getElementById('btn-download');
-        var dMenu = document.getElementById('download-menu');
-        if (dBtn && dMenu) {
-            dBtn.onclick = function(e) {
-                e.stopPropagation();
-                dMenu.style.display = dMenu.style.display === 'none' ? 'block' : 'none';
-            };
-        }
-        document.addEventListener('click', function() {
-            if (dMenu) dMenu.style.display = 'none';
-        });
     });
 </script>
 {% endblock %}

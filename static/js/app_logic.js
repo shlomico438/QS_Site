@@ -69,6 +69,36 @@ function showGlobalConfirm(message, options = {}) {
     });
 }
 
+function showGlobalAlert(message, options = {}) {
+    const overlay = ensureGlobalConfirmDialog();
+    const msgEl = overlay.querySelector('.personal-dialog-message');
+    const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
+    const okBtn = overlay.querySelector('.personal-dialog-btn.primary');
+    if (!msgEl || !cancelBtn || !okBtn) return Promise.resolve();
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    msgEl.textContent = message || '';
+    cancelBtn.style.display = 'none';
+    okBtn.textContent = options.confirmText || T('confirm') || 'אישור';
+    overlay.classList.add('is-open');
+    return new Promise((resolve) => {
+        const cleanup = () => {
+            overlay.classList.remove('is-open');
+            cancelBtn.style.display = '';
+            cancelBtn.onclick = null;
+            okBtn.onclick = null;
+            overlay.onclick = null;
+            window.removeEventListener('keydown', onKey);
+            resolve();
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape' || e.key === 'Enter') cleanup();
+        };
+        window.addEventListener('keydown', onKey);
+        okBtn.onclick = cleanup;
+        overlay.onclick = (e) => { if (e.target === overlay) cleanup(); };
+    });
+}
+
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
@@ -236,6 +266,12 @@ function showStatus(message, isError = false) {
         toast.classList.remove('show');
     }, 4000);
 }
+
+function setSeoHomeContentVisibility(visible) {
+    const seo = document.getElementById('seo-home-content');
+    if (!seo) return;
+    seo.style.display = visible ? '' : 'none';
+}
 /** @param {object} [userOverride] - If provided (e.g. from updateUser), use this user instead of getUser() so the UI shows fresh data. */
 async function setupNavbarAuth(userOverride) {
     const navBtn = document.getElementById('nav-auth-btn');
@@ -293,9 +329,70 @@ function closeUserMenu() {
     }
 }
 
+function ensureUserMenuCloseButton() {
+    const panel = document.getElementById('user-menu-panel');
+    if (!panel) return null;
+    const header = panel.querySelector('.user-menu-header');
+    if (!header) return null;
+    let closeBtn = document.getElementById('user-menu-close');
+    if (!closeBtn) {
+        closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.id = 'user-menu-close';
+        closeBtn.className = 'user-menu-close-btn';
+        closeBtn.setAttribute('aria-label', 'Close');
+        closeBtn.title = 'Close';
+        closeBtn.textContent = '✕';
+        header.appendChild(closeBtn);
+    }
+    // Inline fallback style in case stale CSS is cached.
+    closeBtn.style.display = 'inline-flex';
+    closeBtn.style.alignItems = 'center';
+    closeBtn.style.justifyContent = 'center';
+    closeBtn.style.minWidth = '40px';
+    closeBtn.style.height = '32px';
+    closeBtn.style.padding = '0 10px';
+    closeBtn.style.marginInlineStart = '8px';
+    closeBtn.style.background = '#111827';
+    closeBtn.style.color = '#ffffff';
+    closeBtn.style.border = 'none';
+    closeBtn.style.borderRadius = '8px';
+    closeBtn.style.cursor = 'pointer';
+    closeBtn.style.fontSize = '0.95rem';
+    closeBtn.style.fontWeight = '700';
+    closeBtn.onclick = () => closeUserMenu();
+    return closeBtn;
+}
+
+function ensureBurnProgressOverlay() {
+    let overlay = document.getElementById('burn-progress-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'burn-progress-overlay';
+        overlay.innerHTML = `
+            <div class="burn-progress-card">
+                <div id="burn-progress-text" class="burn-progress-text"></div>
+                <div class="burn-progress-track"><div id="burn-progress-fill" class="burn-progress-fill"></div></div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+    }
+    return overlay;
+}
+
+function setBurnProgress(pct, text) {
+    // Center overlay progress was removed per UX request.
+    return;
+}
+
+function hideBurnProgress() {
+    return;
+}
+
 async function toggleUserMenu() {
     const panel = document.getElementById('user-menu-panel');
     if (!panel) return;
+    ensureUserMenuCloseButton();
     const isOpen = panel.classList.toggle('is-open');
     panel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
     if (isOpen) {
@@ -314,6 +411,7 @@ async function loadUserMenuProfile(user) {
     const messageEl = document.getElementById('user-menu-profile-message');
     const saveBtn = document.getElementById('user-menu-save');
     const cancelBtn = document.getElementById('user-menu-cancel');
+    const closeBtn = document.getElementById('user-menu-close');
     if (!nameInput || !emailInput) return;
 
     const { displayName, email } = getAuthUserDisplayInfo(user);
@@ -330,6 +428,9 @@ async function loadUserMenuProfile(user) {
             if (messageEl) { messageEl.style.display = 'none'; messageEl.textContent = ''; }
             closeUserMenu();
         };
+    }
+    if (closeBtn) {
+        closeBtn.onclick = () => closeUserMenu();
     }
 
     if (!saveBtn) return;
@@ -641,7 +742,13 @@ async function initPersonalPage() {
     const emptyMsg = document.getElementById('personal-empty-msg');
     const tableContainer = document.getElementById('personal-table-container');
     const tbody = document.getElementById('personal-files-tbody');
+    const closeBtn = document.getElementById('personal-close-btn');
     if (!tbody) return;
+
+    if (closeBtn) {
+        const lastJobDbId = localStorage.getItem('lastJobDbId');
+        closeBtn.href = lastJobDbId ? ('/?open=' + encodeURIComponent(lastJobDbId)) : '/';
+    }
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
@@ -685,6 +792,7 @@ async function initPersonalPage() {
     }
     function statusLabel(s) {
         const t = typeof window.t === 'function' ? window.t : (k) => k;
+        if (s === 'post-processed') return t('status_post_processed') || 'עבר עיבוד';
         if (s === 'processed' || s === 'completed') return t('status_processed') || 'הושלם';
         if (s === 'processing') return t('status_processing') || 'מעבד';
         if (s === 'failed') return t('status_failed') || 'נכשל';
@@ -960,6 +1068,7 @@ async function initPersonalPage() {
 
 /** Load a job in the app when user clicks "Open in app" (/?open=jobId). Loads file URL + transcript JSON. */
 async function initOpenInApp(jobId) {
+    setSeoHomeContentVisibility(false);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     // Fetch job without result first so we never 400 if result column is missing
@@ -1301,7 +1410,7 @@ async function tryRecoverSegmentsForExport() {
 }
 
 window.downloadFile = async function(type, bypassUser = null) {
-    const baseName = (window.originalFileName && window.originalFileName.split('.').slice(0, -1).join('.')) || "transcript";
+    const baseName = ((window.originalFileName || '').trim()) || "transcript";
 
     if (type === 'movie') {
         console.log('[movie export] Start');
@@ -1338,8 +1447,7 @@ window.downloadFile = async function(type, bypassUser = null) {
         const limitMsg = typeof window.t === 'function' ? window.t('burn_limits_msg') : "The current system supports files under 10 minutes and 1080p resolution for this feature.";
         if (durationSec > 600 || (widthPx > 0 && widthPx > 1080)) {
             console.log('[movie export] Over limits – abort');
-            if (typeof showStatus === 'function') showStatus(limitMsg, true);
-            if (typeof showStatus === 'function') showStatus(limitMsg, true);
+            if (typeof showGlobalAlert === 'function') await showGlobalAlert(limitMsg);
             return;
         }
 
@@ -1353,18 +1461,24 @@ window.downloadFile = async function(type, bypassUser = null) {
         console.log('[movie export] S3 key OK');
 
         try {
-            if (typeof showStatus === 'function') showStatus("Preparing export…", false);
             if (typeof ensureJobRecordOnExport === 'function') {
                 console.log('[movie export] Ensuring job record…');
                 await ensureJobRecordOnExport();
                 console.log('[movie export] Job record done');
             }
             console.log('[movie export] Fetching simulation_mode…');
-            const simRes = await fetch('/api/simulation_mode');
-            const simJson = simRes.ok ? await simRes.json() : {};
-            console.log('[movie export] Simulation mode:', simJson.simulation);
-            if (simJson.simulation === true) {
-                if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('downloading_video_srt') : "Downloading video and subtitles..."), false);
+            let isSimulation = false;
+            try {
+                const simRes = await fetch('/api/simulation_mode', { cache: 'no-store' });
+                const simJson = simRes.ok ? await simRes.json() : {};
+                isSimulation = simJson.simulation === true;
+                console.log('[movie export] Simulation mode:', isSimulation);
+            } catch (e) {
+                // Network/proxy hiccup on this check should not block production export.
+                isSimulation = false;
+                console.warn('[movie export] simulation_mode check failed; assuming production mode:', e);
+            }
+            if (isSimulation === true) {
                 console.log('[movie export] Simulation branch – downloading video+SRT');
                 const videoBlob = await fetch(videoUrl).then(r => r.blob());
                 if (typeof saveAs !== 'undefined') saveAs(videoBlob, (baseName || 'video') + '.mp4');
@@ -1379,13 +1493,50 @@ window.downloadFile = async function(type, bypassUser = null) {
                     srt += `${i + 1}\n${ts(seg.start)} --> ${ts(seg.end)}\n${(seg.text || '').trim()}\n\n`;
                 });
                 if (typeof saveAs !== 'undefined') saveAs(new Blob([srt], { type: 'text/plain;charset=utf-8' }), (baseName || 'video') + '.srt');
-                if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('video_srt_downloaded') : "Video and SRT downloaded"), false);
                 return;
             }
 
-            const burnTakesMsg = typeof window.t === 'function' ? window.t('burn_takes_minutes') : "This usually takes 2–5 minutes. We'll email you when your video is ready.";
-            const encodingMsg = typeof window.t === 'function' ? window.t('burn_encoding_in_progress') : "Encoding in progress… We'll email you when it's ready.";
-            if (typeof showStatus === 'function') showStatus(burnTakesMsg, false);
+            const encodingMsg = '';
+            const pContainer = document.getElementById('p-container');
+            const progressBar = document.getElementById('progress-bar');
+            const statusTxt = document.getElementById('upload-status');
+            let burnProgressTimer = null;
+            const startBurnProgress = () => {
+                let pct = 8;
+                if (pContainer) pContainer.style.display = 'block';
+                if (progressBar) progressBar.style.width = pct + '%';
+                if (statusTxt) {
+                    statusTxt.innerText = '';
+                    statusTxt.style.display = 'none';
+                }
+                setBurnProgress(pct, encodingMsg);
+                burnProgressTimer = setInterval(() => {
+                    pct = Math.min(95, pct + Math.max(1, Math.round((95 - pct) * 0.1)));
+                    if (progressBar) progressBar.style.width = pct + '%';
+                    setBurnProgress(pct, encodingMsg);
+                }, 1000);
+            };
+            const stopBurnProgress = (completed) => {
+                if (burnProgressTimer) {
+                    clearInterval(burnProgressTimer);
+                    burnProgressTimer = null;
+                }
+                if (progressBar) progressBar.style.width = completed ? '100%' : '0%';
+                if (statusTxt) {
+                    statusTxt.innerText = '';
+                    statusTxt.style.display = 'none';
+                }
+                if (completed) {
+                    setBurnProgress(100, typeof window.t === 'function' ? window.t('movie_downloaded') : 'Movie downloaded');
+                }
+                setTimeout(() => {
+                    if (pContainer) pContainer.style.display = 'none';
+                    if (progressBar) progressBar.style.width = '0%';
+                    hideBurnProgress();
+                }, completed ? 1200 : 0);
+                if (!completed) hideBurnProgress();
+            };
+            startBurnProgress();
             console.log('[movie export] Calling burn_subtitles_server…');
             const rawSegments = (window.currentSegments || []).map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }));
             const segments = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(rawSegments, 0.5) : rawSegments;
@@ -1423,20 +1574,20 @@ window.downloadFile = async function(type, bypassUser = null) {
                 await new Promise(r => setTimeout(r, pollInterval));
                 pollCount++;
                 if (pollCount === 1 || pollCount % 10 === 0) {
-                    if (typeof showStatus === 'function') showStatus(encodingMsg + (pollCount > 1 ? ` (${pollCount})` : ''), false);
                     console.log('[movie export] Poll', pollCount, '…');
                 }
                 const statusRes = await fetch(`/api/burn_subtitles_status?task_id=${encodeURIComponent(taskId)}`);
                 statusJson = statusRes.ok ? await statusRes.json() : {};
             }
             if (statusJson.status === 'failed') {
+                stopBurnProgress(false);
                 console.log('[movie export] Failed:', statusJson.error);
                 throw new Error(statusJson.error || "Burn failed");
             }
             if (statusJson.status === 'completed' && statusJson.output_url) {
+                stopBurnProgress(true);
                 console.log('[movie export] Completed – downloading');
-                if (typeof showStatus === 'function') showStatus("Downloading…", false);
-                const outName = (baseName || 'video') + '_with_subtitles.mp4';
+                const outName = (baseName || 'video') + '.mp4';
                 if (typeof saveAs !== 'undefined') {
                     const blob = await fetch(statusJson.output_url).then(r => r.blob());
                     saveAs(blob, outName);
@@ -1447,8 +1598,8 @@ window.downloadFile = async function(type, bypassUser = null) {
                     a.target = '_blank';
                     a.click();
                 }
-                if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('movie_downloaded') : "Movie downloaded"), false);
             } else {
+                stopBurnProgress(false);
                 console.log('[movie export] Timeout or no output_url:', statusJson);
                 throw new Error("Burn did not complete in time");
             }
@@ -1591,10 +1742,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const transcriptWindow = document.getElementById('transcript-window');
     const mainAudio = document.getElementById('main-audio');
+    const dBtn = document.getElementById('btn-download');
+    const dMenu = document.getElementById('download-menu');
+
+    if (dBtn && dMenu) {
+        dBtn.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
+            dMenu.style.display = isHidden ? 'block' : 'none';
+        };
+        document.addEventListener('click', function(e) {
+            if (!dMenu.contains(e.target) && !dBtn.contains(e.target)) dMenu.style.display = 'none';
+        });
+    }
 
     document.querySelectorAll('.dropdown-item').forEach(btn => {
         btn.addEventListener('click', function() {
             const type = this.getAttribute('data-type');
+            const menu = document.getElementById('download-menu');
+            if (menu) menu.style.display = 'none';
             console.log("🖱️ User requested export:", type);
             window.downloadFile(type);
         });
@@ -1754,6 +1921,7 @@ function resetScreenToInitial() {
     if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
     window.fakeProgressInterval = null;
     window.currentSegments = [];
+    setSeoHomeContentVisibility(true);
 
     const placeholder = document.getElementById('placeholder');
     const transcriptWindow = document.getElementById('transcript-window');
@@ -1908,6 +2076,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 1. CLEAR OVERLAYS & STOP PROGRESS
         window.isTriggering = false;
+        setSeoHomeContentVisibility(false);
+        localStorage.removeItem('activeJobId');
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
         const statusTxt = document.getElementById('upload-status');
@@ -2011,6 +2181,11 @@ document.addEventListener('DOMContentLoaded', () => {
             console.warn(`GPT debug: no translated_text found in result${extraModel}${extraErr}`);
         }
         window.currentSegments = segments;
+        const gptPostProcessed = (
+            (translationMeta && Number(translationMeta.ok_count || 0) > 0 && Number(translationMeta.error_count || 0) === 0) ||
+            translatedCount > 0
+        );
+        const finalStatus = gptPostProcessed ? 'post-processed' : 'processed';
 
         // Persist transcript: save JSON to S3 and store only result_s3_key in DB (or fallback to result.segments)
         if (typeof updateJobStatus === 'function' && dbId) {
@@ -2026,15 +2201,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         });
                         const data = res.ok ? await res.json() : {};
                         if (data.result_s3_key) {
-                            updateJobStatus(dbId, 'processed', { result_s3_key: data.result_s3_key });
+                            updateJobStatus(dbId, finalStatus, { result_s3_key: data.result_s3_key });
                         } else {
-                            updateJobStatus(dbId, 'processed', { segments: window.currentSegments });
+                            updateJobStatus(dbId, finalStatus, { segments: window.currentSegments });
                         }
                     } else {
-                        updateJobStatus(dbId, 'processed', { segments: window.currentSegments });
+                        updateJobStatus(dbId, finalStatus, { segments: window.currentSegments });
                     }
                 } catch (_) {
-                    updateJobStatus(dbId, 'processed', { segments: window.currentSegments });
+                    updateJobStatus(dbId, finalStatus, { segments: window.currentSegments });
                 }
             })();
         }
@@ -2762,6 +2937,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             const file = this.files[0];
             if (!file) return;
+            setSeoHomeContentVisibility(false);
 
             // Hide "Upload a file to start" placeholder as soon as user selects a file (and during processing)
             var placeholderEl = document.getElementById('placeholder');
@@ -2853,6 +3029,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 localStorage.setItem('lastS3Key', s3Key);
                 localStorage.setItem('pendingS3Key', s3Key);
                 localStorage.setItem('lastJobId', jobId);
+                localStorage.setItem('activeJobId', jobId);
                 console.log("💾 Keys parked for recovery:", s3Key);
                 if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId, s3Key });
 
@@ -2902,6 +3079,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 const dbId2 = localStorage.getItem('lastJobDbId');
                                 if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                 window.isTriggering = false;
+                                localStorage.removeItem('activeJobId');
                                 if (mainBtn) mainBtn.disabled = false;
                                 return;
                             }
@@ -2922,6 +3100,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                     window.isTriggering = false;
+                                    localStorage.removeItem('activeJobId');
                                     if (mainBtn) mainBtn.disabled = false;
                                     if (typeof showStatus === 'function') showStatus("GPU trigger failed.", true);
                                     return;
@@ -2934,6 +3113,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             const dbId2 = localStorage.getItem('lastJobDbId');
                             if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                             window.isTriggering = false;
+                            localStorage.removeItem('activeJobId');
                             if (mainBtn) mainBtn.disabled = false;
                             throw err;
                         }
@@ -2942,6 +3122,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const dbId = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                         window.isTriggering = false;
+                        localStorage.removeItem('activeJobId');
                         if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                     }
                 };
@@ -2951,6 +3132,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     const dbId = localStorage.getItem('lastJobDbId');
                     if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                     window.isTriggering = false;
+                    localStorage.removeItem('activeJobId');
                 };
 
                 xhr.send(currentFile);
@@ -2959,6 +3141,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             catch (err) {
                 console.error("Upload Error:", err);
                 window.isTriggering = false;
+                localStorage.removeItem('activeJobId');
                 if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                 // Use our new toast notification for a professional feel
                 if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('error_starting_upload') : "Error starting upload."), true);
