@@ -1193,6 +1193,7 @@ async function initOpenInApp(jobId) {
     }
 
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
+    setTranscriptActionButtonsVisible(true);
     const mainBtn = document.getElementById('main-btn');
     if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
@@ -1978,6 +1979,23 @@ function resetScreenToInitial() {
 
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
+    if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
+}
+
+function setTranscriptActionButtonsVisible(visible) {
+    const downloadBtn = document.getElementById('btn-download');
+    const copyBtn = document.getElementById('btn-copy') || document.querySelector('.toolbar-group button[onclick="window.copyTranscript()"]');
+    const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
+    const editActions = document.getElementById('edit-actions');
+    const downloadMenu = document.getElementById('download-menu');
+
+    [downloadBtn, copyBtn, editBtn].forEach((el) => {
+        if (el) el.style.display = visible ? '' : 'none';
+    });
+    if (!visible) {
+        if (editActions) editActions.style.display = 'none';
+        if (downloadMenu) downloadMenu.style.display = 'none';
+    }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1989,6 +2007,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const diarizationToggle = document.getElementById('diarization-toggle');
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
+    setTranscriptActionButtonsVisible(false);
 
     function openFilePickerAfterDisclaimer() {
         resetScreenToInitial();
@@ -2148,6 +2167,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 2. UNHIDE CORE COMPONENTS (Styled Subtitles button removed; video is shown immediately for video uploads)
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
+        setTranscriptActionButtonsVisible(true);
 
         const mainBtn = document.getElementById('main-btn');
         if (mainBtn) {
@@ -2924,7 +2944,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (current < 95) {
                 current += 0.5;
                 if (progressBar) progressBar.style.width = current + "%";
-                if (statusTxt) statusTxt.innerText = (typeof window.t === 'function' ? window.t('analyzing_content') : 'Analyzing content...') + ' ' + Math.floor(current) + '%';
+                if (statusTxt) statusTxt.style.display = 'none';
             }
         }, 1000);
     }
@@ -2997,6 +3017,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (progressBar) { progressBar.style.width = "0%"; }
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = (typeof window.t === 'function' ? window.t('processing') : "Processing..."); }
             if (statusTxt) { statusTxt.innerText = (typeof window.t === 'function' ? window.t('uploading') : "Uploading..."); statusTxt.style.display = "block"; }
+            setTranscriptActionButtonsVisible(false);
             var placeholderEl = document.getElementById('placeholder');
             if (placeholderEl) placeholderEl.style.display = "none";
 
@@ -3085,8 +3106,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             }
 
                             if (triggerRes.status === 202 && triggerData.status === 'queued') {
-                                const queuedMsg = typeof window.t === 'function' ? window.t('job_queued_waiting_gpu') : "Job queued. Waiting for GPU…";
-                                if (statusTxt) statusTxt.innerText = queuedMsg;
+                                const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+                                const queuedMsg = isHebrewUi ? 'ממתין בתור...' : 'Wait in line...';
+                                if (progressBar) progressBar.style.width = '0%';
+                                if (mainBtn) mainBtn.innerText = queuedMsg;
+                                if (statusTxt) {
+                                    statusTxt.innerText = '';
+                                    statusTxt.style.display = 'none';
+                                }
                                 const pollInterval = 2000;
                                 const maxWait = 360000;
                                 const start = Date.now();
@@ -3317,6 +3344,7 @@ async function handleSubtitleFile(file) {
     // Run correction via backend (GPT)
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     const mainBtn = document.getElementById('main-btn');
+    setTranscriptActionButtonsVisible(false);
     if (mainBtn) {
         mainBtn.disabled = true;
         mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
@@ -3369,6 +3397,7 @@ async function handleSubtitleFile(file) {
         const container = document.getElementById('transcript-window');
         if (container) container.setAttribute('contenteditable', 'false');
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
+        setTranscriptActionButtonsVisible(true);
         const video = document.getElementById('main-video');
         const videoWrapper = document.getElementById('video-wrapper');
         const videoSrc = document.getElementById('video-source');

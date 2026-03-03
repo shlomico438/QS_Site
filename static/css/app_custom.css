@@ -825,17 +825,38 @@ html[dir="rtl"] .upload-status {
         min-width: 100px;
     }
 
-    /* 4. Allow Toolbar to wrap */
+    /* Mobile transcript toolbar: no horizontal scrolling, compact layout */
     .controls-bar {
-        flex-wrap: wrap;
-        gap: 10px;
-        justify-content: center;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: 8px 10px;
+        justify-content: stretch;
+        overflow-x: hidden;
     }
-
     .toggles-group {
-        width: 100%;
+        flex-direction: column;
+        align-items: flex-start;
         justify-content: center;
-        margin-bottom: 10px;
+        gap: 6px;
+        width: auto;
+        margin: 0;
+    }
+    .toggles-group label {
+        font-size: 0.78rem;
+        gap: 6px;
+        margin: 0;
+        white-space: nowrap;
+    }
+    .toolbar-group {
+        justify-content: flex-end;
+        gap: 8px;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+    .toolbar-group .btn-icon {
+        width: 34px;
+        height: 34px;
     }
 }
 /* --- MOBILE "APP MODE" (One Page Layout) --- */
@@ -870,6 +891,7 @@ html[dir="rtl"] .upload-status {
     .transcription-wrapper {
         flex: 1 !important;        /* Grow to fill ALL empty space */
         overflow-y: auto !important; /* Scroll INSIDE this box */
+        overflow-x: hidden !important;
         min-height: 0 !important;  /* Critical Fix for Flexbox scrolling */
         margin-bottom: 10px !important;
         border: 1px solid #eee;    /* Optional: helps see the boundary */
@@ -1230,6 +1252,55 @@ html[dir="rtl"] .upload-status {
     display: inline-block;
   }
  }
+
+/* Personal area mobile: keep table usable without breaking layout */
+@media (max-width: 900px) {
+  .personal-area-page {
+    padding: 14px 10px;
+  }
+  .personal-area-header-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .personal-area-header-row h1 {
+    font-size: 1.3rem;
+  }
+  .personal-close-btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .personal-table-container {
+    max-height: calc(100vh - 210px);
+    overflow-x: auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .personal-files-table {
+    min-width: 700px;
+  }
+  .personal-files-table th,
+  .personal-files-table td {
+    white-space: nowrap;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+  }
+  .personal-dropdown-menu {
+    min-width: 190px;
+  }
+}
+
+.personal-rotate-hint {
+  display: none;
+}
+@media (max-width: 900px) and (orientation: portrait) {
+  .personal-rotate-hint {
+    display: block;
+    margin: 0 0 10px;
+    color: #64748b;
+    font-size: 0.82rem;
+  }
+}
 
 [dir="ltr"] .upload-disclaimer-box {
     text-align: left;
