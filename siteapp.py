@@ -49,6 +49,7 @@ app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 # Configuration for automation
 RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.environ.get('RUNPOD_ENDPOINT_ID')
+RUNPOD_MOVIE_ENDPOINT_ID = os.environ.get('RUNPOD_MOVIE_ENDPOINT_ID') or RUNPOD_ENDPOINT_ID
 BUCKET_NAME = "quickscribe-v2-12345"
 
 
@@ -871,7 +872,7 @@ def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
         endpoint_url = f"https://api.runpod.ai/v2/{clean_id}/run"
         headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
         response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
-        if response.status_code in (200, 201):
+        if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "triggered"
             print(f"🚀 RunPod triggered for job {job_id}")
         else:
@@ -936,7 +937,8 @@ def trigger_processing():
                 "task": task,
                 "language": language,
                 "num_speakers": speaker_count,
-                "diarization": diarization
+                "diarization": diarization,
+                "callback_url": f"{request.url_root.rstrip('/')}/api/gpu_callback",
             }
         }
 
@@ -965,9 +967,6 @@ def get_simulation_mode():
 
 
 # --- BURN SUBTITLES (SERVER-SIDE ON KOYEB) ---
-# Limits for small CPU: max 10 min, max width 1080
-BURN_MAX_DURATION_SEC = 600
-BURN_MAX_WIDTH = 1080
 burn_tasks = {}  # task_id -> { status, output_s3_key?, error? }
 
 def _resolve_ffmpeg():
@@ -1124,8 +1123,108 @@ def _send_burn_ready_email(to_email, download_url, base_name):
     except Exception as e:
         logging.warning("Send burn-ready email failed: %s", e)
 
+
+def _segments_to_srt_text(segments):
+    def to_srt_ts(s):
+        h = int(s // 3600)
+        m = int((s % 3600) // 60)
+        sec = s % 60
+        return f"{h:02d}:{m:02d}:{int(sec):02d},{int((sec % 1) * 1000):03d}"
+
+    rows = []
+    for i, seg in enumerate(segments or []):
+        start = float(seg.get('start', 0) or 0)
+        end = float(seg.get('end', start + 1) or (start + 1))
+        if end <= start:
+            end = start + 0.5
+        text = str(seg.get('text') or '').replace('\n', ' ')
+        rows.append(f"{i + 1}\n{to_srt_ts(start)} --> {to_srt_ts(end)}\n{text}\n")
+    return "\n".join(rows) + ("\n" if rows else "")
+
+
+def _build_output_key(user_id, input_s3_key, task_id):
+    base_name = "video"
+    if input_s3_key:
+        base_name = os.path.splitext(os.path.basename(input_s3_key))[0] or "video"
+    safe_name = "".join(c for c in base_name if c.isalnum() or c in (' ', '-', '_'))[:80].strip() or "video"
+    return f"users/{user_id}/output/{safe_name}_with_subtitles.mp4", safe_name
+
+
+def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, notify_email=None, job_id=None):
+    """Dispatch burn task to RunPod using presigned S3 URLs."""
+    endpoint_id = (RUNPOD_MOVIE_ENDPOINT_ID or "").strip()
+    api_key = (RUNPOD_API_KEY or "").strip()
+    if not endpoint_id or not api_key:
+        raise RuntimeError("RunPod movie endpoint is not configured")
+
+    bucket = os.environ.get('S3_BUCKET')
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.environ.get('AWS_REGION')
+    )
+
+    if not bucket:
+        raise RuntimeError("S3_BUCKET missing")
+
+    output_s3_key, safe_name = _build_output_key(user_id, input_s3_key, task_id)
+    subtitle_s3_key = f"users/{user_id}/tmp/subtitles/{task_id}.srt"
+    subtitle_text = _segments_to_srt_text(segments)
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=subtitle_s3_key,
+        Body=subtitle_text.encode("utf-8"),
+        ContentType="application/x-subrip; charset=utf-8"
+    )
+
+    input_video_url = s3_client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': bucket, 'Key': input_s3_key},
+        ExpiresIn=10800
+    )
+    input_srt_url = s3_client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': bucket, 'Key': subtitle_s3_key},
+        ExpiresIn=10800
+    )
+    output_upload_url = s3_client.generate_presigned_url(
+        'put_object',
+        Params={'Bucket': bucket, 'Key': output_s3_key, 'ContentType': 'video/mp4'},
+        ExpiresIn=21600
+    )
+
+    payload = {
+        "input": {
+            "task": "burn_subtitles",
+            "task_id": task_id,
+            "input_video_url": input_video_url,
+            "input_srt_url": input_srt_url,
+            "output_upload_url": output_upload_url,
+            "output_s3_key": output_s3_key,
+            "subtitle_style": (subtitle_style or 'tiktok'),
+            "job_id": job_id,
+            "user_id": user_id,
+            "notify_email": notify_email,
+            "callback_url": callback_url,
+        }
+    }
+    endpoint_url = f"https://api.runpod.ai/v2/{endpoint_id}/run"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    r = requests.post(endpoint_url, json=payload, headers=headers, timeout=20)
+    if r.status_code not in (200, 201, 202):
+        raise RuntimeError(f"RunPod movie dispatch failed ({r.status_code}): {r.text[:300]}")
+
+    burn_tasks[task_id] = {
+        'status': 'processing',
+        'mode': 'runpod',
+        'output_s3_key': output_s3_key,
+        'subtitle_s3_key': subtitle_s3_key,
+        'safe_name': safe_name
+    }
+
 def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, notify_email=None, job_id=None):
-    """Background task: download from S3, check limits, burn subtitles (SRT or ASS by style), upload to S3, optional email."""
+    """Background task: download from S3, check duration limit, burn subtitles, upload to S3, optional email."""
     bucket = os.environ.get('S3_BUCKET')
     s3_client = boto3.client(
         's3',
@@ -1148,15 +1247,6 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
             if not (os.path.isfile(ffmpeg_path) or shutil.which(ffmpeg_path)):
                 burn_tasks[task_id] = {'status': 'failed', 'error': 'ffmpeg not found. Install ffmpeg, set FFMPEG_PATH, or add it to PATH.'}
                 return
-            try:
-                duration, width = _probe_video_with_ffmpeg(ffmpeg_path, video_path)
-            except Exception as e:
-                burn_tasks[task_id] = {'status': 'failed', 'error': f'Could not read video metadata: {e}'}
-                return
-            if duration > BURN_MAX_DURATION_SEC or width > BURN_MAX_WIDTH:
-                burn_tasks[task_id] = {'status': 'failed', 'error': 'Video exceeds limits (max 10 min, 1080p)'}
-                return
-
             use_ass = subtitle_style in ('tiktok', 'clean', 'cinematic')
             if use_ass:
                 ass_content = _build_ass(segments, subtitle_style or 'tiktok')
@@ -1180,7 +1270,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
             out_path = os.path.join(tmpdir, 'output.mp4')
             subs_escaped = subs_path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
             filter_name = 'ass' if use_ass else 'subtitles'
-            vf = f"scale=min(1080\\,iw):-2,{filter_name}='{subs_escaped}'"
+            vf = f"{filter_name}='{subs_escaped}'"
             cmd = [
                 ffmpeg_path, '-y', '-i', video_path,
                 '-vf', vf,
@@ -1229,28 +1319,43 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
 
 @app.route('/api/burn_subtitles_server', methods=['POST'])
 def burn_subtitles_server():
-    """Start server-side burn (async). Limits: max 10 min, max width 1080. Returns task_id for polling."""
+    """Start burn job (RunPod if configured, local fallback). Returns task_id for polling."""
     try:
         data = request.json or {}
         input_s3_key = data.get('input_s3_key')
         segments = data.get('segments', [])
-        duration_seconds = data.get('duration_seconds')
-        width_px = data.get('width_px')
         user_id = data.get('userId') or data.get('user_id')
         subtitle_style = (data.get('subtitle_style') or 'tiktok').strip() or 'tiktok'
         notify_email = (data.get('notify_email') or '').strip() or None
         job_id = data.get('job_id')
         if not input_s3_key or not segments or not user_id:
             return jsonify({"error": "input_s3_key, segments, and userId required"}), 400
-        if duration_seconds is not None and (duration_seconds > BURN_MAX_DURATION_SEC or duration_seconds <= 0):
-            return jsonify({"error": "Video must be under 10 minutes for this feature"}), 400
-        if width_px is not None and width_px > BURN_MAX_WIDTH:
-            return jsonify({"error": "Video resolution must be 1080p or lower for this feature"}), 400
         if not input_s3_key.startswith(f"users/{user_id}/"):
             return jsonify({"error": "Access denied"}), 403
 
         task_id = str(uuid.uuid4())
         burn_tasks[task_id] = {'status': 'processing'}
+
+        use_runpod = bool((RUNPOD_API_KEY or '').strip() and (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()) and not SIMULATION_MODE
+        if use_runpod:
+            public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root.rstrip('/')).rstrip('/')
+            callback_url = f"{public_base}/api/burn_subtitles_callback"
+            try:
+                _queue_burn_task_on_runpod(
+                    task_id=task_id,
+                    input_s3_key=input_s3_key,
+                    segments=segments,
+                    user_id=user_id,
+                    callback_url=callback_url,
+                    subtitle_style=subtitle_style,
+                    notify_email=notify_email,
+                    job_id=job_id
+                )
+                return jsonify({"task_id": task_id, "status": "processing", "mode": "runpod"}), 202
+            except Exception as e:
+                logging.warning("RunPod burn dispatch failed; falling back to local ffmpeg: %s", e)
+
+        # Local fallback (existing behavior)
         t = threading.Thread(
             target=_run_burn_task,
             args=(task_id, input_s3_key, segments, user_id),
@@ -1258,9 +1363,58 @@ def burn_subtitles_server():
         )
         t.daemon = True
         t.start()
-        return jsonify({"task_id": task_id, "status": "processing"}), 202
+        burn_tasks[task_id]['mode'] = 'local'
+        return jsonify({"task_id": task_id, "status": "processing", "mode": "local"}), 202
     except Exception as e:
         logging.exception("burn_subtitles_server")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/burn_subtitles_callback', methods=['POST'])
+def burn_subtitles_callback():
+    """RunPod worker callback for movie burn completion/failure."""
+    try:
+        data = request.json or {}
+        candidates = [
+            data,
+            data.get('input') if isinstance(data.get('input'), dict) else {},
+            data.get('output') if isinstance(data.get('output'), dict) else {},
+            data.get('result') if isinstance(data.get('result'), dict) else {},
+        ]
+
+        def _pick(keys):
+            for c in candidates:
+                for k in keys:
+                    v = c.get(k) if isinstance(c, dict) else None
+                    if v not in (None, ''):
+                        return v
+            return None
+
+        task_id = _pick(['task_id', 'taskId', 'id'])
+        if not task_id:
+            return jsonify({"error": "task_id required"}), 400
+
+        status_raw = str(_pick(['status']) or 'processing').strip().lower()
+        output_s3_key = _pick(['output_s3_key', 'outputS3Key'])
+        error_text = _pick(['error', 'message']) or ''
+
+        info = burn_tasks.get(task_id) or {}
+        if status_raw in ('completed', 'done', 'success', 'succeeded'):
+            info['status'] = 'completed'
+            if output_s3_key:
+                info['output_s3_key'] = output_s3_key
+            burn_tasks[task_id] = info
+        elif status_raw in ('failed', 'error'):
+            info['status'] = 'failed'
+            info['error'] = str(error_text or 'RunPod burn failed')
+            burn_tasks[task_id] = info
+        else:
+            info['status'] = 'processing'
+            burn_tasks[task_id] = info
+
+        return jsonify({"ok": True, "task_id": task_id, "status": burn_tasks[task_id].get('status')}), 200
+    except Exception as e:
+        logging.exception("burn_subtitles_callback")
         return jsonify({"error": str(e)}), 500
 
 
@@ -1281,6 +1435,7 @@ def burn_subtitles_status():
         if status == 'completed':
             output_s3_key = info.get('output_s3_key')
             if output_s3_key:
+                out["output_s3_key"] = output_s3_key
                 s3_client = boto3.client(
                     's3',
                     aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),

@@ -1445,13 +1445,6 @@ window.downloadFile = async function(type, bypassUser = null) {
         const durationSec = (video.duration && Number.isFinite(video.duration)) ? video.duration : 0;
         const widthPx = (video.videoWidth && video.videoWidth > 0) ? video.videoWidth : 0;
         console.log('[movie export] Video OK – duration', durationSec, 's, width', widthPx);
-        const limitMsg = typeof window.t === 'function' ? window.t('burn_limits_msg') : "Movie creation is limited to short videos up to 10 minutes.";
-        if (durationSec > 600) {
-            console.log('[movie export] Over limits – abort');
-            if (typeof showGlobalAlert === 'function') await showGlobalAlert(limitMsg);
-            return;
-        }
-
         const inputS3Key = localStorage.getItem('lastS3Key');
         if (!inputS3Key || !inputS3Key.startsWith('users/')) {
             console.log('[movie export] No/invalid lastS3Key:', inputS3Key ? inputS3Key.substring(0, 30) + '…' : 'null');
@@ -1460,6 +1453,13 @@ window.downloadFile = async function(type, bypassUser = null) {
             return;
         }
         console.log('[movie export] S3 key OK');
+
+        const mainBtn = document.getElementById('main-btn');
+        const creatingMovieText = (typeof window.t === 'function' ? (window.t('creating_movie') || 'Creating movie...') : 'Creating movie...');
+        if (mainBtn) {
+            mainBtn.disabled = true;
+            mainBtn.innerText = creatingMovieText;
+        }
 
         try {
             if (typeof ensureJobRecordOnExport === 'function') {
@@ -1608,6 +1608,11 @@ window.downloadFile = async function(type, bypassUser = null) {
             console.error('[movie export] Error:', e);
             if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed: ") + (e.message || e), true);
             if (typeof showStatus === 'function') showStatus("Failed to burn subtitles: " + (e.message || e), true);
+        } finally {
+            if (mainBtn) {
+                mainBtn.disabled = false;
+                mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
+            }
         }
         return;
     }
@@ -2941,6 +2946,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     }
     function startFakeProgress() {
         let current = 0;
+        if (mainBtn) {
+            mainBtn.innerText = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
+        }
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         window.fakeProgressInterval = setInterval(() => {
             if (current < 95) {
