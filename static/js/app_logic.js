@@ -2122,6 +2122,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (pContainer) pContainer.style.display = 'none';
         if (progressBar) progressBar.style.width = '0%';
 
+        const output = rawResult.result || rawResult.output || rawResult;
+        const jobStatus = String(rawResult.status || (output && output.status) || '').toLowerCase();
+        const jobError = String(rawResult.error || (output && output.error) || '').trim();
+        const isFailedJob = jobStatus === 'failed' || !!jobError;
+
         // 1. SHOW PLAYER: same layout (video-wrapper) for both audio (m4a) and video so transcript is visible in parallel
         const playerContainer = document.getElementById('audio-player-container');
         const videoWrapper = document.getElementById('video-wrapper');
@@ -2174,7 +2179,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 2. UNHIDE CORE COMPONENTS (Styled Subtitles button removed; video is shown immediately for video uploads)
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
-        setTranscriptActionButtonsVisible(true);
 
         const mainBtn = document.getElementById('main-btn');
         if (mainBtn) {
@@ -2182,8 +2186,23 @@ document.addEventListener('DOMContentLoaded', () => {
             mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : "Upload";
         }
 
+        if (isFailedJob) {
+            window.currentSegments = [];
+            setTranscriptActionButtonsVisible(false);
+            if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
+            const transcriptWindow = document.getElementById('transcript-window');
+            const safeErr = (jobError || 'Transcription failed. Please try again.').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (transcriptWindow) {
+                transcriptWindow.innerHTML = `<p style="color:#b91c1c; text-align:center; margin-top:40px; white-space:pre-wrap;">${safeErr}</p>`;
+                transcriptWindow.setAttribute('contenteditable', 'false');
+            }
+            if (typeof showStatus === 'function') showStatus(safeErr, true);
+            return;
+        }
+
+        setTranscriptActionButtonsVisible(true);
+
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
-        const output = rawResult.result || rawResult.output || rawResult;
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
         if (!Array.isArray(segments)) segments = [];
         segments = splitLongSegments(segments, 40);
@@ -2195,12 +2214,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const o = String(s.text || '').trim();
             return t.length > 0 && t !== o;
         }).length;
+        const metaOkCount = Number((translationMeta && translationMeta.ok_count) || 0);
+        const backendAlreadyApplied = translatedCount === 0 && metaOkCount > 0;
         if (translatedCount > 0) {
             segments = segments.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
             console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
             const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
             const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
             console.log(`GPT debug: translated ${translatedCount}/${segments.length}, changed ${changedCount}/${segments.length}${extraModel}${extraErr}`);
+        } else if (backendAlreadyApplied) {
+            // Some backend paths overwrite text directly and only return translation_meta.
+            console.log('[GPT] Job translate success (applied in text field). meta=', translationMeta);
         } else {
             const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
             const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
