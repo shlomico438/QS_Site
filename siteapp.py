@@ -53,6 +53,19 @@ RUNPOD_MOVIE_ENDPOINT_ID = os.environ.get('RUNPOD_MOVIE_ENDPOINT_ID') or RUNPOD_
 BUCKET_NAME = "quickscribe-v2-12345"
 
 
+def _public_base_url(req):
+    """Best-effort public base URL for third-party callbacks (RunPod -> site)."""
+    explicit = (os.environ.get('PUBLIC_BASE_URL') or '').strip().rstrip('/')
+    if explicit:
+        return explicit
+    root = (req.url_root or '').rstrip('/')
+    xfp = (req.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+    # Behind reverse proxies, Flask may see http internally. Prefer https for public hosts.
+    if root.startswith('http://') and (xfp == 'https' or str(req.host or '').endswith('getquickscribe.com')):
+        root = 'https://' + root[len('http://'):]
+    return root
+
+
 
 # Strict settings to keep connections alive
 socketio = SocketIO(app,
@@ -938,7 +951,7 @@ def trigger_processing():
                 "language": language,
                 "num_speakers": speaker_count,
                 "diarization": diarization,
-                "callback_url": f"{request.url_root.rstrip('/')}/api/gpu_callback",
+                "callback_url": f"{_public_base_url(request)}/api/gpu_callback",
             }
         }
 
@@ -1338,7 +1351,7 @@ def burn_subtitles_server():
 
         use_runpod = bool((RUNPOD_API_KEY or '').strip() and (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()) and not SIMULATION_MODE
         if use_runpod:
-            public_base = (os.environ.get('PUBLIC_BASE_URL') or request.url_root.rstrip('/')).rstrip('/')
+            public_base = _public_base_url(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"
             try:
                 _queue_burn_task_on_runpod(
