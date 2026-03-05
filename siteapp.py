@@ -361,6 +361,8 @@ import time  # Ensure time is imported at the top of your file
 
 # Job is queued until GPU warmup finishes, then we trigger RunPod. Frontend polls trigger_status.
 pending_trigger = {}  # job_id -> "queued" | "triggered" | "failed"
+# So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id }
+pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None}
 
 def get_runpod_endpoint_status(pod_id):
     """GET RunPod endpoint/pod status. Returns dict with 'status' (e.g. 'running') or empty."""
@@ -760,11 +762,17 @@ def gpu_callback():
 
     # Persist raw Ivrit-AI output to S3 (separate JSON from GPT).
     try:
-        input_info = data.get('input') or {}
-        input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
-        user_id = _extract_user_id_from_s3_key(input_s3_key)
-        if user_id and input_s3_key and segments:
-            raw_key = _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='raw')
+        # Prefer server-side cache (set at trigger) in case RunPod callback does not echo input
+        pending = pending_job_info.pop(job_id, None)
+        if pending:
+            input_s3_key = pending.get('input_s3_key') or ''
+            user_id = pending.get('user_id')
+        else:
+            input_info = data.get('input') or {}
+            input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
+            user_id = _extract_user_id_from_s3_key(input_s3_key)
+        if input_s3_key and segments:
+            raw_key = _put_segments_json_to_s3(user_id or 'anonymous', input_s3_key, segments, stage='raw')
             result_dict = dict(result) if isinstance(result, dict) else {}
             result_dict['raw_result_s3_key'] = raw_key
             data = dict(data)
@@ -999,6 +1007,11 @@ def trigger_processing():
             }
         }
 
+        # So gpu_callback can save raw JSON even when RunPod does not echo input
+        pending_job_info[job_id] = {
+            "input_s3_key": s3_key,
+            "user_id": _extract_user_id_from_s3_key(s3_key),
+        }
         pending_trigger[job_id] = "queued"
         t = threading.Thread(
             target=_do_warmup_and_trigger,
