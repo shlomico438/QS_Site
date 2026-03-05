@@ -139,6 +139,58 @@ def get_presigned_url():
         return jsonify({"error": str(e)}), 500
 
 
+def _derive_output_key_base(user_id, input_s3_key):
+    """Base path (without suffix) for storing transcript JSON derived from input_s3_key."""
+    if not input_s3_key:
+        base_name = 'output'
+        return f"users/{user_id or 'anonymous'}/output/{base_name}"
+    if '/input/' in input_s3_key:
+        # users/{id}/input/name.mp4 -> users/{id}/output/name
+        return input_s3_key.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
+    # Fallback: derive from filename
+    base_name = input_s3_key.rsplit('/', 1)[-1].rsplit('.', 1)[0] or 'output'
+    if input_s3_key.startswith('users/'):
+        # Preserve user prefix from path if present
+        parts = input_s3_key.split('/', 2)
+        if len(parts) >= 2:
+            user_part = parts[1]
+            return f"users/{user_part}/output/{base_name}"
+    return f"users/{user_id or 'anonymous'}/output/{base_name}"
+
+
+def _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='gpt'):
+    """Low-level helper to write segments JSON for a given processing stage.
+
+    stage: 'raw' (Ivrit-AI output) or 'gpt' (post-processed).
+    """
+    if segments is None:
+        raise ValueError("segments is required")
+    if not isinstance(segments, list):
+        raise ValueError("segments must be an array")
+    base = _derive_output_key_base(user_id, input_s3_key)
+    stage = (stage or 'gpt').strip().lower()
+    if stage == 'raw':
+        result_s3_key = base + '_raw.json'
+    else:
+        # Keep existing naming for GPT so older data remains compatible.
+        result_s3_key = base + '.json'
+
+    body = json.dumps({"segments": segments}, ensure_ascii=False).encode('utf-8')
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.environ.get('AWS_REGION')
+    )
+    s3_client.put_object(
+        Bucket=os.environ.get('S3_BUCKET'),
+        Key=result_s3_key,
+        Body=body,
+        ContentType='application/json'
+    )
+    return result_s3_key
+
+
 @app.route('/api/save_job_result', methods=['POST'])
 def save_job_result():
     """Save transcript segments JSON to S3; return the result_s3_key. Store only the key in DB, not the full JSON."""
@@ -147,29 +199,12 @@ def save_job_result():
         user_id = data.get('userId') or data.get('user_id')
         input_s3_key = data.get('input_s3_key') or data.get('s3Key')
         segments = data.get('segments')
+        stage = (data.get('stage') or 'gpt').strip().lower()
         if not user_id or not input_s3_key or segments is None:
             return jsonify({"error": "userId, input_s3_key (or s3Key), and segments required"}), 400
         if not isinstance(segments, list):
             return jsonify({"error": "segments must be an array"}), 400
-        # Derive output key: users/{id}/input/name.mp4 -> users/{id}/output/name.json
-        if '/input/' in input_s3_key:
-            result_s3_key = input_s3_key.replace('/input/', '/output/', 1).rsplit('.', 1)[0] + '.json'
-        else:
-            base = input_s3_key.rsplit('/', 1)[-1].rsplit('.', 1)[0] or 'output'
-            result_s3_key = f"users/{user_id}/output/{base}.json"
-        body = json.dumps({"segments": segments}).encode('utf-8')
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
-        s3_client.put_object(
-            Bucket=os.environ.get('S3_BUCKET'),
-            Key=result_s3_key,
-            Body=body,
-            ContentType='application/json'
-        )
+        result_s3_key = _put_segments_json_to_s3(user_id, input_s3_key, segments, stage=stage)
         return jsonify({"result_s3_key": result_s3_key})
     except Exception as e:
         logging.exception("save_job_result failed")
@@ -723,17 +758,26 @@ def gpu_callback():
     # 2) { segments: [...] }
     segments = result.get('segments') or data.get('segments') or []
 
-    # Post-process: add correction via GPT (Node script)
+    # Persist raw Ivrit-AI output to S3 (separate JSON from GPT).
+    try:
+        input_info = data.get('input') or {}
+        input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
+        user_id = _extract_user_id_from_s3_key(input_s3_key)
+        if user_id and input_s3_key and segments:
+            raw_key = _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='raw')
+            result_dict = dict(result) if isinstance(result, dict) else {}
+            result_dict['raw_result_s3_key'] = raw_key
+            data = dict(data)
+            data['result'] = result_dict
+    except Exception as e:
+        logging.warning("Failed to save raw job result to S3: %s", e)
+
+    # Normalize shape for clients: keep top-level segments field.
     if segments:
-        callback_lang = data.get('language') or (data.get('input') or {}).get('language') or 'he'
-        segments, tmeta = translate_segments(segments, target_lang=callback_lang)
         data = dict(data)
-        data['result'] = dict(result) if isinstance(result, dict) else {}
+        data['result'] = dict(data.get('result') or result) if isinstance(result, dict) else {}
         data['result']['segments'] = segments
-        data['result']['translation_meta'] = tmeta
-        # Keep top-level fields in sync for clients that read this shape.
         data['segments'] = segments
-        data['translation_meta'] = tmeta
 
     # Store in cache for persistence
     job_results_cache[job_id] = data
@@ -742,7 +786,7 @@ def gpu_callback():
     socketio.emit('job_status_update', data, room=job_id)
     print(f"DEBUG: Emitted result to room {job_id}")
 
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "ok", "stage": "raw_saved"}), 200
 
 
 # --- 3. Update Join Logic to CHECK the Cache ---
@@ -1153,6 +1197,18 @@ def _segments_to_srt_text(segments):
         text = str(seg.get('text') or '').replace('\n', ' ')
         rows.append(f"{i + 1}\n{to_srt_ts(start)} --> {to_srt_ts(end)}\n{text}\n")
     return "\n".join(rows) + ("\n" if rows else "")
+
+
+def _extract_user_id_from_s3_key(s3_key: str):
+    """Best-effort user id extraction from S3 key like users/{user_id}/..."""
+    try:
+        if s3_key and s3_key.startswith('users/'):
+            parts = s3_key.split('/', 2)
+            if len(parts) >= 2 and parts[1]:
+                return parts[1]
+    except Exception:
+        return None
+    return None
 
 
 def _build_output_key(user_id, input_s3_key, task_id):

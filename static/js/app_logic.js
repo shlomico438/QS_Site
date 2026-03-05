@@ -1448,8 +1448,11 @@ window.downloadFile = async function(type, bypassUser = null) {
         const inputS3Key = localStorage.getItem('lastS3Key');
         if (!inputS3Key || !inputS3Key.startsWith('users/')) {
             console.log('[movie export] No/invalid lastS3Key:', inputS3Key ? inputS3Key.substring(0, 30) + '…' : 'null');
-            if (typeof showStatus === 'function') showStatus(typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed: ", true);
-            if (typeof showStatus === 'function') showStatus("Video must be from your uploads (save and use Styled Subtitles from an uploaded video).", true);
+            if (typeof showStatus === 'function') {
+                const baseErr = typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed.";
+                showStatus(baseErr, true);
+                showStatus("Video must be from your uploads (save and use Styled Subtitles from an uploaded video).", true);
+            }
             return;
         }
         console.log('[movie export] S3 key OK');
@@ -1606,8 +1609,13 @@ window.downloadFile = async function(type, bypassUser = null) {
             }
         } catch (e) {
             console.error('[movie export] Error:', e);
-            if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed: ") + (e.message || e), true);
-            if (typeof showStatus === 'function') showStatus("Failed to burn subtitles: " + (e.message || e), true);
+            if (typeof showStatus === 'function') {
+                const baseErr = typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed.";
+                const hint = typeof window.t === 'function'
+                    ? ""
+                    : " Please try again later.";
+                showStatus(baseErr + hint, true);
+            }
         } finally {
             if (mainBtn) {
                 mainBtn.disabled = false;
@@ -2097,8 +2105,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Set initial state
     syncSpeakerControls();
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
-    window.handleJobUpdate = function(rawResult) {
+    window.handleJobUpdate = async function(rawResult) {
         const dbId = localStorage.getItem('lastJobDbId');
+
+        if (window._checkStatusPollInterval) {
+            clearInterval(window._checkStatusPollInterval);
+            window._checkStatusPollInterval = null;
+        }
 
         // 1. CLEAR OVERLAYS & STOP PROGRESS
         window.isTriggering = false;
@@ -2107,13 +2120,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
 
         const statusTxt = document.getElementById('upload-status');
-        if (statusTxt) {
-            statusTxt.innerText = typeof window.t === 'function' ? window.t('transcription_complete') : "Transcription Complete";
-            setTimeout(() => {
-                const preparingScreen = document.getElementById('preparing-screen');
-                if (preparingScreen) preparingScreen.style.display = 'none';
-            }, 3000);
-        }
         const preparingScreen = document.getElementById('preparing-screen');
         if (preparingScreen) preparingScreen.style.display = 'none';
 
@@ -2179,12 +2185,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 2. UNHIDE CORE COMPONENTS (Styled Subtitles button removed; video is shown immediately for video uploads)
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
-
         const mainBtn = document.getElementById('main-btn');
-        if (mainBtn) {
-            mainBtn.disabled = false;
-            mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : "Upload";
-        }
 
         if (isFailedJob) {
             window.currentSegments = [];
@@ -2206,31 +2207,55 @@ document.addEventListener('DOMContentLoaded', () => {
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
         if (!Array.isArray(segments)) segments = [];
         segments = splitLongSegments(segments, 40);
-        // If backend added translated_text, show GPT output as the main transcript text.
-        const translationMeta = (output && output.translation_meta) || rawResult.translation_meta || null;
-        const translatedCount = segments.filter(s => String(s.translated_text || '').trim().length > 0).length;
-        const changedCount = segments.filter(s => {
-            const t = String(s.translated_text || '').trim();
-            const o = String(s.text || '').trim();
-            return t.length > 0 && t !== o;
-        }).length;
-        const metaOkCount = Number((translationMeta && translationMeta.ok_count) || 0);
-        const backendAlreadyApplied = translatedCount === 0 && metaOkCount > 0;
-        if (translatedCount > 0) {
-            segments = segments.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
-            console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
-            const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
-            const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
-            console.log(`GPT debug: translated ${translatedCount}/${segments.length}, changed ${changedCount}/${segments.length}${extraModel}${extraErr}`);
-        } else if (backendAlreadyApplied) {
-            // Some backend paths overwrite text directly and only return translation_meta.
-            console.log('[GPT] Job translate success (applied in text field). meta=', translationMeta);
-        } else {
-            const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
-            const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
-            console.warn('[GPT] No translated_text found in job result. meta=', translationMeta);
-            console.warn(`GPT debug: no translated_text found in result${extraModel}${extraErr}`);
+
+        // First, treat these as raw Ivrit-AI segments.
+        window.currentSegments = segments;
+
+        // Then, run GPT post-processing via /api/translate_segments (decoupled from RunPod callback).
+        let translationMeta = null;
+        let translatedCount = 0;
+        let changedCount = 0;
+        try {
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            if (mainBtn) {
+                mainBtn.disabled = true;
+                mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
+            }
+            const userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
+            const res = await fetch('/api/translate_segments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ segments, targetLang: userLang })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const translatedSegments = Array.isArray(data.segments) ? data.segments : [];
+                translationMeta = data.meta || null;
+                if (translatedSegments.length) {
+                    translatedCount = translatedSegments.filter(s => String(s.translated_text || '').trim().length > 0).length;
+                    changedCount = translatedSegments.filter(s => {
+                        const t = String(s.translated_text || '').trim();
+                        const o = String(s.text || '').trim();
+                        return t.length > 0 && t !== o;
+                    }).length;
+                    segments = translatedSegments.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
+                    console.log('[GPT] Job translate success:', translatedCount + '/' + translatedSegments.length, 'changed:', changedCount + '/' + translatedSegments.length, 'meta:', translationMeta);
+                    const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
+                    const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
+                    console.log(`GPT debug: translated ${translatedCount}/${translatedSegments.length}, changed ${changedCount}/${translatedSegments.length}${extraModel}${extraErr}`);
+                } else {
+                    const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
+                    const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
+                    console.warn('[GPT] translate_segments returned no segments. meta=', translationMeta);
+                    console.warn(`GPT debug: no translated segments returned (using raw Ivrit-AI output)${extraModel}${extraErr}`);
+                }
+            } else {
+                console.error('[GPT] translate_segments API failed:', res.status);
+            }
+        } catch (e) {
+            console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
         }
+
         window.currentSegments = segments;
         const gptPostProcessed = (
             (translationMeta && Number(translationMeta.ok_count || 0) > 0 && Number(translationMeta.error_count || 0) === 0) ||
@@ -2248,7 +2273,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const res = await fetch('/api/save_job_result', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ userId: user.id, input_s3_key: s3Key, segments: window.currentSegments })
+                            body: JSON.stringify({ userId: user.id, input_s3_key: s3Key, segments: window.currentSegments, stage: 'gpt' })
                         });
                         const data = res.ok ? await res.json() : {};
                         if (data.result_s3_key) {
@@ -2308,6 +2333,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             });
+        }
+
+        // Finally, restore button + status text after GPT stage completes.
+        if (mainBtn) {
+            mainBtn.disabled = false;
+            mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : "Upload";
+        }
+        if (statusTxt) {
+            statusTxt.innerText = typeof window.t === 'function' ? window.t('transcription_complete') : "Transcription Complete";
+            setTimeout(() => {
+                const ps = document.getElementById('preparing-screen');
+                if (ps) ps.style.display = 'none';
+            }, 3000);
         }
     };
 
@@ -3169,6 +3207,31 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 if (ts.status === 'triggered' && typeof startFakeProgress === 'function') startFakeProgress();
                             } else if (triggerRes.ok && (triggerData.status === 'started' || triggerData.status === 'queued')) {
                                 if (typeof startFakeProgress === 'function') startFakeProgress();
+                            }
+                            // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
+                            if (jobId && typeof window.handleJobUpdate === 'function') {
+                                if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+                                const pollMs = 4000;
+                                const maxPolls = 150; // ~10 min
+                                let polls = 0;
+                                window._checkStatusPollInterval = setInterval(async () => {
+                                    polls++;
+                                    if (polls > maxPolls || !localStorage.getItem('activeJobId')) {
+                                        if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+                                        window._checkStatusPollInterval = null;
+                                        return;
+                                    }
+                                    try {
+                                        const res = await fetch(`/api/check_status/${encodeURIComponent(jobId)}`);
+                                        if (!res.ok) return;
+                                        const data = await res.json();
+                                        if (data.status === 'completed' || data.status === 'failed' || (data.segments && data.segments.length > 0)) {
+                                            if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+                                            window._checkStatusPollInterval = null;
+                                            window.handleJobUpdate(data);
+                                        }
+                                    } catch (_) {}
+                                }, pollMs);
                             }
                         } catch (err) {
                             const dbId2 = localStorage.getItem('lastJobDbId');
