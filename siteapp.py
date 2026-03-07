@@ -365,10 +365,11 @@ pending_trigger = {}  # job_id -> "queued" | "triggered" | "failed"
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None}
 
 def get_runpod_endpoint_status(pod_id):
-    """GET RunPod endpoint/pod status. Returns dict with 'status' (e.g. 'running') or empty."""
+    """GET RunPod endpoint status via REST API. Returns dict with endpoint info and optional workers.
+    Uses rest.runpod.io/v1/endpoints (management API), not api.runpod.ai/v2 (run API)."""
     if not RUNPOD_API_KEY or not pod_id:
         return {}
-    url = f"https://api.runpod.ai/v2/{pod_id.strip()}"
+    url = f"https://rest.runpod.io/v1/endpoints/{pod_id.strip()}?includeWorkers=true"
     headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
@@ -379,7 +380,8 @@ def get_runpod_endpoint_status(pod_id):
     return {}
 
 def gpu_warmup(pod_id, timeout_sec=300, interval_sec=5):
-    """Block until RunPod endpoint reports status 'running' (or timeout). Set RUNPOD_SKIP_WARMUP=1 to skip."""
+    """Block until RunPod endpoint reports ready (or timeout). Uses rest.runpod.io/v1/endpoints.
+    For serverless (scale-to-zero), workers start on first /run, so warmup is skipped by default."""
     if str(os.environ.get("RUNPOD_SKIP_WARMUP", "")).lower() in ("1", "true", "yes"):
         print("RUNPOD_SKIP_WARMUP set; skipping warmup.")
         return
@@ -929,10 +931,14 @@ def sign_s3():
         })
 
 def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
-    """Background: warmup GPU then POST /run. Updates pending_trigger[job_id]."""
+    """Background: POST /run to trigger job. Updates pending_trigger[job_id].
+    Serverless scales from zero: workers start on first /run, so we trigger immediately
+    instead of waiting for 'running' (which never comes before /run). Set RUNPOD_SKIP_WARMUP=0
+    and ensure get_runpod_endpoint_status uses rest.runpod.io if you need pre-trigger wait."""
     global pending_trigger
     try:
-        gpu_warmup(endpoint_id, timeout_sec=300, interval_sec=5)
+        if str(os.environ.get("RUNPOD_SKIP_WARMUP", "1")).lower() in ("0", "false", "no"):
+            gpu_warmup(endpoint_id, timeout_sec=300, interval_sec=5)
         clean_id = str(endpoint_id).strip()
         endpoint_url = f"https://api.runpod.ai/v2/{clean_id}/run"
         headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
