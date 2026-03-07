@@ -3066,6 +3066,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         video.pause();
                         try { video.focus(); } catch (e) {}
                     }
+                    // Show video player immediately; do not wait for transcription
+                    const videoWrapper = document.getElementById('video-wrapper');
+                    const videoPlayer = document.getElementById('video-player-container');
+                    const playerContainer = document.getElementById('audio-player-container');
+                    if (playerContainer) playerContainer.style.display = 'none';
+                    if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+                    if (video) video.style.display = '';
+                    if (videoPlayer) videoPlayer.style.display = 'block';
                     // Continue to upload and process (do not return) so transcription runs for video too
                 }
             } catch (e) {
@@ -3087,8 +3095,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const pContainer = document.getElementById('p-container');
             if (pContainer) { pContainer.style.display = "block"; }
             if (progressBar) { progressBar.style.width = "0%"; }
-            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = (typeof window.t === 'function' ? window.t('uploading') : "Uploading..."); }
-            if (statusTxt) { statusTxt.innerText = (typeof window.t === 'function' ? window.t('uploading') : "Uploading..."); statusTxt.style.display = "block"; }
+            const uploadLabel = (typeof window.t === 'function' ? window.t('uploading') : "Uploading...");
+            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
+            if (statusTxt) statusTxt.style.display = "none";
             setTranscriptActionButtonsVisible(false);
             var placeholderEl = document.getElementById('placeholder');
             if (placeholderEl) placeholderEl.style.display = "none";
@@ -3140,15 +3149,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     if (e.lengthComputable && progressBar) {
                         const pct = Math.min(100, Math.round((e.loaded / e.total) * 100));
                         progressBar.style.width = pct + "%";
-                        if (statusTxt) statusTxt.innerText = (typeof window.t === 'function' ? window.t('uploading') : "Uploading...") + " " + pct + "%";
+                        if (mainBtn) mainBtn.innerText = uploadLabel + " " + pct + "%";
                     }
                 };
 
                 xhr.onload = async () => {
                     if (xhr.status === 200 || xhr.status === 201) {
                         if (progressBar) progressBar.style.width = "100%";
-                        if (statusTxt) statusTxt.innerText = (typeof window.t === 'function' ? window.t('uploading') : "Uploading...") + " 100%";
-                        console.log("✅ File uploaded to S3. Triggering processing...");
+                        if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
+                        console.log("✅ File uploaded to S3.");
                         window.isTriggering = true;
                         const dbId = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
@@ -3167,6 +3176,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             let triggerData = {};
                             try { triggerData = await triggerRes.json(); } catch (_) {}
                             if (!triggerRes.ok) {
+                                console.log("❌ Triggering processing failed:", triggerRes.status, triggerData);
                                 const msg = triggerData.message || triggerData.error || `Server error (${triggerRes.status})`;
                                 if (typeof showStatus === 'function') showStatus(msg, true);
                                 const dbId2 = localStorage.getItem('lastJobDbId');
@@ -3178,6 +3188,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             }
 
                             if (triggerRes.status === 202 && triggerData.status === 'queued') {
+                                console.log("✅ Triggering processing queued.");
+
                                 const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
                                 const queuedMsg = isHebrewUi ? 'ממתין בתור...' : 'Wait in line...';
                                 if (progressBar) progressBar.style.width = '0%';
@@ -3196,6 +3208,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     ts = stRes.ok ? await stRes.json() : {};
                                 }
                                 if (ts.status === 'failed') {
+                                    console.log("❌ Triggering processing failed:", ts.status, ts.error);
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                     window.isTriggering = false;
@@ -3206,6 +3219,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 }
                                 if (ts.status === 'triggered' && typeof startFakeProgress === 'function') startFakeProgress();
                             } else if (triggerRes.ok && (triggerData.status === 'started' || triggerData.status === 'queued')) {
+                                console.log("✅ Triggering processing...");
                                 if (typeof startFakeProgress === 'function') startFakeProgress();
                             }
                             // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
