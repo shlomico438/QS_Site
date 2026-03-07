@@ -1012,7 +1012,7 @@ def trigger_processing():
             "input_s3_key": s3_key,
             "user_id": _extract_user_id_from_s3_key(s3_key),
         }
-        pending_trigger[job_id] = "queued"
+        pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
         t = threading.Thread(
             target=_do_warmup_and_trigger,
             args=(job_id, payload, endpoint_id, api_key)
@@ -1020,7 +1020,8 @@ def trigger_processing():
         t.daemon = True
         t.start()
 
-        return jsonify({"status": "queued", "job_id": job_id}), 202
+        # Return "started" so first/cold run shows "Triggering processing..." not "Wait in line..."
+        return jsonify({"status": "started", "job_id": job_id}), 202
 
     except Exception as e:
         print(f"❌ trigger_processing CRASHED: {str(e)}")
