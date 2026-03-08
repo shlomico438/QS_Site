@@ -9,6 +9,85 @@ window.originalFileName = "transcript";
 window.hasMultipleSpeakers = false;
 let isSignUpMode = true;
 
+/** Start polling check_status and trigger_status for a job (used after trigger and on retry). */
+window.startJobStatusPolling = function(jobId) {
+    if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+    const pollMs = 4000;
+    const maxPolls = 150; // ~10 min
+    let polls = 0;
+    window._checkStatusPollInterval = setInterval(async () => {
+        polls++;
+        if (polls > maxPolls || !localStorage.getItem('activeJobId')) {
+            if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+            window._checkStatusPollInterval = null;
+            return;
+        }
+        try {
+            if (polls % 5 === 0) {
+                const tsRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
+                if (tsRes.ok) {
+                    const ts = await tsRes.json();
+                    if (ts.status === 'failed') {
+                        if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+                        window._checkStatusPollInterval = null;
+                        window.isTriggering = false;
+                        const msg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
+                            ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
+                        if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
+                        return;
+                    }
+                    const stale = ts.status === 'stale_queued' || (ts.status === 'queued' && (ts.queued_since_sec || 0) > 120);
+                    if (stale && (!window._triggerRetriedForJobId || window._triggerRetriedForJobId !== jobId)) {
+                        window._triggerRetriedForJobId = jobId;
+                        const retryRes = await fetch('/api/retry_trigger', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ jobId })
+                        });
+                        if (retryRes.ok) {
+                            const retryMsg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
+                                ? 'הפעלה מחדש...' : 'Retrying trigger...';
+                            if (typeof showStatus === 'function') showStatus(retryMsg, false);
+                        }
+                    }
+                }
+            }
+            const res = await fetch(`/api/check_status/${encodeURIComponent(jobId)}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.status === 'completed' || data.status === 'failed' || (data.segments && data.segments.length > 0)) {
+                if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+                window._checkStatusPollInterval = null;
+                window.handleJobUpdate(data);
+            }
+        } catch (_) {}
+    }, pollMs);
+};
+
+/** Call after "GPU trigger failed" to re-send trigger for the active job (no re-upload). */
+window.retryTriggerForActiveJob = async function() {
+    const jobId = localStorage.getItem('activeJobId');
+    if (!jobId) return;
+    try {
+        const r = await fetch('/api/retry_trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobId })
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            if (typeof showStatus === 'function') showStatus(body.message || 'Retry failed', true);
+            return;
+        }
+        window.isTriggering = true;
+        window._triggerRetriedForJobId = null;
+        if (typeof startFakeProgress === 'function') startFakeProgress();
+        if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(jobId);
+    } catch (e) {
+        if (typeof showStatus === 'function') showStatus('Retry failed', true);
+    }
+};
+
 // --- AUTH STATE: after email confirmation (magic link) Supabase creates the session; close modal and refresh ---
 supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session) {
@@ -247,8 +326,7 @@ function splitLongSegments(segments, maxChars = 40) {
     return result;
 }
 
-function showStatus(message, isError = false) {
-    // Create element if it doesn't exist
+function showStatus(message, isError = false, options = {}) {
     let toast = document.getElementById('toast-container');
     if (!toast) {
         toast = document.createElement('div');
@@ -257,14 +335,30 @@ function showStatus(message, isError = false) {
         document.body.appendChild(toast);
     }
 
-    toast.innerText = message;
+    toast.textContent = '';
+    toast.appendChild(document.createTextNode(message));
     toast.classList.toggle('toast-error', isError);
     toast.classList.add('show');
 
-    // Hide after 4 seconds
-    setTimeout(() => {
+    if (options.retryTrigger && typeof window.retryTriggerForActiveJob === 'function') {
+        const retryBtn = document.createElement('button');
+        retryBtn.type = 'button';
+        retryBtn.className = 'toast-retry-btn';
+        retryBtn.textContent = (typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')) ? 'נסה שוב' : 'Retry';
+        retryBtn.addEventListener('click', () => {
+            toast.classList.remove('show');
+            window.retryTriggerForActiveJob();
+        });
+        toast.appendChild(document.createTextNode(' '));
+        toast.appendChild(retryBtn);
+    }
+
+    const hideDelay = options.retryTrigger ? 15000 : 4000;
+    if (toast._hideTimeout) clearTimeout(toast._hideTimeout);
+    toast._hideTimeout = setTimeout(() => {
         toast.classList.remove('show');
-    }, 4000);
+        toast._hideTimeout = null;
+    }, hideDelay);
 }
 
 function setSeoHomeContentVisibility(visible) {
@@ -3192,6 +3286,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
                         console.log("✅ File uploaded to S3.");
                         window.isTriggering = true;
+                        window._triggerRetriedForJobId = null; // allow one auto-retry if trigger gets stuck
                         const dbId = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
 
@@ -3257,28 +3352,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             }
                             // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
                             if (jobId && typeof window.handleJobUpdate === 'function') {
-                                if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
-                                const pollMs = 4000;
-                                const maxPolls = 150; // ~10 min
-                                let polls = 0;
-                                window._checkStatusPollInterval = setInterval(async () => {
-                                    polls++;
-                                    if (polls > maxPolls || !localStorage.getItem('activeJobId')) {
-                                        if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
-                                        window._checkStatusPollInterval = null;
-                                        return;
-                                    }
-                                    try {
-                                        const res = await fetch(`/api/check_status/${encodeURIComponent(jobId)}`);
-                                        if (!res.ok) return;
-                                        const data = await res.json();
-                                        if (data.status === 'completed' || data.status === 'failed' || (data.segments && data.segments.length > 0)) {
-                                            if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
-                                            window._checkStatusPollInterval = null;
-                                            window.handleJobUpdate(data);
-                                        }
-                                    } catch (_) {}
-                                }, pollMs);
+                                window.startJobStatusPolling(jobId);
                             }
                         } catch (err) {
                             const dbId2 = localStorage.getItem('lastJobDbId');

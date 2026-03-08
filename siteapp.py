@@ -361,8 +361,10 @@ import time  # Ensure time is imported at the top of your file
 
 # Job is queued until GPU warmup finishes, then we trigger RunPod. Frontend polls trigger_status.
 pending_trigger = {}  # job_id -> "queued" | "triggered" | "failed"
-# So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id }
-pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None}
+pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detection)
+STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
+# So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
+pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
 
 def get_runpod_endpoint_status(pod_id):
     """GET RunPod endpoint status via REST API. Returns dict with endpoint info and optional workers.
@@ -965,12 +967,22 @@ def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
 
 @app.route('/api/trigger_status', methods=['GET'])
 def trigger_status():
-    """Frontend polls this until status is 'triggered', then starts progress bar."""
+    """Frontend polls this until status is 'triggered', then starts progress bar.
+    If status stays 'queued' longer than STALE_QUEUED_SEC, returns 'stale_queued' so frontend can retry."""
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
     status = pending_trigger.get(job_id, "unknown")
-    return jsonify({"job_id": job_id, "status": status}), 200
+    queued_since_sec = None
+    if status == "queued":
+        at = pending_trigger_at.get(job_id, 0)
+        queued_since_sec = int(time.time() - at) if at else 0
+        if queued_since_sec > STALE_QUEUED_SEC:
+            status = "stale_queued"
+    out = {"job_id": job_id, "status": status}
+    if status in ("queued", "stale_queued") and queued_since_sec is not None:
+        out["queued_since_sec"] = queued_since_sec
+    return jsonify(out), 200
 
 @app.route('/api/trigger_processing', methods=['POST'])
 def trigger_processing():
@@ -1023,12 +1035,15 @@ def trigger_processing():
             }
         }
 
-        # So gpu_callback can save raw JSON even when RunPod does not echo input
+        # So gpu_callback can save raw JSON even when RunPod does not echo input; store task/language for retry
         pending_job_info[job_id] = {
             "input_s3_key": s3_key,
             "user_id": _extract_user_id_from_s3_key(s3_key),
+            "task": task,
+            "language": language,
         }
         pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
+        pending_trigger_at[job_id] = time.time()
         t = threading.Thread(
             target=_do_warmup_and_trigger,
             args=(job_id, payload, endpoint_id, api_key)
@@ -1043,6 +1058,52 @@ def trigger_processing():
         print(f"❌ trigger_processing CRASHED: {str(e)}")
         import traceback
         traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/retry_trigger', methods=['POST'])
+def retry_trigger():
+    """Re-send RunPod trigger for a job that is stuck (e.g. trigger never fired). Uses stored job info."""
+    global pending_trigger, pending_trigger_at
+    try:
+        data = request.json if request.is_json else {}
+        job_id = (data or {}).get('jobId')
+        if not job_id:
+            return jsonify({"status": "error", "message": "jobId required"}), 400
+        if SIMULATION_MODE:
+            return jsonify({"status": "retry_started", "job_id": job_id}), 202
+        info = pending_job_info.get(job_id)
+        if not info:
+            return jsonify({"status": "error", "message": "Job not found or expired"}), 404
+        s3_key = info.get("input_s3_key")
+        if not s3_key:
+            return jsonify({"status": "error", "message": "Job missing s3 key"}), 400
+        endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
+        api_key = os.environ.get('RUNPOD_API_KEY')
+        if not endpoint_id or not api_key:
+            return jsonify({"status": "error", "message": "RunPod not configured"}), 503
+        task = info.get('task', 'transcribe')
+        language = info.get('language', 'he')
+        payload = {
+            "input": {
+                "s3Key": s3_key,
+                "jobId": job_id,
+                "task": task,
+                "language": language,
+            }
+        }
+        pending_trigger[job_id] = "queued"
+        pending_trigger_at[job_id] = time.time()
+        t = threading.Thread(
+            target=_do_warmup_and_trigger,
+            args=(job_id, payload, endpoint_id, api_key)
+        )
+        t.daemon = True
+        t.start()
+        print(f"🔄 Retry trigger started for job {job_id}")
+        return jsonify({"status": "retry_started", "job_id": job_id}), 202
+    except Exception as e:
+        logging.exception("retry_trigger failed")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 

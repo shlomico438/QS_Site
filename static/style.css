@@ -520,6 +520,21 @@ html, body {
     .toast-notification.show {
         opacity: 1;
         transform: translateX(-50%) translateY(-10px);
+        pointer-events: auto;
+    }
+
+    .toast-retry-btn {
+        margin-left: 8px;
+        padding: 4px 12px;
+        border: 1px solid rgba(255,255,255,0.8);
+        border-radius: 6px;
+        background: rgba(255,255,255,0.2);
+        color: inherit;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .toast-retry-btn:hover {
+        background: rgba(255,255,255,0.35);
     }
 
     .toast-error {
