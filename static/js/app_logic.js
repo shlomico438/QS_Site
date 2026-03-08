@@ -2223,8 +2223,8 @@ document.addEventListener('DOMContentLoaded', () => {
         window.currentSegments = segments;
 
         // Then, run GPT post-processing via /api/translate_segments (decoupled from RunPod callback).
-        // For long transcripts we chunk requests to avoid 504 Gateway Timeout (each request stays under gateway limit).
-        const TRANSLATE_CHUNK_SIZE = 45;
+        // Chunk requests so each stays under gateway timeout (~60s). ~25 segments/request usually finishes in time.
+        const TRANSLATE_CHUNK_SIZE = 25;
         let translationMeta = null;
         let translatedCount = 0;
         let changedCount = 0;
@@ -2239,26 +2239,40 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < segments.length; i += TRANSLATE_CHUNK_SIZE) {
                 chunks.push(segments.slice(i, i + TRANSLATE_CHUNK_SIZE));
             }
+            const TRANSLATE_CONCURRENCY = 4;
+            if (chunks.length > 1) console.log('[GPT] Chunked translate:', segments.length, 'segments ->', chunks.length, 'requests (parallel:', TRANSLATE_CONCURRENCY + ')');
+            const chunkResults = [];
+            for (let b = 0; b < chunks.length; b += TRANSLATE_CONCURRENCY) {
+                if (mainBtn && chunks.length > 1) {
+                    mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + Math.min(b + TRANSLATE_CONCURRENCY, chunks.length) + '/' + chunks.length;
+                }
+                const batchIndices = [];
+                for (let i = 0; i < TRANSLATE_CONCURRENCY && b + i < chunks.length; i++) batchIndices.push(b + i);
+                const batchPromises = batchIndices.map(function (c) {
+                    return fetch('/api/translate_segments', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ segments: chunks[c], targetLang: userLang })
+                    }).then(function (res) {
+                        if (res.ok) return res.json().then(function (data) {
+                            return { index: c, segments: Array.isArray(data.segments) ? data.segments : chunks[c], meta: data.meta };
+                        });
+                        console.error('[GPT] translate_segments chunk ' + (c + 1) + '/' + chunks.length + ' failed:', res.status);
+                        return { index: c, segments: chunks[c], meta: null };
+                    }).catch(function (err) {
+                        console.warn('[GPT] translate chunk ' + (c + 1) + ' error:', err);
+                        return { index: c, segments: chunks[c], meta: null };
+                    });
+                });
+                const batchResults = await Promise.all(batchPromises);
+                for (let r = 0; r < batchResults.length; r++) chunkResults.push(batchResults[r]);
+            }
+            chunkResults.sort(function (a, b) { return a.index - b.index; });
             const allTranslated = [];
             let lastMeta = null;
-            for (let c = 0; c < chunks.length; c++) {
-                if (mainBtn && chunks.length > 1) {
-                    mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + (c + 1) + '/' + chunks.length;
-                }
-                const res = await fetch('/api/translate_segments', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ segments: chunks[c], targetLang: userLang })
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    const part = Array.isArray(data.segments) ? data.segments : [];
-                    allTranslated.push(...part);
-                    lastMeta = data.meta || null;
-                } else {
-                    console.error('[GPT] translate_segments chunk ' + (c + 1) + '/' + chunks.length + ' failed:', res.status);
-                    allTranslated.push(...chunks[c]);
-                }
+            for (let r = 0; r < chunkResults.length; r++) {
+                allTranslated.push(...chunkResults[r].segments);
+                if (chunkResults[r].meta) lastMeta = chunkResults[r].meta;
             }
             if (allTranslated.length) {
                 translationMeta = lastMeta;
@@ -3481,33 +3495,42 @@ async function handleSubtitleFile(file) {
         mainBtn.disabled = true;
         mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
     }
-    const TRANSLATE_CHUNK_SIZE = 45;
+    const TRANSLATE_CHUNK_SIZE = 25;
+    const TRANSLATE_CONCURRENCY = 4;
     try {
         const userLang = getUserTargetLang();
         const chunkedCues = [];
         for (let i = 0; i < cues.length; i += TRANSLATE_CHUNK_SIZE) {
             chunkedCues.push(cues.slice(i, i + TRANSLATE_CHUNK_SIZE));
         }
+        const chunkResults = [];
+        for (let b = 0; b < chunkedCues.length; b += TRANSLATE_CONCURRENCY) {
+            if (mainBtn && chunkedCues.length > 1) {
+                mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + Math.min(b + TRANSLATE_CONCURRENCY, chunkedCues.length) + '/' + chunkedCues.length;
+            }
+            const batchIndices = [];
+            for (let i = 0; i < TRANSLATE_CONCURRENCY && b + i < chunkedCues.length; i++) batchIndices.push(b + i);
+            const batchPromises = batchIndices.map(function (c) {
+                return fetch('/api/translate_segments', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ segments: chunkedCues[c], targetLang: userLang })
+                }).then(function (res) {
+                    if (res.ok) return res.json().then(function (data) {
+                        return { index: c, segments: Array.isArray(data.segments) ? data.segments : chunkedCues[c], meta: data.meta };
+                    });
+                    return { index: c, segments: chunkedCues[c], meta: null };
+                }).catch(function () { return { index: c, segments: chunkedCues[c], meta: null }; });
+            });
+            const batchResults = await Promise.all(batchPromises);
+            for (let r = 0; r < batchResults.length; r++) chunkResults.push(batchResults[r]);
+        }
+        chunkResults.sort(function (a, b) { return a.index - b.index; });
         const allTranslated = [];
         let lastMeta = null;
-        for (let c = 0; c < chunkedCues.length; c++) {
-            if (mainBtn && chunkedCues.length > 1) {
-                mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + (c + 1) + '/' + chunkedCues.length;
-            }
-            const res = await fetch('/api/translate_segments', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ segments: chunkedCues[c], targetLang: userLang })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                const part = Array.isArray(data.segments) ? data.segments : [];
-                allTranslated.push(...part);
-                lastMeta = data.meta || null;
-            } else {
-                console.error('[GPT] SRT translate chunk ' + (c + 1) + '/' + chunkedCues.length + ' failed:', res.status);
-                allTranslated.push(...chunkedCues[c]);
-            }
+        for (let r = 0; r < chunkResults.length; r++) {
+            allTranslated.push(...chunkResults[r].segments);
+            if (chunkResults[r].meta) lastMeta = chunkResults[r].meta;
         }
         if (allTranslated.length) {
             const translatedCount = allTranslated.filter(s => String(s.translated_text || '').trim().length > 0).length;

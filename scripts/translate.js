@@ -25,8 +25,8 @@ function getApiKey() {
 }
 
 function getModel() {
-  // Higher-quality default for transcript correction; override with GPT_MODEL if needed.
-  return (process.env.GPT_MODEL || 'gpt-5').trim();
+  // gpt-4o-mini is cheaper; set GPT_MODEL=gpt-4o for highest quality.
+  return (process.env.GPT_MODEL || 'gpt-4o-mini').trim();
 }
 
 function getFallbackModel(primaryModel) {

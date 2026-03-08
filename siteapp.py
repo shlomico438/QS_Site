@@ -488,7 +488,8 @@ def check_job_status(job_id):
 def _translate_segments_via_python_openai(segments, target_lang='he'):
     """Fallback path when Node.js is unavailable: call OpenAI directly from Python."""
     api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
-    model = (os.environ.get('GPT_MODEL') or 'gpt-5').strip()
+    # gpt-4o-mini is much cheaper than gpt-4o; set GPT_MODEL=gpt-4o for highest quality
+    model = (os.environ.get('GPT_MODEL') or 'gpt-4o-mini').strip()
     fallback_model = (os.environ.get('GPT_FALLBACK_MODEL') or 'gpt-4o').strip()
     chunk_size = int(os.environ.get('GPT_CHUNK_SIZE', '30') or 30)
     timeout_sec = int(os.environ.get('GPT_TIMEOUT_SEC', '90') or 90)
