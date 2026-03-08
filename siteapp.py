@@ -1001,6 +1001,7 @@ def trigger_processing():
         except Exception:
             speaker_count = 2
 
+        # VAD: let the model cut segments (silence / max duration / threshold)
         payload = {
             "input": {
                 "s3Key": s3_key,
@@ -1010,6 +1011,9 @@ def trigger_processing():
                 "num_speakers": speaker_count,
                 "diarization": diarization,
                 "callback_url": f"{_public_base_url(request)}/api/gpu_callback",
+                "min_silence_duration_ms": int(data.get("min_silence_duration_ms", 500)),
+                "max_speech_duration_s": float(data.get("max_speech_duration_s", 10)),
+                "vad_threshold": float(data.get("vad_threshold", 0.6)),
             }
         }
 
