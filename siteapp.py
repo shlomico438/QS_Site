@@ -1007,9 +1007,9 @@ def trigger_processing():
                 "jobId": job_id,
                 "task": task,
                 "language": language,
-                "num_speakers": speaker_count,
-                "diarization": diarization,
-                "callback_url": f"{_public_base_url(request)}/api/gpu_callback",
+                # "num_speakers": speaker_count,
+                # "diarization": diarization,
+                # "callback_url": f"{_public_base_url(request)}/api/gpu_callback",
             }
         }
 
