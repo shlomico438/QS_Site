@@ -737,7 +737,8 @@ def translate_segments(segments, target_lang='he'):
 
 @app.route('/api/translate_segments', methods=['POST'])
 def api_translate_segments():
-    """Accept segments JSON, run GPT correction, return segments with translated_text. Used by SRT/VTT upload and any client."""
+    """Accept segments JSON, run GPT correction, return segments with translated_text. Used by SRT/VTT upload and any client.
+    If you get 504: gateway/proxy read timeout is too short; set it > GPT_TIMEOUT_SEC (default 90) or lower GPT_TIMEOUT_SEC."""
     data = request.json or {}
     segments = data.get('segments') or []
     target_lang = data.get('targetLang') or data.get('target_lang') or 'he'

@@ -1071,13 +1071,14 @@ async function initOpenInApp(jobId) {
     setSeoHomeContentVisibility(false);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
-    // Fetch job without result first so we never 400 if result column is missing
+    // Fetch job without result first so we never 400 if result column is missing.
+    // Use maybeSingle() to avoid 406 when no row matches (PostgREST returns 406 for .single() when 0 rows).
     const { data: job, error } = await supabase
         .from('jobs')
         .select('id, input_s3_key')
         .eq('id', jobId)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
     if (error || !job || !job.input_s3_key) {
         if (typeof showStatus === 'function') showStatus('Could not load file.', true);
         return;
