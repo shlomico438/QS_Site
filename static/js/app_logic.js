@@ -2223,6 +2223,8 @@ document.addEventListener('DOMContentLoaded', () => {
         window.currentSegments = segments;
 
         // Then, run GPT post-processing via /api/translate_segments (decoupled from RunPod callback).
+        // For long transcripts we chunk requests to avoid 504 Gateway Timeout (each request stays under gateway limit).
+        const TRANSLATE_CHUNK_SIZE = 45;
         let translationMeta = null;
         let translatedCount = 0;
         let changedCount = 0;
@@ -2233,35 +2235,43 @@ document.addEventListener('DOMContentLoaded', () => {
                 mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
             }
             const userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
-            const res = await fetch('/api/translate_segments', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ segments, targetLang: userLang })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                const translatedSegments = Array.isArray(data.segments) ? data.segments : [];
-                translationMeta = data.meta || null;
-                if (translatedSegments.length) {
-                    translatedCount = translatedSegments.filter(s => String(s.translated_text || '').trim().length > 0).length;
-                    changedCount = translatedSegments.filter(s => {
-                        const t = String(s.translated_text || '').trim();
-                        const o = String(s.text || '').trim();
-                        return t.length > 0 && t !== o;
-                    }).length;
-                    segments = translatedSegments.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
-                    console.log('[GPT] Job translate success:', translatedCount + '/' + translatedSegments.length, 'changed:', changedCount + '/' + translatedSegments.length, 'meta:', translationMeta);
-                    const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
-                    const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
-                    console.log(`GPT debug: translated ${translatedCount}/${translatedSegments.length}, changed ${changedCount}/${translatedSegments.length}${extraModel}${extraErr}`);
-                } else {
-                    const extraModel = translationMeta && translationMeta.model ? ` | model: ${translationMeta.model}` : '';
-                    const extraErr = translationMeta && translationMeta.first_error ? ` | err: ${translationMeta.first_error}` : '';
-                    console.warn('[GPT] translate_segments returned no segments. meta=', translationMeta);
-                    console.warn(`GPT debug: no translated segments returned (using raw Ivrit-AI output)${extraModel}${extraErr}`);
+            const chunks = [];
+            for (let i = 0; i < segments.length; i += TRANSLATE_CHUNK_SIZE) {
+                chunks.push(segments.slice(i, i + TRANSLATE_CHUNK_SIZE));
+            }
+            const allTranslated = [];
+            let lastMeta = null;
+            for (let c = 0; c < chunks.length; c++) {
+                if (mainBtn && chunks.length > 1) {
+                    mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + (c + 1) + '/' + chunks.length;
                 }
-            } else {
-                console.error('[GPT] translate_segments API failed:', res.status);
+                const res = await fetch('/api/translate_segments', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ segments: chunks[c], targetLang: userLang })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const part = Array.isArray(data.segments) ? data.segments : [];
+                    allTranslated.push(...part);
+                    lastMeta = data.meta || null;
+                } else {
+                    console.error('[GPT] translate_segments chunk ' + (c + 1) + '/' + chunks.length + ' failed:', res.status);
+                    allTranslated.push(...chunks[c]);
+                }
+            }
+            if (allTranslated.length) {
+                translationMeta = lastMeta;
+                translatedCount = allTranslated.filter(s => String(s.translated_text || '').trim().length > 0).length;
+                changedCount = allTranslated.filter(s => {
+                    const t = String(s.translated_text || '').trim();
+                    const o = String(s.text || '').trim();
+                    return t.length > 0 && t !== o;
+                }).length;
+                segments = allTranslated.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
+                console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
+            } else if (lastMeta) {
+                translationMeta = lastMeta;
             }
         } catch (e) {
             console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
@@ -3471,38 +3481,43 @@ async function handleSubtitleFile(file) {
         mainBtn.disabled = true;
         mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
     }
+    const TRANSLATE_CHUNK_SIZE = 45;
     try {
         const userLang = getUserTargetLang();
-        const res = await fetch('/api/translate_segments', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ segments: cues, targetLang: userLang })
-        });
-        if (res.ok) {
-            const data = await res.json();
-            const translatedSegments = Array.isArray(data.segments) ? data.segments : [];
-            if (translatedSegments.length) {
-                const translatedCount = translatedSegments.filter(s => String(s.translated_text || '').trim().length > 0).length;
-                const changedCount = translatedSegments.filter(s => {
-                    const t = String(s.translated_text || '').trim();
-                    const o = String(s.text || '').trim();
-                    return t.length > 0 && t !== o;
-                }).length;
-                // Use GPT output as transcript text; keep original text as fallback if GPT is empty.
-                cues = translatedSegments.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
-                console.log('[GPT] SRT translate success:', translatedCount + '/' + translatedSegments.length, 'changed:', changedCount + '/' + translatedSegments.length, 'meta:', data.meta || null);
-                const extraModel = data.meta && data.meta.model ? ` | model: ${data.meta.model}` : '';
-                const extraErr = data.meta && data.meta.first_error ? ` | err: ${data.meta.first_error}` : '';
-                console.log(`GPT debug: translated ${translatedCount}/${translatedSegments.length}, changed ${changedCount}/${translatedSegments.length}${extraModel}${extraErr}`);
-            } else {
-                const extraModel = data.meta && data.meta.model ? ` | model: ${data.meta.model}` : '';
-                const extraErr = data.meta && data.meta.first_error ? ` | err: ${data.meta.first_error}` : '';
-                console.warn('[GPT] SRT translate returned no segments. meta=', data.meta || null);
-                console.warn(`GPT debug: no translated segments returned (using original SRT)${extraModel}${extraErr}`);
+        const chunkedCues = [];
+        for (let i = 0; i < cues.length; i += TRANSLATE_CHUNK_SIZE) {
+            chunkedCues.push(cues.slice(i, i + TRANSLATE_CHUNK_SIZE));
+        }
+        const allTranslated = [];
+        let lastMeta = null;
+        for (let c = 0; c < chunkedCues.length; c++) {
+            if (mainBtn && chunkedCues.length > 1) {
+                mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + (c + 1) + '/' + chunkedCues.length;
             }
-        } else {
-            console.error('[GPT] SRT translate API failed:', res.status);
-            console.error(`GPT debug: translate API failed (${res.status}) - using original SRT`);
+            const res = await fetch('/api/translate_segments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ segments: chunkedCues[c], targetLang: userLang })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const part = Array.isArray(data.segments) ? data.segments : [];
+                allTranslated.push(...part);
+                lastMeta = data.meta || null;
+            } else {
+                console.error('[GPT] SRT translate chunk ' + (c + 1) + '/' + chunkedCues.length + ' failed:', res.status);
+                allTranslated.push(...chunkedCues[c]);
+            }
+        }
+        if (allTranslated.length) {
+            const translatedCount = allTranslated.filter(s => String(s.translated_text || '').trim().length > 0).length;
+            const changedCount = allTranslated.filter(s => {
+                const t = String(s.translated_text || '').trim();
+                const o = String(s.text || '').trim();
+                return t.length > 0 && t !== o;
+            }).length;
+            cues = allTranslated.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
+            console.log('[GPT] SRT translate success:', translatedCount + '/' + cues.length, 'changed:', changedCount + '/' + cues.length, 'meta:', lastMeta || null);
         }
     } catch (e) {
         console.warn('Translation skipped:', e);
