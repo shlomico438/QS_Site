@@ -1922,7 +1922,17 @@ if (authSubmitBtn) {
             authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('link_sent') : "Link sent! Check your email.";
         } catch (err) {
             console.error("❌ Auth Error:", err);
-            showStatus(err.message, true);
+            // Log full error so we can see Supabase response (e.g. 500 "Error sending magic link email")
+            if (err && (err.message || err.error_description || err.msg)) {
+                console.error("Auth error detail:", {
+                    message: err.message,
+                    status: err.status,
+                    error_description: err.error_description,
+                    msg: err.msg,
+                    name: err.name
+                });
+            }
+            showStatus(err.message || (err.error_description || err.msg || "Login failed"), true);
         } finally {
             authSubmitBtn.disabled = false;
         }
