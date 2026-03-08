@@ -1152,7 +1152,7 @@ def _build_ass(segments, style='tiktok'):
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     ]
     # TikTok bold: wrap to 2 lines at 28 chars per line; ASS newline is \N
-    max_chars_per_line = 28 if style == 'tiktok' else 9999
+    max_chars_per_line = 27 if style == 'tiktok' else 9999
     for seg in segments:
         start = seg.get('start', 0)
         end = seg.get('end', start + 1)
