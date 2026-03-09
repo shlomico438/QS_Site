@@ -1239,6 +1239,35 @@ def _ass_ts(s):
     cs = int(round((sec % 1) * 100))
     return f"{h}:{m:02d}:{int(sec):02d}.{cs:02d}"
 
+# Punctuation that should stay with previous line in RTL (not start the next line)
+_RTL_LINE_END_PUNCT = '.,;:!?،؛؟'
+
+def _wrap_text_rtl_safe(text, max_chars_per_line):
+    """Split text into lines; keep trailing punctuation with previous line (fixes RTL burn: comma/period at start of line)."""
+    if not text or len(text) <= max_chars_per_line:
+        return [text.strip()] if text and text.strip() else []
+    parts = []
+    rest = text
+    while rest:
+        rest = rest.lstrip()
+        if not rest:
+            break
+        if len(rest) <= max_chars_per_line:
+            parts.append(rest.strip())
+            break
+        chunk = rest[: max_chars_per_line + 1]
+        last_space = chunk.rfind(' ')
+        split_at = last_space if last_space > 0 else max_chars_per_line
+        part = rest[:split_at].strip()
+        rest = rest[split_at:].lstrip()
+        # Don't start next line with punctuation (RTL: keeps , . at end of previous line)
+        while rest and rest[0] in _RTL_LINE_END_PUNCT:
+            part += rest[0]
+            rest = rest[1:].lstrip()
+        parts.append(part)
+    return parts
+
+
 def _build_ass(segments, style='tiktok', portrait=False):
     """Build ASS content. style: tiktok (bold yellow centered), clean, cinematic. portrait=True uses 14 chars/line."""
     # PlayRes chosen for scale; ffmpeg will scale
@@ -1271,18 +1300,8 @@ def _build_ass(segments, style='tiktok', portrait=False):
         end = seg.get('end', start + 1)
         text = (seg.get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
         if style == 'tiktok' and len(text) > max_chars_per_line:
-            parts = []
-            rest = text
-            while rest:
-                if len(rest) <= max_chars_per_line:
-                    parts.append(rest.strip())
-                    break
-                chunk = rest[: max_chars_per_line + 1]
-                last_space = chunk.rfind(' ')
-                split_at = last_space if last_space > 0 else max_chars_per_line
-                parts.append(rest[:split_at].strip())
-                rest = rest[split_at:].lstrip()
-            text = '\\N'.join(parts)
+            parts = _wrap_text_rtl_safe(text, max_chars_per_line)
+            text = '\\N'.join(parts) if parts else text
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 
@@ -1314,7 +1333,8 @@ def _send_burn_ready_email(to_email, download_url, base_name):
         logging.warning("Send burn-ready email failed: %s", e)
 
 
-def _segments_to_srt_text(segments):
+def _segments_to_srt_text(segments, max_chars_per_line=None):
+    """Build SRT text. If max_chars_per_line is set (e.g. 27 for tiktok), wrap with RTL-safe line breaks."""
     def to_srt_ts(s):
         h = int(s // 3600)
         m = int((s % 3600) // 60)
@@ -1328,6 +1348,9 @@ def _segments_to_srt_text(segments):
         if end <= start:
             end = start + 0.5
         text = str(seg.get('text') or '').replace('\n', ' ')
+        if max_chars_per_line and max_chars_per_line < 9999 and len(text) > max_chars_per_line:
+            lines = _wrap_text_rtl_safe(text, max_chars_per_line)
+            text = '\n'.join(lines) if lines else text
         rows.append(f"{i + 1}\n{to_srt_ts(start)} --> {to_srt_ts(end)}\n{text}\n")
     return "\n".join(rows) + ("\n" if rows else "")
 
@@ -1372,7 +1395,8 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
 
     output_s3_key, safe_name = _build_output_key(user_id, input_s3_key, task_id)
     subtitle_s3_key = f"users/{user_id}/tmp/subtitles/{task_id}.srt"
-    subtitle_text = _segments_to_srt_text(segments)
+    max_chars = 14 if (subtitle_style == 'tiktok' and is_portrait) else (27 if subtitle_style == 'tiktok' else 9999)
+    subtitle_text = _segments_to_srt_text(segments, max_chars_per_line=max_chars)
     s3_client.put_object(
         Bucket=bucket,
         Key=subtitle_s3_key,
