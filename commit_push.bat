@@ -115,7 +115,7 @@ echo.
 echo -----------------------------------------
 echo [5/5] [SUCCESS] Build verified and changes live on master!
 echo -----------------------------------------
-pause
+
 
 ::set KOYEB_TOKEN=8wt69rbq7xta5ivm21s2xmkjimo3wkie43581w15kwq8pf2a13bpd03v3zmgjtti
 ::set SERVICE_ID=c7fcdc62-2caf-4dba-a397-35d4a85b8ead?deploymentId=5a4a3f8a-c89d-45ec-8671-12b387dbb4a7

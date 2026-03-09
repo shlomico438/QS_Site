@@ -123,12 +123,16 @@ def get_presigned_url():
             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=os.environ.get('AWS_REGION')
         )
+        params = {
+            'Bucket': os.environ.get('S3_BUCKET'),
+            'Key': s3_key
+        }
+        # Serve .mov with video/mp4 so Chrome/Firefox use MP4 decoder (many .mov are H.264)
+        if s3_key and s3_key.lower().endswith('.mov'):
+            params['ResponseContentType'] = 'video/mp4'
         url = s3_client.generate_presigned_url(
             'get_object',
-            Params={
-                'Bucket': os.environ.get('S3_BUCKET'),
-                'Key': s3_key
-            },
+            Params=params,
             ExpiresIn=3600
         )
 

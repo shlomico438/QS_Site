@@ -1238,7 +1238,8 @@ async function initOpenInApp(jobId) {
         if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
         if (src) {
             src.src = json.url;
-            const mime = { '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
+            // Use video/mp4 for .mov so Chrome/Firefox use MP4 decoder (many .mov are H.264 in QuickTime container)
+            const mime = { '.mp4': 'video/mp4', '.mov': 'video/mp4', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
             const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
             src.type = mime[ext] || 'video/mp4';
         }
@@ -1261,6 +1262,8 @@ async function initOpenInApp(jobId) {
             }
         }
         if (videoPlayer) videoPlayer.style.display = 'block';
+        const movHint = document.getElementById('video-mov-hint');
+        if (movHint) movHint.style.display = filename.toLowerCase().endsWith('.mov') ? 'block' : 'none';
     } else {
         // Audio only (m4a, mp3, etc.): use audio player only, no video
         const audioContainer = document.getElementById('audio-player-container');
@@ -1271,6 +1274,8 @@ async function initOpenInApp(jobId) {
         const mainAudio = document.getElementById('main-audio');
         if (videoWrapper) { videoWrapper.style.display = 'none'; videoWrapper.classList.remove('visible'); }
         if (video) video.style.display = 'none';
+        const movHint = document.getElementById('video-mov-hint');
+        if (movHint) movHint.style.display = 'none';
         if (audioContainer && videoWrapper && audioContainer.parentNode === videoPlayer) {
             videoWrapper.parentNode.insertBefore(audioContainer, videoWrapper);
         }
@@ -3315,39 +3320,49 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 return;
                             }
 
-                            if (triggerRes.status === 202 && triggerData.status === 'queued') {
-                                console.log("✅ Triggering processing queued.");
-
+                            // Option A: wait for RunPod trigger confirmation before showing "processing"
+                            if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {
                                 const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                                const queuedMsg = isHebrewUi ? 'ממתין בתור...' : 'Wait in line...';
+                                const waitMsg = isHebrewUi ? 'מפעיל עיבוד...' : 'Triggering processing...';
                                 if (progressBar) progressBar.style.width = '0%';
-                                if (mainBtn) mainBtn.innerText = queuedMsg;
+                                if (mainBtn) mainBtn.innerText = waitMsg;
                                 if (statusTxt) {
                                     statusTxt.innerText = '';
                                     statusTxt.style.display = 'none';
                                 }
                                 const pollInterval = 2000;
-                                const maxWait = 360000;
+                                const triggerConfirmTimeoutMs = 90000; // 90s max wait for RunPod handshake
                                 const start = Date.now();
                                 let ts = { status: '' };
-                                while (ts.status !== 'triggered' && ts.status !== 'failed' && (Date.now() - start) < maxWait) {
+                                while (ts.status !== 'triggered' && ts.status !== 'failed' && ts.status !== 'stale_queued' && (Date.now() - start) < triggerConfirmTimeoutMs) {
                                     await new Promise(r => setTimeout(r, pollInterval));
                                     const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
                                     ts = stRes.ok ? await stRes.json() : {};
                                 }
-                                if (ts.status === 'failed') {
-                                    console.log("❌ Triggering processing failed:", ts.status, ts.error);
+                                if (ts.status === 'failed' || ts.status === 'stale_queued') {
+                                    console.log("❌ Trigger not confirmed:", ts.status);
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                     window.isTriggering = false;
                                     localStorage.removeItem('activeJobId');
                                     if (mainBtn) mainBtn.disabled = false;
-                                    if (typeof showStatus === 'function') showStatus("GPU trigger failed.", true);
+                                    const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
+                                    if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
                                     return;
                                 }
-                                if (ts.status === 'triggered' && typeof startFakeProgress === 'function') startFakeProgress();
-                            } else if (triggerRes.ok && (triggerData.status === 'started' || triggerData.status === 'queued')) {
-                                console.log("✅ Triggering processing...");
+                                if (ts.status !== 'triggered') {
+                                    // timeout: still queued after 90s
+                                    console.log("❌ Trigger confirmation timeout");
+                                    const dbId2 = localStorage.getItem('lastJobDbId');
+                                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                                    window.isTriggering = false;
+                                    localStorage.removeItem('activeJobId');
+                                    if (mainBtn) mainBtn.disabled = false;
+                                    const msg = isHebrewUi ? 'הפעלת העיבוד ארכה יותר מדי. נסה שוב.' : 'Trigger timed out. Try again.';
+                                    if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
+                                    return;
+                                }
+                                console.log("✅ RunPod trigger confirmed.");
                                 if (typeof startFakeProgress === 'function') startFakeProgress();
                             }
                             // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
