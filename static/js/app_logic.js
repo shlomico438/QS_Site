@@ -1655,7 +1655,7 @@ window.downloadFile = async function(type, bypassUser = null) {
             let burnProgressTimer = null;
             const startBurnProgress = () => {
                 let pct = 8;
-                if (pContainer) { pContainer.style.display = 'block'; pContainer.classList.add('progress-pinned'); }
+                showProgressBarPinned();
                 if (progressBar) progressBar.style.width = pct + '%';
                 if (statusTxt) {
                     statusTxt.innerText = '';
@@ -1682,8 +1682,7 @@ window.downloadFile = async function(type, bypassUser = null) {
                     setBurnProgress(100, typeof window.t === 'function' ? window.t('movie_downloaded') : 'Movie downloaded');
                 }
                 setTimeout(() => {
-                    if (pContainer) { pContainer.style.display = 'none'; pContainer.classList.remove('progress-pinned'); }
-                    if (progressBar) progressBar.style.width = '0%';
+                    hideProgressBar();
                     hideBurnProgress();
                 }, completed ? 1200 : 0);
                 if (!completed) hideBurnProgress();
@@ -2112,8 +2111,7 @@ function resetScreenToInitial() {
     const editActions = document.getElementById('edit-actions');
 
     if (preparingScreen) preparingScreen.style.display = 'none';
-    if (pContainer) { pContainer.style.display = 'none'; pContainer.classList.remove('progress-pinned'); }
-    if (progressBar) progressBar.style.width = '0%';
+    hideProgressBar();
     if (statusTxt) {
         statusTxt.style.display = 'block';
         statusTxt.innerText = typeof window.t === 'function' ? window.t('ready') : 'Ready';
@@ -2152,6 +2150,35 @@ function resetScreenToInitial() {
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
+}
+
+/** Show progress bar and pin to bottom of viewport (move to body so fixed positioning works). */
+function showProgressBarPinned() {
+    const pc = document.getElementById('p-container');
+    if (!pc) return;
+    pc.style.display = 'block';
+    pc.classList.add('progress-pinned');
+    if (!pc._progressPinParent) {
+        pc._progressPinParent = pc.parentNode;
+        pc._progressPinNext = pc.nextSibling;
+    }
+    document.body.appendChild(pc);
+    const pb = document.getElementById('progress-bar');
+    if (pb) pb.style.width = '0%';
+}
+
+/** Hide progress bar and move back to original place in upload-zone. */
+function hideProgressBar() {
+    const pc = document.getElementById('p-container');
+    if (!pc) return;
+    if (pc._progressPinParent) {
+        if (pc._progressPinNext) pc._progressPinParent.insertBefore(pc, pc._progressPinNext);
+        else pc._progressPinParent.appendChild(pc);
+    }
+    pc.style.display = 'none';
+    pc.classList.remove('progress-pinned');
+    const pb = document.getElementById('progress-bar');
+    if (pb) pb.style.width = '0%';
 }
 
 function setTranscriptActionButtonsVisible(visible) {
@@ -2282,10 +2309,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const preparingScreen = document.getElementById('preparing-screen');
         if (preparingScreen) preparingScreen.style.display = 'none';
 
-        const pContainer = document.getElementById('p-container');
-        const progressBar = document.getElementById('progress-bar');
-        if (pContainer) { pContainer.style.display = 'none'; pContainer.classList.remove('progress-pinned'); }
-        if (progressBar) progressBar.style.width = '0%';
+        hideProgressBar();
 
         const output = rawResult.result || rawResult.output || rawResult;
         const jobStatus = String(rawResult.status || (output && output.status) || '').toLowerCase();
@@ -3285,9 +3309,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // 1. Get the snapshot of the toggle state RIGHT NOW
             const diarizationValue = document.getElementById('diarization-toggle')?.checked || false;
 
-            // UI Feedback: show progress bar for upload phase (pinned so it stays visible during processing)
-            const pContainer = document.getElementById('p-container');
-            if (pContainer) { pContainer.style.display = "block"; pContainer.classList.add('progress-pinned'); }
+            // UI Feedback: show progress bar for upload phase (pinned to viewport bottom)
+            showProgressBarPinned();
             if (progressBar) { progressBar.style.width = "0%"; }
             const uploadLabel = (typeof window.t === 'function' ? window.t('uploading') : "Uploading...");
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
@@ -3380,9 +3403,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                 window.isTriggering = false;
                                 localStorage.removeItem('activeJobId');
-                                const pc = document.getElementById('p-container');
-                                if (pc) { pc.style.display = 'none'; pc.classList.remove('progress-pinned'); }
-                                if (progressBar) progressBar.style.width = '0%';
+                                hideProgressBar();
                                 if (mainBtn) mainBtn.disabled = false;
                                 return;
                             }
@@ -3412,9 +3433,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     console.log("❌ Trigger not confirmed:", ts.status);
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
-                                    const pc = document.getElementById('p-container');
-                                    if (pc) { pc.style.display = 'none'; pc.classList.remove('progress-pinned'); }
-                                    if (progressBar) progressBar.style.width = '0%';
+                                    hideProgressBar();
                                     const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
                                     showTriggerErrorDialog(msg, {
                                         onClose: () => {
@@ -3433,9 +3452,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     window.isTriggering = false;
                                     if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
                                     localStorage.removeItem('activeJobId');
-                                    const pc = document.getElementById('p-container');
-                                    if (pc) { pc.style.display = 'none'; pc.classList.remove('progress-pinned'); }
-                                    if (progressBar) progressBar.style.width = '0%';
+                                    hideProgressBar();
                                     if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                     if (mainBtn) mainBtn.disabled = false;
                                     return;
@@ -3456,9 +3473,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                             window.isTriggering = false;
                             localStorage.removeItem('activeJobId');
-                            const pc = document.getElementById('p-container');
-                            if (pc) { pc.style.display = 'none'; pc.classList.remove('progress-pinned'); }
-                            if (progressBar) progressBar.style.width = '0%';
+                            hideProgressBar();
                             if (mainBtn) mainBtn.disabled = false;
                             throw err;
                         }
@@ -3468,9 +3483,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                         window.isTriggering = false;
                         localStorage.removeItem('activeJobId');
-                        const pc = document.getElementById('p-container');
-                        if (pc) { pc.style.display = 'none'; pc.classList.remove('progress-pinned'); }
-                        if (progressBar) progressBar.style.width = '0%';
+                        hideProgressBar();
                         if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                     }
                 };
@@ -3481,10 +3494,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                     window.isTriggering = false;
                     localStorage.removeItem('activeJobId');
-                    const pc = document.getElementById('p-container');
-                    if (pc) { pc.style.display = 'none'; pc.classList.remove('progress-pinned'); }
-                    const pb = document.getElementById('progress-bar');
-                    if (pb) pb.style.width = '0%';
+                    hideProgressBar();
                 };
 
                 xhr.send(currentFile);
@@ -3494,10 +3504,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 console.error("Upload Error:", err);
                 window.isTriggering = false;
                 localStorage.removeItem('activeJobId');
-                const pc = document.getElementById('p-container');
-                if (pc) { pc.style.display = 'none'; pc.classList.remove('progress-pinned'); }
-                const pb = document.getElementById('progress-bar');
-                if (pb) pb.style.width = '0%';
+                hideProgressBar();
                 if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                 if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('error_starting_upload') : "Error starting upload."), true);
             }
