@@ -3358,6 +3358,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
 
                         try {
+                            console.log("Triggering");
                             const triggerRes = await fetch('/api/trigger_processing', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
@@ -3371,6 +3372,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             let triggerData = {};
                             try { triggerData = await triggerRes.json(); } catch (_) {}
                             if (!triggerRes.ok) {
+                                console.log("trigger nack", triggerRes.status, triggerData);
                                 console.log("❌ Triggering processing failed:", triggerRes.status, triggerData);
                                 const msg = triggerData.message || triggerData.error || `Server error (${triggerRes.status})`;
                                 if (typeof showStatus === 'function') showStatus(msg, true);
@@ -3384,6 +3386,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                             // Option A: wait for RunPod trigger confirmation before showing "processing"
                             if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {
+                                console.log("trigger ack (started, waiting for worker handshake)");
                                 const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
                                 const waitMsg = isHebrewUi ? 'מפעיל עיבוד...' : 'Triggering processing...';
                                 if (progressBar) progressBar.style.width = '0%';
@@ -3402,6 +3405,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     ts = stRes.ok ? await stRes.json() : {};
                                 }
                                 if (ts.status === 'failed' || ts.status === 'stale_queued') {
+                                    console.log("trigger nack", ts.status);
                                     console.log("❌ Trigger not confirmed:", ts.status);
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
@@ -3417,6 +3421,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 }
                                 if (ts.status !== 'triggered') {
                                     // timeout: still queued after 90s
+                                    console.log("trigger nack", "timeout");
                                     console.log("❌ Trigger confirmation timeout");
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
@@ -3430,14 +3435,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     });
                                     return;
                                 }
+                                console.log("trigger ack (triggered)");
                                 console.log("✅ RunPod trigger confirmed.");
                                 if (typeof startFakeProgress === 'function') startFakeProgress();
+                            } else if (triggerRes.status === 202) {
+                                console.log("trigger nack", "unexpected status", triggerData.status);
                             }
                             // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
                             if (jobId && typeof window.handleJobUpdate === 'function') {
                                 window.startJobStatusPolling(jobId);
                             }
                         } catch (err) {
+                            console.log("trigger nack", "exception", err && err.message);
                             const dbId2 = localStorage.getItem('lastJobDbId');
                             if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                             window.isTriggering = false;

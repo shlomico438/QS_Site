@@ -1024,12 +1024,14 @@ def trigger_processing():
             data = {}
         print(f"📩 Received Trigger Request: {data}")
 
-        if SIMULATION_MODE:
-            print("🔮 SIMULATION: Skipping RunPod Trigger")
-            return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
-
         s3_key = data.get('s3Key')
         job_id = data.get('jobId')
+        if SIMULATION_MODE:
+            print("🔮 SIMULATION: Skipping RunPod Trigger")
+            if job_id:
+                pending_trigger[job_id] = "triggered"  # so frontend does not wait for gpu_started
+            return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
+
         if not s3_key or not job_id:
             return jsonify({"status": "error", "message": "s3Key and jobId required"}), 400
 
@@ -1043,7 +1045,7 @@ def trigger_processing():
 
         if not endpoint_id or not api_key:
             print("🔮 RunPod not configured: falling back to simulation (mock result in ~1s)")
-            # Only start simulation here when not in SIMULATION_MODE (sign-s3 already starts it when SIMULATION_MODE)
+            pending_trigger[job_id] = "triggered"  # no worker to call gpu_started; let frontend proceed
             if not SIMULATION_MODE:
                 t = threading.Thread(target=simulate_completion, args=(job_id, diarization))
                 t.daemon = True
