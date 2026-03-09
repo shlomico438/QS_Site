@@ -3396,7 +3396,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     statusTxt.style.display = 'none';
                                 }
                                 const pollInterval = 2000;
-                                const triggerConfirmTimeoutMs = 90000; // 90s max wait for RunPod handshake
+                                const triggerConfirmTimeoutMs = 5 * 60 * 1000; // 5 min for cold startup
                                 const start = Date.now();
                                 let ts = { status: '' };
                                 while (ts.status !== 'triggered' && ts.status !== 'failed' && ts.status !== 'stale_queued' && (Date.now() - start) < triggerConfirmTimeoutMs) {
@@ -3420,19 +3420,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     return;
                                 }
                                 if (ts.status !== 'triggered') {
-                                    // timeout: still queued after 90s
+                                    // timeout: only console, no popup
                                     console.log("trigger nack", "timeout");
                                     console.log("❌ Trigger confirmation timeout");
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
-                                    const msg = isHebrewUi ? 'הפעלת העיבוד ארכה יותר מדי.' : 'Trigger timed out.';
-                                    showTriggerErrorDialog(msg, {
-                                        onClose: () => {
-                                            localStorage.removeItem('activeJobId');
-                                            if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
-                                            if (mainBtn) mainBtn.disabled = false;
-                                        }
-                                    });
+                                    if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
+                                    localStorage.removeItem('activeJobId');
+                                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                                    if (mainBtn) mainBtn.disabled = false;
                                     return;
                                 }
                                 console.log("trigger ack (triggered)");
