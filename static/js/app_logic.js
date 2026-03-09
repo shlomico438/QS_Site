@@ -20,6 +20,13 @@ window.startJobStatusPolling = function(jobId) {
         if (polls > maxPolls || !localStorage.getItem('activeJobId')) {
             if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
             window._checkStatusPollInterval = null;
+            if (polls > maxPolls && localStorage.getItem('activeJobId') === jobId) {
+                window.isTriggering = false;
+                if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
+                const msg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
+                    ? 'העיבוד ארך יותר מדי או נכשל בשרת. נסה שוב.' : 'Job timed out or may have failed on the server. Try again.';
+                if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
+            }
             return;
         }
         try {
@@ -2261,7 +2268,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
             if (mainVideo) mainVideo.style.display = '';
             const videoSrc = document.getElementById('video-source');
-            if (videoSrc && savedUrl) { videoSrc.src = savedUrl; videoSrc.type = (localStorage.getItem('currentAudioMime') || 'video/mp4'); }
+            if (videoSrc && savedUrl) {
+                videoSrc.src = savedUrl;
+                let mime = localStorage.getItem('currentAudioMime') || 'video/mp4';
+                if (mime.toLowerCase().includes('quicktime') || (savedUrl + '').toLowerCase().includes('.mov')) mime = 'video/mp4';
+                videoSrc.type = mime;
+            }
             if (mainVideo) {
                 mainVideo.controls = true;
                 mainVideo.load();
@@ -3189,7 +3201,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     window.originalFileName = file.name.replace(/\.[^.]+$/, '');
                     const src = document.getElementById('video-source');
                     const video = document.getElementById('main-video');
-                    if (src) src.src = url;
+                    if (src) {
+                        src.src = url;
+                        // Use video/mp4 for .mov so Chrome/Firefox can play (same as presigned-URL path)
+                        const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
+                        src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+                    }
                     if (video) {
                         video.style.position = 'relative';
                         video.style.zIndex = '1002';
@@ -3215,7 +3232,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // CREATE A LOCAL PREVIEW URL
             const objectUrl = URL.createObjectURL(file);
             localStorage.setItem('currentAudioUrl', objectUrl);
-            localStorage.setItem('currentAudioMime', file.type || '');
+            const storeMime = (file.type || '').toLowerCase();
+            const mimeForMov = (/\.mov$/i.test(file.name) || storeMime.includes('quicktime')) ? 'video/mp4' : (file.type || '');
+            localStorage.setItem('currentAudioMime', mimeForMov);
 
             const currentFile = file; // Captured for use in the fetch
             fileInput.value = ""; // Reset for next selection

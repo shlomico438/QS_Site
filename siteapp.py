@@ -364,7 +364,12 @@ def legal():
 import time  # Ensure time is imported at the top of your file
 
 # Job is queued until GPU warmup finishes, then we trigger RunPod. Frontend polls trigger_status.
-pending_trigger = {}  # job_id -> "queued" | "triggered" | "failed"
+# States:
+# - "queued": we accepted the trigger request and are about to call RunPod /run
+# - "run_accepted": RunPod /run returned 200/201/202 (container should start soon)
+# - "triggered": app_transcribe.py has started and called /api/gpu_started
+# - "failed": RunPod /run failed or warmup/trigger crashed
+pending_trigger = {}  # job_id -> "queued" | "run_accepted" | "triggered" | "failed"
 pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detection)
 STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
@@ -766,53 +771,60 @@ def api_translate_segments():
 # --- 1. Add Global Cache at the top ---
 job_results_cache = {}
 
-# --- 2. Update GPU Callback to SAVE the data ---
-# Inside siteapp.py -> gpu_callback
+# --- 2. GPU Callback: bulletproof contract (return 200 only after we've saved) ---
+# Worker must POST here; only 200 + body.ok=true means "app has received and stored the result".
+# See docs/GPU_CALLBACK_API.md for full contract.
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
     data = request.json or {}
     job_id = data.get('jobId')
+    if not job_id:
+        return jsonify({"ok": False, "error": "jobId required"}), 400
     result = data.get('result') or {}
-    # Support both callback shapes:
-    # 1) { result: { segments: [...] } }
-    # 2) { segments: [...] }
     segments = result.get('segments') or data.get('segments') or []
+    if not isinstance(segments, list):
+        return jsonify({"ok": False, "error": "segments must be an array"}), 400
 
-    # Persist raw Ivrit-AI output to S3 (separate JSON from GPT).
-    try:
-        # Prefer server-side cache (set at trigger) in case RunPod callback does not echo input
-        pending = pending_job_info.pop(job_id, None)
-        if pending:
-            input_s3_key = pending.get('input_s3_key') or ''
-            user_id = pending.get('user_id')
-        else:
-            input_info = data.get('input') or {}
-            input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
-            user_id = _extract_user_id_from_s3_key(input_s3_key)
-        if input_s3_key and segments:
-            raw_key = _put_segments_json_to_s3(user_id or 'anonymous', input_s3_key, segments, stage='raw')
+    # Resolve input_s3_key and user_id (for S3 path)
+    pending = pending_job_info.pop(job_id, None)
+    if pending:
+        input_s3_key = pending.get('input_s3_key') or ''
+        user_id = pending.get('user_id')
+    else:
+        input_info = data.get('input') or {}
+        input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
+        user_id = _extract_user_id_from_s3_key(input_s3_key)
+
+    raw_result_s3_key = None
+    if input_s3_key:
+        try:
+            raw_result_s3_key = _put_segments_json_to_s3(user_id or 'anonymous', input_s3_key, segments, stage='raw')
             result_dict = dict(result) if isinstance(result, dict) else {}
-            result_dict['raw_result_s3_key'] = raw_key
+            result_dict['raw_result_s3_key'] = raw_result_s3_key
             data = dict(data)
             data['result'] = result_dict
-    except Exception as e:
-        logging.warning("Failed to save raw job result to S3: %s", e)
+        except Exception as e:
+            logging.exception("Failed to save raw job result to S3 for %s", job_id)
+            return jsonify({"ok": False, "error": "Failed to save result", "detail": str(e)}), 500
 
-    # Normalize shape for clients: keep top-level segments field.
-    if segments:
-        data = dict(data)
-        data['result'] = dict(data.get('result') or result) if isinstance(result, dict) else {}
-        data['result']['segments'] = segments
-        data['segments'] = segments
+    data = dict(data)
+    data.setdefault('result', {})
+    data['result'] = dict(data.get('result') or result) if isinstance(result, dict) else {}
+    data['result']['segments'] = segments
+    data['segments'] = segments
+    data['status'] = 'completed'
 
-    # Store in cache for persistence
     job_results_cache[job_id] = data
-
-    # EMIT: 'job_status_update' must match the listener in app_logic.js
     socketio.emit('job_status_update', data, room=job_id)
     print(f"DEBUG: Emitted result to room {job_id}")
 
-    return jsonify({"status": "ok", "stage": "raw_saved"}), 200
+    return jsonify({
+        "ok": True,
+        "received": True,
+        "job_id": job_id,
+        "stage": "raw_saved",
+        "raw_result_s3_key": raw_result_s3_key,
+    }), 200
 
 
 # --- 3. Update Join Logic to CHECK the Cache ---
@@ -960,14 +972,30 @@ def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
         headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
         response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
         if response.status_code in (200, 201, 202):
-            pending_trigger[job_id] = "triggered"
-            print(f"🚀 RunPod triggered for job {job_id}")
+            pending_trigger[job_id] = "run_accepted"
+            print(f"🚀 RunPod accepted job {job_id} (container starting)")
         else:
             pending_trigger[job_id] = "failed"
             print(f"❌ RunPod API Error ({response.status_code}): {response.text}")
     except Exception as e:
         pending_trigger[job_id] = "failed"
         logging.exception("warmup_and_trigger failed for %s", job_id)
+
+
+@app.route('/api/gpu_started', methods=['POST'])
+def gpu_started():
+    """Early handshake from worker: called once app_transcribe.py starts.
+    Marks pending_trigger[job_id] as 'triggered' so frontend can move from 'queued' to 'processing'."""
+    data = request.json or {}
+    job_id = data.get('jobId') or data.get('job_id')
+    if not job_id:
+        return jsonify({"ok": False, "error": "jobId required"}), 400
+    if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
+        pending_trigger[job_id] = "triggered"
+    else:
+        logging.warning("gpu_started for unknown or failed job_id %s", job_id)
+    return jsonify({"ok": True, "job_id": job_id}), 200
+
 
 @app.route('/api/trigger_status', methods=['GET'])
 def trigger_status():
@@ -1027,15 +1055,18 @@ def trigger_processing():
         except Exception:
             speaker_count = 2
 
+        public_base = _public_base_url(request)
+        callback_url = f"{public_base}/api/gpu_callback"
+        start_callback_url = f"{public_base}/api/gpu_started"
+
         payload = {
             "input": {
                 "s3Key": s3_key,
                 "jobId": job_id,
                 "task": task,
                 "language": language,
-                # "num_speakers": speaker_count,
-                # "diarization": diarization,
-                # "callback_url": f"{_public_base_url(request)}/api/gpu_callback",
+                "callback_url": callback_url,
+                "start_callback_url": start_callback_url,
             }
         }
 
@@ -1088,12 +1119,17 @@ def retry_trigger():
             return jsonify({"status": "error", "message": "RunPod not configured"}), 503
         task = info.get('task', 'transcribe')
         language = info.get('language', 'he')
+        public_base = _public_base_url(request)
+        callback_url = f"{public_base}/api/gpu_callback"
+        start_callback_url = f"{public_base}/api/gpu_started"
         payload = {
             "input": {
                 "s3Key": s3_key,
                 "jobId": job_id,
                 "task": task,
                 "language": language,
+                "callback_url": callback_url,
+                "start_callback_url": start_callback_url,
             }
         }
         pending_trigger[job_id] = "queued"
