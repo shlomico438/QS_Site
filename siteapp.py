@@ -33,8 +33,9 @@ from docx.oxml.ns import qn
 
 
 # --- CONFIGURATION ---
-# Read simulation flag from environment so someone can set it before running
-SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'true')).lower() in ('1', 'true', 'yes')
+# Read simulation flag from environment so someone can set it before running.
+# Default 'false' in production: set SIMULATION_MODE=1 or true to enable mock RunPod.
+SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'false')).lower() in ('1', 'true', 'yes')
 
 # App root (for Node translate script)
 APP_ROOT = pathlib.Path(__file__).resolve().parent
@@ -82,9 +83,8 @@ job_results_cache = {}
 
 logging.basicConfig(level=logging.INFO)
 
-if SIMULATION_MODE is False:
-    print("SIMULATION_MODE is True")
-else:
+print(f"SIMULATION_MODE is {SIMULATION_MODE}")
+if not SIMULATION_MODE:
     BASE_DIR = pathlib.Path(__file__).resolve().parent
 
     ffmpeg_path = BASE_DIR / "bin" / "ffmpeg"
@@ -374,6 +374,47 @@ pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detect
 STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
+
+
+def _trigger_state_dir():
+    """Directory for shared trigger state (survives across Gunicorn workers)."""
+    d = (os.environ.get('TRIGGER_STATE_DIR') or '').strip() or os.path.join(tempfile.gettempdir(), 'qs_trigger')
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def _trigger_state_path(job_id):
+    """Safe file path for one job's trigger state."""
+    safe = re.sub(r'[^\w\-]', '_', str(job_id))[:200]
+    return os.path.join(_trigger_state_dir(), f"{safe}.json")
+
+
+def _get_trigger_state(job_id):
+    """Return (status, at_ts) from shared store, or (None, None) if missing."""
+    try:
+        path = _trigger_state_path(job_id)
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return (data.get('status'), data.get('at'))
+    except Exception:
+        pass
+    return (None, None)
+
+
+def _set_trigger_state(job_id, status):
+    """Write trigger state so all workers see it."""
+    try:
+        path = _trigger_state_path(job_id)
+        payload = {"status": status, "at": time.time()}
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+    except Exception as e:
+        logging.warning("Could not write trigger state for %s: %s", job_id, e)
+
 
 def get_runpod_endpoint_status(pod_id):
     """GET RunPod endpoint status via REST API. Returns dict with endpoint info and optional workers.
@@ -818,6 +859,11 @@ def gpu_callback():
     socketio.emit('job_status_update', data, room=job_id)
     print(f"DEBUG: Emitted result to room {job_id}")
 
+    # So frontend handshake completes even if /api/gpu_started was never called; shared store for multi-worker
+    if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
+        pending_trigger[job_id] = "triggered"
+    _set_trigger_state(job_id, "triggered")
+
     return jsonify({
         "ok": True,
         "received": True,
@@ -973,12 +1019,15 @@ def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
         response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
         if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "run_accepted"
+            _set_trigger_state(job_id, "run_accepted")
             print(f"🚀 RunPod accepted job {job_id} (container starting)")
         else:
             pending_trigger[job_id] = "failed"
+            _set_trigger_state(job_id, "failed")
             print(f"❌ RunPod API Error ({response.status_code}): {response.text}")
     except Exception as e:
         pending_trigger[job_id] = "failed"
+        _set_trigger_state(job_id, "failed")
         logging.exception("warmup_and_trigger failed for %s", job_id)
 
 
@@ -992,7 +1041,8 @@ def gpu_started():
         return jsonify({"ok": False, "error": "jobId required"}), 400
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
-    else:
+    _set_trigger_state(job_id, "triggered")
+    if job_id not in pending_trigger or pending_trigger.get(job_id) == "failed":
         logging.warning("gpu_started for unknown or failed job_id %s", job_id)
     return jsonify({"ok": True, "job_id": job_id}), 200
 
@@ -1000,14 +1050,16 @@ def gpu_started():
 @app.route('/api/trigger_status', methods=['GET'])
 def trigger_status():
     """Frontend polls this until status is 'triggered', then starts progress bar.
-    If status stays 'queued' longer than STALE_QUEUED_SEC, returns 'stale_queued' so frontend can retry."""
+    If status stays 'queued' longer than STALE_QUEUED_SEC, returns 'stale_queued' so frontend can retry.
+    Reads from shared store so any Gunicorn worker sees updates from gpu_callback/gpu_started."""
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
-    status = pending_trigger.get(job_id, "unknown")
+    file_status, file_at = _get_trigger_state(job_id)
+    status = file_status if file_status else pending_trigger.get(job_id, "unknown")
     queued_since_sec = None
     if status == "queued":
-        at = pending_trigger_at.get(job_id, 0)
+        at = file_at if file_at else pending_trigger_at.get(job_id, 0)
         queued_since_sec = int(time.time() - at) if at else 0
         if queued_since_sec > STALE_QUEUED_SEC:
             status = "stale_queued"
@@ -1029,7 +1081,8 @@ def trigger_processing():
         if SIMULATION_MODE:
             print("🔮 SIMULATION: Skipping RunPod Trigger")
             if job_id:
-                pending_trigger[job_id] = "triggered"  # so frontend does not wait for gpu_started
+                pending_trigger[job_id] = "triggered"
+                _set_trigger_state(job_id, "triggered")
             return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
 
         if not s3_key or not job_id:
@@ -1045,7 +1098,8 @@ def trigger_processing():
 
         if not endpoint_id or not api_key:
             print("🔮 RunPod not configured: falling back to simulation (mock result in ~1s)")
-            pending_trigger[job_id] = "triggered"  # no worker to call gpu_started; let frontend proceed
+            pending_trigger[job_id] = "triggered"
+            _set_trigger_state(job_id, "triggered")
             if not SIMULATION_MODE:
                 t = threading.Thread(target=simulate_completion, args=(job_id, diarization))
                 t.daemon = True
@@ -1081,6 +1135,7 @@ def trigger_processing():
         }
         pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
         pending_trigger_at[job_id] = time.time()
+        _set_trigger_state(job_id, "queued")
         t = threading.Thread(
             target=_do_warmup_and_trigger,
             args=(job_id, payload, endpoint_id, api_key)
@@ -1136,6 +1191,7 @@ def retry_trigger():
         }
         pending_trigger[job_id] = "queued"
         pending_trigger_at[job_id] = time.time()
+        _set_trigger_state(job_id, "queued")
         t = threading.Thread(
             target=_do_warmup_and_trigger,
             args=(job_id, payload, endpoint_id, api_key)
