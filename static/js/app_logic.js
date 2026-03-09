@@ -24,8 +24,14 @@ window.startJobStatusPolling = function(jobId) {
                 window.isTriggering = false;
                 if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
                 const msg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
-                    ? 'העיבוד ארך יותר מדי או נכשל בשרת. נסה שוב.' : 'Job timed out or may have failed on the server. Try again.';
-                if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
+                    ? 'העיבוד ארך יותר מדי או נכשל בשרת.' : 'Job timed out or may have failed on the server.';
+                showTriggerErrorDialog(msg, {
+                    onClose: () => {
+                        localStorage.removeItem('activeJobId');
+                        const mb = document.getElementById('main-btn');
+                        if (mb) mb.disabled = false;
+                    }
+                });
             }
             return;
         }
@@ -40,7 +46,13 @@ window.startJobStatusPolling = function(jobId) {
                         window.isTriggering = false;
                         const msg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
                             ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
-                        if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
+                        showTriggerErrorDialog(msg, {
+                            onClose: () => {
+                                localStorage.removeItem('activeJobId');
+                                const mb = document.getElementById('main-btn');
+                                if (mb) mb.disabled = false;
+                            }
+                        });
                         return;
                     }
                     const stale = ts.status === 'stale_queued' || (ts.status === 'queued' && (ts.queued_since_sec || 0) > 120);
@@ -51,11 +63,9 @@ window.startJobStatusPolling = function(jobId) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ jobId })
                         });
-                        if (retryRes.ok) {
-                            const retryMsg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
-                                ? 'הפעלה מחדש...' : 'Retrying trigger...';
-                            if (typeof showStatus === 'function') showStatus(retryMsg, false);
-                        }
+                                                    if (retryRes.ok) {
+                                                        console.log('[trigger] Retrying trigger for job', jobId);
+                                                    }
                     }
                 }
             }
@@ -153,6 +163,62 @@ function showGlobalConfirm(message, options = {}) {
         okBtn.onclick = () => cleanup(true);
         overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
     });
+}
+
+/** Standard popup for trigger/GPU errors. Offers Retry and Close. Do not clear activeJobId before calling. */
+function showTriggerErrorDialog(message, options = {}) {
+    let overlay = document.getElementById('trigger-error-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'trigger-error-overlay';
+        overlay.className = 'personal-dialog-overlay';
+        overlay.innerHTML = `
+            <div class="personal-dialog" role="dialog" aria-modal="true">
+                <p class="personal-dialog-message"></p>
+                <div class="personal-dialog-actions">
+                    <button type="button" class="personal-dialog-btn cancel"></button>
+                    <button type="button" class="personal-dialog-btn primary"></button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+    }
+    const msgEl = overlay.querySelector('.personal-dialog-message');
+    const closeBtn = overlay.querySelector('.personal-dialog-btn.cancel');
+    const retryBtn = overlay.querySelector('.personal-dialog-btn.primary');
+    if (!msgEl || !closeBtn || !retryBtn) return;
+    const isHebrew = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he');
+    msgEl.textContent = message || '';
+    closeBtn.textContent = options.closeText || (isHebrew ? 'סגור' : 'Close');
+    retryBtn.textContent = options.retryText || (isHebrew ? 'נסה שוב' : 'Try again');
+    overlay.classList.add('is-open');
+    const cleanup = () => {
+        overlay.classList.remove('is-open');
+        closeBtn.onclick = null;
+        retryBtn.onclick = null;
+        overlay.onclick = null;
+        window.removeEventListener('keydown', onKey);
+    };
+    const onKey = (e) => {
+        if (e.key === 'Escape') {
+            cleanup();
+            if (options.onClose) options.onClose();
+        }
+    };
+    window.addEventListener('keydown', onKey);
+    closeBtn.onclick = () => {
+        cleanup();
+        if (options.onClose) options.onClose();
+    };
+    retryBtn.onclick = () => {
+        cleanup();
+        if (typeof window.retryTriggerForActiveJob === 'function') window.retryTriggerForActiveJob();
+    };
+    overlay.onclick = (e) => {
+        if (e.target === overlay) {
+            cleanup();
+            if (options.onClose) options.onClose();
+        }
+    };
 }
 
 function showGlobalAlert(message, options = {}) {
@@ -333,39 +399,12 @@ function splitLongSegments(segments, maxChars = 40) {
     return result;
 }
 
+/** User-facing messages: show standard popup (not toast). Developer messages should use console.log/warn instead. */
 function showStatus(message, isError = false, options = {}) {
-    let toast = document.getElementById('toast-container');
-    if (!toast) {
-        toast = document.createElement('div');
-        toast.id = 'toast-container';
-        toast.className = 'toast-notification';
-        document.body.appendChild(toast);
-    }
-
-    toast.textContent = '';
-    toast.appendChild(document.createTextNode(message));
-    toast.classList.toggle('toast-error', isError);
-    toast.classList.add('show');
-
-    if (options.retryTrigger && typeof window.retryTriggerForActiveJob === 'function') {
-        const retryBtn = document.createElement('button');
-        retryBtn.type = 'button';
-        retryBtn.className = 'toast-retry-btn';
-        retryBtn.textContent = (typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')) ? 'נסה שוב' : 'Retry';
-        retryBtn.addEventListener('click', () => {
-            toast.classList.remove('show');
-            window.retryTriggerForActiveJob();
-        });
-        toast.appendChild(document.createTextNode(' '));
-        toast.appendChild(retryBtn);
-    }
-
-    const hideDelay = options.retryTrigger ? 15000 : 4000;
-    if (toast._hideTimeout) clearTimeout(toast._hideTimeout);
-    toast._hideTimeout = setTimeout(() => {
-        toast.classList.remove('show');
-        toast._hideTimeout = null;
-    }, hideDelay);
+    if (!message && message !== 0) return;
+    const str = String(message);
+    const isHebrew = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he');
+    showGlobalAlert(str, { confirmText: isHebrew ? 'אישור' : 'OK' });
 }
 
 function setSeoHomeContentVisibility(visible) {
@@ -1551,7 +1590,9 @@ window.downloadFile = async function(type, bypassUser = null) {
 
         const durationSec = (video.duration && Number.isFinite(video.duration)) ? video.duration : 0;
         const widthPx = (video.videoWidth && video.videoWidth > 0) ? video.videoWidth : 0;
-        console.log('[movie export] Video OK – duration', durationSec, 's, width', widthPx);
+        const heightPx = (video.videoHeight && video.videoHeight > 0) ? video.videoHeight : 0;
+        const isPortrait = heightPx > 0 && widthPx > 0 && heightPx > widthPx;
+        console.log('[movie export] Video OK – duration', durationSec, 's, width', widthPx, ', portrait', isPortrait);
         const inputS3Key = localStorage.getItem('lastS3Key');
         if (!inputS3Key || !inputS3Key.startsWith('users/')) {
             console.log('[movie export] No/invalid lastS3Key:', inputS3Key ? inputS3Key.substring(0, 30) + '…' : 'null');
@@ -1662,6 +1703,7 @@ window.downloadFile = async function(type, bypassUser = null) {
                     width_px: widthPx || undefined,
                     userId: movieUser.id,
                     subtitle_style: subtitleStyle,
+                    is_portrait: isPortrait,
                     notify_email: movieUser.email || undefined,
                     job_id: localStorage.getItem('lastJobId') || undefined
                 })
@@ -2932,7 +2974,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // Center cues only for TikTok style; clean/cinematic keep default (bottom) positioning
         const isTiktok = window.currentSubtitleStyle === 'tiktok';
         const cueSettings = isTiktok ? ' line:50% position:50% align:middle' : '';
-        const maxCharsPerLine = isTiktok ? 28 : 42; // TikTok bold: 2 lines at 28 chars; others ~2 lines at 42
+        const isPortrait = video.videoHeight > 0 && video.videoWidth > 0 && video.videoHeight > video.videoWidth;
+        const maxCharsPerLine = isPortrait ? 14 : (isTiktok ? 28 : 42); // Portrait (vertical) has less space: 14 chars
         for (const c of window.currentSegments) {
             vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}${cueSettings}`);
             let text = (c.text || '').replace(/<[^>]+>/g, '').trim();
@@ -3361,24 +3404,30 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 if (ts.status === 'failed' || ts.status === 'stale_queued') {
                                     console.log("❌ Trigger not confirmed:", ts.status);
                                     const dbId2 = localStorage.getItem('lastJobDbId');
-                                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                     window.isTriggering = false;
-                                    localStorage.removeItem('activeJobId');
-                                    if (mainBtn) mainBtn.disabled = false;
                                     const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
-                                    if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
+                                    showTriggerErrorDialog(msg, {
+                                        onClose: () => {
+                                            localStorage.removeItem('activeJobId');
+                                            if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                                            if (mainBtn) mainBtn.disabled = false;
+                                        }
+                                    });
                                     return;
                                 }
                                 if (ts.status !== 'triggered') {
                                     // timeout: still queued after 90s
                                     console.log("❌ Trigger confirmation timeout");
                                     const dbId2 = localStorage.getItem('lastJobDbId');
-                                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                     window.isTriggering = false;
-                                    localStorage.removeItem('activeJobId');
-                                    if (mainBtn) mainBtn.disabled = false;
-                                    const msg = isHebrewUi ? 'הפעלת העיבוד ארכה יותר מדי. נסה שוב.' : 'Trigger timed out. Try again.';
-                                    if (typeof showStatus === 'function') showStatus(msg, true, { retryTrigger: true });
+                                    const msg = isHebrewUi ? 'הפעלת העיבוד ארכה יותר מדי.' : 'Trigger timed out.';
+                                    showTriggerErrorDialog(msg, {
+                                        onClose: () => {
+                                            localStorage.removeItem('activeJobId');
+                                            if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                                            if (mainBtn) mainBtn.disabled = false;
+                                        }
+                                    });
                                     return;
                                 }
                                 console.log("✅ RunPod trigger confirmed.");

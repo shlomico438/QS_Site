@@ -1237,8 +1237,8 @@ def _ass_ts(s):
     cs = int(round((sec % 1) * 100))
     return f"{h}:{m:02d}:{int(sec):02d}.{cs:02d}"
 
-def _build_ass(segments, style='tiktok'):
-    """Build ASS content. style: tiktok (bold yellow centered), clean, cinematic."""
+def _build_ass(segments, style='tiktok', portrait=False):
+    """Build ASS content. style: tiktok (bold yellow centered), clean, cinematic. portrait=True uses 14 chars/line."""
     # PlayRes chosen for scale; ffmpeg will scale
     play_res_x, play_res_y = 384, 288
     if style == 'tiktok':
@@ -1262,8 +1262,8 @@ def _build_ass(segments, style='tiktok'):
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     ]
-    # TikTok bold: wrap to 2 lines at 28 chars per line; ASS newline is \N
-    max_chars_per_line = 27 if style == 'tiktok' else 9999
+    # TikTok bold: wrap at N chars per line (portrait/vertical = 14, landscape = 27); ASS newline is \N
+    max_chars_per_line = 14 if (style == 'tiktok' and portrait) else (27 if style == 'tiktok' else 9999)
     for seg in segments:
         start = seg.get('start', 0)
         end = seg.get('end', start + 1)
@@ -1350,7 +1350,7 @@ def _build_output_key(user_id, input_s3_key, task_id):
     return f"users/{user_id}/output/{safe_name}_with_subtitles.mp4", safe_name
 
 
-def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, notify_email=None, job_id=None):
+def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None):
     """Dispatch burn task to RunPod using presigned S3 URLs."""
     endpoint_id = (RUNPOD_MOVIE_ENDPOINT_ID or "").strip()
     api_key = (RUNPOD_API_KEY or "").strip()
@@ -1403,6 +1403,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
             "output_upload_url": output_upload_url,
             "output_s3_key": output_s3_key,
             "subtitle_style": (subtitle_style or 'tiktok'),
+            "is_portrait": is_portrait,
             "job_id": job_id,
             "user_id": user_id,
             "notify_email": notify_email,
@@ -1423,7 +1424,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
         'safe_name': safe_name
     }
 
-def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, notify_email=None, job_id=None):
+def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None):
     """Background task: download from S3, check duration limit, burn subtitles, upload to S3, optional email."""
     bucket = os.environ.get('S3_BUCKET')
     s3_client = boto3.client(
@@ -1449,7 +1450,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
                 return
             use_ass = subtitle_style in ('tiktok', 'clean', 'cinematic')
             if use_ass:
-                ass_content = _build_ass(segments, subtitle_style or 'tiktok')
+                ass_content = _build_ass(segments, subtitle_style or 'tiktok', portrait=is_portrait)
                 subs_path = os.path.join(tmpdir, 'subtitles.ass')
                 with open(subs_path, 'w', encoding='utf-8') as f:
                     f.write(ass_content)
@@ -1526,6 +1527,7 @@ def burn_subtitles_server():
         segments = data.get('segments', [])
         user_id = data.get('userId') or data.get('user_id')
         subtitle_style = (data.get('subtitle_style') or 'tiktok').strip() or 'tiktok'
+        is_portrait = bool(data.get('is_portrait'))
         notify_email = (data.get('notify_email') or '').strip() or None
         job_id = data.get('job_id')
         if not input_s3_key or not segments or not user_id:
@@ -1548,6 +1550,7 @@ def burn_subtitles_server():
                     user_id=user_id,
                     callback_url=callback_url,
                     subtitle_style=subtitle_style,
+                    is_portrait=is_portrait,
                     notify_email=notify_email,
                     job_id=job_id
                 )
@@ -1559,7 +1562,7 @@ def burn_subtitles_server():
         t = threading.Thread(
             target=_run_burn_task,
             args=(task_id, input_s3_key, segments, user_id),
-            kwargs={'subtitle_style': subtitle_style, 'notify_email': notify_email, 'job_id': job_id}
+            kwargs={'subtitle_style': subtitle_style, 'is_portrait': is_portrait, 'notify_email': notify_email, 'job_id': job_id}
         )
         t.daemon = True
         t.start()
