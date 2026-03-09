@@ -596,29 +596,6 @@ input:checked + .slider:before { transform: translateX(16px); }
     overflow: hidden;
 }
 
-/* When visible during upload/processing, pin to bottom of viewport (moved to body in JS so fixed works) */
-#p-container.progress-pinned {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 10050;
-    padding: 14px 20px;
-    background: #f8f9fa;
-    box-shadow: 0 -2px 12px rgba(0,0,0,0.12);
-    border-top: 1px solid #e5e7eb;
-}
-
-#p-container.progress-pinned {
-    height: auto;
-    min-height: 14px;
-}
-
-#p-container.progress-pinned #progress-bar {
-    min-height: 12px;
-    border-radius: 6px;
-}
-
 #progress-bar {
     height: 100%;
     width: 0%;

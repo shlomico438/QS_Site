@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Run siteapp (Production)",
+            "name": "Run siteapp (F5 = simulation)",
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/siteapp.py",
@@ -10,7 +10,7 @@
             "console": "integratedTerminal",
             "envFile": "${workspaceFolder}/.env",
             "env": {
-                "SIMULATION_MODE": "0",
+                "SIMULATION_MODE": "1",
                 "GEVENT_SUPPORT": "True"
             }
         }

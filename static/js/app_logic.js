@@ -1655,7 +1655,6 @@ window.downloadFile = async function(type, bypassUser = null) {
             let burnProgressTimer = null;
             const startBurnProgress = () => {
                 let pct = 8;
-                showProgressBarPinned();
                 if (progressBar) progressBar.style.width = pct + '%';
                 if (statusTxt) {
                     statusTxt.innerText = '';
@@ -2152,31 +2151,21 @@ function resetScreenToInitial() {
     if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
 }
 
-/** Show progress bar and pin to bottom of viewport (move to body so fixed positioning works). */
-function showProgressBarPinned() {
+/** Show progress bar in place and scroll it into view so it stays visible during processing. */
+function showProgressBar() {
     const pc = document.getElementById('p-container');
     if (!pc) return;
     pc.style.display = 'block';
-    pc.classList.add('progress-pinned');
-    if (!pc._progressPinParent) {
-        pc._progressPinParent = pc.parentNode;
-        pc._progressPinNext = pc.nextSibling;
-    }
-    document.body.appendChild(pc);
     const pb = document.getElementById('progress-bar');
     if (pb) pb.style.width = '0%';
+    setTimeout(() => { pc.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 100);
 }
 
-/** Hide progress bar and move back to original place in upload-zone. */
+/** Hide progress bar. */
 function hideProgressBar() {
     const pc = document.getElementById('p-container');
     if (!pc) return;
-    if (pc._progressPinParent) {
-        if (pc._progressPinNext) pc._progressPinParent.insertBefore(pc, pc._progressPinNext);
-        else pc._progressPinParent.appendChild(pc);
-    }
     pc.style.display = 'none';
-    pc.classList.remove('progress-pinned');
     const pb = document.getElementById('progress-bar');
     if (pb) pb.style.width = '0%';
 }
@@ -3219,14 +3208,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     }
     function startFakeProgress() {
         let current = 0;
-        if (mainBtn) {
-            mainBtn.innerText = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
-        }
+        const processingLabel = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
+        if (mainBtn) mainBtn.innerText = processingLabel + ' 0%';
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         window.fakeProgressInterval = setInterval(() => {
             if (current < 95) {
                 current += 0.5;
+                const pct = Math.round(current);
                 if (progressBar) progressBar.style.width = current + "%";
+                if (mainBtn) mainBtn.innerText = processingLabel + ' ' + pct + '%';
                 if (statusTxt) statusTxt.style.display = 'none';
             }
         }, 1000);
@@ -3309,8 +3299,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // 1. Get the snapshot of the toggle state RIGHT NOW
             const diarizationValue = document.getElementById('diarization-toggle')?.checked || false;
 
-            // UI Feedback: show progress bar for upload phase (pinned to viewport bottom)
-            showProgressBarPinned();
+            // Show progress bar for upload; processing phase uses % in button only
+            showProgressBar();
             if (progressBar) { progressBar.style.width = "0%"; }
             const uploadLabel = (typeof window.t === 'function' ? window.t('uploading') : "Uploading...");
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
@@ -3413,7 +3403,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 console.log("trigger ack (started, waiting for worker handshake)");
                                 const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
                                 const waitMsg = isHebrewUi ? 'מפעיל עיבוד...' : 'Triggering processing...';
-                                if (progressBar) progressBar.style.width = '0%';
+                                hideProgressBar(); // from here on, progress is % in button only
                                 if (mainBtn) mainBtn.innerText = waitMsg;
                                 if (statusTxt) {
                                     statusTxt.innerText = '';

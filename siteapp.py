@@ -33,9 +33,8 @@ from docx.oxml.ns import qn
 
 
 # --- CONFIGURATION ---
-# Read simulation flag from environment so someone can set it before running.
-# Default 'false' in production: set SIMULATION_MODE=1 or true to enable mock RunPod.
-SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'false')).lower() in ('1', 'true', 'yes')
+# Read simulation flag from environment. Default True for local dev (F5); set SIMULATION_MODE=0 or false in production (e.g. Koyeb).
+SIMULATION_MODE = str(os.environ.get('SIMULATION_MODE', 'true')).lower() in ('1', 'true', 'yes')
 
 # App root (for Node translate script)
 APP_ROOT = pathlib.Path(__file__).resolve().parent
