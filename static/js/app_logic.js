@@ -2292,7 +2292,10 @@ document.addEventListener('DOMContentLoaded', () => {
         window.isTriggering = false;
         setSeoHomeContentVisibility(false);
         localStorage.removeItem('activeJobId');
-        if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+        if (window.fakeProgressInterval) {
+            clearInterval(window.fakeProgressInterval);
+            window.fakeProgressInterval = null;
+        }
 
         const statusTxt = document.getElementById('upload-status');
         const preparingScreen = document.getElementById('preparing-screen');
@@ -3212,6 +3215,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         if (mainBtn) mainBtn.innerText = processingLabel + ' 0%';
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         window.fakeProgressInterval = setInterval(() => {
+            if (!window.isTriggering) {
+                clearInterval(window.fakeProgressInterval);
+                window.fakeProgressInterval = null;
+                return;
+            }
             if (current < 95) {
                 current += 0.5;
                 const pct = Math.round(current);
