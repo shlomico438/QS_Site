@@ -1910,22 +1910,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     const dMenu = document.getElementById('download-menu');
 
     if (dBtn && dMenu) {
+        const downloadMenuParent = dMenu.parentElement;
+        const PORTAL_ID = 'qs-download-menu-portal';
         function isMobileViewport() { return window.innerWidth <= 768; }
         function positionDownloadMenuOpen() {
             if (!isMobileViewport()) return;
-            const rect = dBtn.getBoundingClientRect();
+            // Portal: full-viewport layer so menu is never covered by transcript (stacking/overflow)
+            let portal = document.getElementById(PORTAL_ID);
+            if (!portal) {
+                portal = document.createElement('div');
+                portal.id = PORTAL_ID;
+                portal.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
+                document.body.appendChild(portal);
+            }
+            if (dMenu.parentElement !== portal) {
+                portal.appendChild(dMenu);
+            }
             dMenu.style.position = 'fixed';
-            dMenu.style.top = Math.max(8, rect.top - dMenu.offsetHeight - 6) + 'px';
-            dMenu.style.right = (window.innerWidth - rect.right) + 'px';
-            dMenu.style.left = 'auto';
-            dMenu.style.bottom = 'auto';
+            dMenu.style.zIndex = '2147483647';
+            dMenu.style.pointerEvents = 'auto';
+            function place() {
+                const rect = dBtn.getBoundingClientRect();
+                const h = dMenu.offsetHeight || 120;
+                dMenu.style.top = Math.max(8, rect.top - h - 6) + 'px';
+                dMenu.style.right = (window.innerWidth - rect.right) + 'px';
+                dMenu.style.left = 'auto';
+                dMenu.style.bottom = 'auto';
+            }
+            place();
+            requestAnimationFrame(place);
         }
         function positionDownloadMenuClosed() {
             dMenu.style.position = '';
+            dMenu.style.zIndex = '';
+            dMenu.style.pointerEvents = '';
             dMenu.style.top = '';
             dMenu.style.right = '';
             dMenu.style.left = '';
             dMenu.style.bottom = '';
+            if (downloadMenuParent && dMenu.parentElement?.id === PORTAL_ID) {
+                downloadMenuParent.appendChild(dMenu);
+            }
+            const portal = document.getElementById(PORTAL_ID);
+            if (portal && portal.children.length === 0) {
+                portal.remove();
+            }
         }
         dBtn.onclick = function(e) {
             e.preventDefault();
@@ -1958,10 +1987,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 menu.style.display = 'none';
                 menu.classList.remove('show');
                 menu.style.position = '';
+                menu.style.zIndex = '';
+                menu.style.pointerEvents = '';
                 menu.style.top = '';
                 menu.style.right = '';
                 menu.style.left = '';
                 menu.style.bottom = '';
+                const parent = document.getElementById('btn-download')?.parentElement;
+                if (parent && menu.parentElement?.id === 'qs-download-menu-portal') {
+                    parent.appendChild(menu);
+                }
+                const portal = document.getElementById('qs-download-menu-portal');
+                if (portal) portal.remove();
             }
             console.log("🖱️ User requested export:", type);
             window.downloadFile(type);
