@@ -514,8 +514,9 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 .paragraph-row {
     display: flex;
+    align-items: baseline;
     gap: 15px;
-    margin-bottom: 20px;
+    margin-bottom: 0.1em;
     direction: rtl;
 }
 
@@ -538,7 +539,7 @@ input:checked + .slider:before { transform: translateX(16px); }
     color: #4f46e5; /* Primary Indigo Color for Speakers */
     font-weight: 700;
     font-size: 0.95rem;
-    margin-bottom: 4px;
+    margin-bottom: 0.1em;
 }
 
 .clickable-sent {
@@ -573,6 +574,22 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 
 .dropdown-menu.show { display: flex; }
+
+/* Mobile: export dropdown must sit above transcript (avoid being hidden) */
+@media screen and (max-width: 768px) {
+    .transcription-wrapper .controls-bar {
+        position: relative;
+        z-index: 200;
+    }
+    #download-menu.dropdown-menu.show {
+        z-index: 1000;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+    }
+    #transcript-window {
+        position: relative;
+        z-index: 0;
+    }
+}
 
 .dropdown-item {
     padding: 10px 15px;

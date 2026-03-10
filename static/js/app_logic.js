@@ -1655,6 +1655,7 @@ window.downloadFile = async function(type, bypassUser = null) {
             let burnProgressTimer = null;
             const startBurnProgress = () => {
                 let pct = 8;
+                if (mainBtn) mainBtn.innerText = creatingMovieText + ' ' + pct + '%';
                 if (progressBar) progressBar.style.width = pct + '%';
                 if (statusTxt) {
                     statusTxt.innerText = '';
@@ -1663,6 +1664,7 @@ window.downloadFile = async function(type, bypassUser = null) {
                 setBurnProgress(pct, encodingMsg);
                 burnProgressTimer = setInterval(() => {
                     pct = Math.min(95, pct + Math.max(1, Math.round((95 - pct) * 0.1)));
+                    if (mainBtn) mainBtn.innerText = creatingMovieText + ' ' + pct + '%';
                     if (progressBar) progressBar.style.width = pct + '%';
                     setBurnProgress(pct, encodingMsg);
                 }, 1000);
@@ -1673,6 +1675,7 @@ window.downloadFile = async function(type, bypassUser = null) {
                     burnProgressTimer = null;
                 }
                 if (progressBar) progressBar.style.width = completed ? '100%' : '0%';
+                if (mainBtn) mainBtn.innerText = completed ? creatingMovieText + ' 100%' : creatingMovieText;
                 if (statusTxt) {
                     statusTxt.innerText = '';
                     statusTxt.style.display = 'none';
@@ -2674,8 +2677,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const showLabel = isSpeakerVisible && window.aiDiarizationRan;
 
             return `
-            <div class="paragraph-row" id="seg-row-${rowIndex}" style="margin-bottom: 20px;">
-                <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+            <div class="paragraph-row" id="seg-row-${rowIndex}" style="margin-bottom: 0.1em;">
+                <div style="font-size: 0.85em; color: #888; margin-bottom: 2px;">
 
                     <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
                         ${formatTime(g.start)}
@@ -3104,8 +3107,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
                 const row = p.closest('.paragraph-row');
                 const newRowHtml = `
-                <div class="paragraph-row" style="margin-bottom: 20px;">
-                    <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+                <div class="paragraph-row" style="margin-bottom: 0.1em;">
+                    <div style="font-size: 0.85em; color: #888; margin-bottom: 2px;">
                         <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
                             ${formatTime(newSeg.start)}
                         </span>
@@ -3149,8 +3152,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
             const row = p.closest('.paragraph-row');
             const newRowHtml = `
-            <div class="paragraph-row" style="margin-bottom: 20px;">
-                <div style="font-size: 0.85em; color: #888; margin-bottom: 4px;">
+            <div class="paragraph-row" style="margin-bottom: 0.1em;">
+                <div style="font-size: 0.85em; color: #888; margin-bottom: 2px;">
                     <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
                         ${formatTime(splitTime)}
                     </span>
@@ -3192,7 +3195,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const translatedLine = translatedParts.length ? translatedParts.join(" ").replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
 
         return `
-        <div class="paragraph-row" style="display: flex; justify-content: flex-end; width: 100%; margin-bottom: 25px; direction: rtl;">
+        <div class="paragraph-row" style="display: flex; justify-content: flex-end; width: 100%; margin-bottom: 0.1em; direction: rtl;">
 
             <div style="min-width: 90px; text-align: right; margin-left: 15px; flex-shrink: 0; font-size: 0.85em; color: #888;">
                 <div style="display: ${isTimeVisible ? 'block' : 'none'};">${formatTime(group.start)}</div>
@@ -3626,8 +3629,8 @@ function renderTranscriptFromCues(cues) {
             return `<span class="word-token" data-idx="${idx}" data-start="${start}" data-end="${end}">${safe}</span>`;
         }).join('');
         return `
-        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="margin-bottom:12px; direction: ${textDirection}; text-align: ${textAlign};">
-            <div style="font-size:0.85em; color:#6b7280; margin-bottom:4px;">[${formatTime(Math.floor(c.start))}]</div>
+        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
+            <div style="font-size:0.85em; color:#6b7280; margin-bottom:2px;">[${formatTime(Math.floor(c.start))}]</div>
             <p data-idx="${idx}" style="margin:0; line-height:1.6;">${wordSpans}</p>
         </div>`;
     }).join('');
