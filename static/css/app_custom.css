@@ -575,13 +575,17 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 .dropdown-menu.show { display: flex; }
 
-/* Mobile: export dropdown must sit above transcript (avoid being hidden) */
+/* Mobile: export dropdown opens upward so it isn't clipped by transcript wrapper overflow */
 @media screen and (max-width: 768px) {
     .transcription-wrapper .controls-bar {
         position: relative;
         z-index: 200;
     }
-    #download-menu.dropdown-menu.show {
+    #download-menu.dropdown-menu {
+        top: auto;
+        bottom: 100%;
+        margin-bottom: 6px;
+        right: 0;
         z-index: 1000;
         box-shadow: 0 6px 20px rgba(0,0,0,0.15);
     }

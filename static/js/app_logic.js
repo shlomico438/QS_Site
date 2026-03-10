@@ -1910,14 +1910,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     const dMenu = document.getElementById('download-menu');
 
     if (dBtn && dMenu) {
+        function isMobileViewport() { return window.innerWidth <= 768; }
+        function positionDownloadMenuOpen() {
+            if (!isMobileViewport()) return;
+            const rect = dBtn.getBoundingClientRect();
+            dMenu.style.position = 'fixed';
+            dMenu.style.top = Math.max(8, rect.top - dMenu.offsetHeight - 6) + 'px';
+            dMenu.style.right = (window.innerWidth - rect.right) + 'px';
+            dMenu.style.left = 'auto';
+            dMenu.style.bottom = 'auto';
+        }
+        function positionDownloadMenuClosed() {
+            dMenu.style.position = '';
+            dMenu.style.top = '';
+            dMenu.style.right = '';
+            dMenu.style.left = '';
+            dMenu.style.bottom = '';
+        }
         dBtn.onclick = function(e) {
             e.preventDefault();
             e.stopPropagation();
             const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
-            dMenu.style.display = isHidden ? 'block' : 'none';
+            if (isHidden) {
+                dMenu.style.display = 'flex';
+                dMenu.classList.add('show');
+                positionDownloadMenuOpen();
+            } else {
+                dMenu.style.display = 'none';
+                dMenu.classList.remove('show');
+                positionDownloadMenuClosed();
+            }
         };
         document.addEventListener('click', function(e) {
-            if (!dMenu.contains(e.target) && !dBtn.contains(e.target)) dMenu.style.display = 'none';
+            if (!dMenu.contains(e.target) && !dBtn.contains(e.target)) {
+                dMenu.style.display = 'none';
+                dMenu.classList.remove('show');
+                positionDownloadMenuClosed();
+            }
         });
     }
 
@@ -1925,7 +1954,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         btn.addEventListener('click', function() {
             const type = this.getAttribute('data-type');
             const menu = document.getElementById('download-menu');
-            if (menu) menu.style.display = 'none';
+            if (menu) {
+                menu.style.display = 'none';
+                menu.classList.remove('show');
+                menu.style.position = '';
+                menu.style.top = '';
+                menu.style.right = '';
+                menu.style.left = '';
+                menu.style.bottom = '';
+            }
             console.log("🖱️ User requested export:", type);
             window.downloadFile(type);
         });
