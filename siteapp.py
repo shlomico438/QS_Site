@@ -1297,34 +1297,29 @@ def _ass_ts(s):
 # Punctuation that should stay with previous line in RTL (not start the next line)
 _RTL_LINE_END_PUNCT = '.,;:!?،؛؟'
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
-def _contains_hebrew(text):
-    return bool(text and _HEBREW_RE.search(text))
 
 
-def _rtl_line_for_libass(line):
-    """For libass/VSFilter: in RTL, punctuation shows at visual end (left) only if it is at the *start* of the line string.
-    See https://github.com/libass/libass/issues/741 . We move trailing punctuation to the beginning of the line."""
-    if not line or not _contains_hebrew(line):
-        return line
-    # Trailing run of punctuation (logical end = visual left in RTL)
+def _rtl_line_for_display(text):
+    """For SRT/ASS players (VLC, libass): in RTL, punctuation only shows at visual end (left) if it is at the *start* of the line string. Move trailing punctuation to the beginning."""
+    if not text or not _HEBREW_RE.search(text):
+        return text
     trailing = []
-    for i in range(len(line) - 1, -1, -1):
-        if line[i] in _RTL_LINE_END_PUNCT:
-            trailing.append(line[i])
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] in _RTL_LINE_END_PUNCT:
+            trailing.append(text[i])
         else:
             break
     if not trailing:
-        return line
-    punct_str = ''.join(reversed(trailing))
-    body = line[: len(line) - len(punct_str)].rstrip()
-    return punct_str + body
+        return text
+    punct = ''.join(reversed(trailing))
+    body = text[: len(text) - len(punct)].rstrip()
+    return punct + body
 
 
 def _wrap_text_rtl_safe(text, max_chars_per_line):
     """Split text into lines; keep trailing punctuation with previous line (fixes RTL burn: comma/period at start of line)."""
     if not text or len(text) <= max_chars_per_line:
-        one = text.strip() if text and text.strip() else ''
-        return [_rtl_line_for_libass(one)] if one else []
+        return [text.strip()] if text and text.strip() else []
     parts = []
     rest = text
     while rest:
@@ -1332,7 +1327,7 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
         if not rest:
             break
         if len(rest) <= max_chars_per_line:
-            parts.append(_rtl_line_for_libass(rest.strip()))
+            parts.append(rest.strip())
             break
         chunk = rest[: max_chars_per_line + 1]
         last_space = chunk.rfind(' ')
@@ -1343,7 +1338,7 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
         while rest and rest[0] in _RTL_LINE_END_PUNCT:
             part += rest[0]
             rest = rest[1:].lstrip()
-        parts.append(_rtl_line_for_libass(part))
+        parts.append(part)
     return parts
 
 
@@ -1380,7 +1375,10 @@ def _build_ass(segments, style='tiktok', portrait=False):
         text = (seg.get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
         if style == 'tiktok' and len(text) > max_chars_per_line:
             parts = _wrap_text_rtl_safe(text, max_chars_per_line)
+            parts = [_rtl_line_for_display(p) for p in parts]
             text = '\\N'.join(parts) if parts else text
+        else:
+            text = _rtl_line_for_display(text)
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 
@@ -1427,9 +1425,7 @@ def _segments_to_srt_text(segments, max_chars_per_line=None):
         if end <= start:
             end = start + 0.5
         text = str(seg.get('text') or '').replace('\n', ' ')
-        if max_chars_per_line and max_chars_per_line < 9999 and len(text) > max_chars_per_line:
-            lines = _wrap_text_rtl_safe(text, max_chars_per_line)
-            text = '\n'.join(lines) if lines else text
+        text = _rtl_line_for_display(text)
         rows.append(f"{i + 1}\n{to_srt_ts(start)} --> {to_srt_ts(end)}\n{text}\n")
     return "\n".join(rows) + ("\n" if rows else "")
 

@@ -3663,6 +3663,19 @@ function normalizeSegmentDurations(segments, minDuration = 0.5) {
     return out;
 }
 
+// So VLC/libass show punctuation at visual end (left) of RTL line: put it at start of string
+const RTL_LINE_END_PUNCT = '.,;:!?،؛؟';
+const HEBREW_RE = /[\u0590-\u05FF]/;
+function rtlLineForDisplay(text) {
+    if (!text || !HEBREW_RE.test(text)) return text;
+    let i = text.length - 1;
+    while (i >= 0 && RTL_LINE_END_PUNCT.includes(text[i])) i--;
+    if (i === text.length - 1) return text;
+    const punct = text.slice(i + 1);
+    const body = text.slice(0, i + 1).trimEnd();
+    return punct + body;
+}
+
 function srtFromCues(cues) {
     const normalized = normalizeSegmentDurations(cues, 0.5);
     return normalized.map((c, i) => {
@@ -3674,7 +3687,8 @@ function srtFromCues(cues) {
             const ss = Math.floor(s % 60);
             return `${pad(hh)}:${pad(mm)}:${pad(ss)},${String(ms).padStart(3,'0')}`;
         };
-        return `${i+1}\n${fmt(c.start)} --> ${fmt(c.end)}\n${c.text}\n`;
+        const text = rtlLineForDisplay(String(c.text || '').replace(/\n/g, ' '));
+        return `${i+1}\n${fmt(c.start)} --> ${fmt(c.end)}\n${text}\n`;
     }).join('\n');
 }
 
