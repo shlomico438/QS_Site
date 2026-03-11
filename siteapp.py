@@ -1299,6 +1299,7 @@ _RTL_LINE_END_PUNCT = '.,;:!?،؛؟'
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
 _RTL_EMBED_OPEN = '\u202B'  # Right-to-left embedding
 _RTL_EMBED_CLOSE = '\u202C'  # Pop directional formatting
+_RLM = '\u200F'  # Right-to-left mark (helps punctuation stick to RTL runs)
 
 
 def _contains_hebrew(text):
@@ -1312,7 +1313,14 @@ def _force_rtl_line(text):
     # Avoid double-wrapping
     if text.startswith(_RTL_EMBED_OPEN) and text.endswith(_RTL_EMBED_CLOSE):
         return text
-    return f"{_RTL_EMBED_OPEN}{text}{_RTL_EMBED_CLOSE}"
+    t = text
+    # Neutral punctuation often "floats" to the wrong edge on line breaks in libass.
+    # Adding RLM near the boundary anchors punctuation to RTL context.
+    if t and t[0] in _RTL_LINE_END_PUNCT:
+        t = _RLM + t
+    if t and t[-1] in _RTL_LINE_END_PUNCT:
+        t = t + _RLM
+    return f"{_RTL_EMBED_OPEN}{t}{_RTL_EMBED_CLOSE}"
 
 def _wrap_text_rtl_safe(text, max_chars_per_line):
     """Split text into lines; keep trailing punctuation with previous line (fixes RTL burn: comma/period at start of line)."""
