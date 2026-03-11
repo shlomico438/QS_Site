@@ -1633,20 +1633,39 @@ window.downloadFile = async function(type, bypassUser = null) {
                 console.warn('[movie export] simulation_mode check failed; assuming production mode:', e);
             }
             if (isSimulation === true) {
-                console.log('[movie export] Simulation branch – downloading video+SRT');
-                const videoBlob = await fetch(videoUrl).then(r => r.blob());
-                if (typeof saveAs !== 'undefined') saveAs(videoBlob, (baseName || 'video') + '.mp4');
+                console.log('[movie export] Simulation branch – burn subtitles via server');
                 const segments = window.currentSegments || [];
-                let srt = '';
                 const normSegs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(segments, 0.5) : segments;
-                normSegs.forEach((seg, i) => {
-                    const ts = (s) => {
-                        const d = new Date(0); d.setMilliseconds(s * 1000);
-                        return d.toISOString().substr(11, 12).replace('.', ',');
-                    };
-                    srt += `${i + 1}\n${ts(seg.start)} --> ${ts(seg.end)}\n${(seg.text || '').trim()}\n\n`;
-                });
-                if (typeof saveAs !== 'undefined') saveAs(new Blob([srt], { type: 'text/plain;charset=utf-8' }), (baseName || 'video') + '.srt');
+                const videoBlob = await fetch(videoUrl).then(r => r.blob());
+                const ext = (videoUrl.match(/\.(mp4|mov|webm|m4v|mkv|avi)(\?|$)/i) || [])[1] || 'mp4';
+                const filename = (baseName || 'video') + '.' + ext.toLowerCase();
+                const form = new FormData();
+                form.append('video', videoBlob, filename);
+                form.append('segments', JSON.stringify(normSegs.map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }))));
+                form.append('filename', filename);
+                try {
+                    const burnRes = await fetch('/api/burn_subtitles', { method: 'POST', body: form });
+                    if (burnRes.ok) {
+                        const outBlob = await burnRes.blob();
+                        const outName = (burnRes.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)"?/);
+                        const downloadName = outName ? outName[1] : 'video_with_subtitles.' + ext;
+                        if (typeof saveAs !== 'undefined') saveAs(outBlob, downloadName);
+                        else { const a = document.createElement('a'); a.href = URL.createObjectURL(outBlob); a.download = downloadName; a.click(); URL.revokeObjectURL(a.href); }
+                    } else {
+                        const err = await burnRes.json().catch(() => ({}));
+                        throw new Error(err.error || burnRes.statusText);
+                    }
+                } catch (e) {
+                    console.warn('[movie export] Burn failed, falling back to video+SRT:', e);
+                    if (typeof saveAs !== 'undefined') saveAs(videoBlob, filename);
+                    const srt = typeof srtFromCues === 'function' ? srtFromCues(normSegs) : '';
+                    if (srt && typeof saveAs !== 'undefined') saveAs(new Blob([srt], { type: 'text/plain;charset=utf-8' }), (baseName || 'video') + '.srt');
+                    let errMsg = (typeof window.t === 'function' ? window.t('movie_burn_failed') : 'Burn failed') + '. ';
+                    if (e && e.message) errMsg += e.message + '. ';
+                    errMsg += (typeof window.t === 'function' ? window.t('download_fallback_hint') : 'Downloaded video + SRT instead. Install ffmpeg for burned subtitles.');
+                    if (typeof showStatus === 'function') showStatus(errMsg, true);
+                }
+                if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
                 return;
             }
 
@@ -1831,6 +1850,10 @@ window.downloadFile = async function(type, bypassUser = null) {
 
         const doc = new Document({ sections: [{ properties: {}, children: children }] });
         Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
+    } else if (type === 'srt') {
+        const segs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(window.currentSegments, 0.5) : window.currentSegments;
+        const content = typeof srtFromCues === 'function' ? srtFromCues(segs) : '';
+        saveAs(new Blob([content], { type: 'text/plain;charset=utf-8' }), `${baseName}.srt`);
     } else {
         let content = type === 'vtt' ? "WEBVTT\n\n" : "";
         const segs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(window.currentSegments, 0.5) : window.currentSegments;
@@ -1838,9 +1861,8 @@ window.downloadFile = async function(type, bypassUser = null) {
             const ts = (s) => {
                 let d = new Date(0); d.setMilliseconds(s * 1000);
                 let iso = d.toISOString().substr(11, 12);
-                return type === 'srt' ? iso.replace('.', ',') : iso;
+                return iso;
             };
-            if (type === 'srt') content += `${i + 1}\n`;
             content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text.trim()}\n\n`;
         });
         saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`);
@@ -3663,21 +3685,43 @@ function normalizeSegmentDurations(segments, minDuration = 0.5) {
     return out;
 }
 
-// So VLC/libass show punctuation at visual end (left) of RTL line: put it at start of string
-const RTL_LINE_END_PUNCT = '.,;:!?،؛؟';
+// SRT: many players default to LTR, so Hebrew/mixed lines can display in wrong order.
+// Wrap in Unicode RTL embedding so bidi-aware players show like the transcript.
 const HEBREW_RE = /[\u0590-\u05FF]/;
-function rtlLineForDisplay(text) {
+const LATIN_WORD_RE = /[a-zA-Z]{2,}/;
+const RTL_EMBED = '\u202B';  // U+202B Right-to-Left Embedding
+const RTL_POP = '\u202C';   // U+202C Pop Directional Formatting
+
+function rtlLineForSrtVisual(text) {
     if (!text || !HEBREW_RE.test(text)) return text;
-    let i = text.length - 1;
-    while (i >= 0 && RTL_LINE_END_PUNCT.includes(text[i])) i--;
-    if (i === text.length - 1) return text;
-    const punct = text.slice(i + 1);
-    const body = text.slice(0, i + 1).trimEnd();
-    return punct + body;
+    const original = String(text);
+    const trimmed = original.trimEnd();
+    if (!trimmed) return original;
+
+    const isMixed = LATIN_WORD_RE.test(trimmed);
+
+    if (isMixed) {
+        // Mixed Hebrew+English: wrap in RTL embedding so player lays out like transcript (RTL with LTR embed for "QuickScribe").
+        if (trimmed.startsWith(RTL_EMBED) && trimmed.endsWith(RTL_POP)) return original;
+        return RTL_EMBED + trimmed + RTL_POP;
+    }
+
+    // Pure Hebrew: move trailing punctuation to start (no space) for LTR players.
+    const m = trimmed.match(/^(.*?)([.,!?…:;]+)$/u);
+    if (!m) return original;
+
+    const body = m[1].trimStart();
+    const punct = m[2];
+    if (!body) return original;
+    if (body.startsWith(punct)) return original;
+
+    return `${punct}${body}`;
 }
 
+// Set to true in console (window.DEBUG_SRT = true) then export SRT to log each line's before/after
 function srtFromCues(cues) {
     const normalized = normalizeSegmentDurations(cues, 0.5);
+    const debug = !!window.DEBUG_SRT;
     return normalized.map((c, i) => {
         const pad = (n) => String(Math.floor(n)).padStart(2, '0');
         const fmt = (s) => {
@@ -3687,7 +3731,18 @@ function srtFromCues(cues) {
             const ss = Math.floor(s % 60);
             return `${pad(hh)}:${pad(mm)}:${pad(ss)},${String(ms).padStart(3,'0')}`;
         };
-        const text = rtlLineForDisplay(String(c.text || '').replace(/\n/g, ' '));
+        const raw = String(c.text || '').replace(/\n/g, ' ');
+        const text = rtlLineForSrtVisual(raw);
+        if (debug && i < 5) {
+            const repr = (s) => {
+                if (!s || s.length === 0) return '';
+                const arr = Array.from(s);
+                const first = arr.slice(0, 2).map((ch, idx) => ch + '(U+' + (s.codePointAt(idx) || 0).toString(16).toUpperCase() + ')').join(' ');
+                const last = arr.length > 2 ? arr.slice(-2).map((ch, idx) => ch + '(U+' + (s.codePointAt(s.length - 2 + idx) || 0).toString(16).toUpperCase() + ')').join(' ') : first;
+                return arr.length > 4 ? first + ' ... ' + last : first + ' ' + last;
+            };
+            console.log('[SRT debug] cue ' + (i + 1), { raw, text, rawRepr: repr(raw), outRepr: repr(text) });
+        }
         return `${i+1}\n${fmt(c.start)} --> ${fmt(c.end)}\n${text}\n`;
     }).join('\n');
 }

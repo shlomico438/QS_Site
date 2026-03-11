@@ -1297,23 +1297,44 @@ def _ass_ts(s):
 # Punctuation that should stay with previous line in RTL (not start the next line)
 _RTL_LINE_END_PUNCT = '.,;:!?،؛؟'
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
+_RTL_EMBED_OPEN = '\u202B'  # Right-to-left embedding
+_RTL_EMBED_CLOSE = '\u202C'  # Pop directional formatting
 
 
-def _rtl_line_for_display(text):
-    """For SRT/ASS players (VLC, libass): in RTL, punctuation only shows at visual end (left) if it is at the *start* of the line string. Move trailing punctuation to the beginning."""
+def _rtl_force_direction(text):
+    """Force RTL direction for Hebrew lines in ASS/burn (embedding only)."""
     if not text or not _HEBREW_RE.search(text):
         return text
-    trailing = []
-    for i in range(len(text) - 1, -1, -1):
-        if text[i] in _RTL_LINE_END_PUNCT:
-            trailing.append(text[i])
-        else:
-            break
-    if not trailing:
+    if text.startswith(_RTL_EMBED_OPEN) and text.endswith(_RTL_EMBED_CLOSE):
         return text
-    punct = ''.join(reversed(trailing))
-    body = text[: len(text) - len(punct)].rstrip()
-    return punct + body
+    return f"{_RTL_EMBED_OPEN}{text}{_RTL_EMBED_CLOSE}"
+
+
+_LATIN_WORD_RE = re.compile(r'[a-zA-Z]{2,}')
+
+
+def _rtl_srt_visual_order(text):
+    """For SRT: mixed Hebrew+English – wrap in RTL embedding so bidi-aware players show like transcript. Pure Hebrew – move trailing punct to start."""
+    if not text or not _HEBREW_RE.search(text):
+        return text
+    original = text
+    trimmed = original.rstrip()
+    if not trimmed:
+        return original
+    if _LATIN_WORD_RE.search(trimmed):
+        if trimmed.startswith(_RTL_EMBED_OPEN) and trimmed.endswith(_RTL_EMBED_CLOSE):
+            return original
+        return f"{_RTL_EMBED_OPEN}{trimmed}{_RTL_EMBED_CLOSE}"
+    m = re.match(r'^(.*?)([.,!?…:;]+)$', trimmed, re.UNICODE)
+    if not m:
+        return original
+    body = m.group(1).lstrip()
+    punct = m.group(2)
+    if not body or body.startswith(punct):
+        return original
+    return f"{punct}{body}"
+
+
 
 
 def _wrap_text_rtl_safe(text, max_chars_per_line):
@@ -1375,10 +1396,10 @@ def _build_ass(segments, style='tiktok', portrait=False):
         text = (seg.get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
         if style == 'tiktok' and len(text) > max_chars_per_line:
             parts = _wrap_text_rtl_safe(text, max_chars_per_line)
-            parts = [_rtl_line_for_display(p) for p in parts]
+            parts = [_rtl_force_direction(p) for p in parts]
             text = '\\N'.join(parts) if parts else text
         else:
-            text = _rtl_line_for_display(text)
+            text = _rtl_force_direction(text)
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 
@@ -1425,7 +1446,7 @@ def _segments_to_srt_text(segments, max_chars_per_line=None):
         if end <= start:
             end = start + 0.5
         text = str(seg.get('text') or '').replace('\n', ' ')
-        text = _rtl_line_for_display(text)
+        text = _rtl_srt_visual_order(text)
         rows.append(f"{i + 1}\n{to_srt_ts(start)} --> {to_srt_ts(end)}\n{text}\n")
     return "\n".join(rows) + ("\n" if rows else "")
 
@@ -1796,6 +1817,15 @@ def burn_subtitles():
             ext = '.mp4'
         out_ext = ext if ext in BURN_VIDEO_EXTENSIONS else '.mp4'
 
+        ffmpeg_path = _resolve_ffmpeg()
+        try:
+            subprocess.run([ffmpeg_path, '-version'], capture_output=True, timeout=5)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return jsonify({
+                "error": "ffmpeg not found or not runnable. Install ffmpeg and add it to PATH, or set FFMPEG_PATH.",
+                "detail": str(e)
+            }), 500
+
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, 'input' + ext)
             video_file.save(video_path)
@@ -1821,7 +1851,6 @@ def burn_subtitles():
             vtt_norm = os.path.normpath(vtt_path)
             if os.name == 'nt':
                 vtt_norm = vtt_norm.replace('\\', '/').replace(':', '\\:')
-            ffmpeg_path = _resolve_ffmpeg()
             cmd = [
                 ffmpeg_path, '-y', '-i', video_path,
                 '-vf', f"subtitles={vtt_norm}",
