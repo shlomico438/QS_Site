@@ -1297,35 +1297,34 @@ def _ass_ts(s):
 # Punctuation that should stay with previous line in RTL (not start the next line)
 _RTL_LINE_END_PUNCT = '.,;:!?،؛؟'
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
-_RTL_EMBED_OPEN = '\u202B'  # Right-to-left embedding
-_RTL_EMBED_CLOSE = '\u202C'  # Pop directional formatting
-_RLM = '\u200F'  # Right-to-left mark (helps punctuation stick to RTL runs)
-
-
 def _contains_hebrew(text):
     return bool(text and _HEBREW_RE.search(text))
 
 
-def _force_rtl_line(text):
-    """Wrap line with RTL direction marks for better FFmpeg/libass bidi behavior."""
-    if not text or not _contains_hebrew(text):
-        return text
-    # Avoid double-wrapping
-    if text.startswith(_RTL_EMBED_OPEN) and text.endswith(_RTL_EMBED_CLOSE):
-        return text
-    t = text
-    # Neutral punctuation often "floats" to the wrong edge on line breaks in libass.
-    # Adding RLM near the boundary anchors punctuation to RTL context.
-    if t and t[0] in _RTL_LINE_END_PUNCT:
-        t = _RLM + t
-    if t and t[-1] in _RTL_LINE_END_PUNCT:
-        t = t + _RLM
-    return f"{_RTL_EMBED_OPEN}{t}{_RTL_EMBED_CLOSE}"
+def _rtl_line_for_libass(line):
+    """For libass/VSFilter: in RTL, punctuation shows at visual end (left) only if it is at the *start* of the line string.
+    See https://github.com/libass/libass/issues/741 . We move trailing punctuation to the beginning of the line."""
+    if not line or not _contains_hebrew(line):
+        return line
+    # Trailing run of punctuation (logical end = visual left in RTL)
+    trailing = []
+    for i in range(len(line) - 1, -1, -1):
+        if line[i] in _RTL_LINE_END_PUNCT:
+            trailing.append(line[i])
+        else:
+            break
+    if not trailing:
+        return line
+    punct_str = ''.join(reversed(trailing))
+    body = line[: len(line) - len(punct_str)].rstrip()
+    return punct_str + body
+
 
 def _wrap_text_rtl_safe(text, max_chars_per_line):
     """Split text into lines; keep trailing punctuation with previous line (fixes RTL burn: comma/period at start of line)."""
     if not text or len(text) <= max_chars_per_line:
-        return [_force_rtl_line(text.strip())] if text and text.strip() else []
+        one = text.strip() if text and text.strip() else ''
+        return [_rtl_line_for_libass(one)] if one else []
     parts = []
     rest = text
     while rest:
@@ -1333,7 +1332,7 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
         if not rest:
             break
         if len(rest) <= max_chars_per_line:
-            parts.append(_force_rtl_line(rest.strip()))
+            parts.append(_rtl_line_for_libass(rest.strip()))
             break
         chunk = rest[: max_chars_per_line + 1]
         last_space = chunk.rfind(' ')
@@ -1344,7 +1343,7 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
         while rest and rest[0] in _RTL_LINE_END_PUNCT:
             part += rest[0]
             rest = rest[1:].lstrip()
-        parts.append(_force_rtl_line(part))
+        parts.append(_rtl_line_for_libass(part))
     return parts
 
 
