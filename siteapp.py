@@ -1296,11 +1296,28 @@ def _ass_ts(s):
 
 # Punctuation that should stay with previous line in RTL (not start the next line)
 _RTL_LINE_END_PUNCT = '.,;:!?،؛؟'
+_HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
+_RTL_EMBED_OPEN = '\u202B'  # Right-to-left embedding
+_RTL_EMBED_CLOSE = '\u202C'  # Pop directional formatting
+
+
+def _contains_hebrew(text):
+    return bool(text and _HEBREW_RE.search(text))
+
+
+def _force_rtl_line(text):
+    """Wrap line with RTL direction marks for better FFmpeg/libass bidi behavior."""
+    if not text or not _contains_hebrew(text):
+        return text
+    # Avoid double-wrapping
+    if text.startswith(_RTL_EMBED_OPEN) and text.endswith(_RTL_EMBED_CLOSE):
+        return text
+    return f"{_RTL_EMBED_OPEN}{text}{_RTL_EMBED_CLOSE}"
 
 def _wrap_text_rtl_safe(text, max_chars_per_line):
     """Split text into lines; keep trailing punctuation with previous line (fixes RTL burn: comma/period at start of line)."""
     if not text or len(text) <= max_chars_per_line:
-        return [text.strip()] if text and text.strip() else []
+        return [_force_rtl_line(text.strip())] if text and text.strip() else []
     parts = []
     rest = text
     while rest:
@@ -1308,7 +1325,7 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
         if not rest:
             break
         if len(rest) <= max_chars_per_line:
-            parts.append(rest.strip())
+            parts.append(_force_rtl_line(rest.strip()))
             break
         chunk = rest[: max_chars_per_line + 1]
         last_space = chunk.rfind(' ')
@@ -1319,7 +1336,7 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
         while rest and rest[0] in _RTL_LINE_END_PUNCT:
             part += rest[0]
             rest = rest[1:].lstrip()
-        parts.append(part)
+        parts.append(_force_rtl_line(part))
     return parts
 
 

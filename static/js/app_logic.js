@@ -128,7 +128,7 @@ function ensureGlobalConfirmDialog() {
                 <p class="personal-dialog-message"></p>
                 <div class="personal-dialog-actions">
                     <button type="button" class="personal-dialog-btn cancel"></button>
-                    <button type="button" class="personal-dialog-btn primary danger"></button>
+                    <button type="button" class="personal-dialog-btn primary"></button>
                 </div>
             </div>`;
         document.body.appendChild(overlay);
@@ -145,6 +145,7 @@ function showGlobalConfirm(message, options = {}) {
     msgEl.textContent = message || '';
     cancelBtn.textContent = options.cancelText || T('cancel') || 'Cancel';
     okBtn.textContent = options.confirmText || T('confirm') || 'Confirm';
+    okBtn.classList.toggle('danger', !!options.danger);
     overlay.classList.add('is-open');
     return new Promise((resolve) => {
         const cleanup = (val) => {
@@ -231,6 +232,7 @@ function showGlobalAlert(message, options = {}) {
     msgEl.textContent = message || '';
     cancelBtn.style.display = 'none';
     okBtn.textContent = options.confirmText || T('confirm') || 'אישור';
+    okBtn.classList.remove('danger');
     overlay.classList.add('is-open');
     return new Promise((resolve) => {
         const cleanup = () => {
