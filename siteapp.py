@@ -830,7 +830,6 @@ def translate_segments(segments, target_lang='he'):
     if not node_exe:
         logging.warning("Node.js not found in PATH; using Python OpenAI fallback")
         result = _translate_segments_via_python_openai(segments, target_lang=target_lang)
-        logging.info("PROCESS TIMING: GPT (Python fallback) took %.1fs", time.time() - t0)
         return result
     try:
         logging.info("GPT translate: start segments=%s target=%s", len(segments), target_lang)
@@ -849,7 +848,6 @@ def translate_segments(segments, target_lang='he'):
             logging.info("GPT translate stderr: %s", stderr_text[:500])
 
         if proc.returncode != 0:
-            logging.info("PROCESS TIMING: GPT (Node) took %.1fs (exit %s)", time.time() - t0, proc.returncode)
             return segments, {
                 "total": len(segments),
                 "ok_count": 0,
@@ -862,7 +860,6 @@ def translate_segments(segments, target_lang='he'):
 
         out_text = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
         if not out_text:
-            logging.info("PROCESS TIMING: GPT (Node) took %.1fs (empty stdout)", time.time() - t0)
             return segments, {
                 "total": len(segments),
                 "ok_count": 0,
@@ -877,7 +874,6 @@ def translate_segments(segments, target_lang='he'):
         translated = data.get("segments", segments)
         meta = data.get("meta") or {}
         if not isinstance(translated, list):
-            logging.info("PROCESS TIMING: GPT (Node) took %.1fs (invalid response)", time.time() - t0)
             return segments, {
                 "total": len(segments),
                 "ok_count": 0,
@@ -904,11 +900,9 @@ def translate_segments(segments, target_lang='he'):
             result_meta["empty_count"], result_meta["error_count"],
             result_meta["model"], result_meta["first_error"][:180]
         )
-        logging.info("PROCESS TIMING: GPT (Node) took %.1fs", time.time() - t0)
         return translated, result_meta
     except subprocess.TimeoutExpired:
         logging.warning("Translate script timed out")
-        logging.info("PROCESS TIMING: GPT (Node) took %.1fs (timeout)", time.time() - t0)
         return segments, {
             "total": len(segments),
             "ok_count": 0,
@@ -920,7 +914,6 @@ def translate_segments(segments, target_lang='he'):
         }
     except Exception as e:
         logging.warning("Translate segments error: %s", e)
-        logging.info("PROCESS TIMING: GPT (Node) took %.1fs (error)", time.time() - t0)
         return segments, {
             "total": len(segments),
             "ok_count": 0,
@@ -950,12 +943,8 @@ def api_translate_segments():
     try:
         translated, meta = translate_segments(segments, target_lang=target_lang)
         elapsed = time.time() - t0
-        logging.info("PROCESS TIMING: api_translate_segments total took %.1fs", elapsed)
-        # Infer GPT timing for the job that just had gpu_callback; update DB
         last_job, callback_at, last_user_id = _get_last_callback_for_gpt()
         if last_job and callback_at is not None and (time.time() - callback_at) < 120:
-            inferred_gap = time.time() - callback_at
-            logging.info("PROCESS TIMING (addendum): job %s GPT took %.1fs (inferred from gpu_callback→translate: %.1fs)", last_job, elapsed, inferred_gap)
             _update_job_timings(last_job, user_id=last_user_id, gpt_sec=elapsed)
         return jsonify({"segments": translated, "meta": meta})
     finally:
@@ -994,10 +983,7 @@ def gpu_callback():
     s3_sec = 0.0
     if input_s3_key:
         try:
-            t_s3 = time.time()
             raw_result_s3_key = _put_segments_json_to_s3(user_id or 'anonymous', input_s3_key, segments, stage='raw')
-            s3_sec = time.time() - t_s3
-            logging.info("PROCESS TIMING: S3 save (raw segments) took %.1fs", s3_sec)
             result_dict = dict(result) if isinstance(result, dict) else {}
             result_dict['raw_result_s3_key'] = raw_result_s3_key
             data = dict(data)
@@ -1046,25 +1032,6 @@ def gpu_callback():
     wakeup_sec = worker_timing.get("wakeup_sec") or waiting_for_run
     process_sec = runpod_process
     gpt_sec = worker_timing.get("gpt_sec")
-
-    # Timing table
-    rows = [
-        ("trigger", trigger_sec),
-        ("download (trigger → download complete)", download_sec),
-        ("runpod wakeup (download complete → runpod start)", wakeup_sec),
-        ("runpod process (runpod start → complete)", process_sec),
-        ("GPT (correction/translation)", gpt_sec),
-        ("TOTAL", total_sec),
-    ]
-    table_lines = [
-        "PROCESS TIMING:",
-        "  | Phase                                          | Duration |",
-        "  |------------------------------------------------|----------|",
-    ] + [
-        f"  | {phase:<45} | {f'{v:.1f}s' if v is not None else '-':>8} |"
-        for phase, v in rows
-    ]
-    logging.info("\n".join(table_lines))
 
     # So frontend handshake completes even if /api/gpu_started was never called; shared store for multi-worker
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
@@ -1295,7 +1262,6 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         pending = pending_job_info.get(job_id, {})
         user_id = pending.get("user_id") or _extract_user_id_from_s3_key((pending.get("input_s3_key") or ""))
         _update_job_timings(job_id, user_id=user_id, trigger_sec=trigger_sec, trigger_completed_at=trigger_completed_at)
-        logging.info("PROCESS TIMING: trigger (POST /run) took %.1fs", trigger_sec)
         if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "run_accepted"
             _set_trigger_state(job_id, "run_accepted")
@@ -1307,7 +1273,6 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
     except Exception as e:
         pending_trigger[job_id] = "failed"
         _set_trigger_state(job_id, "failed")
-        logging.info("PROCESS TIMING: trigger failed after %.1fs", time.time() - t0)
         logging.exception("trigger_gpu failed for %s", job_id)
 
 

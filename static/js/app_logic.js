@@ -2391,6 +2391,12 @@ document.addEventListener('DOMContentLoaded', () => {
     syncSpeakerControls();
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
     window.handleJobUpdate = async function(rawResult) {
+        const jobId = rawResult.jobId || (rawResult.output && rawResult.output.jobId) || (rawResult.result && rawResult.result.jobId);
+        if (jobId && window._lastProcessedJobId === jobId) {
+            return;
+        }
+        if (jobId) window._lastProcessedJobId = jobId;
+
         const dbId = localStorage.getItem('lastJobDbId');
 
         if (window._checkStatusPollInterval) {
@@ -3458,6 +3464,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 localStorage.setItem('pendingS3Key', s3Key);
                 localStorage.setItem('lastJobId', jobId);
                 localStorage.setItem('activeJobId', jobId);
+                window._lastProcessedJobId = null;
                 console.log("💾 Keys parked for recovery:", s3Key);
                 if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId, s3Key });
 

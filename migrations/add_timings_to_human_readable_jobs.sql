@@ -1,4 +1,4 @@
--- human_readable_jobs: remove input_s3_key and job_id, add timing (whole seconds).
+-- human_readable_jobs: no trigger_sec, download_sec at end.
 -- Run in Supabase SQL Editor.
 
 DROP VIEW IF EXISTS public.human_readable_jobs;
