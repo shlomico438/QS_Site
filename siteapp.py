@@ -430,6 +430,7 @@ def _get_trigger_timings(job_id):
                 data = json.load(f)
             return {
                 "queued_at": data.get("queued_at") or data.get("at"),
+                "trigger_sec": data.get("trigger_sec"),
                 "trigger_completed_at": data.get("trigger_completed_at"),
                 "gpu_started_at": data.get("gpu_started_at"),
             }
@@ -476,6 +477,28 @@ def _get_last_callback_for_gpt() -> tuple:
     return (None, None, None)
 
 
+def _get_job_timings_from_db(runpod_job_id: str, user_id: str = None) -> dict:
+    """Fetch current timing columns from jobs table (for cross-instance reads)."""
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key:
+        return {}
+    from urllib.parse import quote
+    rj = quote(str(runpod_job_id), safe='')
+    url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}&select=trigger_sec,trigger_completed_at,gpu_started_at,runpod_wakeup_sec"
+    if user_id:
+        url += f"&user_id=eq.{quote(str(user_id), safe='')}"
+    try:
+        r = requests.get(url, headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"}, timeout=5)
+        if r.status_code == 200 and r.text:
+            rows = r.json()
+            if isinstance(rows, list) and len(rows) > 0:
+                return rows[0] or {}
+    except Exception:
+        pass
+    return {}
+
+
 def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> None:
     """Update jobs table with PROCESS TIMING data. Matches by runpod_job_id column or metadata.job_id."""
     supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
@@ -484,6 +507,7 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         return
     payload = {k: v for k, v in timings.items() if v is not None}
     if not payload:
+        logging.debug("_update_job_timings: no values to update for %s", runpod_job_id)
         return
     from urllib.parse import quote
     rj = quote(str(runpod_job_id), safe='')
@@ -954,16 +978,17 @@ def gpu_callback():
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
 
-    # Build timing summary: read from shared file (multi-worker) or in-memory
+    # Build timing summary: read from shared file, in-memory, or DB (DB survives multi-instance / ephemeral storage)
     now = time.time()
     file_timings = _get_trigger_timings(job_id)
     mem_timings = job_timings.pop(job_id, {})
+    db_timings = _get_job_timings_from_db(job_id, user_id) if user_id else {}
     queued_at = file_timings.get("queued_at") or pending_trigger_at.get(job_id, t0)
     trigger_completed_at = file_timings.get("trigger_completed_at") or mem_timings.get("trigger_completed_at")
-    started_at = file_timings.get("gpu_started_at") or gpu_started_at.pop(job_id, None)
+    started_at = file_timings.get("gpu_started_at") or gpu_started_at.pop(job_id, None) or db_timings.get("gpu_started_at")
 
     total_sec = now - queued_at
-    trigger_sec = mem_timings.get("trigger_sec")
+    trigger_sec = mem_timings.get("trigger_sec") or file_timings.get("trigger_sec") or db_timings.get("trigger_sec")
 
     # runpod wakeup = trigger to gpu_started (cold start; download happens after gpu_started)
     waiting_for_run = None
@@ -1227,7 +1252,11 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         trigger_sec = time.time() - t0
         trigger_completed_at = time.time()
         job_timings[job_id] = {"trigger_sec": trigger_sec, "trigger_completed_at": trigger_completed_at}
-        _update_trigger_timings(job_id, trigger_completed_at=trigger_completed_at)
+        _update_trigger_timings(job_id, trigger_sec=trigger_sec, trigger_completed_at=trigger_completed_at)
+        # Persist to DB immediately (survives multi-instance / ephemeral storage)
+        pending = pending_job_info.get(job_id, {})
+        user_id = pending.get("user_id") or _extract_user_id_from_s3_key((pending.get("input_s3_key") or ""))
+        _update_job_timings(job_id, user_id=user_id, trigger_sec=trigger_sec, trigger_completed_at=trigger_completed_at)
         logging.info("PROCESS TIMING: trigger (POST /run) took %.1fs", trigger_sec)
         if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "run_accepted"
@@ -1256,6 +1285,16 @@ def gpu_started():
     started_at = time.time()
     gpu_started_at[job_id] = started_at
     _update_trigger_timings(job_id, gpu_started_at=started_at)
+    # Persist runpod_wakeup_sec and gpu_started_at to DB (survives multi-instance)
+    pending = pending_job_info.get(job_id, {})
+    user_id = pending.get("user_id") or _extract_user_id_from_s3_key((pending.get("input_s3_key") or ""))
+    trigger_completed_at = _get_trigger_timings(job_id).get("trigger_completed_at")
+    if trigger_completed_at is None:
+        db_timings = _get_job_timings_from_db(job_id, user_id)
+        trigger_completed_at = db_timings.get("trigger_completed_at")
+    if trigger_completed_at is not None:
+        wakeup_sec = started_at - trigger_completed_at
+        _update_job_timings(job_id, user_id=user_id, runpod_wakeup_sec=wakeup_sec, gpu_started_at=started_at)
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
     _set_trigger_state(job_id, "triggered")

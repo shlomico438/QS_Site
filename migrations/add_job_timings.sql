@@ -1,9 +1,12 @@
 -- Add PROCESS TIMING columns to jobs table for human-readable display.
 -- Run this in Supabase SQL Editor or via psql.
+-- If you already ran an earlier version, run the ALTER again (ADD COLUMN IF NOT EXISTS is safe).
 
 ALTER TABLE jobs
   ADD COLUMN IF NOT EXISTS runpod_job_id text,
   ADD COLUMN IF NOT EXISTS trigger_sec real,
+  ADD COLUMN IF NOT EXISTS trigger_completed_at real,
+  ADD COLUMN IF NOT EXISTS gpu_started_at real,
   ADD COLUMN IF NOT EXISTS download_sec real,
   ADD COLUMN IF NOT EXISTS runpod_wakeup_sec real,
   ADD COLUMN IF NOT EXISTS runpod_process_sec real,
