@@ -85,18 +85,17 @@ logging.basicConfig(level=logging.INFO)
 print(f"SIMULATION_MODE is {SIMULATION_MODE}")
 if not SIMULATION_MODE:
     BASE_DIR = pathlib.Path(__file__).resolve().parent
-
     ffmpeg_path = BASE_DIR / "bin" / "ffmpeg"
     ffprobe_path = BASE_DIR / "bin" / "ffprobe"
-
-    # Ensure executable permissions (Windows strips them)
-    os.chmod(ffmpeg_path, 0o755)
-    os.chmod(ffprobe_path, 0o755)
-
-    subprocess.run(
-        [str(ffmpeg_path), "-version"],
-        check=True
-    )
+    try:
+        if ffmpeg_path.exists():
+            os.chmod(ffmpeg_path, 0o755)
+        if ffprobe_path.exists():
+            os.chmod(ffprobe_path, 0o755)
+        if ffmpeg_path.exists():
+            subprocess.run([str(ffmpeg_path), "-version"], check=True, timeout=5)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as e:
+        logging.warning("ffmpeg check skipped or failed (app will start; burn-in may fail): %s", e)
 
 
 @app.route('/api/get_presigned_url', methods=['POST'])
