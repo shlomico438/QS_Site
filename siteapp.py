@@ -373,6 +373,7 @@ pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detect
 STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
+job_timings = {}  # job_id -> {"trigger_sec": float} for final timing summary
 
 
 def _trigger_state_dir():
@@ -430,28 +431,6 @@ def get_runpod_endpoint_status(pod_id):
         logging.warning("get_runpod_endpoint_status: %s", e)
     return {}
 
-def gpu_warmup(pod_id, timeout_sec=30, interval_sec=5):
-    """Block until RunPod endpoint reports ready (or timeout). Uses rest.runpod.io/v1/endpoints.
-    For serverless (scale-to-zero), workers start on first /run, so warmup is skipped by default."""
-    if str(os.environ.get("RUNPOD_SKIP_WARMUP", "")).lower() in ("1", "true", "yes"):
-        print("RUNPOD_SKIP_WARMUP set; skipping warmup.")
-        return
-    start = time.time()
-    while (time.time() - start) < timeout_sec:
-        pod_info = get_runpod_endpoint_status(pod_id)
-        status = (pod_info.get("status") or pod_info.get("state") or "").lower()
-        if status == "running":
-            print("Pod is ready!")
-            return
-        workers = pod_info.get("workers") or pod_info.get("worker") or []
-        if workers and isinstance(workers, list):
-            for w in workers:
-                if (w.get("status") or w.get("state") or "").lower() == "running":
-                    print("Pod is ready (worker running)!")
-                    return
-        print("Waiting for pod to warm up...")
-        time.sleep(interval_sec)
-    print("Warmup timeout; proceeding to trigger.")
 
 def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
     data = []
@@ -680,6 +659,7 @@ def translate_segments(segments, target_lang='he'):
     """Run Node translate script to add translated_text to each segment.
     Returns (segments, meta). On failure, returns original segments + error meta.
     """
+    t0 = time.time()
     if not segments or not isinstance(segments, list):
         return segments, {"total": 0, "ok_count": 0, "empty_count": 0, "error_count": 0, "changed_count": 0, "first_error": ""}
     if not TRANSLATE_SCRIPT.exists():
@@ -692,7 +672,9 @@ def translate_segments(segments, target_lang='he'):
     node_exe = shutil.which("node")
     if not node_exe:
         logging.warning("Node.js not found in PATH; using Python OpenAI fallback")
-        return _translate_segments_via_python_openai(segments, target_lang=target_lang)
+        result = _translate_segments_via_python_openai(segments, target_lang=target_lang)
+        logging.info("PROCESS TIMING: GPT (Python fallback) took %.1fs", time.time() - t0)
+        return result
     try:
         logging.info("GPT translate: start segments=%s target=%s", len(segments), target_lang)
         payload = json.dumps({"segments": segments, "targetLang": target_lang}).encode("utf-8")
@@ -710,6 +692,7 @@ def translate_segments(segments, target_lang='he'):
             logging.info("GPT translate stderr: %s", stderr_text[:500])
 
         if proc.returncode != 0:
+            logging.info("PROCESS TIMING: GPT (Node) took %.1fs (exit %s)", time.time() - t0, proc.returncode)
             return segments, {
                 "total": len(segments),
                 "ok_count": 0,
@@ -722,6 +705,7 @@ def translate_segments(segments, target_lang='he'):
 
         out_text = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
         if not out_text:
+            logging.info("PROCESS TIMING: GPT (Node) took %.1fs (empty stdout)", time.time() - t0)
             return segments, {
                 "total": len(segments),
                 "ok_count": 0,
@@ -736,6 +720,7 @@ def translate_segments(segments, target_lang='he'):
         translated = data.get("segments", segments)
         meta = data.get("meta") or {}
         if not isinstance(translated, list):
+            logging.info("PROCESS TIMING: GPT (Node) took %.1fs (invalid response)", time.time() - t0)
             return segments, {
                 "total": len(segments),
                 "ok_count": 0,
@@ -762,9 +747,11 @@ def translate_segments(segments, target_lang='he'):
             result_meta["empty_count"], result_meta["error_count"],
             result_meta["model"], result_meta["first_error"][:180]
         )
+        logging.info("PROCESS TIMING: GPT (Node) took %.1fs", time.time() - t0)
         return translated, result_meta
     except subprocess.TimeoutExpired:
         logging.warning("Translate script timed out")
+        logging.info("PROCESS TIMING: GPT (Node) took %.1fs (timeout)", time.time() - t0)
         return segments, {
             "total": len(segments),
             "ok_count": 0,
@@ -776,6 +763,7 @@ def translate_segments(segments, target_lang='he'):
         }
     except Exception as e:
         logging.warning("Translate segments error: %s", e)
+        logging.info("PROCESS TIMING: GPT (Node) took %.1fs (error)", time.time() - t0)
         return segments, {
             "total": len(segments),
             "ok_count": 0,
@@ -794,6 +782,7 @@ def api_translate_segments():
     """Accept segments JSON, run GPT correction, return segments with translated_text. Used by SRT/VTT upload and any client.
     If you get 504: gateway/proxy read timeout is too short; set it > GPT_TIMEOUT_SEC (default 90) or lower GPT_TIMEOUT_SEC."""
     global _translate_in_flight
+    t0 = time.time()
     data = request.json or {}
     segments = data.get('segments') or []
     target_lang = data.get('targetLang') or data.get('target_lang') or 'he'
@@ -803,6 +792,8 @@ def api_translate_segments():
     logging.info("GPT translate: in_flight=%d (concurrent requests)", _translate_in_flight)
     try:
         translated, meta = translate_segments(segments, target_lang=target_lang)
+        elapsed = time.time() - t0
+        logging.info("PROCESS TIMING: api_translate_segments total took %.1fs", elapsed)
         return jsonify({"segments": translated, "meta": meta})
     finally:
         _translate_in_flight -= 1
@@ -816,6 +807,7 @@ job_results_cache = {}
 # See docs/GPU_CALLBACK_API.md for full contract.
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
+    t0 = time.time()
     data = request.json or {}
     job_id = data.get('jobId')
     if not job_id:
@@ -836,9 +828,13 @@ def gpu_callback():
         user_id = _extract_user_id_from_s3_key(input_s3_key)
 
     raw_result_s3_key = None
+    s3_sec = 0.0
     if input_s3_key:
         try:
+            t_s3 = time.time()
             raw_result_s3_key = _put_segments_json_to_s3(user_id or 'anonymous', input_s3_key, segments, stage='raw')
+            s3_sec = time.time() - t_s3
+            logging.info("PROCESS TIMING: S3 save (raw segments) took %.1fs", s3_sec)
             result_dict = dict(result) if isinstance(result, dict) else {}
             result_dict['raw_result_s3_key'] = raw_result_s3_key
             data = dict(data)
@@ -856,7 +852,18 @@ def gpu_callback():
 
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
-    print(f"DEBUG: Emitted result to room {job_id}")
+
+    callback_sec = time.time() - t0
+    total_sec = time.time() - pending_trigger_at.get(job_id, t0)
+    timings = job_timings.pop(job_id, {})
+    trigger_sec = timings.get("trigger_sec")
+    summary_parts = []
+    if trigger_sec is not None:
+        summary_parts.append(f"trigger={trigger_sec:.1f}s")
+    summary_parts.append(f"S3_save={s3_sec:.1f}s")
+    summary_parts.append(f"callback={callback_sec:.1f}s")
+    summary_parts.append(f"TOTAL={total_sec:.1f}s")
+    logging.info("PROCESS TIMING: %s", " | ".join(summary_parts))
 
     # So frontend handshake completes even if /api/gpu_started was never called; shared store for multi-worker
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
@@ -1003,19 +1010,19 @@ def sign_s3():
             }
         })
 
-def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
-    """Background: POST /run to trigger job. Updates pending_trigger[job_id].
-    Serverless scales from zero: workers start on first /run, so we trigger immediately
-    instead of waiting for 'running' (which never comes before /run). Set RUNPOD_SKIP_WARMUP=0
-    and ensure get_runpod_endpoint_status uses rest.runpod.io if you need pre-trigger wait."""
-    global pending_trigger
+def _trigger_gpu(job_id, payload, endpoint_id, api_key):
+    """Background: POST /run to wake RunPod from cold and start the job. No polling.
+    The trigger itself starts the container; worker downloads from S3 and transcribes."""
+    global pending_trigger, job_timings
+    t0 = time.time()
     try:
-        if str(os.environ.get("RUNPOD_SKIP_WARMUP", "1")).lower() in ("0", "false", "no"):
-            gpu_warmup(endpoint_id, timeout_sec=300, interval_sec=5)
         clean_id = str(endpoint_id).strip()
         endpoint_url = f"https://api.runpod.ai/v2/{clean_id}/run"
         headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
         response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
+        trigger_sec = time.time() - t0
+        job_timings[job_id] = {"trigger_sec": trigger_sec}
+        logging.info("PROCESS TIMING: trigger (POST /run) took %.1fs", trigger_sec)
         if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "run_accepted"
             _set_trigger_state(job_id, "run_accepted")
@@ -1027,7 +1034,8 @@ def _do_warmup_and_trigger(job_id, payload, endpoint_id, api_key):
     except Exception as e:
         pending_trigger[job_id] = "failed"
         _set_trigger_state(job_id, "failed")
-        logging.exception("warmup_and_trigger failed for %s", job_id)
+        logging.info("PROCESS TIMING: trigger failed after %.1fs", time.time() - t0)
+        logging.exception("trigger_gpu failed for %s", job_id)
 
 
 @app.route('/api/gpu_started', methods=['POST'])
@@ -1136,7 +1144,7 @@ def trigger_processing():
         pending_trigger_at[job_id] = time.time()
         _set_trigger_state(job_id, "queued")
         t = threading.Thread(
-            target=_do_warmup_and_trigger,
+            target=_trigger_gpu,
             args=(job_id, payload, endpoint_id, api_key)
         )
         t.daemon = True
@@ -1192,7 +1200,7 @@ def retry_trigger():
         pending_trigger_at[job_id] = time.time()
         _set_trigger_state(job_id, "queued")
         t = threading.Thread(
-            target=_do_warmup_and_trigger,
+            target=_trigger_gpu,
             args=(job_id, payload, endpoint_id, api_key)
         )
         t.daemon = True
