@@ -52,6 +52,7 @@ Or with `result` and optional `timing` (for PROCESS TIMING summary):
     ],
     "timing": {
       "download_sec": 2.1,
+      "wakeup_sec": 5.0,
       "transcribe_sec": 28.5,
       "gpt_sec": 4.2
     }
@@ -59,7 +60,10 @@ Or with `result` and optional `timing` (for PROCESS TIMING summary):
 }
 ```
 
-- **`result.timing`** (optional) — If present, Site includes these in the PROCESS TIMING log: `download=Xs | transcribe=Xs | gpt=Xs`.
+- **`result.timing`** (optional) — If present, Site includes these in the PROCESS TIMING table:
+  - **`download_sec`** — Time from trigger to download complete (worker fetching file from S3).
+  - **`wakeup_sec`** — Time from download complete to runpod start (model load, etc.). If omitted, Site infers from `waiting_for_run - download_sec`.
+  - **`transcribe_sec`**, **`gpt_sec`** — Optional breakdown of runpod process time.
 
 ---
 

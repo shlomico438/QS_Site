@@ -869,22 +869,36 @@ def gpu_callback():
     if started_at is not None:
         runpod_process = now - started_at
 
-    # Worker can send timing in result.timing: { download_sec, transcribe_sec, gpt_sec }
+    # Worker can send timing in result.timing: { download_sec, wakeup_sec, transcribe_sec, gpt_sec }
     worker_timing = (result if isinstance(result, dict) else {}).get("timing") or {}
     if not isinstance(worker_timing, dict):
         worker_timing = {}
 
-    summary_parts = [f"trigger={timings.get('trigger_sec', 0):.1f}s"]
-    if waiting_for_run is not None:
-        summary_parts.append(f"waiting_for_run={waiting_for_run:.1f}s")
-    if runpod_process is not None:
-        summary_parts.append(f"runpod_process={runpod_process:.1f}s")
-    for k in ("download_sec", "transcribe_sec", "gpt_sec"):
-        v = worker_timing.get(k)
-        if v is not None:
-            summary_parts.append(f"{k.replace('_sec', '')}={float(v):.1f}s")
-    summary_parts.append(f"TOTAL={total_sec:.1f}s")
-    logging.info("PROCESS TIMING: %s", " | ".join(summary_parts))
+    download_sec = worker_timing.get("download_sec")
+    wakeup_sec = worker_timing.get("wakeup_sec")
+    if wakeup_sec is None and waiting_for_run is not None and download_sec is not None:
+        wakeup_sec = max(0, waiting_for_run - float(download_sec))
+    elif wakeup_sec is None and waiting_for_run is not None:
+        wakeup_sec = waiting_for_run
+    process_sec = runpod_process
+
+    # Timing table
+    rows = [
+        ("trigger", timings.get("trigger_sec")),
+        ("download (trigger → download complete)", download_sec),
+        ("runpod wakeup (download complete → runpod start)", wakeup_sec),
+        ("runpod process (runpod start → complete)", process_sec),
+        ("TOTAL", total_sec),
+    ]
+    table_lines = [
+        "PROCESS TIMING:",
+        "  | Phase                                          | Duration |",
+        "  |------------------------------------------------|----------|",
+    ] + [
+        f"  | {phase:<45} | {f'{v:.1f}s' if v is not None else '-':>8} |"
+        for phase, v in rows
+    ]
+    logging.info("\n".join(table_lines))
 
     # So frontend handshake completes even if /api/gpu_started was never called; shared store for multi-worker
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
@@ -1023,6 +1037,17 @@ def sign_s3():
             ExpiresIn=3600
         )
 
+        # Trigger RunPod early (before upload) so container is warming during upload
+        _start_trigger_if_configured(
+            job_id=job_id,
+            s3_key=s3_key,
+            request=request,
+            task='transcribe',
+            language=data.get('language', 'he'),
+            diarization=data.get('diarization', False),
+            speaker_count=2,
+        )
+
         return jsonify({
             'data': {
                 'url': presigned_url,
@@ -1030,6 +1055,43 @@ def sign_s3():
                 'jobId': job_id
             }
         })
+
+def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2):
+    """Start RunPod trigger in background. Called from sign_s3 (before upload) so container warms during upload.
+    No-op if RunPod not configured or SIMULATION_MODE."""
+    if SIMULATION_MODE:
+        return
+    endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
+    api_key = os.environ.get('RUNPOD_API_KEY')
+    if not endpoint_id or not api_key:
+        return
+    public_base = _public_base_url(request)
+    callback_url = f"{public_base}/api/gpu_callback"
+    start_callback_url = f"{public_base}/api/gpu_started"
+    payload = {
+        "input": {
+            "s3Key": s3_key,
+            "jobId": job_id,
+            "task": task,
+            "language": language,
+            "callback_url": callback_url,
+            "start_callback_url": start_callback_url,
+        }
+    }
+    pending_job_info[job_id] = {
+        "input_s3_key": s3_key,
+        "user_id": _extract_user_id_from_s3_key(s3_key),
+        "task": task,
+        "language": language,
+    }
+    pending_trigger[job_id] = "queued"
+    pending_trigger_at[job_id] = time.time()
+    _set_trigger_state(job_id, "queued")
+    t = threading.Thread(target=_trigger_gpu, args=(job_id, payload, endpoint_id, api_key))
+    t.daemon = True
+    t.start()
+    logging.info("Trigger started at sign-s3 (before upload) for %s", job_id)
+
 
 def _trigger_gpu(job_id, payload, endpoint_id, api_key):
     """Background: POST /run to wake RunPod from cold and start the job. No polling.
@@ -1117,6 +1179,10 @@ def trigger_processing():
 
         if not s3_key or not job_id:
             return jsonify({"status": "error", "message": "s3Key and jobId required"}), 400
+
+        # Trigger was already started at sign-s3 (before upload); just confirm
+        if job_id in pending_trigger and pending_trigger.get(job_id) not in ("failed", None):
+            return jsonify({"status": "started", "job_id": job_id}), 202
 
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
         api_key = os.environ.get('RUNPOD_API_KEY')

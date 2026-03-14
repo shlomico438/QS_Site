@@ -3430,7 +3430,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         filename: currentFile.name,
                         filetype: currentFile.type,
                         diarization: diarizationValue,
-                        userId: userId
+                        userId: userId,
+                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
                     })
                 });
 

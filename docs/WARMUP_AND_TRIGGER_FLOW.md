@@ -8,17 +8,13 @@
 
 ## Backend flow (step by step)
 
-1. **Frontend** uploads file to S3, then `POST /api/trigger_processing` with `{ s3Key, jobId, language, ... }`.
+1. **Frontend** calls `POST /api/sign-s3` to get presigned URL. **Backend** starts the RunPod trigger immediately (before upload) so the container warms during upload.
 
-2. **Backend** `trigger_processing()`:
-   - Builds the RunPod payload (`input: { s3Key, jobId, task, language }`).
-   - Sets `pending_trigger[job_id] = "queued"` and `pending_trigger_at[job_id] = now`.
-   - Starts a **background daemon thread** that runs `_trigger_gpu(...)`.
-   - **Immediately** returns `202` with `{"status": "started", "job_id": "..."}`.
+2. **Frontend** uploads file to S3, then `POST /api/trigger_processing` with `{ s3Key, jobId, ... }`. If trigger was already started at sign-s3, backend returns 202 without re-triggering.
 
-   So the HTTP response is sent **before** the thread has done anything. The thread runs in parallel.
+3. **Backend** `sign_s3()` calls `_start_trigger_if_configured()` which starts `_trigger_gpu` in a background thread (or `trigger_processing()` does the same if trigger was not already started at sign-s3).
 
-3. **In the thread** `_trigger_gpu(job_id, payload, endpoint_id, api_key)`:
+4. **In the thread** `_trigger_gpu(job_id, payload, endpoint_id, api_key)`:
    - **Trigger:**  
      `POST https://api.runpod.ai/v2/{endpoint_id}/run` with the payload, timeout 15s.
    - The trigger itself wakes RunPod from cold (no polling for "running").
