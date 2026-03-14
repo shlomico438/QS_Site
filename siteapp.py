@@ -454,27 +454,62 @@ def _update_trigger_timings(job_id, **updates):
         logging.warning("Could not update trigger timings for %s: %s", job_id, e)
 
 
-def _set_last_callback_for_gpt(job_id: str, at: float) -> None:
+def _set_last_callback_for_gpt(job_id: str, at: float, user_id: str = None) -> None:
     """Store last gpu_callback job so api_translate_segments can infer GPT timing."""
     try:
         path = os.path.join(_trigger_state_dir(), "last_callback.json")
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump({"job_id": job_id, "at": at}, f)
+            json.dump({"job_id": job_id, "at": at, "user_id": user_id}, f)
     except Exception as e:
         logging.warning("Could not set last_callback_for_gpt: %s", e)
 
 
 def _get_last_callback_for_gpt() -> tuple:
-    """Return (job_id, callback_at) for inferring GPT timing, or (None, None)."""
+    """Return (job_id, callback_at, user_id) for inferring GPT timing, or (None, None, None)."""
     try:
         path = os.path.join(_trigger_state_dir(), "last_callback.json")
         if os.path.isfile(path):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            return (data.get("job_id"), data.get("at"))
+            return (data.get("job_id"), data.get("at"), data.get("user_id"))
     except Exception:
         pass
-    return (None, None)
+    return (None, None, None)
+
+
+def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> None:
+    """Update jobs table with PROCESS TIMING data. Matches by runpod_job_id column or metadata.job_id."""
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key:
+        return
+    payload = {k: v for k, v in timings.items() if v is not None}
+    if not payload:
+        return
+    from urllib.parse import quote
+    rj = quote(str(runpod_job_id), safe='')
+    uid = quote(str(user_id), safe='') if user_id else None
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    try:
+        # Prefer runpod_job_id column (see migrations/add_job_timings.sql)
+        url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
+        if uid:
+            url += f"&user_id=eq.{uid}"
+        r = requests.patch(url, json=payload, headers=headers, timeout=10)
+        if r.status_code in (200, 204):
+            return
+        # Fallback: filter by metadata->job_id (PostgREST: metadata->job_id for jsonb)
+        url2 = f"{supabase_url}/rest/v1/jobs?metadata->job_id=eq.\"{runpod_job_id}\""
+        if uid:
+            url2 += f"&user_id=eq.{uid}"
+        requests.patch(url2, json=payload, headers=headers, timeout=10)
+    except Exception as e:
+        logging.warning("Could not update job timings for %s: %s", runpod_job_id, e)
 
 
 def get_runpod_endpoint_status(pod_id):
@@ -855,11 +890,12 @@ def api_translate_segments():
         translated, meta = translate_segments(segments, target_lang=target_lang)
         elapsed = time.time() - t0
         logging.info("PROCESS TIMING: api_translate_segments total took %.1fs", elapsed)
-        # Infer GPT timing for the job that just had gpu_callback
-        last_job, callback_at = _get_last_callback_for_gpt()
+        # Infer GPT timing for the job that just had gpu_callback; update DB
+        last_job, callback_at, last_user_id = _get_last_callback_for_gpt()
         if last_job and callback_at is not None and (time.time() - callback_at) < 120:
             inferred_gap = time.time() - callback_at
             logging.info("PROCESS TIMING (addendum): job %s GPT took %.1fs (inferred from gpu_callback→translate: %.1fs)", last_job, elapsed, inferred_gap)
+            _update_job_timings(last_job, user_id=last_user_id, gpt_sec=elapsed)
         return jsonify({"segments": translated, "meta": meta})
     finally:
         _translate_in_flight -= 1
@@ -974,7 +1010,19 @@ def gpu_callback():
     _set_trigger_state(job_id, "triggered")
 
     # Store for GPT timing inference: api_translate_segments will log addendum when it completes
-    _set_last_callback_for_gpt(job_id, now)
+    _set_last_callback_for_gpt(job_id, now, user_id=user_id)
+
+    # Persist PROCESS TIMING to DB (runpod_wakeup_sec, runpod_process_sec, gpt_sec; gpt filled when translate completes)
+    _update_job_timings(
+        job_id,
+        user_id=user_id,
+        trigger_sec=trigger_sec,
+        download_sec=download_sec,
+        runpod_wakeup_sec=wakeup_sec,
+        runpod_process_sec=process_sec,
+        gpt_sec=gpt_sec,
+        total_sec=total_sec,
+    )
 
     return jsonify({
         "ok": True,

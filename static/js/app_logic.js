@@ -902,7 +902,7 @@ async function initPersonalPage() {
     tableWrap.style.display = 'block';
     const { data: jobs, error } = await supabase
         .from('jobs')
-        .select('id, status, input_s3_key, created_at, type, result_s3_key')
+        .select('id, status, input_s3_key, created_at, type, result_s3_key, runpod_wakeup_sec, runpod_process_sec, gpt_sec')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
@@ -948,6 +948,10 @@ async function initPersonalPage() {
     } catch (_) {}
 
     const T = (k) => (typeof window.t === 'function' ? window.t(k) : k);
+    function formatSec(v) {
+        if (v == null || typeof v !== 'number') return '—';
+        return v < 1 ? (v * 1000).toFixed(0) + 'ms' : v.toFixed(1) + 's';
+    }
 
     const personalDialogMarkup = `
         <div class="personal-dialog" role="dialog" aria-modal="true">
@@ -1069,6 +1073,9 @@ async function initPersonalPage() {
             <td class="personal-cell-name">${escapeHtml(name)}${pad}</td>
             <td>${escapeHtml(formatDate(job.created_at))}${pad}</td>
             <td>${escapeHtml(statusLabel(job.status))}${pad}</td>
+            <td>${formatSec(job.runpod_wakeup_sec)}${pad}</td>
+            <td>${formatSec(job.runpod_process_sec)}${pad}</td>
+            <td>${formatSec(job.gpt_sec)}${pad}</td>
             <td class="personal-row-actions">
                 <button type="button" class="personal-dropdown-btn" data-job-id="${escapeHtml(job.id)}" aria-haspopup="true" aria-expanded="false" aria-label="${escapeHtml(actionsLabel)}">${actionsBtnHtml}</button>
                 <div class="personal-dropdown-menu" role="menu">
@@ -1372,6 +1379,7 @@ async function createJobOnUpload({ jobId, s3Key }) {
         type: 'transcription',
         status: 'pending',
         input_s3_key: s3Key,
+        runpod_job_id: jobId,
         user_name,
         user_email,
         metadata: { job_id: jobId }
@@ -1440,6 +1448,7 @@ async function ensureJobRecordOnExport() {
         type: 'transcription',
         status: 'exported',
         input_s3_key: s3Key,
+        runpod_job_id: jobId || null,
         user_name,
         user_email,
         metadata: { job_id: jobId || null }
