@@ -41,7 +41,7 @@ Minimum valid body:
 }
 ```
 
-Or with `result`:
+Or with `result` and optional `timing` (for PROCESS TIMING summary):
 
 ```json
 {
@@ -49,10 +49,17 @@ Or with `result`:
   "result": {
     "segments": [
       { "start": 0.0, "end": 2.5, "text": "Hello" }
-    ]
+    ],
+    "timing": {
+      "download_sec": 2.1,
+      "transcribe_sec": 28.5,
+      "gpt_sec": 4.2
+    }
   }
 }
 ```
+
+- **`result.timing`** (optional) — If present, Site includes these in the PROCESS TIMING log: `download=Xs | transcribe=Xs | gpt=Xs`.
 
 ---
 

@@ -373,7 +373,8 @@ pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detect
 STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
-job_timings = {}  # job_id -> {"trigger_sec": float} for final timing summary
+job_timings = {}  # job_id -> {"trigger_sec": float, "trigger_completed_at": float}
+gpu_started_at = {}  # job_id -> when worker called /api/gpu_started (container running)
 
 
 def _trigger_state_dir():
@@ -853,15 +854,35 @@ def gpu_callback():
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
 
-    callback_sec = time.time() - t0
+    # Build timing summary: what the user cares about
     total_sec = time.time() - pending_trigger_at.get(job_id, t0)
     timings = job_timings.pop(job_id, {})
-    trigger_sec = timings.get("trigger_sec")
-    summary_parts = []
-    if trigger_sec is not None:
-        summary_parts.append(f"trigger={trigger_sec:.1f}s")
-    summary_parts.append(f"S3_save={s3_sec:.1f}s")
-    summary_parts.append(f"callback={callback_sec:.1f}s")
+    trigger_completed_at = timings.get("trigger_completed_at")
+    started_at = gpu_started_at.pop(job_id, None)
+    now = time.time()
+
+    waiting_for_run = None
+    if trigger_completed_at is not None and started_at is not None:
+        waiting_for_run = started_at - trigger_completed_at
+
+    runpod_process = None
+    if started_at is not None:
+        runpod_process = now - started_at
+
+    # Worker can send timing in result.timing: { download_sec, transcribe_sec, gpt_sec }
+    worker_timing = (result if isinstance(result, dict) else {}).get("timing") or {}
+    if not isinstance(worker_timing, dict):
+        worker_timing = {}
+
+    summary_parts = [f"trigger={timings.get('trigger_sec', 0):.1f}s"]
+    if waiting_for_run is not None:
+        summary_parts.append(f"waiting_for_run={waiting_for_run:.1f}s")
+    if runpod_process is not None:
+        summary_parts.append(f"runpod_process={runpod_process:.1f}s")
+    for k in ("download_sec", "transcribe_sec", "gpt_sec"):
+        v = worker_timing.get(k)
+        if v is not None:
+            summary_parts.append(f"{k.replace('_sec', '')}={float(v):.1f}s")
     summary_parts.append(f"TOTAL={total_sec:.1f}s")
     logging.info("PROCESS TIMING: %s", " | ".join(summary_parts))
 
@@ -1021,7 +1042,7 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
         response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
         trigger_sec = time.time() - t0
-        job_timings[job_id] = {"trigger_sec": trigger_sec}
+        job_timings[job_id] = {"trigger_sec": trigger_sec, "trigger_completed_at": time.time()}
         logging.info("PROCESS TIMING: trigger (POST /run) took %.1fs", trigger_sec)
         if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "run_accepted"
@@ -1042,10 +1063,12 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
 def gpu_started():
     """Early handshake from worker: called once app_transcribe.py starts.
     Marks pending_trigger[job_id] as 'triggered' so frontend can move from 'queued' to 'processing'."""
+    global gpu_started_at
     data = request.json or {}
     job_id = data.get('jobId') or data.get('job_id')
     if not job_id:
         return jsonify({"ok": False, "error": "jobId required"}), 400
+    gpu_started_at[job_id] = time.time()
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
     _set_trigger_state(job_id, "triggered")
