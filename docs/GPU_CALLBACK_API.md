@@ -11,7 +11,21 @@ When the Site calls RunPod `/run`, it sends an `input` object. The worker receiv
 - **`callback_url`** (string) — Full URL to POST the result. Example: `https://your-app.koyeb.app/api/gpu_callback`
 - **`jobId`** (string) — Job id; must be sent back in the callback body.
 - **`s3Key`** (string) — Input file S3 key (used by Site to build output path).
+- **`upload_status_url`** (string) — Full URL to poll until upload is complete. Example: `https://your-app.koyeb.app/api/upload_status?job_id=xxx`
 - **`task`**, **`language`** — Optional; for worker logic.
+
+### Upload status (worker must wait before download)
+
+The trigger is sent **before** the user uploads the file. The worker **must** poll `upload_status_url` until `status === "complete"` before downloading from S3. Otherwise the file may not exist yet (404).
+
+**Poll:** `GET <upload_status_url>` (e.g. `GET /api/upload_status?job_id=xxx`)
+
+**Response:** `{ "job_id": "xxx", "status": "pending" | "complete" }`
+
+**Worker flow:**
+1. Receive job with `upload_status_url`.
+2. Poll `upload_status_url` every 2–3 seconds until `status === "complete"`.
+3. Then download from S3 and proceed with transcription.
 
 The worker **must** POST to `callback_url` when done; only when it receives **200 and `ok: true`** should it consider the job “delivered”.
 

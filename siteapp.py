@@ -375,6 +375,7 @@ STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
 job_timings = {}  # job_id -> {"trigger_sec": float, "trigger_completed_at": float}
 gpu_started_at = {}  # job_id -> when worker called /api/gpu_started (container running)
+upload_complete = {}  # job_id -> True when trigger_processing called (upload done); worker polls until this
 
 
 def _trigger_state_dir():
@@ -1068,6 +1069,7 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
     public_base = _public_base_url(request)
     callback_url = f"{public_base}/api/gpu_callback"
     start_callback_url = f"{public_base}/api/gpu_started"
+    upload_status_url = f"{public_base}/api/upload_status?job_id={job_id}"
     payload = {
         "input": {
             "s3Key": s3_key,
@@ -1076,6 +1078,7 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
             "language": language,
             "callback_url": callback_url,
             "start_callback_url": start_callback_url,
+            "upload_status_url": upload_status_url,
         }
     }
     pending_job_info[job_id] = {
@@ -1139,6 +1142,16 @@ def gpu_started():
     return jsonify({"ok": True, "job_id": job_id}), 200
 
 
+@app.route('/api/upload_status', methods=['GET'])
+def upload_status():
+    """Worker polls this until upload is complete. Set when trigger_processing is called (after frontend upload)."""
+    job_id = request.args.get('job_id')
+    if not job_id:
+        return jsonify({"error": "job_id required"}), 400
+    status = "complete" if job_id in upload_complete else "pending"
+    return jsonify({"job_id": job_id, "status": status}), 200
+
+
 @app.route('/api/trigger_status', methods=['GET'])
 def trigger_status():
     """Frontend polls this until status is 'triggered', then starts progress bar.
@@ -1173,6 +1186,7 @@ def trigger_processing():
         if SIMULATION_MODE:
             print("🔮 SIMULATION: Skipping RunPod Trigger")
             if job_id:
+                upload_complete[job_id] = True
                 pending_trigger[job_id] = "triggered"
                 _set_trigger_state(job_id, "triggered")
             return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
@@ -1180,7 +1194,10 @@ def trigger_processing():
         if not s3_key or not job_id:
             return jsonify({"status": "error", "message": "s3Key and jobId required"}), 400
 
-        # Trigger was already started at sign-s3 (before upload); just confirm
+        # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
+        upload_complete[job_id] = True
+
+        # Trigger already running; just confirm
         if job_id in pending_trigger and pending_trigger.get(job_id) not in ("failed", None):
             return jsonify({"status": "started", "job_id": job_id}), 202
 
@@ -1210,6 +1227,7 @@ def trigger_processing():
         public_base = _public_base_url(request)
         callback_url = f"{public_base}/api/gpu_callback"
         start_callback_url = f"{public_base}/api/gpu_started"
+        upload_status_url = f"{public_base}/api/upload_status?job_id={job_id}"
 
         payload = {
             "input": {
@@ -1219,6 +1237,7 @@ def trigger_processing():
                 "language": language,
                 "callback_url": callback_url,
                 "start_callback_url": start_callback_url,
+                "upload_status_url": upload_status_url,
             }
         }
 
@@ -1275,6 +1294,7 @@ def retry_trigger():
         public_base = _public_base_url(request)
         callback_url = f"{public_base}/api/gpu_callback"
         start_callback_url = f"{public_base}/api/gpu_started"
+        upload_status_url = f"{public_base}/api/upload_status?job_id={job_id}"
         payload = {
             "input": {
                 "s3Key": s3_key,
@@ -1283,8 +1303,10 @@ def retry_trigger():
                 "language": language,
                 "callback_url": callback_url,
                 "start_callback_url": start_callback_url,
+                "upload_status_url": upload_status_url,
             }
         }
+        upload_complete[job_id] = True  # retry: upload was already done
         pending_trigger[job_id] = "queued"
         pending_trigger_at[job_id] = time.time()
         _set_trigger_state(job_id, "queued")
