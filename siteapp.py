@@ -530,7 +530,7 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         if r.status_code in (200, 204):
             logging.info("_update_job_timings: updated job %s with %s", runpod_job_id, list(payload.keys()))
             return
-        # Fallback: try unquoted value (works for simple strings)
+        # Fallback 1: try unquoted value
         url_alt = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
         if uid:
             url_alt += f"&user_id=eq.{uid}"
@@ -538,6 +538,13 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         if r2.status_code in (200, 204):
             logging.info("_update_job_timings: updated job %s (fallback) with %s", runpod_job_id, list(payload.keys()))
             return
+        # Fallback 2: runpod_job_id only (no user_id) in case UUID filter fails
+        if uid:
+            url_no_uid = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
+            r3 = requests.patch(url_no_uid, json=payload, headers=headers, timeout=10)
+            if r3.status_code in (200, 204):
+                logging.info("_update_job_timings: updated job %s (no user_id filter) with %s", runpod_job_id, list(payload.keys()))
+                return
         logging.warning("_update_job_timings: PATCH failed for %s: %s %s", runpod_job_id, r.status_code, r.text[:200] if r.text else "")
     except Exception as e:
         logging.warning("Could not update job timings for %s: %s", runpod_job_id, e)
