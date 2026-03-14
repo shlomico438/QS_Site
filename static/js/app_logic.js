@@ -2517,7 +2517,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const T = typeof window.t === 'function' ? window.t : (k) => k;
             if (mainBtn) {
                 mainBtn.disabled = true;
-                mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
+                mainBtn.innerText = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '') + ' 0%';
             }
             const userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
             const chunks = [];
@@ -2528,7 +2528,7 @@ document.addEventListener('DOMContentLoaded', () => {
             var completedCount = 0;
             function onChunkDone() {
                 completedCount++;
-                if (mainBtn && chunks.length > 1) mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + completedCount + '/' + chunks.length;
+                if (mainBtn && chunks.length > 1) mainBtn.innerText = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '') + ' ' + completedCount + '/' + chunks.length;
             }
             const chunkPromises = chunks.map(function (chunk, c) {
                 return fetch('/api/translate_segments', {
@@ -3327,7 +3327,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     }
     function startFakeProgress() {
         let current = 0;
-        const processingLabel = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
+        const processingLabel = ((typeof window.t === 'function' ? window.t('processing') : 'Processing...') || '').replace(/\.\.\.?$/, '');
         if (mainBtn) mainBtn.innerText = processingLabel + ' 0%';
         if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
         window.fakeProgressInterval = setInterval(() => {
@@ -3426,7 +3426,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // Show progress bar for upload; processing phase uses % in button only
             showProgressBar();
             if (progressBar) { progressBar.style.width = "0%"; }
-            const uploadLabel = (typeof window.t === 'function' ? window.t('uploading') : "Uploading...");
+            const uploadLabel = ((typeof window.t === 'function' ? window.t('downloading') : "Downloading...") || '').replace(/\.\.\.?$/, '');
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
             if (statusTxt) statusTxt.style.display = "none";
             setTranscriptActionButtonsVisible(false);
@@ -3528,9 +3528,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {
                                 console.log("trigger ack (started, waiting for worker handshake)");
                                 const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                                const waitMsgBase = isHebrewUi ? 'מפעיל עיבוד' : 'Triggering processing';
+                                const processingLabel = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
                                 hideProgressBar(); // from here on, progress is % in button only
-                                if (mainBtn) mainBtn.innerText = waitMsgBase + ' 0%';
+                                if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' 0%';
                                 if (statusTxt) {
                                     statusTxt.innerText = '';
                                     statusTxt.style.display = 'none';
@@ -3543,7 +3543,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     await new Promise(r => setTimeout(r, pollInterval));
                                     const elapsed = Date.now() - start;
                                     const pct = Math.min(95, Math.round((elapsed / triggerConfirmTimeoutMs) * 100));
-                                    if (mainBtn) mainBtn.innerText = waitMsgBase + ' ' + pct + '%';
+                                    if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + pct + '%';
                                     const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
                                     ts = stRes.ok ? await stRes.json() : {};
                                 }
@@ -3848,7 +3848,7 @@ async function handleSubtitleFile(file) {
     setTranscriptActionButtonsVisible(false);
     if (mainBtn) {
         mainBtn.disabled = true;
-        mainBtn.innerText = T('translating') || 'מטייב דיקדוק...';
+        mainBtn.innerText = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '') + ' 0%';
     }
     const TRANSLATE_CHUNK_SIZE = 40;
     const TRANSLATE_CONCURRENCY = 4;
@@ -3861,7 +3861,7 @@ async function handleSubtitleFile(file) {
         const chunkResults = [];
         for (let b = 0; b < chunkedCues.length; b += TRANSLATE_CONCURRENCY) {
             if (mainBtn && chunkedCues.length > 1) {
-                mainBtn.innerText = (T('translating') || 'מטייב דיקדוק...') + ' ' + Math.min(b + TRANSLATE_CONCURRENCY, chunkedCues.length) + '/' + chunkedCues.length;
+                mainBtn.innerText = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '') + ' ' + Math.min(b + TRANSLATE_CONCURRENCY, chunkedCues.length) + '/' + chunkedCues.length;
             }
             const batchIndices = [];
             for (let i = 0; i < TRANSLATE_CONCURRENCY && b + i < chunkedCues.length; i++) batchIndices.push(b + i);
