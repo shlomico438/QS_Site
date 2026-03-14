@@ -407,15 +407,74 @@ def _get_trigger_state(job_id):
     return (None, None)
 
 
-def _set_trigger_state(job_id, status):
-    """Write trigger state so all workers see it."""
+def _set_trigger_state(job_id, status, **extra):
+    """Write trigger state so all workers see it. Merges with existing to preserve timings."""
     try:
         path = _trigger_state_path(job_id)
-        payload = {"status": status, "at": time.time()}
+        data = {}
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        data.update({"status": status, "at": time.time(), **extra})
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f)
+            json.dump(data, f)
     except Exception as e:
         logging.warning("Could not write trigger state for %s: %s", job_id, e)
+
+
+def _get_trigger_timings(job_id):
+    """Read timing fields from shared file (for multi-worker)."""
+    try:
+        path = _trigger_state_path(job_id)
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return {
+                "queued_at": data.get("queued_at") or data.get("at"),
+                "trigger_completed_at": data.get("trigger_completed_at"),
+                "gpu_started_at": data.get("gpu_started_at"),
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def _update_trigger_timings(job_id, **updates):
+    """Merge timing fields into trigger state file (preserves existing)."""
+    try:
+        path = _trigger_state_path(job_id)
+        data = {}
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        data.update(updates)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+    except Exception as e:
+        logging.warning("Could not update trigger timings for %s: %s", job_id, e)
+
+
+def _set_last_callback_for_gpt(job_id: str, at: float) -> None:
+    """Store last gpu_callback job so api_translate_segments can infer GPT timing."""
+    try:
+        path = os.path.join(_trigger_state_dir(), "last_callback.json")
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({"job_id": job_id, "at": at}, f)
+    except Exception as e:
+        logging.warning("Could not set last_callback_for_gpt: %s", e)
+
+
+def _get_last_callback_for_gpt() -> tuple:
+    """Return (job_id, callback_at) for inferring GPT timing, or (None, None)."""
+    try:
+        path = os.path.join(_trigger_state_dir(), "last_callback.json")
+        if os.path.isfile(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return (data.get("job_id"), data.get("at"))
+    except Exception:
+        pass
+    return (None, None)
 
 
 def get_runpod_endpoint_status(pod_id):
@@ -796,6 +855,11 @@ def api_translate_segments():
         translated, meta = translate_segments(segments, target_lang=target_lang)
         elapsed = time.time() - t0
         logging.info("PROCESS TIMING: api_translate_segments total took %.1fs", elapsed)
+        # Infer GPT timing for the job that just had gpu_callback
+        last_job, callback_at = _get_last_callback_for_gpt()
+        if last_job and callback_at is not None and (time.time() - callback_at) < 120:
+            inferred_gap = time.time() - callback_at
+            logging.info("PROCESS TIMING (addendum): job %s GPT took %.1fs (inferred from gpu_callback→translate: %.1fs)", last_job, elapsed, inferred_gap)
         return jsonify({"segments": translated, "meta": meta})
     finally:
         _translate_in_flight -= 1
@@ -855,13 +919,18 @@ def gpu_callback():
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
 
-    # Build timing summary: what the user cares about
-    total_sec = time.time() - pending_trigger_at.get(job_id, t0)
-    timings = job_timings.pop(job_id, {})
-    trigger_completed_at = timings.get("trigger_completed_at")
-    started_at = gpu_started_at.pop(job_id, None)
+    # Build timing summary: read from shared file (multi-worker) or in-memory
     now = time.time()
+    file_timings = _get_trigger_timings(job_id)
+    mem_timings = job_timings.pop(job_id, {})
+    queued_at = file_timings.get("queued_at") or pending_trigger_at.get(job_id, t0)
+    trigger_completed_at = file_timings.get("trigger_completed_at") or mem_timings.get("trigger_completed_at")
+    started_at = file_timings.get("gpu_started_at") or gpu_started_at.pop(job_id, None)
 
+    total_sec = now - queued_at
+    trigger_sec = mem_timings.get("trigger_sec")
+
+    # runpod wakeup = trigger to gpu_started (cold start; download happens after gpu_started)
     waiting_for_run = None
     if trigger_completed_at is not None and started_at is not None:
         waiting_for_run = started_at - trigger_completed_at
@@ -876,19 +945,17 @@ def gpu_callback():
         worker_timing = {}
 
     download_sec = worker_timing.get("download_sec")
-    wakeup_sec = worker_timing.get("wakeup_sec")
-    if wakeup_sec is None and waiting_for_run is not None and download_sec is not None:
-        wakeup_sec = max(0, waiting_for_run - float(download_sec))
-    elif wakeup_sec is None and waiting_for_run is not None:
-        wakeup_sec = waiting_for_run
+    wakeup_sec = worker_timing.get("wakeup_sec") or waiting_for_run
     process_sec = runpod_process
+    gpt_sec = worker_timing.get("gpt_sec")
 
     # Timing table
     rows = [
-        ("trigger", timings.get("trigger_sec")),
+        ("trigger", trigger_sec),
         ("download (trigger → download complete)", download_sec),
         ("runpod wakeup (download complete → runpod start)", wakeup_sec),
         ("runpod process (runpod start → complete)", process_sec),
+        ("GPT (correction/translation)", gpt_sec),
         ("TOTAL", total_sec),
     ]
     table_lines = [
@@ -905,6 +972,9 @@ def gpu_callback():
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
     _set_trigger_state(job_id, "triggered")
+
+    # Store for GPT timing inference: api_translate_segments will log addendum when it completes
+    _set_last_callback_for_gpt(job_id, now)
 
     return jsonify({
         "ok": True,
@@ -1088,8 +1158,9 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
         "language": language,
     }
     pending_trigger[job_id] = "queued"
-    pending_trigger_at[job_id] = time.time()
-    _set_trigger_state(job_id, "queued")
+    t_queued = time.time()
+    pending_trigger_at[job_id] = t_queued
+    _set_trigger_state(job_id, "queued", queued_at=t_queued)
     t = threading.Thread(target=_trigger_gpu, args=(job_id, payload, endpoint_id, api_key))
     t.daemon = True
     t.start()
@@ -1107,7 +1178,9 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
         response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
         trigger_sec = time.time() - t0
-        job_timings[job_id] = {"trigger_sec": trigger_sec, "trigger_completed_at": time.time()}
+        trigger_completed_at = time.time()
+        job_timings[job_id] = {"trigger_sec": trigger_sec, "trigger_completed_at": trigger_completed_at}
+        _update_trigger_timings(job_id, trigger_completed_at=trigger_completed_at)
         logging.info("PROCESS TIMING: trigger (POST /run) took %.1fs", trigger_sec)
         if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "run_accepted"
@@ -1133,7 +1206,9 @@ def gpu_started():
     job_id = data.get('jobId') or data.get('job_id')
     if not job_id:
         return jsonify({"ok": False, "error": "jobId required"}), 400
-    gpu_started_at[job_id] = time.time()
+    started_at = time.time()
+    gpu_started_at[job_id] = started_at
+    _update_trigger_timings(job_id, gpu_started_at=started_at)
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
     _set_trigger_state(job_id, "triggered")
@@ -1248,9 +1323,10 @@ def trigger_processing():
             "task": task,
             "language": language,
         }
+        t_queued = time.time()
         pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
-        pending_trigger_at[job_id] = time.time()
-        _set_trigger_state(job_id, "queued")
+        pending_trigger_at[job_id] = t_queued
+        _set_trigger_state(job_id, "queued", queued_at=t_queued)
         t = threading.Thread(
             target=_trigger_gpu,
             args=(job_id, payload, endpoint_id, api_key)
@@ -1307,9 +1383,10 @@ def retry_trigger():
             }
         }
         upload_complete[job_id] = True  # retry: upload was already done
+        t_queued = time.time()
         pending_trigger[job_id] = "queued"
-        pending_trigger_at[job_id] = time.time()
-        _set_trigger_state(job_id, "queued")
+        pending_trigger_at[job_id] = t_queued
+        _set_trigger_state(job_id, "queued", queued_at=t_queued)
         t = threading.Thread(
             target=_trigger_gpu,
             args=(job_id, payload, endpoint_id, api_key)
