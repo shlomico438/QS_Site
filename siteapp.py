@@ -430,7 +430,7 @@ def get_runpod_endpoint_status(pod_id):
         logging.warning("get_runpod_endpoint_status: %s", e)
     return {}
 
-def gpu_warmup(pod_id, timeout_sec=300, interval_sec=5):
+def gpu_warmup(pod_id, timeout_sec=30, interval_sec=5):
     """Block until RunPod endpoint reports ready (or timeout). Uses rest.runpod.io/v1/endpoints.
     For serverless (scale-to-zero), workers start on first /run, so warmup is skipped by default."""
     if str(os.environ.get("RUNPOD_SKIP_WARMUP", "")).lower() in ("1", "true", "yes"):
