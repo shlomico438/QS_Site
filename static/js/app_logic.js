@@ -950,7 +950,7 @@ async function initPersonalPage() {
     const T = (k) => (typeof window.t === 'function' ? window.t(k) : k);
     function formatSec(v) {
         if (v == null || typeof v !== 'number') return '—';
-        return v < 1 ? (v * 1000).toFixed(0) + 'ms' : v.toFixed(1) + 's';
+        return v < 1 ? Math.round(v * 1000) + 'ms' : Math.round(v) + 's';
     }
 
     const personalDialogMarkup = `
@@ -3521,9 +3521,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {
                                 console.log("trigger ack (started, waiting for worker handshake)");
                                 const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                                const waitMsg = isHebrewUi ? 'מפעיל עיבוד...' : 'Triggering processing...';
+                                const waitMsgBase = isHebrewUi ? 'מפעיל עיבוד' : 'Triggering processing';
                                 hideProgressBar(); // from here on, progress is % in button only
-                                if (mainBtn) mainBtn.innerText = waitMsg;
+                                if (mainBtn) mainBtn.innerText = waitMsgBase + ' 0%';
                                 if (statusTxt) {
                                     statusTxt.innerText = '';
                                     statusTxt.style.display = 'none';
@@ -3534,6 +3534,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 let ts = { status: '' };
                                 while (ts.status !== 'triggered' && ts.status !== 'failed' && ts.status !== 'stale_queued' && (Date.now() - start) < triggerConfirmTimeoutMs) {
                                     await new Promise(r => setTimeout(r, pollInterval));
+                                    const elapsed = Date.now() - start;
+                                    const pct = Math.min(95, Math.round((elapsed / triggerConfirmTimeoutMs) * 100));
+                                    if (mainBtn) mainBtn.innerText = waitMsgBase + ' ' + pct + '%';
                                     const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
                                     ts = stRes.ok ? await stRes.json() : {};
                                 }

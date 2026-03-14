@@ -504,12 +504,15 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
     supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
     service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
     if not supabase_url or not service_key:
+        logging.warning("_update_job_timings: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set, skipping")
         return
     payload = {k: v for k, v in timings.items() if v is not None}
     if not payload:
         logging.debug("_update_job_timings: no values to update for %s", runpod_job_id)
         return
     from urllib.parse import quote
+    # PostgREST: string values in eq filter need double quotes for reliability
+    rj_quoted = quote(f'"{runpod_job_id}"', safe='')
     rj = quote(str(runpod_job_id), safe='')
     uid = quote(str(user_id), safe='') if user_id else None
     headers = {
@@ -519,18 +522,23 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         "Prefer": "return=minimal",
     }
     try:
-        # Prefer runpod_job_id column (see migrations/add_job_timings.sql)
-        url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
+        # Prefer runpod_job_id column; use eq."value" for string match
+        url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_quoted}"
         if uid:
             url += f"&user_id=eq.{uid}"
         r = requests.patch(url, json=payload, headers=headers, timeout=10)
         if r.status_code in (200, 204):
+            logging.info("_update_job_timings: updated job %s with %s", runpod_job_id, list(payload.keys()))
             return
-        # Fallback: filter by metadata->job_id (PostgREST: metadata->job_id for jsonb)
-        url2 = f"{supabase_url}/rest/v1/jobs?metadata->job_id=eq.\"{runpod_job_id}\""
+        # Fallback: try unquoted value (works for simple strings)
+        url_alt = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
         if uid:
-            url2 += f"&user_id=eq.{uid}"
-        requests.patch(url2, json=payload, headers=headers, timeout=10)
+            url_alt += f"&user_id=eq.{uid}"
+        r2 = requests.patch(url_alt, json=payload, headers=headers, timeout=10)
+        if r2.status_code in (200, 204):
+            logging.info("_update_job_timings: updated job %s (fallback) with %s", runpod_job_id, list(payload.keys()))
+            return
+        logging.warning("_update_job_timings: PATCH failed for %s: %s %s", runpod_job_id, r.status_code, r.text[:200] if r.text else "")
     except Exception as e:
         logging.warning("Could not update job timings for %s: %s", runpod_job_id, e)
 
