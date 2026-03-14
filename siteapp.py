@@ -519,7 +519,7 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         "apikey": service_key,
         "Authorization": f"Bearer {service_key}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal",
+        "Prefer": "return=representation",
     }
     try:
         # Prefer runpod_job_id column; use eq."value" for string match
@@ -528,24 +528,47 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
             url += f"&user_id=eq.{uid}"
         r = requests.patch(url, json=payload, headers=headers, timeout=10)
         if r.status_code in (200, 204):
-            logging.info("_update_job_timings: updated job %s with %s", runpod_job_id, list(payload.keys()))
-            return
+            updated = r.json() if r.text else []
+            if isinstance(updated, list) and len(updated) > 0:
+                logging.info("_update_job_timings: updated job %s with %s (%d rows)", runpod_job_id, list(payload.keys()), len(updated))
+                return
+            logging.warning("_update_job_timings: PATCH 200 but 0 rows matched for %s (filter: runpod_job_id=eq.%s)", runpod_job_id, rj_quoted[:50])
         # Fallback 1: try unquoted value
         url_alt = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
         if uid:
             url_alt += f"&user_id=eq.{uid}"
         r2 = requests.patch(url_alt, json=payload, headers=headers, timeout=10)
         if r2.status_code in (200, 204):
-            logging.info("_update_job_timings: updated job %s (fallback) with %s", runpod_job_id, list(payload.keys()))
-            return
+            updated2 = r2.json() if r2.text else []
+            if isinstance(updated2, list) and len(updated2) > 0:
+                logging.info("_update_job_timings: updated job %s (fallback unquoted) with %s", runpod_job_id, list(payload.keys()))
+                return
         # Fallback 2: runpod_job_id only (no user_id) in case UUID filter fails
         if uid:
             url_no_uid = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
             r3 = requests.patch(url_no_uid, json=payload, headers=headers, timeout=10)
             if r3.status_code in (200, 204):
-                logging.info("_update_job_timings: updated job %s (no user_id filter) with %s", runpod_job_id, list(payload.keys()))
-                return
-        logging.warning("_update_job_timings: PATCH failed for %s: %s %s", runpod_job_id, r.status_code, r.text[:200] if r.text else "")
+                updated3 = r3.json() if r3.text else []
+                if isinstance(updated3, list) and len(updated3) > 0:
+                    logging.info("_update_job_timings: updated job %s (no user_id) with %s", runpod_job_id, list(payload.keys()))
+                    return
+        # Fallback 3: GET job by runpod_job_id, then PATCH by id (most reliable)
+        for rj_try in (rj, rj_quoted):
+            get_url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_try}&select=id"
+            get_r = requests.get(get_url, headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"}, timeout=5)
+            if get_r.status_code == 200 and get_r.text:
+                rows = get_r.json()
+                if isinstance(rows, list) and len(rows) > 0 and rows[0].get("id"):
+                    job_uuid = rows[0]["id"]
+                    patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{job_uuid}"
+                    r4 = requests.patch(patch_url, json=payload, headers=headers, timeout=10)
+                    if r4.status_code in (200, 204):
+                        updated4 = r4.json() if r4.text else []
+                        if isinstance(updated4, list) and len(updated4) > 0:
+                            logging.info("_update_job_timings: updated job %s (by id) with %s", runpod_job_id, list(payload.keys()))
+                            return
+                    break
+        logging.warning("_update_job_timings: all attempts failed for %s. Last: %s %s", runpod_job_id, r.status_code, r.text[:200] if r.text else "")
     except Exception as e:
         logging.warning("Could not update job timings for %s: %s", runpod_job_id, e)
 
