@@ -1854,6 +1854,12 @@ window.downloadFile = async function(type, bypassUser = null) {
             })();
             const segments = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(rawSegments, 0.5) : rawSegments;
             const subtitleStyle = (typeof window.currentSubtitleStyle === 'string' && window.currentSubtitleStyle) ? window.currentSubtitleStyle : 'tiktok';
+            const hasCustomFormatting = Array.isArray(window.currentCaptions) && window.currentCaptions.some((c) => {
+                const st = c && c.style && typeof c.style === 'object' ? c.style : null;
+                if (st && (st.position || st.highlightMode)) return true;
+                return false;
+            });
+            const hasWordHighlights = Array.isArray(window.currentWords) && window.currentWords.some((w) => !!(w && w.highlighted));
             const burnRes = await fetch('/api/burn_subtitles_server', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1866,7 +1872,8 @@ window.downloadFile = async function(type, bypassUser = null) {
                     subtitle_style: subtitleStyle,
                     is_portrait: isPortrait,
                     notify_email: movieUser.email || undefined,
-                    job_id: localStorage.getItem('lastJobId') || undefined
+                    job_id: localStorage.getItem('lastJobId') || undefined,
+                    force_local_burn: !!(hasCustomFormatting || hasWordHighlights)
                 })
             });
             const burnData = burnRes.ok ? await burnRes.json() : {};

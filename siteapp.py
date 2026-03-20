@@ -2074,6 +2074,7 @@ def burn_subtitles_server():
         user_id = data.get('userId') or data.get('user_id')
         subtitle_style = (data.get('subtitle_style') or 'tiktok').strip() or 'tiktok'
         is_portrait = bool(data.get('is_portrait'))
+        force_local_burn = bool(data.get('force_local_burn'))
         notify_email = (data.get('notify_email') or '').strip() or None
         job_id = data.get('job_id')
         if not input_s3_key or not segments or not user_id:
@@ -2084,7 +2085,7 @@ def burn_subtitles_server():
         task_id = str(uuid.uuid4())
         burn_tasks[task_id] = {'status': 'processing'}
 
-        use_runpod = bool((RUNPOD_API_KEY or '').strip() and (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()) and not SIMULATION_MODE
+        use_runpod = bool((RUNPOD_API_KEY or '').strip() and (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()) and not SIMULATION_MODE and not force_local_burn
         if use_runpod:
             public_base = _public_base_url(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"

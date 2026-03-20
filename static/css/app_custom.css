@@ -890,17 +890,24 @@ html[dir="rtl"] .upload-status {
     #subtitle-style-selector {
         width: 100% !important;
         margin-bottom: 12px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
     }
-    
-    #subtitle-style-selector > div {
+
+    #subtitle-style-list {
+        display: flex !important;
         flex-direction: row !important;
-        flex-wrap: wrap;
-        gap: 8px;
+        flex-wrap: nowrap !important;
+        gap: 8px !important;
+        min-width: max-content;
+        width: max-content;
     }
-    
+
     #subtitle-style-selector .subtitle-style-card {
-        flex: 1;
-        min-width: 100px;
+        flex: 0 0 auto !important;
+        width: 140px !important;
+        min-width: 140px !important;
     }
 
     /* Mobile transcript toolbar: no horizontal scrolling, compact layout */
