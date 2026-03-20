@@ -1795,7 +1795,7 @@ def _build_ass(segments, style='tiktok', portrait=False):
         if use_word_karaoke:
             # Word-level highlight in ASS using karaoke timing (\k in centiseconds).
             # We keep the base style and force karaoke colors locally:
-            # Primary=white (normal), Secondary=dark red (active progressing word).
+            # Primary=white (normal), Secondary=black (active progressing word).
             parts = []
             for w in seg_words:
                 wt = str((w or {}).get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
@@ -1810,9 +1810,9 @@ def _build_ass(segments, style='tiktok', portrait=False):
                 else:
                     parts.append(rf"{{\k{dur_cs}}}" + wt)
             if parts:
-                # Secondary colour used during karaoke progress (dark red).
+                # Secondary colour used during karaoke progress (black).
                 text = (
-                    r"{\1c&H00FFFFFF&\2c&H00000099&\3c&H00000000&\bord2\shad0}"
+                    r"{\1c&H00FFFFFF&\2c&H00000000&\3c&H00000000&\bord2\shad0}"
                     + ' '.join(parts)
                 )
 
@@ -1820,7 +1820,7 @@ def _build_ass(segments, style='tiktok', portrait=False):
             parts = _wrap_text_rtl_safe(text, max_chars_per_line)
             parts = [_rtl_force_direction(p) for p in parts]
             text = '\\N'.join(parts) if parts else text
-        else:
+        elif not use_word_karaoke:
             text = _rtl_force_direction(text)
         if pos_override:
             text = pos_override + text

@@ -3345,13 +3345,46 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     
     window.showSubtitleStyleSelector = function() {
         const selector = document.getElementById('subtitle-style-selector');
+        const list = document.getElementById('subtitle-style-list');
         const video = document.getElementById('main-video');
         if (selector && video && window.currentSegments && window.currentSegments.length > 0) {
             try { selector.querySelector('#caption-style-timeline-ui')?.remove(); } catch (_) {}
             selector.style.display = 'flex';
             selector.style.gap = '10px';
             selector.style.alignItems = 'flex-start';
-            selector.style.width = 'auto';
+            if (window.innerWidth <= 768) {
+                selector.style.width = '100%';
+                selector.style.overflowX = 'auto';
+                selector.style.overflowY = 'hidden';
+                if (list) {
+                    list.style.display = 'flex';
+                    list.style.flexDirection = 'row';
+                    list.style.flexWrap = 'nowrap';
+                    list.style.gap = '8px';
+                    list.style.width = 'max-content';
+                }
+                selector.querySelectorAll('.subtitle-style-card').forEach((card) => {
+                    card.style.width = '108px';
+                    card.style.minWidth = '108px';
+                    card.style.padding = '8px 6px';
+                });
+            } else {
+                selector.style.width = 'auto';
+                selector.style.overflowX = '';
+                selector.style.overflowY = '';
+                if (list) {
+                    list.style.display = '';
+                    list.style.flexDirection = '';
+                    list.style.flexWrap = '';
+                    list.style.gap = '';
+                    list.style.width = '';
+                }
+                selector.querySelectorAll('.subtitle-style-card').forEach((card) => {
+                    card.style.width = '';
+                    card.style.minWidth = '';
+                    card.style.padding = '';
+                });
+            }
             window.applySubtitleStyle(window.currentSubtitleStyle);
         }
     };
