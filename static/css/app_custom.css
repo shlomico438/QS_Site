@@ -264,20 +264,74 @@ audio {
 }
 
 .subtitle-style-card {
-    transition: all 0.2s ease;
+    transition: all 0.15s ease;
     display: block;
+    border: none !important;
+    border-radius: 14px !important;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+    padding: 16px 12px !important;
+    background: rgba(255,255,255,0.92) !important;
 }
 
 .subtitle-style-card:hover {
-    border-color: #5d5dff !important;
-    transform: translateX(2px);
-    box-shadow: 0 2px 8px rgba(93, 93, 255, 0.15);
+    transform: translateY(-1px);
+    background: #ffffff !important;
+    box-shadow: 0 10px 24px rgba(93, 93, 255, 0.18);
 }
 
 .subtitle-style-card.active {
-    border-color: #5d5dff !important;
-    background: #f0f7ff !important;
-    box-shadow: 0 2px 8px rgba(93, 93, 255, 0.2);
+    background: #eef2ff !important;
+    box-shadow: 0 10px 24px rgba(93, 93, 255, 0.22);
+}
+
+#subtitle-style-selector > div:first-child {
+    display: grid !important;
+    gap: 10px !important;
+    width: 170px;
+}
+
+/* Unified timeline controls (modern segmented UI) */
+.caption-style-timeline-ui {
+    min-width: 240px;
+    padding: 14px;
+    border-radius: 16px;
+    background: rgba(255,255,255,0.75);
+    backdrop-filter: blur(3px);
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.10);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.caption-style-timeline-ui .cs-section { display: flex; flex-direction: column; gap: 8px; }
+.caption-style-timeline-ui .cs-label {
+    font-size: 12px;
+    color: #6b7280;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+.caption-style-timeline-ui .cs-segmented {
+    display: inline-flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.caption-style-timeline-ui .cs-segmented button {
+    border: none;
+    border-radius: 12px;
+    padding: 8px 12px;
+    background: rgba(243,244,246,0.85);
+    color: #111827;
+    font-weight: 700;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.caption-style-timeline-ui .cs-segmented button:hover {
+    background: rgba(229,231,235,0.95);
+}
+.caption-style-timeline-ui .cs-segmented button.is-selected {
+    background: rgba(93, 93, 255, 0.14);
+    color: #3730a3;
+    box-shadow: inset 0 0 0 1px rgba(93, 93, 255, 0.28);
 }
 
 /* --- SUBTITLE STYLES FOR VIDEO TRACK --- */
@@ -286,7 +340,7 @@ audio {
 #main-video.subtitle-style-tiktok::cue {
     font-size: 2.5em;
     font-weight: 700;
-    color: #ffd700;
+    color: #ffffff;
     text-shadow: 
         -2px -2px 0 #000,
         2px -2px 0 #000,
@@ -304,7 +358,7 @@ audio {
 
 #main-video.subtitle-style-tiktok::cue(.highlight) {
     background: transparent;
-    color: #ffd700;
+    color: #ffffff;
     padding: 2px 4px;
     border-radius: 4px;
 }
@@ -321,7 +375,7 @@ audio {
     line-height: 1.3;
     background: transparent;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    padding-bottom: 10%;
+    padding-bottom: 0;
 }
 
 /* Cinematic Dramatic Style */
@@ -338,7 +392,7 @@ audio {
     font-family: "Times New Roman", Times, serif;
     text-transform: uppercase;
     letter-spacing: 0.1em;
-    padding-bottom: 8%;
+    padding-bottom: 0;
 }
 
 /* --- SUBTITLE LOOK ON MOBILE: no gray background; TikTok centered via VTT only --- */

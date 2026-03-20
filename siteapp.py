@@ -169,6 +169,64 @@ def _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='gpt'):
         raise ValueError("segments is required")
     if not isinstance(segments, list):
         raise ValueError("segments must be an array")
+    return _put_transcript_json_to_s3(user_id, input_s3_key, {"segments": segments}, stage=stage)
+
+
+def _flatten_words_from_segments(segments):
+    """Flatten WhisperX-style segment words into flat words[] + captions[].
+
+    Returns (words, captions) if word timestamps exist, else (None, None).
+    """
+    if not isinstance(segments, list) or not segments:
+        return None, None
+    words = []
+    captions = []
+    wi = 0
+    for si, seg in enumerate(segments):
+        if not isinstance(seg, dict):
+            continue
+        seg_words = seg.get("words")
+        if not isinstance(seg_words, list) or len(seg_words) == 0:
+            continue
+        start_index = wi
+        for w in seg_words:
+            if not isinstance(w, dict):
+                continue
+            text = (w.get("word") if w.get("word") is not None else w.get("text")) or ""
+            start = w.get("start")
+            end = w.get("end")
+            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+                # If ANY word is missing timing, we can't build a timing-safe word model.
+                return None, None
+            words.append({
+                "id": f"w{wi}",
+                "text": str(text),
+                "start": float(start),
+                "end": float(end),
+            })
+            wi += 1
+        end_index = wi - 1
+        if end_index >= start_index:
+            captions.append({
+                "id": f"c{len(captions)}",
+                "wordStartIndex": int(start_index),
+                "wordEndIndex": int(end_index),
+            })
+    if len(words) == 0 or len(captions) == 0:
+        return None, None
+    return words, captions
+
+
+def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
+    """Low-level helper to write transcript JSON for a given processing stage.
+
+    transcript can include:
+      - segments: legacy list[{start,end,text,...}]
+      - words: flat list[{id,text,start,end}]
+      - captions: list[{id,wordStartIndex,wordEndIndex}]
+    """
+    if transcript is None or not isinstance(transcript, dict):
+        raise ValueError("transcript must be an object")
     base = _derive_output_key_base(user_id, input_s3_key)
     stage = (stage or 'gpt').strip().lower()
     if stage == 'raw':
@@ -177,7 +235,7 @@ def _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='gpt'):
         # Keep existing naming for GPT so older data remains compatible.
         result_s3_key = base + '.json'
 
-    body = json.dumps({"segments": segments}, ensure_ascii=False).encode('utf-8')
+    body = json.dumps(transcript, ensure_ascii=False).encode('utf-8')
     s3_client = boto3.client(
         's3',
         aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
@@ -195,18 +253,43 @@ def _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='gpt'):
 
 @app.route('/api/save_job_result', methods=['POST'])
 def save_job_result():
-    """Save transcript segments JSON to S3; return the result_s3_key. Store only the key in DB, not the full JSON."""
+    """Save transcript JSON to S3; return the result_s3_key. Store only the key in DB, not the full JSON."""
     try:
         data = request.json or {}
         user_id = data.get('userId') or data.get('user_id')
         input_s3_key = data.get('input_s3_key') or data.get('s3Key')
         segments = data.get('segments')
+        words = data.get('words')
+        captions = data.get('captions')
         stage = (data.get('stage') or 'gpt').strip().lower()
-        if not user_id or not input_s3_key or segments is None:
-            return jsonify({"error": "userId, input_s3_key (or s3Key), and segments required"}), 400
-        if not isinstance(segments, list):
-            return jsonify({"error": "segments must be an array"}), 400
-        result_s3_key = _put_segments_json_to_s3(user_id, input_s3_key, segments, stage=stage)
+        if not user_id or not input_s3_key:
+            return jsonify({"error": "userId and input_s3_key (or s3Key) required"}), 400
+
+        transcript = {}
+        if segments is not None:
+            if not isinstance(segments, list):
+                return jsonify({"error": "segments must be an array"}), 400
+            transcript["segments"] = segments
+        if words is not None:
+            if not isinstance(words, list):
+                return jsonify({"error": "words must be an array"}), 400
+            transcript["words"] = words
+        if captions is not None:
+            if not isinstance(captions, list):
+                return jsonify({"error": "captions must be an array"}), 400
+            transcript["captions"] = captions
+
+        if "segments" not in transcript and "words" not in transcript:
+            return jsonify({"error": "segments or words required"}), 400
+
+        # If client didn't send words/captions but segments include word timestamps, derive them server-side.
+        if "words" not in transcript and "segments" in transcript:
+            w, c = _flatten_words_from_segments(transcript["segments"])
+            if w is not None and c is not None:
+                transcript["words"] = w
+                transcript["captions"] = c
+
+        result_s3_key = _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage=stage)
         return jsonify({"result_s3_key": result_s3_key})
     except Exception as e:
         logging.exception("save_job_result failed")
@@ -983,7 +1066,12 @@ def gpu_callback():
     s3_sec = 0.0
     if input_s3_key:
         try:
-            raw_result_s3_key = _put_segments_json_to_s3(user_id or 'anonymous', input_s3_key, segments, stage='raw')
+            transcript_payload = {"segments": segments}
+            w, c = _flatten_words_from_segments(segments)
+            if w is not None and c is not None:
+                transcript_payload["words"] = w
+                transcript_payload["captions"] = c
+            raw_result_s3_key = _put_transcript_json_to_s3(user_id or 'anonymous', input_s3_key, transcript_payload, stage='raw')
             result_dict = dict(result) if isinstance(result, dict) else {}
             result_dict['raw_result_s3_key'] = raw_result_s3_key
             data = dict(data)
