@@ -1767,12 +1767,63 @@ def _build_ass(segments, style='tiktok', portrait=False):
         start = seg.get('start', 0)
         end = seg.get('end', start + 1)
         text = (seg.get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
-        if style == 'tiktok' and len(text) > max_chars_per_line:
+        seg_style = seg.get('style') if isinstance(seg, dict) else None
+        pos = None
+        if isinstance(seg_style, dict):
+            pos = str(seg_style.get('position') or '').strip().lower()
+        # ASS alignment override per caption:
+        # an8=top-center, an5=middle-center, an2=bottom-center
+        pos_override = ''
+        if pos == 'top':
+            pos_override = r"{\an8}"
+        elif pos == 'middle':
+            pos_override = r"{\an5}"
+        elif pos == 'bottom':
+            pos_override = r"{\an2}"
+
+        highlight_mode = ''
+        if isinstance(seg_style, dict):
+            highlight_mode = str(seg_style.get('highlightMode') or '').strip().lower()
+
+        seg_words = seg.get('words') if isinstance(seg, dict) else None
+        use_word_karaoke = (
+            highlight_mode == 'active-word'
+            and isinstance(seg_words, list)
+            and len(seg_words) > 0
+        )
+
+        if use_word_karaoke:
+            # Word-level highlight in ASS using karaoke timing (\k in centiseconds).
+            # We keep the base style and force karaoke colors locally:
+            # Primary=white (normal), Secondary=dark red (active progressing word).
+            parts = []
+            for w in seg_words:
+                wt = str((w or {}).get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+                if not wt:
+                    continue
+                ws = float((w or {}).get('start') or start)
+                we = float((w or {}).get('end') or (ws + 0.12))
+                dur_cs = max(1, int(round(max(0.01, we - ws) * 100)))
+                if bool((w or {}).get('highlighted')):
+                    # Pinned words: keep visible standout color.
+                    parts.append(r"{\1c&H00FFFFFF&\3c&H00000000\bord2\shad0}" + wt)
+                else:
+                    parts.append(rf"{{\k{dur_cs}}}" + wt)
+            if parts:
+                # Secondary colour used during karaoke progress (dark red).
+                text = (
+                    r"{\1c&H00FFFFFF&\2c&H00000099&\3c&H00000000&\bord2\shad0}"
+                    + ' '.join(parts)
+                )
+
+        if style == 'tiktok' and (not use_word_karaoke) and len(text) > max_chars_per_line:
             parts = _wrap_text_rtl_safe(text, max_chars_per_line)
             parts = [_rtl_force_direction(p) for p in parts]
             text = '\\N'.join(parts) if parts else text
         else:
             text = _rtl_force_direction(text)
+        if pos_override:
+            text = pos_override + text
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 

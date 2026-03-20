@@ -1262,7 +1262,7 @@ async function initOpenInApp(jobId) {
                     if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
                         console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length });
                         window.currentWords = tr.words;
-                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 28);
+                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 27);
                         window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                         segments = window.currentSegments;
                     } else if (Array.isArray(tr.segments)) {
@@ -1277,7 +1277,7 @@ async function initOpenInApp(jobId) {
                             if (model) {
                                 console.log('[word-edit] open-in-app: derived words/captions from segments[*].words', { words: model.words.length, captions: model.captions.length });
                                 window.currentWords = model.words;
-                                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 28);
+                                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 27);
                                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                                 segments = window.currentSegments;
                             }
@@ -1298,7 +1298,7 @@ async function initOpenInApp(jobId) {
                                         if (rawTr && Array.isArray(rawTr.words) && Array.isArray(rawTr.captions) && rawTr.words.length > 0 && rawTr.captions.length > 0) {
                                             console.log('[word-edit] open-in-app: loaded words/captions from raw transcript JSON', { words: rawTr.words.length, captions: rawTr.captions.length });
                                             window.currentWords = rawTr.words;
-                                            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, rawTr.captions, 28);
+                                            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, rawTr.captions, 27);
                                             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                                             segments = window.currentSegments;
                                         } else if (rawTr && Array.isArray(rawTr.segments) && _hasWordTimestampsInSegments(rawTr.segments)) {
@@ -1306,7 +1306,7 @@ async function initOpenInApp(jobId) {
                                             if (model2) {
                                                 console.log('[word-edit] open-in-app: derived words/captions from raw segments[*].words', { words: model2.words.length, captions: model2.captions.length });
                                                 window.currentWords = model2.words;
-                                                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model2.captions, 28);
+                                                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model2.captions, 27);
                                                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                                                 segments = window.currentSegments;
                                             }
@@ -1817,7 +1817,41 @@ window.downloadFile = async function(type, bypassUser = null) {
             };
             startBurnProgress();
             console.log('[movie export] Calling burn_subtitles_server…');
-            const rawSegments = (window.currentSegments || []).map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }));
+            const rawSegments = (() => {
+                if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
+                    const out = [];
+                    for (let ci = 0; ci < window.currentCaptions.length; ci++) {
+                        const c = window.currentCaptions[ci];
+                        const ws = window.currentWords[c.wordStartIndex];
+                        const we = window.currentWords[c.wordEndIndex];
+                        if (!ws || !we) continue;
+                        const segWords = [];
+                        const textParts = [];
+                        for (let wi = c.wordStartIndex; wi <= c.wordEndIndex; wi++) {
+                            const w = window.currentWords[wi];
+                            if (!w) continue;
+                            const wt = String(w.text || '').trim();
+                            if (!wt) continue;
+                            textParts.push(wt);
+                            segWords.push({
+                                text: wt,
+                                start: Number(w.start),
+                                end: Number(w.end),
+                                highlighted: !!w.highlighted
+                            });
+                        }
+                        out.push({
+                            start: Number(ws.start),
+                            end: Number(we.end) || (Number(ws.start) + 1),
+                            text: textParts.join(' '),
+                            style: (c.style && typeof c.style === 'object') ? { ...c.style } : {},
+                            words: segWords
+                        });
+                    }
+                    if (out.length) return out;
+                }
+                return (window.currentSegments || []).map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }));
+            })();
             const segments = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(rawSegments, 0.5) : rawSegments;
             const subtitleStyle = (typeof window.currentSubtitleStyle === 'string' && window.currentSubtitleStyle) ? window.currentSubtitleStyle : 'tiktok';
             const burnRes = await fetch('/api/burn_subtitles_server', {
@@ -2109,7 +2143,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     document.querySelectorAll('.dropdown-item').forEach(btn => {
-        btn.addEventListener('click', function() {
+        btn.addEventListener('click', function(e) {
+            try {
+                e.preventDefault();
+                e.stopPropagation();
+            } catch (_) {}
             const type = this.getAttribute('data-type');
             const menu = document.getElementById('download-menu');
             if (menu) {
@@ -2222,7 +2260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Reset the pending type so it doesn't loop
             window.pendingExportType = null;
             localStorage.removeItem('pendingExportType');
-            if (user && typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('exporting_file') : 'Exporting your ') + savedExportType.toUpperCase() + (typeof window.t === 'function' ? window.t('exporting_file_suffix') : ' file...'), false);
+            // Intentionally no status toast here (user requested no export popup for DOCX flow).
         }
 
 
@@ -3428,7 +3466,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // Keep line wrapping behavior tied to old tiktok style choice only.
         const isTiktok = window.currentSubtitleStyle === 'tiktok';
         const isPortrait = video.videoHeight > 0 && video.videoWidth > 0 && video.videoHeight > video.videoWidth;
-        const maxCharsPerLine = isPortrait ? 14 : (isTiktok ? 28 : 42); // Portrait (vertical) has less space: 14 chars
+        const maxCharsPerLine = isPortrait ? 14 : 27; // Enforce consistent wrapping in landscape.
         for (let i = 0; i < window.currentSegments.length; i++) {
             const c = window.currentSegments[i];
             const st = (typeof window.getResolvedCaptionStyle === 'function')
@@ -4258,7 +4296,7 @@ function _setCaretToWordIndex(container, wordIndex, atStart = true) {
     try { el.focus(); } catch (_) {}
 }
 
-function reflowCaptionsByMaxChars(words, captions, maxChars = 28) {
+function reflowCaptionsByMaxChars(words, captions, maxChars = 27) {
     // Re-split captions using ONLY word boundaries (no timing estimation).
     if (!Array.isArray(words) || !Array.isArray(captions) || captions.length === 0) return captions;
     const out = [];
