@@ -1763,10 +1763,18 @@ def _build_ass(segments, style='tiktok', portrait=False):
     ]
     # TikTok bold: wrap at N chars per line (portrait/vertical = 14, landscape = 27); ASS newline is \N
     max_chars_per_line = 14 if (style == 'tiktok' and portrait) else (27 if style == 'tiktok' else 9999)
+    def _esc_ass_text(s):
+        return str(s or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+
+    # Per-word inline tags (ASS colors are AABBGGRR).
+    NORMAL_TAG = r"{\1c&H00FFFFFF&\3c&H00000000&\bord2\shad0}"
+    ACTIVE_TAG = r"{\1c&H00000000&\3c&H00FFFFFF&\bord3\shad0\blur0.4}"
+    PINNED_TAG = r"{\1c&H00000000&\3c&H00FFFFFF&\bord3\shad0\blur0.4}"
+
     for seg in segments:
         start = seg.get('start', 0)
         end = seg.get('end', start + 1)
-        text = (seg.get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+        text = _esc_ass_text(seg.get('text') or '')
         seg_style = seg.get('style') if isinstance(seg, dict) else None
         pos = None
         if isinstance(seg_style, dict):
@@ -1792,29 +1800,50 @@ def _build_ass(segments, style='tiktok', portrait=False):
             and len(seg_words) > 0
         )
 
+        # High-fidelity word-level rendering:
+        # For active-word mode, emit one Dialogue event per active word timing window
+        # and style only that word (plus pinned words) as highlighted.
         if use_word_karaoke:
-            # Word-level highlight in ASS using karaoke timing (\k in centiseconds).
-            # We keep the base style and force karaoke colors locally:
-            # Primary=white (normal), Secondary=black (active progressing word).
-            parts = []
+            words_clean = []
             for w in seg_words:
-                wt = str((w or {}).get('text') or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+                wt = _esc_ass_text((w or {}).get('text') or '')
                 if not wt:
                     continue
                 ws = float((w or {}).get('start') or start)
                 we = float((w or {}).get('end') or (ws + 0.12))
-                dur_cs = max(1, int(round(max(0.01, we - ws) * 100)))
-                if bool((w or {}).get('highlighted')):
-                    # Pinned words: keep visible standout color.
-                    parts.append(r"{\1c&H00FFFFFF&\3c&H00000000\bord2\shad0}" + wt)
-                else:
-                    parts.append(rf"{{\k{dur_cs}}}" + wt)
-            if parts:
-                # Secondary colour used during karaoke progress (black).
-                text = (
-                    r"{\1c&H00FFFFFF&\2c&H00000000&\3c&H00000000&\bord2\shad0}"
-                    + ' '.join(parts)
-                )
+                if we <= ws:
+                    we = ws + 0.08
+                words_clean.append({
+                    'text': wt,
+                    'start': ws,
+                    'end': we,
+                    'highlighted': bool((w or {}).get('highlighted'))
+                })
+
+            if words_clean:
+                for ai in range(len(words_clean)):
+                    aw = words_clean[ai]
+                    ev_start = max(float(start), float(aw['start']))
+                    ev_end = min(float(end), float(aw['end']))
+                    if ev_end <= ev_start + 0.01:
+                        ev_end = ev_start + 0.06
+
+                    token_parts = []
+                    for i, tw in enumerate(words_clean):
+                        if tw['highlighted']:
+                            token_parts.append(PINNED_TAG + tw['text'])
+                        elif i == ai:
+                            token_parts.append(ACTIVE_TAG + tw['text'])
+                        else:
+                            token_parts.append(NORMAL_TAG + tw['text'])
+
+                    ev_text = ' '.join(token_parts)
+                    # Keep RTL visual order stable for Hebrew text.
+                    ev_text = _rtl_force_direction(ev_text)
+                    if pos_override:
+                        ev_text = pos_override + ev_text
+                    lines.append(f"Dialogue: 0,{_ass_ts(ev_start)},{_ass_ts(ev_end)},Default,,0,0,0,,{ev_text}")
+                continue
 
         if style == 'tiktok' and (not use_word_karaoke) and len(text) > max_chars_per_line:
             parts = _wrap_text_rtl_safe(text, max_chars_per_line)

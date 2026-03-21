@@ -903,11 +903,21 @@ html[dir="rtl"] .upload-status {
         min-width: max-content;
         width: max-content;
     }
+    /* Fallback for cached/older markup where inner container has no id */
+    #subtitle-style-selector > div:first-child {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        gap: 8px !important;
+        min-width: max-content !important;
+        width: max-content !important;
+    }
 
     #subtitle-style-selector .subtitle-style-card {
         flex: 0 0 auto !important;
-        width: 140px !important;
-        min-width: 140px !important;
+        width: 108px !important;
+        min-width: 108px !important;
+        padding: 8px 6px !important;
     }
 
     /* Mobile transcript toolbar: no horizontal scrolling, compact layout */
