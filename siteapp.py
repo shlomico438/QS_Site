@@ -1799,6 +1799,11 @@ def _build_ass(segments, style='tiktok', portrait=False):
             and isinstance(seg_words, list)
             and len(seg_words) > 0
         )
+        use_word_pinned = (
+            (not use_word_karaoke)
+            and isinstance(seg_words, list)
+            and any(bool((w or {}).get('highlighted')) for w in seg_words)
+        )
 
         # High-fidelity word-level rendering:
         # For active-word mode, emit one Dialogue event per active word timing window
@@ -1843,6 +1848,23 @@ def _build_ass(segments, style='tiktok', portrait=False):
                     if pos_override:
                         ev_text = pos_override + ev_text
                     lines.append(f"Dialogue: 0,{_ass_ts(ev_start)},{_ass_ts(ev_end)},Default,,0,0,0,,{ev_text}")
+                continue
+        if use_word_pinned:
+            token_parts = []
+            for w in seg_words:
+                wt = _esc_ass_text((w or {}).get('text') or '')
+                if not wt:
+                    continue
+                if bool((w or {}).get('highlighted')):
+                    token_parts.append(PINNED_TAG + wt)
+                else:
+                    token_parts.append(NORMAL_TAG + wt)
+            if token_parts:
+                text = ' '.join(token_parts)
+                text = _rtl_force_direction(text)
+                if pos_override:
+                    text = pos_override + text
+                lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
                 continue
 
         if style == 'tiktok' and (not use_word_karaoke) and len(text) > max_chars_per_line:

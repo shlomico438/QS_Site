@@ -1856,7 +1856,7 @@ window.downloadFile = async function(type, bypassUser = null) {
             const subtitleStyle = (typeof window.currentSubtitleStyle === 'string' && window.currentSubtitleStyle) ? window.currentSubtitleStyle : 'tiktok';
             const hasCustomFormatting = Array.isArray(window.currentCaptions) && window.currentCaptions.some((c) => {
                 const st = c && c.style && typeof c.style === 'object' ? c.style : null;
-                if (st && (st.position || st.highlightMode)) return true;
+                if (st && st.position) return true;
                 return false;
             });
             const hasWordHighlights = Array.isArray(window.currentWords) && window.currentWords.some((w) => !!(w && w.highlighted));
@@ -3415,7 +3415,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const o = JSON.parse(raw);
                 window.globalCaptionLayoutStyle = {
                     position: _sanitizePosition(o.position),
-                    highlightMode: _sanitizeHighlightMode(o.highlightMode),
+                    highlightMode: 'none',
                 };
                 return;
             }
@@ -3427,7 +3427,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (kf0) {
                 window.globalCaptionLayoutStyle = {
                     position: _sanitizePosition(kf0.position),
-                    highlightMode: _sanitizeHighlightMode(kf0.highlightMode),
+                    highlightMode: 'none',
                 };
                 return;
             }
@@ -3453,7 +3453,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const s = (cap && cap.style && typeof cap.style === 'object') ? cap.style : {};
         return {
             position: s.position != null ? _sanitizePosition(s.position) : _sanitizePosition(g.position),
-            highlightMode: s.highlightMode != null ? _sanitizeHighlightMode(s.highlightMode) : _sanitizeHighlightMode(g.highlightMode),
+            highlightMode: 'none',
             fontWeight: 'bold',
         };
     };
@@ -3471,7 +3471,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             ...(partialStyle || {}),
         };
         window.globalCaptionLayoutStyle.position = _sanitizePosition(window.globalCaptionLayoutStyle.position);
-        window.globalCaptionLayoutStyle.highlightMode = _sanitizeHighlightMode(window.globalCaptionLayoutStyle.highlightMode);
+        window.globalCaptionLayoutStyle.highlightMode = 'none';
         _saveGlobalCaptionLayoutStyle();
         if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
         try {
@@ -4263,8 +4263,7 @@ function _normalizeWordsCaptionsModel(words, captions) {
     if (Array.isArray(captions)) {
         captions.forEach((c) => {
             if (!c || typeof c !== 'object' || !c.style || typeof c.style !== 'object') return;
-            const hm = c.style.highlightMode;
-            c.style.highlightMode = hm === 'active-word' ? 'active-word' : 'none';
+            c.style.highlightMode = 'none';
             const p = c.style.position;
             if (p !== 'top' && p !== 'middle' && p !== 'bottom') delete c.style.position;
         });
@@ -4712,9 +4711,6 @@ function renderWordCaptionEditor() {
         panel.querySelectorAll('.qs-pos-seg .qs-inline-seg-btn').forEach(b => {
             b.classList.toggle('is-selected', b.getAttribute('data-pos') === st.position);
         });
-        panel.querySelectorAll('.qs-hl-seg .qs-inline-seg-btn').forEach(b => {
-            b.classList.toggle('is-selected', b.getAttribute('data-hl') === st.highlightMode);
-        });
     }
 
     const rows = captions.map((cap, ci) => {
@@ -4749,17 +4745,9 @@ function renderWordCaptionEditor() {
             </div>` : '';
         const panelHtml = isEditing ? `
             <div class="qs-inline-style-panel" data-ci="${ci}" style="display:none;width:100%;padding:10px 12px;border-radius:10px;background:#f9fafb;border:1px solid #e5e7eb;margin-top:6px;box-sizing:border-box;">
-              <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:8px;">Caption style</div>
-              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
                 <span style="font-size:11px;color:#6b7280;width:64px;">Position</span>
                 <div class="qs-inline-seg qs-pos-seg" data-ci="${ci}" style="display:flex;gap:4px;flex-wrap:wrap;">${posSeg}</div>
-              </div>
-              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-                <span style="font-size:11px;color:#6b7280;width:64px;">Highlight</span>
-                <div class="qs-inline-seg qs-hl-seg" data-ci="${ci}" style="display:flex;gap:4px;flex-wrap:wrap;">
-                  <button type="button" class="qs-inline-seg-btn" data-hl="none">None</button>
-                  <button type="button" class="qs-inline-seg-btn" data-hl="active-word">Active word</button>
-                </div>
               </div>
             </div>` : '';
         return `
@@ -4785,11 +4773,6 @@ function renderWordCaptionEditor() {
         const st = document.createElement('style');
         st.id = 'qs-word-editor-base-style';
         st.textContent = `
-          #transcript-window .word-token.active {
-            outline: 2px solid rgba(34,197,94,0.85);
-            background: rgba(34,197,94,0.10);
-            border-radius: 4px;
-          }
           #transcript-window .word-token.editing {
             outline: 2px solid rgba(59,130,246,0.85);
             background: rgba(59,130,246,0.08);
@@ -4836,13 +4819,10 @@ function renderWordCaptionEditor() {
             border-color: #1e3a8a;
           }
           #transcript-window .word-token[data-highlighted="1"] {
-            box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.85);
+            background: rgba(245, 158, 11, 0.28);
+            color: #111827;
+            box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.9);
             border-radius: 4px;
-          }
-          #transcript-window .word-token.qs-runtime-active-word,
-          #transcript-window .word-token.qs-runtime-keyword {
-            border-radius: 4px;
-            transition: background-color 100ms linear, font-weight 100ms linear;
           }
           /* Stronger, obvious handle highlight */
           #transcript-window .caption-row.qs-handle-start { box-shadow: inset 8px 0 0 rgba(59,130,246,0.95); background: rgba(59,130,246,0.10); border-radius: 10px; padding-left:6px; }
@@ -4852,7 +4832,11 @@ function renderWordCaptionEditor() {
           /* RTL visual correction: swap which physical side is highlighted. */
           #transcript-window.qs-rtl .word-token.qs-handle-start { box-shadow: inset 0 0 0 2px rgba(59,130,246,0.95), inset -6px 0 0 rgba(59,130,246,0.95); border-radius: 6px; background: rgba(59,130,246,0.12); }
           #transcript-window.qs-rtl .word-token.qs-handle-end { box-shadow: inset 0 0 0 2px rgba(59,130,246,0.95), inset 6px 0 0 rgba(59,130,246,0.95); border-radius: 6px; background: rgba(59,130,246,0.12); }
-          #transcript-window .caption-row.qs-sel-caption { background: rgba(59,130,246,0.08); border-radius: 10px; padding: 1px 0; }
+          #transcript-window .caption-row.qs-sel-caption { background: rgba(0,0,0,0.08); border-radius: 10px; padding: 1px 0; }
+          #transcript-window[data-multi-select="1"] .caption-row.qs-line-selected,
+          #transcript-window[data-multi-select="1"] .caption-row.qs-sel-caption {
+            background: rgba(0,0,0,0.08);
+          }
           .qs-boundary-pipe {
             display: inline-block;
             padding: 0 6px;
@@ -4939,7 +4923,6 @@ function renderWordCaptionEditor() {
         st.textContent = `
           #transcript-window.qs-word-editor-debug .caption-row { outline: 1px dashed rgba(59,130,246,0.6); }
           #transcript-window.qs-word-editor-debug .word-token { outline: 1px solid rgba(239,68,68,0.6); padding: 0 2px; margin: 0 1px; border-radius: 3px; }
-          #transcript-window.qs-word-editor-debug .word-token.active { outline: 2px solid rgba(34,197,94,0.9); }
           #transcript-window.qs-word-editor-debug .word-token::after { content: attr(data-wi); font-size: 10px; color: rgba(239,68,68,0.8); margin-left: 4px; }
         `;
         document.head.appendChild(st);
@@ -5033,19 +5016,104 @@ function renderWordCaptionEditor() {
         }, 0);
 
         const commit = () => {
-            const cleaned = String(input.value || '').replace(/\s+/g, '').trim();
-            window.currentWords[wi].text = cleaned;
-            if (cleaned.length === 0) {
+            const raw = String(input.value || '').trim();
+            const parts = raw.split(/\s+/).filter(Boolean);
+            const allWords = Array.isArray(window.currentWords) ? window.currentWords : [];
+            const capIndex = Array.isArray(window.currentCaptions)
+                ? window.currentCaptions.findIndex((c) => wi >= c.wordStartIndex && wi <= c.wordEndIndex)
+                : -1;
+            const cap = (capIndex >= 0 && window.currentCaptions) ? window.currentCaptions[capIndex] : null;
+            const capEndWi = cap ? cap.wordEndIndex : wi;
+            const maxSlots = Math.max(1, capEndWi - wi + 1);
+
+            if (!parts.length) {
+                window.currentWords[wi].text = '';
                 tokenEl.innerHTML = '&nbsp;';
                 tokenEl.setAttribute('data-empty', '1');
-            } else {
-                tokenEl.textContent = cleaned;
-                tokenEl.setAttribute('data-empty', '0');
+                tokenEl.classList.remove('editing');
+                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                setActiveToken(tokenEl);
+                return;
             }
+
+            // Allow typing multiple words with spaces; map them to consecutive timed words.
+            // This preserves existing timings and never inserts extra timing slots.
+            const usable = parts.slice(0, maxSlots);
+            for (let i = 0; i < usable.length; i++) {
+                const tgtWi = wi + i;
+                if (!window.currentWords[tgtWi]) break;
+                window.currentWords[tgtWi].text = usable[i];
+            }
+
+            // Overflow handling: create new timed words in the gap before next caption,
+            // then use append-to-last only for any remaining overflow.
+            if (parts.length > usable.length && usable.length > 0 && cap && Array.isArray(window.currentCaptions)) {
+                const overflowParts = parts.slice(usable.length);
+                const lastInCap = allWords[cap.wordEndIndex];
+                const nextCap = window.currentCaptions[capIndex + 1] || null;
+                const nextFirst = nextCap ? allWords[nextCap.wordStartIndex] : null;
+                const gapStart = lastInCap && Number.isFinite(Number(lastInCap.end)) ? Number(lastInCap.end) : null;
+                const gapEnd = nextFirst && Number.isFinite(Number(nextFirst.start)) ? Number(nextFirst.start) : null;
+                const MIN_DUR = 0.05;
+                let canCreate = 0;
+                if (Number.isFinite(gapStart) && Number.isFinite(gapEnd) && gapEnd > gapStart + MIN_DUR) {
+                    canCreate = Math.floor((gapEnd - gapStart) / MIN_DUR);
+                } else if (Number.isFinite(gapStart) && !Number.isFinite(gapEnd)) {
+                    // Last caption: allow creating timed words by extending timeline.
+                    canCreate = overflowParts.length;
+                }
+                const createCount = Math.max(0, Math.min(overflowParts.length, canCreate));
+                if (createCount > 0) {
+                    const insertAt = cap.wordEndIndex + 1;
+                    let start = Number(gapStart);
+                    let step = 0.24;
+                    if (Number.isFinite(gapEnd) && gapEnd > start) {
+                        step = Math.max(MIN_DUR, (gapEnd - start) / createCount);
+                    }
+                    const newWords = [];
+                    for (let i = 0; i < createCount; i++) {
+                        let s = start + (i * step);
+                        let e = s + step;
+                        if (Number.isFinite(gapEnd)) {
+                            const remaining = gapEnd - s;
+                            const maxE = gapEnd - Math.max(0, (createCount - i - 1) * MIN_DUR);
+                            e = Math.min(maxE, s + Math.max(MIN_DUR, remaining));
+                            if (e < s + MIN_DUR) e = s + MIN_DUR;
+                        }
+                        newWords.push({
+                            id: `w${Date.now()}_${i}`,
+                            text: overflowParts[i],
+                            start: s,
+                            end: e,
+                            highlighted: false
+                        });
+                    }
+                    allWords.splice(insertAt, 0, ...newWords);
+                    cap.wordEndIndex += newWords.length;
+                    for (let ci = capIndex + 1; ci < window.currentCaptions.length; ci++) {
+                        const c = window.currentCaptions[ci];
+                        c.wordStartIndex += newWords.length;
+                        c.wordEndIndex += newWords.length;
+                    }
+                }
+
+                const stillOverflow = overflowParts.slice(createCount);
+                if (stillOverflow.length) {
+                    const lastWi = cap.wordEndIndex;
+                    if (window.currentWords[lastWi]) {
+                        window.currentWords[lastWi].text = `${window.currentWords[lastWi].text} ${stillOverflow.join(' ')}`.trim();
+                    }
+                }
+            }
+
             tokenEl.classList.remove('editing');
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            renderWordCaptionEditor();
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-            setActiveToken(tokenEl);
+            const focusWi = wi + Math.max(0, usable.length - 1);
+            const focusEl = container.querySelector(`span.word-token[data-wi="${focusWi}"]`);
+            if (focusEl) setActiveToken(focusEl);
         };
         input.onblur = commit;
         input.onkeydown = (e) => {
@@ -5063,11 +5131,8 @@ function renderWordCaptionEditor() {
                 } catch (_) {}
                 return;
             }
-            if (e.key === ' ') { e.preventDefault(); return; }
         };
         input.oninput = () => {
-            const cleaned = String(input.value || '').replace(/\s+/g, '');
-            if (input.value !== cleaned) input.value = cleaned;
             input.style.width = Math.max(16, (Math.max(1, input.value.length) * 10)) + 'px';
         };
     }
@@ -5127,12 +5192,15 @@ function renderWordCaptionEditor() {
                 } catch (_) {}
                 return;
             }
-            // Double-click: toggle per-word highlight (pinned).
+            // Double-click toggles pinned per-word highlight (constant, non-karaoke).
             const wi = parseInt(el.getAttribute('data-wi'), 10);
             if (!Number.isFinite(wi) || !window.currentWords || !window.currentWords[wi]) return;
             window.currentWords[wi].highlighted = !window.currentWords[wi].highlighted;
             el.setAttribute('data-highlighted', window.currentWords[wi].highlighted ? '1' : '0');
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            renderWordCaptionEditor();
+            const reEl = container.querySelector(`span.word-token[data-wi="${wi}"]`);
+            if (reEl) setActiveToken(reEl);
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
             const t = (() => {
                 const v = document.getElementById('main-video');
@@ -5410,9 +5478,6 @@ function renderWordCaptionEditor() {
                         cap.style = cap.style && typeof cap.style === 'object' ? { ...cap.style } : {};
                         if (seg.hasAttribute('data-pos')) {
                             cap.style.position = seg.getAttribute('data-pos');
-                        }
-                        if (seg.hasAttribute('data-hl')) {
-                            cap.style.highlightMode = seg.getAttribute('data-hl');
                         }
                     });
                     window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
@@ -5911,16 +5976,9 @@ function highlightActiveCaptionRowByTime(currentTime) {
                 if (currentTime >= seg.start && currentTime < end) { activeIdx = i; break; }
             }
         }
-        const effectiveHighlightColor = '#000000';
         rows.forEach((r, idx) => {
-            const rowStyle = (typeof window.getResolvedCaptionStyle === 'function' && useCaptionRows)
-                ? window.getResolvedCaptionStyle(idx)
-                : (typeof window.getResolvedCaptionStyle === 'function' ? window.getResolvedCaptionStyle(0) : { highlightMode: 'none', fontWeight: 'bold' });
-            const hm = rowStyle.highlightMode || 'none';
             const isActive = idx === activeIdx;
-            r.style.backgroundColor = isActive
-                ? (hm === 'none' ? 'rgba(0,0,0,0.06)' : 'rgba(0,0,0,0.14)')
-                : 'transparent';
+            r.style.backgroundColor = isActive ? 'rgba(0,0,0,0.06)' : 'transparent';
             r.querySelectorAll('.word-token.qs-runtime-active-word,.word-token.qs-runtime-word-pinned').forEach(t => {
                 t.classList.remove('qs-runtime-active-word', 'qs-runtime-word-pinned');
                 t.style.backgroundColor = '';
@@ -5938,81 +5996,11 @@ function highlightActiveCaptionRowByTime(currentTime) {
                 p.style.backgroundColor = '';
                 p.style.fontWeight = '';
             }
-            if (useCaptionRows && window.currentWords) {
-                r.querySelectorAll('span.word-token[data-wi]').forEach(t => {
-                    const wi = parseInt(t.getAttribute('data-wi'), 10);
-                    const w = window.currentWords[wi];
-                    if (w && w.highlighted) {
-                        t.classList.add('qs-runtime-word-pinned');
-                        t.style.backgroundColor = effectiveHighlightColor;
-                        t.style.color = '#ffffff';
-                        t.style.fontWeight = rowStyle.fontWeight || 'bold';
-                        t.style.boxShadow = '0 0 0 2px #fbbf24';
-                    }
-                });
-            }
         });
-        if (activeIdx < 0) return;
-        const activeRow = rows[activeIdx];
-        if (!activeRow) return;
-        const style = (typeof window.getResolvedCaptionStyle === 'function' && useCaptionRows)
-            ? window.getResolvedCaptionStyle(activeIdx)
-            : (typeof window.getResolvedCaptionStyle === 'function' ? window.getResolvedCaptionStyle(0) : { highlightMode: 'none', fontWeight: 'bold' });
-        if (style.highlightMode !== 'active-word') return;
-        const tokens = Array.from(activeRow.querySelectorAll('span.word-token[data-wi]'));
-        let foundActive = false;
-        const EPS = 0.03;
-        let activeWi = null;
-        for (const t of tokens) {
-            const wi = parseInt(t.getAttribute('data-wi'), 10);
-            const w = window.currentWords && window.currentWords[wi];
-            if (!w) continue;
-            const ws = Number(w.start), we = Number(w.end);
-            if (!Number.isFinite(ws) || !Number.isFinite(we)) continue;
-            if (currentTime >= ws - EPS && currentTime <= we + EPS) { activeWi = wi; break; }
-        }
-        if (activeWi == null) {
-            let lastStartWi = null;
-            for (const t of tokens) {
-                const wi = parseInt(t.getAttribute('data-wi'), 10);
-                const w = window.currentWords && window.currentWords[wi];
-                if (!w) continue;
-                const ws = Number(w.start);
-                if (!Number.isFinite(ws)) continue;
-                if (ws <= currentTime + EPS) lastStartWi = wi;
-            }
-            activeWi = lastStartWi != null ? lastStartWi : null;
-        }
-        if (activeWi != null) {
-            for (const t of tokens) {
-                const wi = parseInt(t.getAttribute('data-wi'), 10);
-                if (wi !== activeWi) continue;
-                const w = window.currentWords && window.currentWords[wi];
-                if (w && w.highlighted) { foundActive = true; break; }
-                t.classList.add('qs-runtime-active-word');
-                t.style.backgroundColor = effectiveHighlightColor;
-                t.style.color = '#ffffff';
-                t.style.fontWeight = style.fontWeight || 'bold';
-                foundActive = true;
-                break;
-            }
-        }
-        if (!foundActive) {
-            const txt = activeRow.querySelector('.caption-text');
-            if (txt) {
-                txt.style.backgroundColor = effectiveHighlightColor;
-                txt.style.fontWeight = style.fontWeight || 'bold';
-            }
-            const p = activeRow.querySelector('p[data-idx]');
-            if (p) {
-                p.style.backgroundColor = effectiveHighlightColor;
-                p.style.fontWeight = style.fontWeight || 'bold';
-            }
-        }
     } catch (_) {}
 }
 
-// --- Live word highlight overlay on top of the video (HTML layer) ---
+// --- Video word overlay (disabled in phase 1; position-only editing uses native VTT) ---
 window.ensureVideoWordOverlay = function() {
     const videoWrapper = document.getElementById('video-player-container');
     const video = document.getElementById('main-video');
@@ -6107,31 +6095,7 @@ window.updateVideoWordOverlay = function(currentTime) {
     try {
         const ov = window.ensureVideoWordOverlay();
         if (!ov) return;
-        if (!Array.isArray(window.currentCaptions) || !Array.isArray(window.currentWords) || !window.currentWords.length) {
-            ov.style.display = 'none';
-            return;
-        }
-
         const video = document.getElementById('main-video');
-        // Fit overlay to the *displayed* video rectangle (not full container).
-        try {
-            const wrapper = document.getElementById('video-player-container');
-            if (video && wrapper) {
-                const vRect = video.getBoundingClientRect();
-                const wRect = wrapper.getBoundingClientRect();
-                const left = Math.max(0, vRect.left - wRect.left);
-                const top = Math.max(0, vRect.top - wRect.top);
-                const width = Math.max(1, vRect.width);
-                const height = Math.max(1, vRect.height);
-                ov.style.left = `${left}px`;
-                ov.style.right = '';
-                ov.style.top = `${top}px`;
-                ov.style.width = `${width}px`;
-                ov.style.height = `${height}px`;
-                ov.style.padding = '0 12px';
-                ov.style.transform = 'none';
-            }
-        } catch (_) {}
         const setNativeTrackMode = (mode) => {
             if (!video || !video.textTracks || !video.textTracks.length) return;
             const targetMode = mode === 'hidden' ? 'disabled' : mode;
@@ -6140,6 +6104,11 @@ window.updateVideoWordOverlay = function(currentTime) {
             }
         };
 
+        if (!Array.isArray(window.currentCaptions) || !Array.isArray(window.currentWords) || !window.currentWords.length) {
+            ov.style.display = 'none';
+            setNativeTrackMode('showing');
+            return;
+        }
         const ci = window.getActiveCaptionIndexAtTime(currentTime);
         if (ci < 0) {
             ov.style.display = 'none';
@@ -6147,352 +6116,75 @@ window.updateVideoWordOverlay = function(currentTime) {
             return;
         }
 
-        const style = (typeof window.getResolvedCaptionStyle === 'function')
-            ? window.getResolvedCaptionStyle(ci)
-            : { position: 'bottom', highlightMode: 'none', fontWeight: 'bold' };
-        const highlightMode = style.highlightMode || 'none';
-
-        const cap0 = window.currentCaptions[ci];
-        const words0 = window.currentWords;
-        let hasPinnedWord = false;
-        if (cap0) {
-            for (let wi = cap0.wordStartIndex; wi <= cap0.wordEndIndex; wi++) {
-                const ww = words0[wi];
-                if (ww && ww.highlighted) { hasPinnedWord = true; break; }
-            }
-        }
-        const needsWordOverlay = highlightMode === 'active-word' || hasPinnedWord;
-        if (!needsWordOverlay) {
-            ov.style.display = 'none';
-            setNativeTrackMode('showing');
-            return;
-        }
-
-        const pos = style && style.position ? style.position : 'bottom';
-        ov.style.paddingTop = '0';
-
-        ov.style.display = 'block';
-
         const cap = window.currentCaptions[ci];
         const words = window.currentWords;
-        const inner = ov.querySelector('.qs-video-word-overlay-inner');
-        if (!cap || !inner) {
+        if (!cap) {
+            ov.style.display = 'none';
+            setNativeTrackMode('showing');
+            return;
+        }
+        let hasPinnedWord = false;
+        for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
+            const ww = words[wi];
+            if (ww && ww.highlighted) { hasPinnedWord = true; break; }
+        }
+        if (!hasPinnedWord) {
             ov.style.display = 'none';
             setNativeTrackMode('showing');
             return;
         }
 
-        const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
-        const isRtl = (
-            locale.startsWith('he') ||
-            locale.startsWith('iw') ||
-            locale.startsWith('ar') ||
-            locale.startsWith('fa') ||
-            locale.startsWith('ur')
-        );
-        // Set text direction/alignment on the inner block only.
-        // Keep direction neutral here; apply it only on the single content wrapper.
-        inner.style.direction = 'ltr';
-        inner.style.unicodeBidi = 'normal';
-        inner.style.textAlign = 'center';
-
-        // Deterministic centering: geometric center (direction-agnostic).
-        inner.style.position = 'absolute';
-        inner.style.left = '50%';
-        inner.style.right = '';
-        inner.style.transform = 'translateX(-50%)';
-        inner.style.margin = '0';
-        inner.style.display = 'inline-block';
-
-        const preset = (window.currentSubtitleStyle || localStorage.getItem('subtitleStyle') || 'tiktok');
-
-        // Base cue styling, derived from the chosen preset (so we don't invent a new look).
-        const base = {};
-        // Paint-only highlight (no background/padding/box-shadow) to keep RTL centering stable.
-        // Dark TikTok-like red.
-        const paintColor = '#b30000';
-        const fontWeight = style.fontWeight || 'bold';
-        if (preset === 'tiktok') {
-            ov.style.fontSize = '2.5em';
-            ov.style.fontWeight = '700';
-            // TikTok preset: white text with black stroke; highlighted word uses yellow background.
-            ov.style.color = '#ffffff';
-            ov.style.textShadow =
-                '-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, ' +
-                '-3px 0 0 #000, 3px 0 0 #000, 0 -3px 0 #000, 0 3px 0 #000';
-            base.fontWeight = '700';
-            base.color = '#ffffff';
-            base.textShadow = ov.style.textShadow;
-        } else if (preset === 'clean') {
-            ov.style.fontSize = '1.4em';
-            ov.style.fontWeight = '500';
-            ov.style.color = '#ffffff';
-            ov.style.textShadow = '0 1px 3px rgba(0, 0, 0, 0.8), 0 2px 6px rgba(0, 0, 0, 0.6)';
-            ov.style.fontFamily = '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif';
-            base.fontWeight = '500';
-            base.color = '#ffffff';
-            base.textShadow = ov.style.textShadow;
-        } else if (preset === 'cinematic') {
-            ov.style.fontSize = '1.6em';
-            ov.style.fontWeight = '400';
-            ov.style.color = '#f5f5f5';
-            ov.style.textTransform = 'uppercase';
-            ov.style.letterSpacing = '0.1em';
-            ov.style.fontFamily = '"Times New Roman", Times, serif';
-            ov.style.textShadow = '0 2px 4px rgba(0,0,0,0.7), 0 4px 8px rgba(0,0,0,0.5)';
-            base.fontWeight = '400';
-            base.color = '#f5f5f5';
-            base.textShadow = ov.style.textShadow;
-        } else {
-            ov.style.fontSize = '1.6em';
-            ov.style.fontWeight = '600';
-            ov.style.color = '#ffffff';
-            ov.style.textShadow = '0 2px 6px rgba(0,0,0,0.75)';
-            base.fontWeight = '600';
-            base.color = '#ffffff';
-            base.textShadow = ov.style.textShadow;
+        const st = (typeof window.getResolvedCaptionStyle === 'function')
+            ? window.getResolvedCaptionStyle(ci)
+            : { position: 'bottom' };
+        const pos = st && st.position ? st.position : 'bottom';
+        const inner = ov.querySelector('.qs-video-word-overlay-inner');
+        if (!inner) {
+            ov.style.display = 'none';
+            setNativeTrackMode('showing');
+            return;
         }
 
-        const parts = [];
-        const drawWords = [];
-        let matchedCount = 0;
-        let matchedWordText = null;
-        let matchedWi = null;
-
-        // Active word resolution:
-        // Prefer strict containment with a small epsilon to handle float drift.
-        // If nothing contains `currentTime` (common when there's a gap), fall back
-        // to the last word whose start <= currentTime.
-        const EPS = 0.03; // 30ms tolerance
-        let activeWi = null;
-        if (highlightMode === 'active-word') {
-            for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
-                const w0 = words[wi];
-                if (!w0) continue;
-                const ws = Number(w0.start), we = Number(w0.end);
-                if (!Number.isFinite(ws) || !Number.isFinite(we)) continue;
-                if (currentTime >= ws - EPS && currentTime <= we + EPS) {
-                    activeWi = wi;
-                    break;
-                }
-            }
-            if (activeWi == null) {
-                let lastStart = null;
-                for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
-                    const w0 = words[wi];
-                    if (!w0) continue;
-                    const ws = Number(w0.start);
-                    if (!Number.isFinite(ws)) continue;
-                    if (ws <= currentTime + EPS) lastStart = wi;
-                }
-                activeWi = lastStart != null ? lastStart : cap.wordStartIndex;
-            }
-        }
-
+        const chunks = [];
         for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
             const w = words[wi];
             if (!w || w.text == null) continue;
             const txt = _escapeHtml(w.text);
-            const isPinned = !!w.highlighted;
-            const isActive = highlightMode === 'active-word' && (wi === activeWi);
-            if (isPinned) {
-                matchedCount++;
-                matchedWordText = String(w.text || '').trim();
-                matchedWi = wi;
-                drawWords.push({ text: String(w.text || ''), color: '#ffffff', highlighted: true });
-                parts.push(
-                    `<span style="display:inline-block;margin:0 .16em;padding:0 .22em;border-radius:4px;background:#000000;color:#ffffff;font-weight:${base.fontWeight || fontWeight};text-shadow:${base.textShadow};">${txt}</span>`
-                );
-            } else if (isActive) {
-                matchedCount++;
-                matchedWordText = String(w.text || '').trim();
-                matchedWi = wi;
-                drawWords.push({ text: String(w.text || ''), color: '#ffffff', highlighted: true });
-                parts.push(
-                    `<span style="display:inline-block;margin:0 .16em;padding:0 .22em;border-radius:4px;background:#000000;color:#ffffff;font-weight:${base.fontWeight || fontWeight};text-shadow:${base.textShadow};">${txt}</span>`
-                );
+            if (w.highlighted) {
+                chunks.push(`<span style="display:inline-block;margin:0 .16em;padding:0 .22em;border-radius:4px;background:#000000;color:#ffffff;font-weight:700;">${txt}</span>`);
             } else {
-                // Keep a uniform inline structure for all words.
-                // Mixed text nodes + styled spans can produce bidi reordering drift
-                // that appears only when highlight is enabled.
-                drawWords.push({ text: String(w.text || ''), color: base.color, highlighted: false });
-                parts.push(`<span style="display:inline-block;margin:0 .16em;color:${base.color};font-weight:${base.fontWeight || fontWeight};text-shadow:${base.textShadow};">${txt}</span>`);
+                chunks.push(`<span style="display:inline-block;margin:0 .16em;color:#ffffff;font-weight:700;">${txt}</span>`);
             }
         }
-        if (!parts.length) {
+        if (!chunks.length) {
             ov.style.display = 'none';
             setNativeTrackMode('showing');
             return;
         }
 
-        // Now that we have something to render, hide native VTT to prevent duplicates.
-        setNativeTrackMode('hidden');
-        // Primary path: draw highlighted line on canvas for deterministic visual centering.
-        try {
-            let canvas = ov.querySelector('#qs-video-word-overlay-canvas');
-            if (!canvas) {
-                canvas = document.createElement('canvas');
-                canvas.id = 'qs-video-word-overlay-canvas';
-                ov.appendChild(canvas);
-            }
-            inner.style.display = 'none';
-            const ovRect = ov.getBoundingClientRect();
-            const cssW = Math.max(1, Math.floor(ovRect.width));
-            const ovCs = window.getComputedStyle(ov);
-            const fontPx = Math.max(12, parseFloat(ovCs.fontSize) || 22);
-            const cssH = Math.max(48, Math.ceil(fontPx * 2.2));
-            const dpr = Math.max(1, window.devicePixelRatio || 1);
-
-            canvas.style.display = 'block';
-            canvas.style.position = 'absolute';
-            canvas.style.left = '0';
-            canvas.style.width = `${cssW}px`;
-            canvas.style.height = `${cssH}px`;
-            const anchor = (pos === 'top') ? 0.10 : (pos === 'middle' ? 0.50 : 0.90);
-            const topPx = Math.max(0, Math.min(cssH > 0 ? (ovRect.height - cssH) : 0, (ovRect.height - cssH) * anchor));
-            canvas.style.top = `${Math.round(topPx)}px`;
-            canvas.width = Math.max(1, Math.floor(cssW * dpr));
-            canvas.height = Math.max(1, Math.floor(cssH * dpr));
-
-            const ctx = canvas.getContext('2d');
-            if (!ctx) throw new Error('canvas-ctx-null');
-            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            ctx.clearRect(0, 0, cssW, cssH);
-
-            const fw = String(base.fontWeight || fontWeight || '500');
-            const ff = String(ovCs.fontFamily || 'Arial, sans-serif');
-            ctx.font = `${fw} ${fontPx}px ${ff}`;
-            ctx.textBaseline = 'alphabetic';
-            ctx.textAlign = 'left';
-            ctx.shadowColor = 'rgba(0,0,0,0.7)';
-            ctx.shadowBlur = Math.max(2, fontPx * 0.12);
-            ctx.shadowOffsetX = 0;
-            ctx.shadowOffsetY = Math.max(1, fontPx * 0.06);
-
-            const gap = fontPx * 0.32;
-            const padX = fontPx * 0.22;
-            const padY = fontPx * 0.08;
-            const textWidths = drawWords.map(dw => ctx.measureText(dw.text || '').width);
-            const tokenWidths = drawWords.map((dw, i) => (textWidths[i] || 0) + (dw.highlighted ? (padX * 2) : 0));
-            const totalW = tokenWidths.reduce((a, b) => a + b, 0) + Math.max(0, drawWords.length - 1) * gap;
-            const startX = (cssW - totalW) / 2;
-            const y = Math.round(cssH * 0.72);
-
-            if (isRtl) {
-                let xRight = startX + totalW;
-                for (let i = 0; i < drawWords.length; i++) {
-                    const wpx = tokenWidths[i] || 0;
-                    const tw = textWidths[i] || 0;
-                    xRight -= wpx;
-                    if (drawWords[i].highlighted) {
-                        const rX = xRight;
-                        const rY = y - fontPx + 2;
-                        const rW = wpx;
-                        const rH = fontPx + padY + 2;
-                        const rr = Math.max(3, Math.round(fontPx * 0.16));
-                        ctx.fillStyle = '#000000';
-                        ctx.beginPath();
-                        ctx.moveTo(rX + rr, rY);
-                        ctx.lineTo(rX + rW - rr, rY);
-                        ctx.quadraticCurveTo(rX + rW, rY, rX + rW, rY + rr);
-                        ctx.lineTo(rX + rW, rY + rH - rr);
-                        ctx.quadraticCurveTo(rX + rW, rY + rH, rX + rW - rr, rY + rH);
-                        ctx.lineTo(rX + rr, rY + rH);
-                        ctx.quadraticCurveTo(rX, rY + rH, rX, rY + rH - rr);
-                        ctx.lineTo(rX, rY + rr);
-                        ctx.quadraticCurveTo(rX, rY, rX + rr, rY);
-                        ctx.closePath();
-                        ctx.fill();
-                        ctx.fillStyle = '#ffffff';
-                        ctx.fillText(drawWords[i].text || '', xRight + padX, y);
-                    } else {
-                        ctx.fillStyle = drawWords[i].color || base.color || '#ffffff';
-                        ctx.fillText(drawWords[i].text || '', xRight, y);
-                    }
-                    xRight -= gap;
-                }
-            } else {
-                let x = startX;
-                for (let i = 0; i < drawWords.length; i++) {
-                    const wpx = tokenWidths[i] || 0;
-                    if (drawWords[i].highlighted) {
-                        const rX = x;
-                        const rY = y - fontPx + 2;
-                        const rW = wpx;
-                        const rH = fontPx + padY + 2;
-                        const rr = Math.max(3, Math.round(fontPx * 0.16));
-                        ctx.fillStyle = '#000000';
-                        ctx.beginPath();
-                        ctx.moveTo(rX + rr, rY);
-                        ctx.lineTo(rX + rW - rr, rY);
-                        ctx.quadraticCurveTo(rX + rW, rY, rX + rW, rY + rr);
-                        ctx.lineTo(rX + rW, rY + rH - rr);
-                        ctx.quadraticCurveTo(rX + rW, rY + rH, rX + rW - rr, rY + rH);
-                        ctx.lineTo(rX + rr, rY + rH);
-                        ctx.quadraticCurveTo(rX, rY + rH, rX, rY + rH - rr);
-                        ctx.lineTo(rX, rY + rr);
-                        ctx.quadraticCurveTo(rX, rY, rX + rr, rY);
-                        ctx.closePath();
-                        ctx.fill();
-                        ctx.fillStyle = '#ffffff';
-                        ctx.fillText(drawWords[i].text || '', x + padX, y);
-                    } else {
-                        ctx.fillStyle = drawWords[i].color || base.color || '#ffffff';
-                        ctx.fillText(drawWords[i].text || '', x, y);
-                    }
-                    x += wpx + gap;
-                }
-            }
-        } catch (canvasErr) {
-            // Fallback path: keep existing HTML overlay rendering.
-            try {
-                const c = ov.querySelector('#qs-video-word-overlay-canvas');
-                if (c) c.style.display = 'none';
-            } catch (_) {}
-            inner.style.display = '';
-            const renderParts = isRtl ? parts.slice().reverse() : parts;
-            inner.innerHTML = `<span dir="ltr" style="display:inline-block;max-width:100%;unicode-bidi:normal;text-align:center;">${renderParts.join('')}</span>`;
-        }
-
-
-
         ov.style.display = 'block';
-        // Final visual-centering pass:
-        // Center by the actual rendered text-run box (not only the container box),
-        // then apply a small pixel correction to inner transform.
+        setNativeTrackMode('hidden');
+        inner.style.display = 'inline-block';
+        inner.style.top = (pos === 'top') ? '8%' : (pos === 'middle' ? '46%' : '86%');
+        inner.style.transform = 'translateX(-50%)';
+        inner.style.direction = 'ltr';
+        inner.style.textAlign = 'center';
+        inner.innerHTML = `<span dir="ltr" style="display:inline-block;max-width:100%;white-space:normal;line-height:1.2;text-shadow:0 2px 6px rgba(0,0,0,0.75);">${chunks.join('')}</span>`;
         try {
-            const run = inner.firstElementChild;
-            if (run) {
-                const ovRect = ov.getBoundingClientRect();
-                const ovCx = ovRect.left + (ovRect.width / 2);
-                const tokenNodes = Array.from(run.querySelectorAll('span'));
-                let visualLeft = null;
-                let visualRight = null;
-                tokenNodes.forEach((n) => {
-                    const r = n.getBoundingClientRect();
-                    if (!Number.isFinite(r.left) || !Number.isFinite(r.right)) return;
-                    visualLeft = (visualLeft == null) ? r.left : Math.min(visualLeft, r.left);
-                    visualRight = (visualRight == null) ? r.right : Math.max(visualRight, r.right);
-                });
-                const runRect = run.getBoundingClientRect();
-                const runCx = runRect.left + (runRect.width / 2);
-                const visualCx = (visualLeft != null && visualRight != null)
-                    ? (visualLeft + visualRight) / 2
-                    : runCx;
-                const delta = visualCx - ovCx;
-                // Clamp for safety against sudden jumps.
-                const clamped = Math.max(-80, Math.min(80, delta));
-                inner.style.transform = `translateX(calc(-50% - ${clamped.toFixed(2)}px))`;
-            } else {
-                inner.style.transform = 'translateX(-50%)';
+            const canvas = ov.querySelector('#qs-video-word-overlay-canvas');
+            if (canvas) canvas.style.display = 'none';
+        } catch (_) {}
+    } catch (_) {
+        try {
+            const ov = document.getElementById('qs-video-word-overlay');
+            if (ov) ov.style.display = 'none';
+            const video = document.getElementById('main-video');
+            if (video && video.textTracks && video.textTracks.length) {
+                for (let i = 0; i < video.textTracks.length; i++) {
+                    try { video.textTracks[i].mode = 'showing'; } catch (_) {}
+                }
             }
-        } catch (_) {
-            inner.style.transform = 'translateX(-50%)';
-        }
-    } catch (e) {
-        try { ov.style.display = 'none'; } catch (_) {}
-        try { setNativeTrackMode('showing'); } catch (_) {}
-        // swallow and fallback handled above
+        } catch (_) {}
     }
 };
 
