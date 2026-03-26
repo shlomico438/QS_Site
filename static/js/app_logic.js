@@ -2235,16 +2235,48 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (dBtn && dMenu) {
         const downloadMenuParent = dMenu.parentElement;
+        let mobileMenuBackdrop = null;
+        function ensureMobileMenuBackdrop() {
+            if (mobileMenuBackdrop && document.body.contains(mobileMenuBackdrop)) return mobileMenuBackdrop;
+            mobileMenuBackdrop = document.createElement('div');
+            mobileMenuBackdrop.id = 'download-menu-backdrop';
+            mobileMenuBackdrop.addEventListener('click', () => {
+                dMenu.style.display = 'none';
+                dMenu.classList.remove('show');
+                positionDownloadMenuClosed();
+            });
+            document.body.appendChild(mobileMenuBackdrop);
+            return mobileMenuBackdrop;
+        }
+        function removeMobileMenuBackdrop() {
+            if (mobileMenuBackdrop && mobileMenuBackdrop.parentNode) {
+                mobileMenuBackdrop.parentNode.removeChild(mobileMenuBackdrop);
+            }
+            mobileMenuBackdrop = null;
+        }
         function positionDownloadMenuOpen() {
             // Keep menu constrained inside the transcript wrapper rectangle.
             const wrap = document.querySelector('.transcription-wrapper');
             if (wrap && dMenu.parentElement !== wrap) {
                 wrap.appendChild(dMenu);
             }
-            dMenu.style.position = 'absolute';
-            dMenu.style.zIndex = '220';
+            const isMobile = window.matchMedia('(max-width: 768px)').matches;
+            dMenu.style.position = isMobile ? 'fixed' : 'absolute';
+            dMenu.style.zIndex = isMobile ? '9999' : '220';
             dMenu.style.pointerEvents = 'auto';
             function place() {
+                if (isMobile) {
+                    dMenu.classList.add('is-mobile-overlay');
+                    const backdrop = ensureMobileMenuBackdrop();
+                    if (backdrop) backdrop.classList.add('show');
+                    dMenu.style.left = '8px';
+                    dMenu.style.right = '8px';
+                    dMenu.style.top = '8px';
+                    dMenu.style.bottom = '8px';
+                    dMenu.style.maxWidth = 'none';
+                    return;
+                }
+                dMenu.classList.remove('is-mobile-overlay');
                 const host = document.querySelector('.transcription-wrapper') || downloadMenuParent;
                 if (!host) return;
                 const hostRect = host.getBoundingClientRect();
@@ -2285,6 +2317,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             dMenu.style.left = '';
             dMenu.style.bottom = '';
             dMenu.style.maxWidth = '';
+            dMenu.classList.remove('is-mobile-overlay');
+            removeMobileMenuBackdrop();
             if (downloadMenuParent && dMenu.parentElement !== downloadMenuParent) {
                 downloadMenuParent.appendChild(dMenu);
             }
@@ -2334,6 +2368,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             menu.style.left = '';
             menu.style.bottom = '';
             menu.style.maxWidth = '';
+            menu.classList.remove('is-mobile-overlay');
+            removeMobileMenuBackdrop();
             const parent = document.getElementById('btn-download')?.parentElement;
             if (parent && menu.parentElement !== parent) {
                 parent.appendChild(menu);

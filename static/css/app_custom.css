@@ -631,6 +631,37 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 .dropdown-menu.show { display: flex; }
 
+#download-menu.is-mobile-overlay {
+    width: auto;
+    max-width: none;
+    border-radius: 14px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(2px);
+    overflow: visible;
+}
+
+#download-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    z-index: 9998;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease;
+}
+
+#download-menu-backdrop.show {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+#download-menu.is-mobile-overlay .export-panel-card {
+    margin: 0;
+    width: 100%;
+    max-height: none;
+}
+
 /* Mobile: export dropdown uses a body-level portal (see app_logic.js) so it is never covered */
 @media screen and (max-width: 768px) {
     .transcription-wrapper {
@@ -1608,7 +1639,8 @@ html[dir="rtl"] .upload-status {
   .personal-rotate-hint {
     display: block;
     margin: 0 0 10px;
-    color: #64748b;
+    color: #dc2626;
+    font-weight: 600;
     font-size: 0.82rem;
   }
 }
