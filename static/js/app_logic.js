@@ -4082,6 +4082,81 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     return;
                 }
 
+                // Debug transcript JSON: load locally into editor (no upload/transcribe).
+                const isTranscriptJson = (file.type && file.type.includes('json')) || /\.json$/i.test(file.name);
+                if (isTranscriptJson) {
+                    try {
+                        const text = await file.text();
+                        const tr = JSON.parse(text || '{}');
+                        const words = Array.isArray(tr.words) ? tr.words : null;
+                        const captions = Array.isArray(tr.captions) ? tr.captions : null;
+                        const segments = Array.isArray(tr.segments) ? tr.segments : [];
+                        const formatted = (tr.formatted && typeof tr.formatted === 'object') ? tr.formatted : null;
+
+                        if (formatted) {
+                            window.currentFormattedDoc = {
+                                clean_transcript: String(formatted.clean_transcript || '').trim(),
+                                overview: String(formatted.overview || '').trim(),
+                                key_points: Array.isArray(formatted.key_points)
+                                    ? formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                                    : []
+                            };
+                        } else {
+                            window.currentFormattedDoc = null;
+                        }
+
+                        if (words && captions && words.length > 0 && captions.length > 0) {
+                            window.currentWords = words;
+                            window.currentCaptions = captions;
+                            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                        } else if (segments.length > 0) {
+                            if (_hasWordTimestampsInSegments(segments)) {
+                                const model = _buildWordModelFromSegments(segments);
+                                if (model) {
+                                    window.currentWords = model.words;
+                                    window.currentCaptions = model.captions;
+                                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                                } else {
+                                    window.currentWords = null;
+                                    window.currentCaptions = null;
+                                    window.currentSegments = segments;
+                                }
+                            } else {
+                                window.currentWords = null;
+                                window.currentCaptions = null;
+                                window.currentSegments = segments;
+                            }
+                        } else {
+                            throw new Error('JSON must include segments[] or words[]+captions[]');
+                        }
+
+                        window.uploadWasVideo = false;
+                        window.originalFileName = file.name.replace(/\.json$/i, '') || 'transcript';
+                        setTranscriptActionButtonsVisible(true);
+                        syncSpeakerControls();
+                        const transcriptWindow = document.getElementById('transcript-window');
+                        if (transcriptWindow) {
+                            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
+                                renderWordCaptionEditor();
+                            } else if (typeof window.render === 'function') {
+                                window.render();
+                            }
+                            window.showSubtitleStyleSelector();
+                        }
+                        if (mainBtn) {
+                            mainBtn.disabled = false;
+                            mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
+                        }
+                        hideProgressBar();
+                        if (typeof showStatus === 'function') showStatus('JSON transcript loaded locally.', false, { duration: 5000 });
+                    } catch (e) {
+                        console.warn('JSON transcript load failed', e);
+                        if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${e.message || e}`, true);
+                    }
+                    fileInput.value = '';
+                    return;
+                }
+
                 const isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
                 const isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
                 window.uploadWasVideo = !!isVideo;
