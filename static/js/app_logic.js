@@ -2233,6 +2233,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const dBtn = document.getElementById('btn-download');
     const dMenu = document.getElementById('download-menu');
 
+    let removeMobileMenuBackdrop = () => {};
     if (dBtn && dMenu) {
         const downloadMenuParent = dMenu.parentElement;
         let mobileMenuBackdrop = null;
@@ -2248,12 +2249,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.body.appendChild(mobileMenuBackdrop);
             return mobileMenuBackdrop;
         }
-        function removeMobileMenuBackdrop() {
+        removeMobileMenuBackdrop = function() {
             if (mobileMenuBackdrop && mobileMenuBackdrop.parentNode) {
                 mobileMenuBackdrop.parentNode.removeChild(mobileMenuBackdrop);
             }
             mobileMenuBackdrop = null;
-        }
+        };
         function positionDownloadMenuOpen() {
             // Keep menu constrained inside the transcript wrapper rectangle.
             const wrap = document.querySelector('.transcription-wrapper');
@@ -3040,34 +3041,34 @@ document.addEventListener('DOMContentLoaded', () => {
             console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
         }
 
-        // One-time doc formatting pass (clean transcript + summary), reused by all exports.
-        try {
+        // One-time doc formatting pass (clean transcript + summary), reused by exports.
+        // IMPORTANT: run in background so transcript rendering is never blocked by this request.
+        (() => {
             const fullText = (window.currentSegments || [])
                 .map((s) => String((s && s.text) || '').trim())
                 .filter(Boolean)
                 .join('\n');
-            if (fullText) {
-                const fmtRes = await fetch('/api/format_transcript_summary', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: fullText, target_lang: userLang || 'he' })
+            if (!fullText) return;
+            fetch('/api/format_transcript_summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: fullText, target_lang: userLang || 'he' })
+            })
+                .then((fmtRes) => (fmtRes.ok ? fmtRes.json() : null))
+                .then((fmt) => {
+                    if (!fmt || typeof fmt !== 'object') return;
+                    window.currentFormattedDoc = {
+                        clean_transcript: String(fmt.clean_transcript || '').trim(),
+                        overview: String(fmt.overview || '').trim(),
+                        key_points: Array.isArray(fmt.key_points)
+                            ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                            : []
+                    };
+                })
+                .catch((e) => {
+                    console.warn('[GPT] format_transcript_summary failed (background), export will fallback:', e);
                 });
-                if (fmtRes.ok) {
-                    const fmt = await fmtRes.json();
-                    if (fmt && typeof fmt === 'object') {
-                        window.currentFormattedDoc = {
-                            clean_transcript: String(fmt.clean_transcript || '').trim(),
-                            overview: String(fmt.overview || '').trim(),
-                            key_points: Array.isArray(fmt.key_points)
-                                ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
-                                : []
-                        };
-                    }
-                }
-            }
-        } catch (e) {
-            console.warn('[GPT] format_transcript_summary failed, export will fallback:', e);
-        }
+        })();
 
         // Ensure global segments are set (already handled above); keep legacy flow happy.
         const gptPostProcessed = (
@@ -3113,9 +3114,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // We create a Set of all speaker IDs found in the segments
         const uniqueSpeakers = new Set(
-            segments
-                .map(s => s.speaker)
-                .filter(s => s !== undefined && s.speaker !== null)
+            (window.currentSegments || [])
+                .map((seg) => seg && seg.speaker)
+                .filter((sp) => sp != null && String(sp).trim() !== '')
         );
 
         // Only enable if there are 2 or more DIFFERENT speakers
