@@ -24,12 +24,8 @@ import tempfile
 import threading
 import uuid
 import pathlib
-
-# python-docx imports for server-side RTL post-processing
-from docx import Document as DocxDocument
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+import zipfile
+from io import BytesIO
 
 
 # --- CONFIGURATION ---
@@ -64,6 +60,327 @@ def _public_base_url(req):
     if root.startswith('http://') and (xfp == 'https' or str(req.host or '').endswith('getquickscribe.com')):
         root = 'https://' + root[len('http://'):]
     return root
+
+
+def _xml_esc(text):
+    """Escape XML special characters in text content."""
+    return (str(text)
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+            .replace('"', '&quot;'))
+
+
+def _wrap_line_max_chars(text, max_chars=150):
+    """Wrap a single line by spaces so each physical line is <= max_chars."""
+    s = str(text or "").strip()
+    if not s:
+        return []
+    out = []
+    rest = s
+    while len(rest) > max_chars:
+        cut = rest.rfind(' ', 0, max_chars + 1)
+        if cut <= 0:
+            cut = max_chars
+        out.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        out.append(rest)
+    return out
+
+
+def _wrap_text_to_max_chars(text, max_chars=150):
+    """Wrap multi-line text to max chars per line, preserving paragraph breaks."""
+    result = []
+    for raw_line in str(text or "").splitlines():
+        if not raw_line.strip():
+            result.append("")
+            continue
+        result.extend(_wrap_line_max_chars(raw_line, max_chars=max_chars))
+    return "\n".join(result).strip()
+
+
+def _build_rtl_docx(lines, bold_first=False):
+    """
+    Build a guaranteed-RTL DOCX completely from scratch as a ZIP with
+    hand-crafted XML.  No python-docx template is loaded so every byte is
+    under our control — namespace prefixes, element ordering, and RTL flags
+    are exactly what Word expects.
+    """
+    # ---- paragraph XML ----
+    para_xmls = []
+    for i, line in enumerate(lines):
+        line_s = str(line or '').strip()
+        bold = bold_first and i == 0
+        ppr = '<w:pPr><w:bidi w:val="1"/><w:jc w:val="right"/></w:pPr>'
+        if not line_s:
+            para_xmls.append(f'<w:p>{ppr}</w:p>')
+        else:
+            b_tags = '<w:b/><w:bCs/>' if bold else ''
+            rpr = (f'<w:rPr>{b_tags}'
+                   '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
+                   '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+                   '<w:rtl w:val="1"/>'
+                   '<w:lang w:val="he-IL" w:bidi="he-IL"/></w:rPr>')
+            t   = f'<w:t xml:space="preserve">{_xml_esc(line_s)}</w:t>'
+            para_xmls.append(f'<w:p>{ppr}<w:r>{rpr}{t}</w:r></w:p>')
+
+    body = '\n'.join(para_xmls)
+
+    # ---- [Content_Types].xml ----
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels"'
+        ' ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml"'
+        ' ContentType="application/vnd.openxmlformats-officedocument'
+        '.wordprocessingml.document.main+xml"/>'
+        '<Override PartName="/word/styles.xml"'
+        ' ContentType="application/vnd.openxmlformats-officedocument'
+        '.wordprocessingml.styles+xml"/>'
+        '<Override PartName="/word/settings.xml"'
+        ' ContentType="application/vnd.openxmlformats-officedocument'
+        '.wordprocessingml.settings+xml"/>'
+        '</Types>'
+    )
+
+    # ---- _rels/.rels ----
+    pkg_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1"'
+        ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"'
+        ' Target="word/document.xml"/>'
+        '</Relationships>'
+    )
+
+    # ---- word/_rels/document.xml.rels ----
+    doc_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1"'
+        ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"'
+        ' Target="styles.xml"/>'
+        '<Relationship Id="rId2"'
+        ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"'
+        ' Target="settings.xml"/>'
+        '</Relationships>'
+    )
+
+    # ---- word/styles.xml ---- RTL at every level
+    styles = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:docDefaults>'
+        '<w:rPrDefault><w:rPr>'
+        '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
+        '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+        '<w:lang w:val="he-IL" w:bidi="he-IL"/>'
+        '</w:rPr></w:rPrDefault>'
+        '<w:pPrDefault><w:pPr>'
+        '<w:bidi w:val="1"/><w:jc w:val="right"/>'
+        '</w:pPr></w:pPrDefault>'
+        '</w:docDefaults>'
+        '<w:style w:type="paragraph" w:default="1" w:styleId="Normal">'
+        '<w:name w:val="Normal"/>'
+        '<w:pPr><w:bidi w:val="1"/><w:jc w:val="right"/></w:pPr>'
+        '<w:rPr>'
+        '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
+        '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+        '<w:rtl w:val="1"/>'
+        '<w:lang w:val="he-IL" w:bidi="he-IL"/>'
+        '</w:rPr>'
+        '</w:style>'
+        '</w:styles>'
+    )
+
+    # ---- word/settings.xml ----
+    settings = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:defaultTabStop w:val="720"/>'
+        '</w:settings>'
+    )
+
+    # ---- word/document.xml ----
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document'
+        ' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<w:body>'
+        f'{body}'
+        '<w:sectPr>'
+        '<w:pgSz w:w="12240" w:h="15840"/>'
+        '<w:pgMar w:top="1440" w:right="1800" w:bottom="1440" w:left="1800"'
+        ' w:header="708" w:footer="708" w:gutter="0"/>'
+        '</w:sectPr>'
+        '</w:body>'
+        '</w:document>'
+    )
+
+    out = BytesIO()
+    with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('[Content_Types].xml', content_types)
+        zf.writestr('_rels/.rels', pkg_rels)
+        zf.writestr('word/_rels/document.xml.rels', doc_rels)
+        zf.writestr('word/document.xml', document)
+        zf.writestr('word/styles.xml', styles)
+        zf.writestr('word/settings.xml', settings)
+
+    return out.getvalue()
+
+
+def _force_docx_rtl_bytes(docx_bytes):
+    """
+    Patch RTL/right-alignment directly in the DOCX ZIP using regex string
+    substitution — never re-parses XML so all OOXML namespace prefixes are
+    preserved exactly (ElementTree re-serialisation was mangling them).
+
+    What we inject per paragraph (w:pPr):
+      <w:bidi/>                  — paragraph base direction = RTL
+      <w:jc w:val="right"/>      — paragraph alignment = right  (= Ctrl+R)
+
+    What we inject per run (w:rPr):
+      <w:rtl/>                   — run direction = RTL (needed for mixed text)
+
+    We also patch word/styles.xml so the Normal style and docDefaults
+    inherit the same defaults, which means a new empty paragraph is also RTL.
+    """
+
+    _BIDI    = '<w:bidi w:val="1"/>'
+    _JC      = '<w:jc w:val="right"/>'
+    _RTL_RUN = '<w:rtl w:val="1"/>'
+
+    # --- helpers --------------------------------------------------------
+
+    def _strip(tag, xml):
+        """Remove all occurrences of <tag .../> or <tag...>...</tag>."""
+        xml = re.sub(r'<' + tag + r'(?:\s[^/]*)*/>', '', xml)
+        xml = re.sub(r'<' + tag + r'(?:\s[^>]*)?>.*?</' + tag + r'>', '', xml, flags=re.DOTALL)
+        return xml
+
+    def _patch_ppr_inner(inner):
+        """Given the content between <w:pPr> and </w:pPr>, enforce bidi+jc.
+        w:pStyle MUST stay first in pPr — Word silently drops paragraphs otherwise."""
+        inner = _strip('w:bidi', inner)
+        inner = _strip('w:jc',   inner)
+        # Keep pStyle first if present; insert bidi+jc immediately after it
+        m = re.match(r'(\s*<w:pStyle\b[^/]*/>\s*)', inner)
+        if m:
+            return m.group(0) + _BIDI + _JC + inner[m.end():]
+        return _BIDI + _JC + inner
+
+    def _patch_rpr_inner(inner):
+        """Given the content between <w:rPr> and </w:rPr>, enforce rtl."""
+        if '<w:rtl' not in inner:
+            return inner + _RTL_RUN
+        return inner
+
+    def patch_body_xml(xml):
+        # Non-empty <w:pPr>...</w:pPr>
+        xml = re.sub(
+            r'<w:pPr>(.*?)</w:pPr>',
+            lambda m: '<w:pPr>' + _patch_ppr_inner(m.group(1)) + '</w:pPr>',
+            xml, flags=re.DOTALL
+        )
+        # Self-closing <w:pPr/>
+        xml = xml.replace('<w:pPr/>', '<w:pPr>' + _BIDI + _JC + '</w:pPr>')
+        # Non-empty <w:rPr>...</w:rPr>
+        xml = re.sub(
+            r'<w:rPr>(.*?)</w:rPr>',
+            lambda m: '<w:rPr>' + _patch_rpr_inner(m.group(1)) + '</w:rPr>',
+            xml, flags=re.DOTALL
+        )
+        # Self-closing <w:rPr/>
+        xml = xml.replace('<w:rPr/>', '<w:rPr>' + _RTL_RUN + '</w:rPr>')
+        return xml
+
+    def patch_styles_xml(xml):
+        # Patch every paragraph style block
+        def _fix_style(m):
+            block = m.group(0)
+            if '<w:pPr>' in block:
+                block = re.sub(
+                    r'<w:pPr>(.*?)</w:pPr>',
+                    lambda pm: '<w:pPr>' + _patch_ppr_inner(pm.group(1)) + '</w:pPr>',
+                    block, flags=re.DOTALL
+                )
+                block = block.replace('<w:pPr/>', '<w:pPr>' + _BIDI + _JC + '</w:pPr>')
+            else:
+                block = block.replace('</w:style>', '<w:pPr>' + _BIDI + _JC + '</w:pPr></w:style>')
+            return block
+
+        xml = re.sub(
+            r'<w:style\b[^>]*w:type="paragraph"[^>]*>.*?</w:style>',
+            _fix_style, xml, flags=re.DOTALL
+        )
+
+        # Patch docDefaults pPrDefault and rPrDefault
+        def _fix_defaults(m):
+            block = m.group(0)
+            # pPrDefault
+            if '<w:pPrDefault' in block:
+                if '<w:pPr>' in block:
+                    block = re.sub(
+                        r'(<w:pPrDefault[^>]*>.*?)<w:pPr>(.*?)</w:pPr>',
+                        lambda pm: pm.group(1) + '<w:pPr>' + _patch_ppr_inner(pm.group(2)) + '</w:pPr>',
+                        block, flags=re.DOTALL
+                    )
+                else:
+                    block = block.replace('</w:pPrDefault>',
+                        '<w:pPr>' + _BIDI + _JC + '</w:pPr></w:pPrDefault>')
+            else:
+                block = block.replace('</w:docDefaults>',
+                    '<w:pPrDefault><w:pPr>' + _BIDI + _JC + '</w:pPr></w:pPrDefault></w:docDefaults>')
+            # rPrDefault
+            if '<w:rPrDefault' in block:
+                if '<w:rPr>' in block:
+                    block = re.sub(
+                        r'(<w:rPrDefault[^>]*>.*?)<w:rPr>(.*?)</w:rPr>',
+                        lambda rm: rm.group(1) + '<w:rPr>' + _patch_rpr_inner(rm.group(2)) + '</w:rPr>',
+                        block, flags=re.DOTALL
+                    )
+                else:
+                    block = block.replace('</w:rPrDefault>',
+                        '<w:rPr>' + _RTL_RUN + '</w:rPr></w:rPrDefault>')
+            else:
+                block = block.replace('</w:docDefaults>',
+                    '<w:rPrDefault><w:rPr>' + _RTL_RUN + '</w:rPr></w:rPrDefault></w:docDefaults>')
+            return block
+
+        xml = re.sub(r'<w:docDefaults>.*?</w:docDefaults>', _fix_defaults, xml, flags=re.DOTALL)
+        return xml
+
+    # --- zip pass -------------------------------------------------------
+
+    in_mem  = BytesIO(docx_bytes)
+    out_mem = BytesIO()
+    BODY_PARTS = {
+        'word/document.xml', 'word/footnotes.xml',
+        'word/endnotes.xml', 'word/comments.xml',
+    }
+
+    with zipfile.ZipFile(in_mem, 'r') as zin, \
+         zipfile.ZipFile(out_mem, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            name = item.filename.lower()
+            try:
+                if name in BODY_PARTS \
+                        or (name.startswith('word/header') and name.endswith('.xml')) \
+                        or (name.startswith('word/footer') and name.endswith('.xml')):
+                    data = patch_body_xml(data.decode('utf-8', errors='replace')).encode('utf-8')
+                elif name == 'word/styles.xml':
+                    data = patch_styles_xml(data.decode('utf-8', errors='replace')).encode('utf-8')
+            except Exception as e:
+                logging.warning('RTL patch skipped for %s: %s', item.filename, e)
+            zout.writestr(item, data)
+
+    out_mem.seek(0)
+    return out_mem.getvalue()
 
 
 
@@ -261,6 +578,7 @@ def save_job_result():
         segments = data.get('segments')
         words = data.get('words')
         captions = data.get('captions')
+        formatted = data.get('formatted')
         stage = (data.get('stage') or 'gpt').strip().lower()
         if not user_id or not input_s3_key:
             return jsonify({"error": "userId and input_s3_key (or s3Key) required"}), 400
@@ -278,6 +596,14 @@ def save_job_result():
             if not isinstance(captions, list):
                 return jsonify({"error": "captions must be an array"}), 400
             transcript["captions"] = captions
+        if formatted is not None:
+            if not isinstance(formatted, dict):
+                return jsonify({"error": "formatted must be an object"}), 400
+            transcript["formatted"] = {
+                "clean_transcript": str(formatted.get("clean_transcript") or "").strip(),
+                "overview": str(formatted.get("overview") or "").strip(),
+                "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
+            }
 
         if "segments" not in transcript and "words" not in transcript:
             return jsonify({"error": "segments or words required"}), 400
@@ -893,6 +1219,118 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
         "model": model_used,
     }
 
+def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he'):
+    """Generate clean transcript paragraphs + separate summary payload."""
+    api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
+    if not api_key:
+        raise RuntimeError("GPT_API_KEY missing")
+    model = (os.environ.get('GPT_MODEL') or 'gpt-4o-mini').strip()
+    timeout_sec = int(os.environ.get('GPT_TIMEOUT_SEC', '90') or 90)
+
+    system_prompt = (
+        "You are an expert transcript editor. "
+        "Return ONLY valid JSON in this exact shape: "
+        "{\"clean_transcript\":string,\"overview\":string,\"key_points\":[string]} . "
+        "Do not include markdown fences. Keep original language and directionality."
+    )
+    lang_hint = str(target_lang or 'he').strip().lower()[:8]
+    want_hebrew = lang_hint.startswith('he')
+    output_lang_label = 'Hebrew' if want_hebrew else target_lang
+    user_prompt = (
+        "You are editing a transcript.\n\n"
+        "Task 1 – Clean Transcript\n\n"
+        "* Correct grammar and punctuation.\n"
+        "* Keep the original wording as much as possible.\n"
+        "* Split the text into clear paragraphs (2–4 sentences each).\n"
+        "* Start a new paragraph when the topic changes.\n"
+        "* IMPORTANT: each line in clean_transcript must be at most 150 characters.\n"
+        "* Add line breaks as needed to keep line length <= 150 characters.\n"
+        "* Do NOT summarize or remove content.\n\n"
+        "Task 2 – Summary\n"
+        "Create a separate summary including:\n\n"
+        "* A short 3–4 sentence overview\n"
+        "* 5–8 bullet key points\n"
+        "Focus on decisions, insights, and actionable ideas.\n"
+        "Ignore filler conversation.\n\n"
+        "Return as JSON fields only (clean_transcript, overview, key_points).\n"
+        f"Output language must be {output_lang_label} for all fields.\n\n"
+        f"Language hint: {lang_hint}\n\n"
+        "Transcript:\n\n"
+        f"{transcript_text}"
+    )
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=timeout_sec,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OpenAI API {resp.status_code}: {(resp.text or '')[:500]}")
+    data = resp.json()
+    content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    if not content:
+        raise RuntimeError("OpenAI returned empty content")
+    # Allow occasional accidental code fences.
+    content = re.sub(r'^```json\s*', '', content, flags=re.IGNORECASE)
+    content = re.sub(r'^```\s*', '', content)
+    content = re.sub(r'```$', '', content).strip()
+    parsed = json.loads(content)
+
+    clean_transcript = str((parsed or {}).get("clean_transcript") or "").strip()
+    clean_transcript = _wrap_text_to_max_chars(clean_transcript, max_chars=150)
+    overview = str((parsed or {}).get("overview") or "").strip()
+    key_points = (parsed or {}).get("key_points")
+    if not isinstance(key_points, list):
+        key_points = []
+    key_points = [str(p).strip() for p in key_points if str(p).strip()]
+
+    # Safety net: if Hebrew is requested but summary fields came back non-Hebrew,
+    # run a focused translation pass for overview/key points only.
+    if want_hebrew:
+        he_char_re = re.compile(r'[\u0590-\u05FF]')
+
+        def _has_hebrew(s):
+            return bool(he_char_re.search(str(s or "")))
+
+        needs_translate = (overview and not _has_hebrew(overview)) or any(
+            (p and not _has_hebrew(p)) for p in key_points
+        )
+        if needs_translate:
+            to_translate = []
+            if overview:
+                to_translate.append({"id": 0, "text": overview})
+            for i, p in enumerate(key_points):
+                to_translate.append({"id": i + 1, "text": p})
+            translated, _meta = translate_segments(to_translate, target_lang='he')
+            translated_map = {
+                int((seg or {}).get("id")): str((seg or {}).get("translated_text") or "").strip()
+                for seg in (translated or [])
+                if isinstance(seg, dict)
+            }
+            if overview:
+                overview = translated_map.get(0) or overview
+            key_points = [
+                translated_map.get(i + 1) or p
+                for i, p in enumerate(key_points)
+            ]
+    return {
+        "clean_transcript": clean_transcript,
+        "overview": overview,
+        "key_points": key_points
+    }
+
 
 # --- TRANSLATE SEGMENTS (GPT via Node script from package.json) ---
 def translate_segments(segments, target_lang='he'):
@@ -1032,6 +1470,125 @@ def api_translate_segments():
         return jsonify({"segments": translated, "meta": meta})
     finally:
         _translate_in_flight -= 1
+
+
+@app.route('/api/format_transcript_summary', methods=['POST'])
+def api_format_transcript_summary():
+    """Return clean transcript + summary fields for DOCX export."""
+    data = request.json or {}
+    target_lang = data.get('targetLang') or data.get('target_lang') or 'he'
+    raw_text = str(data.get('text') or '').strip()
+    segments = data.get('segments') or []
+    if not raw_text and isinstance(segments, list):
+        raw_text = "\n".join(
+            str((s or {}).get('text') or '').strip()
+            for s in segments
+            if str((s or {}).get('text') or '').strip()
+        ).strip()
+    if not raw_text:
+        return jsonify({"error": "No transcript text provided"}), 400
+    try:
+        out = _format_transcript_and_summary_via_openai(raw_text, target_lang=target_lang)
+        return jsonify(out), 200
+    except Exception as e:
+        logging.warning("format_transcript_summary failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/docx_force_rtl', methods=['POST'])
+def api_docx_force_rtl():
+    """Receive a DOCX file and return a RTL/right-aligned DOCX."""
+    try:
+        uploaded = request.files.get('file')
+        if not uploaded:
+            return jsonify({"error": "file is required"}), 400
+        filename = str(uploaded.filename or 'document.docx')
+        if not filename.lower().endswith('.docx'):
+            return jsonify({"error": "Only .docx is supported"}), 400
+        raw = uploaded.read()
+        if not raw:
+            return jsonify({"error": "Empty file"}), 400
+        fixed = _force_docx_rtl_bytes(raw)
+        from flask import send_file
+        out = BytesIO(fixed)
+        out.seek(0)
+        return send_file(
+            out,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+    except Exception as e:
+        logging.warning("docx_force_rtl failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/export_docx', methods=['POST'])
+def api_export_docx():
+    """
+    Generate a fully RTL Hebrew DOCX in Python and stream it back.
+    Body JSON: { text, segments, kind, filename }
+      kind: 'transcript' | 'summary'
+    The endpoint calls format_transcript_summary internally so the caller
+    does not need a separate AI call.
+    """
+    try:
+        data = request.json or {}
+        kind     = str(data.get('kind') or 'transcript').lower()
+        raw_text = str(data.get('text') or '').strip()
+        segments = data.get('segments') or []
+        filename = (str(data.get('filename') or 'document')
+                    .replace('/', '_').replace('\\', '_').strip() or 'document')
+
+        if not raw_text and isinstance(segments, list):
+            raw_text = '\n'.join(
+                str((s or {}).get('text') or '').strip()
+                for s in segments
+                if str((s or {}).get('text') or '').strip()
+            ).strip()
+
+        if not raw_text:
+            return jsonify({"error": "No transcript text provided"}), 400
+
+        # Prefer precomputed formatting from saved JSON/session to avoid GPT on each export.
+        fmt = data.get('formatted') if isinstance(data.get('formatted'), dict) else None
+        if not isinstance(fmt, dict):
+            try:
+                fmt = _format_transcript_and_summary_via_openai(raw_text, target_lang='he')
+            except Exception as ai_err:
+                logging.warning("export_docx: AI format failed (%s), using raw text", ai_err)
+                fmt = {'clean_transcript': raw_text, 'overview': '', 'key_points': []}
+
+        if kind == 'summary':
+            overview   = str(fmt.get('overview') or '').strip()
+            key_points = [str(p).strip() for p in (fmt.get('key_points') or []) if str(p).strip()]
+            lines = []
+            lines.append('סקירה:')
+            lines.append(overview or 'N/A')
+            lines.append('')
+            lines.append('נקודות מפתח:')
+            lines.extend(key_points or ['לא הוחזרו נקודות מפתח.'])
+            dl_name = filename + '_summary.docx'
+        else:
+            clean = str(fmt.get('clean_transcript') or '').strip() or raw_text
+            clean = _wrap_text_to_max_chars(clean, max_chars=150)
+            lines = [l for l in clean.split('\n') if l.strip()]
+            dl_name = filename + '.docx'
+
+        docx_bytes = _build_rtl_docx(lines)
+
+        from flask import send_file
+        out = BytesIO(docx_bytes)
+        out.seek(0)
+        return send_file(
+            out,
+            as_attachment=True,
+            download_name=dl_name,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+    except Exception as e:
+        logging.exception("export_docx failed: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 # --- 1. Add Global Cache at the top ---

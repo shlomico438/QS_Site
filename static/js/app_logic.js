@@ -31,6 +31,7 @@ window.isTriggering = false;
 window.aiDiarizationRan = false;
 window.fakeProgressInterval = null;
 window.currentSegments = [];
+window.currentFormattedDoc = null;
 // Per-caption layout + highlight (merged with global defaults). Timeline/keywords UI removed.
 window.globalCaptionLayoutStyle = window.globalCaptionLayoutStyle || null;
 window.currentWords = null;
@@ -440,12 +441,40 @@ function splitLongSegments(segments, maxChars = 40) {
     return result;
 }
 
-/** User-facing messages: show standard popup (not toast). Developer messages should use console.log/warn instead. */
+/** User-facing messages.
+ *  Errors  → blocking dialog with אישור / OK button.
+ *  Non-errors → auto-dismissing toast (no button needed).
+ */
 function showStatus(message, isError = false, options = {}) {
     if (!message && message !== 0) return;
     const str = String(message);
-    const isHebrew = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he');
-    showGlobalAlert(str, { confirmText: isHebrew ? 'אישור' : 'OK' });
+    if (isError) {
+        const isHebrew = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+        showGlobalAlert(str, { confirmText: isHebrew ? 'אישור' : 'OK' });
+    } else {
+        _showToast(str, options.duration ?? 3000);
+    }
+}
+
+function _showToast(message, duration = 3000) {
+    let toast = document.getElementById('qs-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'qs-toast';
+        toast.style.cssText = [
+            'position:fixed', 'bottom:28px', 'left:50%', 'transform:translateX(-50%)',
+            'background:#1e293b', 'color:#f8fafc', 'padding:10px 22px',
+            'border-radius:10px', 'font-size:0.92rem', 'font-weight:500',
+            'box-shadow:0 4px 18px rgba(0,0,0,0.22)', 'z-index:99999',
+            'opacity:0', 'transition:opacity 0.2s ease', 'pointer-events:none',
+            'white-space:nowrap', 'max-width:92vw', 'text-align:center'
+        ].join(';');
+        document.body.appendChild(toast);
+    }
+    clearTimeout(toast._hideTimer);
+    toast.textContent = message;
+    toast.style.opacity = '1';
+    toast._hideTimer = setTimeout(() => { toast.style.opacity = '0'; }, duration);
 }
 
 function setSeoHomeContentVisibility(visible) {
@@ -1285,6 +1314,15 @@ async function initOpenInApp(jobId) {
             if (urlJson.url) {
                 const tr = await fetch(urlJson.url).then(r => r.json());
                 if (tr) {
+                    if (tr.formatted && typeof tr.formatted === 'object') {
+                        window.currentFormattedDoc = {
+                            clean_transcript: String(tr.formatted.clean_transcript || '').trim(),
+                            overview: String(tr.formatted.overview || '').trim(),
+                            key_points: Array.isArray(tr.formatted.key_points)
+                                ? tr.formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                                : []
+                        };
+                    }
                     if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
                         console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length });
                         window.currentWords = tr.words;
@@ -1356,6 +1394,15 @@ async function initOpenInApp(jobId) {
         const { data: resultData } = await supabase.from('jobs').select('result').eq('id', jobId).eq('user_id', user.id).maybeSingle();
         if (resultData && resultData.result && Array.isArray(resultData.result.segments)) {
             segments = resultData.result.segments;
+        }
+        if (resultData && resultData.result && resultData.result.formatted && typeof resultData.result.formatted === 'object') {
+            window.currentFormattedDoc = {
+                clean_transcript: String(resultData.result.formatted.clean_transcript || '').trim(),
+                overview: String(resultData.result.formatted.overview || '').trim(),
+                key_points: Array.isArray(resultData.result.formatted.key_points)
+                    ? resultData.result.formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                    : []
+            };
         }
     }
     if (!Array.isArray(window.currentWords) || !Array.isArray(window.currentCaptions)) {
@@ -1621,6 +1668,21 @@ async function ensureJobRecordOnExport() {
         return paragraphs;
     }
 
+    function createDocxParagraphsFromPlainText(text, rtl = true) {
+        const { Paragraph, TextRun, AlignmentType } = docx;
+        const raw = String(text || '').replace(/\r\n/g, '\n').trim();
+        let parts = raw.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+        if (parts.length <= 1) {
+            parts = raw.split(/\n+/).map(p => p.trim()).filter(Boolean);
+        }
+        return parts.map(p => new Paragraph({
+                children: [new TextRun({ text: p, size: 24, rightToLeft: !!rtl })],
+                alignment: rtl ? AlignmentType.RIGHT : AlignmentType.LEFT,
+                bidirectional: !!rtl,
+                spacing: { after: 260 }
+            }));
+    }
+
 
 
 /** Burn subtitles into video via server (supports mp4, mov, webm, m4v, mkv, avi). */
@@ -1669,6 +1731,19 @@ function extractSegmentsFromJobPayload(payload) {
     return Array.isArray(segments) ? segments : [];
 }
 
+function extractFormattedFromJobPayload(payload) {
+    const output = (payload && (payload.result || payload.output)) || payload || {};
+    const formatted = (output && output.formatted) || payload?.formatted || null;
+    if (!formatted || typeof formatted !== 'object') return null;
+    return {
+        clean_transcript: String(formatted.clean_transcript || '').trim(),
+        overview: String(formatted.overview || '').trim(),
+        key_points: Array.isArray(formatted.key_points)
+            ? formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+            : []
+    };
+}
+
 async function tryRecoverSegmentsForExport() {
     if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return true;
     const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId');
@@ -1678,8 +1753,10 @@ async function tryRecoverSegmentsForExport() {
         if (!res.ok) return false;
         const data = await res.json();
         const recovered = extractSegmentsFromJobPayload(data);
+        const recoveredFormatted = extractFormattedFromJobPayload(data);
         if (recovered.length > 0) {
             window.currentSegments = recovered;
+            if (recoveredFormatted) window.currentFormattedDoc = recoveredFormatted;
             if (typeof window.render === 'function') window.render();
             return true;
         }
@@ -1689,8 +1766,34 @@ async function tryRecoverSegmentsForExport() {
     return Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
 }
 
-window.downloadFile = async function(type, bypassUser = null) {
-    const baseName = ((window.originalFileName || '').trim()) || "transcript";
+async function _serverForceRtlDocx(blob, filename) {
+    try {
+        const fd = new FormData();
+        fd.append('file', blob, filename || 'document.docx');
+        const res = await fetch('/api/docx_force_rtl', {
+            method: 'POST',
+            body: fd
+        });
+        if (!res.ok) {
+            console.warn('[docx] docx_force_rtl returned non-OK:', res.status);
+            if (typeof showStatus === 'function') showStatus('שמירת DOCX ב-RTL נכשלה, מוריד גרסה רגילה.', true);
+            return blob;
+        }
+        return await res.blob();
+    } catch (e) {
+        console.warn('[docx] server rtl post-process failed, keeping original docx:', e);
+        return blob;
+    }
+}
+
+async function _saveDocxWithRtl(blob, filename) {
+    const fixedBlob = await _serverForceRtlDocx(blob, filename);
+    saveAs(fixedBlob, filename);
+}
+
+window.downloadFile = async function(type, bypassUser = null, options = {}) {
+    const rawBaseName = ((window.originalFileName || '').trim()) || "transcript";
+    const baseName = rawBaseName.replace(/^job_\d+_/, '').trim() || "transcript";
 
     if (type === 'movie') {
         console.log('[movie export] Start');
@@ -1998,30 +2101,55 @@ window.downloadFile = async function(type, bypassUser = null) {
         console.error("Failed to update job status:", err);
     }
 
-    if (type === 'docx' && typeof docx === 'undefined') {
-        if (typeof showStatus === 'function') showStatus("Error: DOCX library not loaded.", true);
-        return;
-    }
     if (typeof saveAs === 'undefined') {
         if (typeof showStatus === 'function') showStatus("Error: FileSaver library not loaded.", true);
         return;
     }
 
     if (type === 'docx') {
-        const { Document, Packer, Paragraph, TextRun, AlignmentType } = docx;
-        let children = [];
-        let current = null;
-        window.currentSegments.forEach(seg => {
-            if (!current || current.speaker !== seg.speaker) {
-                if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
-                current = { speaker: seg.speaker, text: "", start: seg.start };
-            }
-            current.text += seg.text + " ";
-        });
-        if (current) children.push(...createDocxParagraphs(current, showTime, showSpeaker));
+        const docBase = (String(baseName || '').trim() || 'transcript').replace(/[\\/:*?"<>|]+/g, '_');
+        const requestedKinds = Array.isArray(options && options.docxKinds)
+            ? options.docxKinds.map((k) => String(k || '').toLowerCase()).filter((k) => k === 'transcript' || k === 'summary')
+            : [];
+        const docxKind = (options && options.docxKind) ? String(options.docxKind) : 'transcript';
+        const effectiveKinds = requestedKinds.length ? requestedKinds : [docxKind];
+        const wantTranscript = effectiveKinds.includes('transcript');
+        const wantSummary    = effectiveKinds.includes('summary');
+        const rawTranscript = (window.currentSegments || [])
+            .map(s => String((s && s.text) || '').trim())
+            .filter(Boolean)
+            .join('\n');
 
-        const doc = new Document({ sections: [{ properties: {}, children: children }] });
-        Packer.toBlob(doc).then(blob => saveAs(blob, `${baseName}.docx`));
+        const _exportKind = async (kind, dlName) => {
+            if (typeof showStatus === 'function') showStatus(
+                kind === 'summary' ? 'מייצר סיכום…' : 'מייצר תמלול…', false, { duration: 10000 }
+            );
+            const res = await fetch('/api/export_docx', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind,
+                    text: rawTranscript,
+                    segments: window.currentSegments || [],
+                    formatted: window.currentFormattedDoc || undefined,
+                    filename: docBase
+                })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || res.statusText || 'export failed');
+            }
+            const blob = await res.blob();
+            saveAs(blob, dlName);
+        };
+
+        try {
+            if (wantTranscript) await _exportKind('transcript', `${docBase}.docx`);
+            if (wantSummary)    await _exportKind('summary',    `${docBase}_summary.docx`);
+        } catch (e) {
+            console.error('[docx] export_docx failed:', e);
+            if (typeof showStatus === 'function') showStatus('שגיאה בייצוא: ' + e.message, true);
+        }
     } else if (type === 'srt') {
         const segs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(window.currentSegments, 0.5) : window.currentSegments;
         const content = typeof srtFromCues === 'function' ? srtFromCues(segs) : '';
@@ -2107,30 +2235,42 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (dBtn && dMenu) {
         const downloadMenuParent = dMenu.parentElement;
-        const PORTAL_ID = 'qs-download-menu-portal';
-        function isMobileViewport() { return window.innerWidth <= 768; }
         function positionDownloadMenuOpen() {
-            if (!isMobileViewport()) return;
-            // Portal: full-viewport layer so menu is never covered by transcript (stacking/overflow)
-            let portal = document.getElementById(PORTAL_ID);
-            if (!portal) {
-                portal = document.createElement('div');
-                portal.id = PORTAL_ID;
-                portal.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
-                document.body.appendChild(portal);
+            // Keep menu constrained inside the transcript wrapper rectangle.
+            const wrap = document.querySelector('.transcription-wrapper');
+            if (wrap && dMenu.parentElement !== wrap) {
+                wrap.appendChild(dMenu);
             }
-            if (dMenu.parentElement !== portal) {
-                portal.appendChild(dMenu);
-            }
-            dMenu.style.position = 'fixed';
-            dMenu.style.zIndex = '2147483647';
+            dMenu.style.position = 'absolute';
+            dMenu.style.zIndex = '220';
             dMenu.style.pointerEvents = 'auto';
             function place() {
-                const rect = dBtn.getBoundingClientRect();
+                const host = document.querySelector('.transcription-wrapper') || downloadMenuParent;
+                if (!host) return;
+                const hostRect = host.getBoundingClientRect();
+                const btnRect = dBtn.getBoundingClientRect();
+                const pad = 8;
+                const maxW = Math.max(240, hostRect.width - (pad * 2));
+                dMenu.style.maxWidth = `${maxW}px`;
+                const w = Math.min(dMenu.offsetWidth || 320, maxW);
                 const h = dMenu.offsetHeight || 120;
-                dMenu.style.top = Math.max(8, rect.top - h - 6) + 'px';
-                dMenu.style.right = (window.innerWidth - rect.right) + 'px';
-                dMenu.style.left = 'auto';
+                const preferredLeft = (btnRect.right - hostRect.left) - w;
+                const maxLeft = Math.max(pad, hostRect.width - w - pad);
+                const left = Math.min(Math.max(pad, preferredLeft), maxLeft);
+
+                // Prefer below the toolbar button; fallback above when needed.
+                const belowTop = (btnRect.bottom - hostRect.top) + 6;
+                const aboveTop = (btnRect.top - hostRect.top) - h - 6;
+                const maxTop = Math.max(pad, hostRect.height - h - pad);
+                let top = belowTop;
+                if ((belowTop + h) > (hostRect.height - pad)) {
+                    top = aboveTop >= pad ? aboveTop : maxTop;
+                }
+                top = Math.min(Math.max(pad, top), maxTop);
+
+                dMenu.style.left = `${left}px`;
+                dMenu.style.top = `${top}px`;
+                dMenu.style.right = 'auto';
                 dMenu.style.bottom = 'auto';
             }
             place();
@@ -2144,12 +2284,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             dMenu.style.right = '';
             dMenu.style.left = '';
             dMenu.style.bottom = '';
-            if (downloadMenuParent && dMenu.parentElement?.id === PORTAL_ID) {
+            dMenu.style.maxWidth = '';
+            if (downloadMenuParent && dMenu.parentElement !== downloadMenuParent) {
                 downloadMenuParent.appendChild(dMenu);
-            }
-            const portal = document.getElementById(PORTAL_ID);
-            if (portal && portal.children.length === 0) {
-                portal.remove();
             }
         }
         dBtn.onclick = function(e) {
@@ -2157,6 +2294,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             e.stopPropagation();
             const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
             if (isHidden) {
+                const movieInput = document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="movie"]');
+                if (movieInput) {
+                    const label = movieInput.closest('.export-check-item');
+                    const hasVideo = Boolean(window.uploadWasVideo);
+                    movieInput.disabled = !hasVideo;
+                    if (!hasVideo) movieInput.checked = false;
+                    if (label) label.classList.toggle('is-disabled', !hasVideo);
+                }
                 dMenu.style.display = 'flex';
                 dMenu.classList.add('show');
                 positionDownloadMenuOpen();
@@ -2175,6 +2320,81 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    let selectedDocFormat = 'docx';
+    const closeDownloadMenu = () => {
+        const menu = document.getElementById('download-menu');
+        if (menu) {
+            menu.style.display = 'none';
+            menu.classList.remove('show');
+            menu.style.position = '';
+            menu.style.zIndex = '';
+            menu.style.pointerEvents = '';
+            menu.style.top = '';
+            menu.style.right = '';
+            menu.style.left = '';
+            menu.style.bottom = '';
+            menu.style.maxWidth = '';
+            const parent = document.getElementById('btn-download')?.parentElement;
+            if (parent && menu.parentElement !== parent) {
+                parent.appendChild(menu);
+            }
+        }
+    };
+    const getSelectedDocxKinds = () => {
+        const checked = Array.from(document.querySelectorAll('#docx-submenu .export-doc-choice:checked'))
+            .map((el) => (el.getAttribute('data-docx-kind') || '').toLowerCase())
+            .filter((k) => k === 'transcript' || k === 'summary');
+        return checked;
+    };
+    const getSelectedExtraKinds = () => {
+        return Array.from(document.querySelectorAll('#docx-submenu .export-extra-choice:checked'))
+            .map((el) => (el.getAttribute('data-export-kind') || '').toLowerCase())
+            .filter((k) => k === 'srt' || k === 'vtt' || k === 'movie');
+    };
+    const updateMovieGenerateAvailability = () => {
+        const movieInput = document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="movie"]');
+        if (!movieInput) return;
+        const label = movieInput.closest('.export-check-item');
+        const hasVideo = Boolean(window.uploadWasVideo);
+        movieInput.disabled = !hasVideo;
+        if (!hasVideo) movieInput.checked = false;
+        if (label) label.classList.toggle('is-disabled', !hasVideo);
+    };
+    document.querySelectorAll('#docx-submenu .export-format-choice').forEach((btn) => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            selectedDocFormat = this.getAttribute('data-format') || 'docx';
+            document.querySelectorAll('#docx-submenu .export-format-choice').forEach((it) => {
+                it.classList.toggle('is-selected', it === this);
+            });
+        });
+    });
+    const docExportBtn = document.querySelector('#docx-submenu [data-type="generate-export"]');
+    if (docExportBtn) {
+        docExportBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const selectedDocKinds = getSelectedDocxKinds();
+            const selectedExtraKinds = getSelectedExtraKinds();
+            if (!selectedDocKinds.length && !selectedExtraKinds.length) {
+                if (typeof showStatus === 'function') showStatus('Select at least one output to generate.', true);
+                return;
+            }
+            if (selectedDocKinds.length && selectedDocFormat !== 'docx') {
+                if (typeof showStatus === 'function') showStatus('Only DOCX is available right now for this export.', true);
+                return;
+            }
+            closeDownloadMenu();
+            if (selectedDocKinds.length) {
+                window.downloadFile('docx', null, { docxKinds: selectedDocKinds });
+            }
+            selectedExtraKinds.forEach((kind) => {
+                window.downloadFile(kind, null, {});
+            });
+        });
+    }
+    updateMovieGenerateAvailability();
     document.querySelectorAll('.dropdown-item').forEach(btn => {
         btn.addEventListener('click', function(e) {
             try {
@@ -2182,26 +2402,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 e.stopPropagation();
             } catch (_) {}
             const type = this.getAttribute('data-type');
-            const menu = document.getElementById('download-menu');
-            if (menu) {
-                menu.style.display = 'none';
-                menu.classList.remove('show');
-                menu.style.position = '';
-                menu.style.zIndex = '';
-                menu.style.pointerEvents = '';
-                menu.style.top = '';
-                menu.style.right = '';
-                menu.style.left = '';
-                menu.style.bottom = '';
-                const parent = document.getElementById('btn-download')?.parentElement;
-                if (parent && menu.parentElement?.id === 'qs-download-menu-portal') {
-                    parent.appendChild(menu);
-                }
-                const portal = document.getElementById('qs-download-menu-portal');
-                if (portal) portal.remove();
-            }
+            closeDownloadMenu();
             console.log("🖱️ User requested export:", type);
-            window.downloadFile(type);
+            window.downloadFile(type, null, {});
         });
     });
 
@@ -2369,6 +2572,7 @@ function resetScreenToInitial() {
     if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
     window.fakeProgressInterval = null;
     window.currentSegments = [];
+    window.currentFormattedDoc = null;
     setSeoHomeContentVisibility(true);
 
     const placeholder = document.getElementById('placeholder');
@@ -2602,6 +2806,7 @@ document.addEventListener('DOMContentLoaded', () => {
         hideProgressBar();
 
         const output = rawResult.result || rawResult.output || rawResult;
+        window.currentFormattedDoc = extractFormattedFromJobPayload(rawResult) || null;
         const jobStatus = String(rawResult.status || (output && output.status) || '').toLowerCase();
         const jobError = String(rawResult.error || (output && output.error) || '').trim();
         const isFailedJob = jobStatus === 'failed' || !!jobError;
@@ -2667,6 +2872,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isFailedJob) {
             window.currentSegments = [];
+            window.currentFormattedDoc = null;
             setTranscriptActionButtonsVisible(false);
             if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
             const transcriptWindow = document.getElementById('transcript-window');
@@ -2713,6 +2919,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let translationMeta = null;
         let translatedCount = 0;
         let changedCount = 0;
+        let userLang = 'he';
         try {
             const T = typeof window.t === 'function' ? window.t : (k) => k;
             const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
@@ -2720,7 +2927,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 mainBtn.disabled = true;
                 mainBtn.innerText = processingLabel + ' ' + GPT_PHASE_BASE_PCT + '%';
             }
-            const userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
+            userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
             const chunks = [];
             for (let i = 0; i < window.currentSegments.length; i += TRANSLATE_CHUNK_SIZE) {
                 chunks.push(window.currentSegments.slice(i, i + TRANSLATE_CHUNK_SIZE));
@@ -2797,6 +3004,35 @@ document.addEventListener('DOMContentLoaded', () => {
             console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
         }
 
+        // One-time doc formatting pass (clean transcript + summary), reused by all exports.
+        try {
+            const fullText = (window.currentSegments || [])
+                .map((s) => String((s && s.text) || '').trim())
+                .filter(Boolean)
+                .join('\n');
+            if (fullText) {
+                const fmtRes = await fetch('/api/format_transcript_summary', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: fullText, target_lang: userLang || 'he' })
+                });
+                if (fmtRes.ok) {
+                    const fmt = await fmtRes.json();
+                    if (fmt && typeof fmt === 'object') {
+                        window.currentFormattedDoc = {
+                            clean_transcript: String(fmt.clean_transcript || '').trim(),
+                            overview: String(fmt.overview || '').trim(),
+                            key_points: Array.isArray(fmt.key_points)
+                                ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                                : []
+                        };
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[GPT] format_transcript_summary failed, export will fallback:', e);
+        }
+
         // Ensure global segments are set (already handled above); keep legacy flow happy.
         const gptPostProcessed = (
             (translationMeta && Number(translationMeta.ok_count || 0) > 0 && Number(translationMeta.error_count || 0) === 0) ||
@@ -2820,6 +3056,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 segments: window.currentSegments,
                                 words: window.currentWords || undefined,
                                 captions: window.currentCaptions || undefined,
+                                formatted: window.currentFormattedDoc || undefined,
                                 stage: 'gpt'
                             })
                         });

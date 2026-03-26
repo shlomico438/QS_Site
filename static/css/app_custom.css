@@ -623,7 +623,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     display: none;
     flex-direction: column;
-    min-width: 140px;
+    width: clamp(280px, 86vw, 380px);
+    min-width: 0;
+    max-width: calc(100vw - 24px);
     z-index: 100;
 }
 
@@ -657,13 +659,211 @@ input:checked + .slider:before { transform: translateX(16px); }
     cursor: pointer;
     border: none;
     background: none;
-    text-align: left;
+    text-align: right;
     width: 100%;
+}
+
+#download-menu {
+    direction: rtl;
 }
 
 .dropdown-item:hover {
     background: #f0f0ff;
     color: #5d5dff;
+}
+
+.export-panel-card {
+    margin: 8px;
+    padding: 14px 16px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+    direction: rtl;
+    text-align: right;
+}
+
+.export-panel-section {
+    margin-bottom: 14px;
+}
+
+.export-panel-section--inline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.export-panel-section--inline .export-panel-label {
+    margin-bottom: 0;
+    white-space: nowrap;
+}
+
+.export-panel-section--inline .export-format-group {
+    flex: 1;
+}
+
+.export-panel-label {
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 8px;
+}
+
+.export-check-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-direction: row-reverse;
+    justify-content: flex-end;
+    cursor: pointer;
+    user-select: none;
+    margin-bottom: 8px;
+}
+
+.export-check-item:last-child {
+    margin-bottom: 0;
+}
+
+.export-check-item.is-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.export-check-item.is-disabled .export-check-ui {
+    border-color: #d1d5db;
+    box-shadow: none !important;
+}
+
+.export-check-item input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.export-check-ui {
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+    border: 1.6px solid #cbd5e1;
+    background: #fff;
+    position: relative;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+}
+
+.export-check-item:hover .export-check-ui {
+    border-color: #818cf8;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+.export-check-item input:checked + .export-check-ui {
+    background: #4f46e5;
+    border-color: #4f46e5;
+}
+
+.export-check-item input:checked + .export-check-ui::after {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 1px;
+    width: 5px;
+    height: 10px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+.export-check-text {
+    font-size: 0.9rem;
+    color: #111827;
+}
+
+.export-format-group {
+    display: flex;
+    gap: 6px;
+    direction: ltr;
+}
+
+.export-format-choice {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 28px;
+    padding: 0 6px;
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    color: #334155;
+    font-weight: 600;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.export-format-choice:hover {
+    border-color: #818cf8;
+    color: #4338ca;
+}
+
+.export-format-choice.is-selected {
+    background: #4f46e5;
+    border-color: #4f46e5;
+    color: #fff;
+}
+
+.dropdown-submenu {
+    display: flex;
+    flex-direction: column;
+    margin: 2px 0 6px 0;
+    padding-left: 12px;
+}
+
+.dropdown-subitem {
+    font-size: 13px;
+    color: #374151;
+    text-align: left;
+}
+
+.dropdown-subitem.is-checked {
+    font-weight: 600;
+}
+
+.dropdown-section-title {
+    padding: 10px 15px 6px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #111827;
+}
+
+.dropdown-submenu-title {
+    padding: 6px 15px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #4b5563;
+}
+
+.dropdown-item[disabled] {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.export-docx-btn {
+    width: 100%;
+    height: 40px;
+    margin-top: 0;
+    border-radius: 10px;
+    border: 1px solid #4338ca;
+    background: #4f46e5;
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.92rem;
+    text-align: center;
+}
+
+.export-docx-btn:hover {
+    background: #4338ca;
+    border-color: #3730a3;
+    color: #fff;
 }
 
 /* --- BAR-GRAPH (PROGRESS BAR) --- */
@@ -929,8 +1129,7 @@ html[dir="rtl"] .upload-status {
         justify-content: stretch;
         width: 100%;
         max-width: 100%;
-        overflow-x: hidden;
-        overflow-x: clip;
+        overflow: visible;
         box-sizing: border-box;
         touch-action: pan-y;
     }
@@ -957,8 +1156,7 @@ html[dir="rtl"] .upload-status {
         flex-wrap: wrap;
         width: 100%;
         max-width: 100%;
-        overflow-x: hidden;
-        overflow-x: clip;
+        overflow: visible;
     }
     .toolbar-group > * {
         flex: 0 0 auto;

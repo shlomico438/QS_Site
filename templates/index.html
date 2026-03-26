@@ -138,10 +138,56 @@
                     <div style="position: relative;">
                         <button class="btn-icon" id="btn-download" data-i18n-title="download" title="Download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>
                         <div class="dropdown-menu" id="download-menu">
-                            <button class="dropdown-item" data-type="docx" data-i18n="word_docx">Word (.docx)</button>
-                            <button class="dropdown-item" data-type="srt" data-i18n="subtitles_srt">Subtitles (.srt)</button>
-                            <button class="dropdown-item" data-type="vtt" data-i18n="web_vtt">Web VTT (.vtt)</button>
-                            <button class="dropdown-item" data-type="movie" data-i18n="movie_download">Movie download</button>
+                            <div class="export-panel-card" id="docx-submenu">
+
+                                <div class="export-panel-section">
+                                    <div class="export-panel-label">מסמכים</div>
+                                    <label class="export-check-item">
+                                        <input class="export-doc-choice" type="checkbox" data-docx-kind="transcript" checked>
+                                        <span class="export-check-ui" aria-hidden="true"></span>
+                                        <span class="export-check-text">תמלול</span>
+                                    </label>
+                                    <label class="export-check-item">
+                                        <input class="export-doc-choice" type="checkbox" data-docx-kind="summary">
+                                        <span class="export-check-ui" aria-hidden="true"></span>
+                                        <span class="export-check-text">סיכום</span>
+                                    </label>
+                                </div>
+
+                                <div class="export-panel-section export-panel-section--inline">
+                                    <div class="export-panel-label">פורמט</div>
+                                    <div class="export-format-group" role="group" aria-label="Export format">
+                                        <button class="export-format-choice is-selected" type="button" data-format="docx">DOCX</button>
+                                        <button class="export-format-choice" type="button" data-format="txt">TXT</button>
+                                        <button class="export-format-choice" type="button" data-format="pdf">PDF</button>
+                                    </div>
+                                </div>
+
+                                <div class="export-panel-section">
+                                    <div class="export-panel-label">כתוביות</div>
+                                    <label class="export-check-item">
+                                        <input class="export-extra-choice" type="checkbox" data-export-kind="srt">
+                                        <span class="export-check-ui" aria-hidden="true"></span>
+                                        <span class="export-check-text">SRT</span>
+                                    </label>
+                                    <label class="export-check-item">
+                                        <input class="export-extra-choice" type="checkbox" data-export-kind="vtt">
+                                        <span class="export-check-ui" aria-hidden="true"></span>
+                                        <span class="export-check-text">VTT</span>
+                                    </label>
+                                </div>
+
+                                <div class="export-panel-section">
+                                    <div class="export-panel-label">וידאו</div>
+                                    <label class="export-check-item">
+                                        <input class="export-extra-choice" type="checkbox" data-export-kind="movie">
+                                        <span class="export-check-ui" aria-hidden="true"></span>
+                                        <span class="export-check-text">יצירת וידאו</span>
+                                    </label>
+                                </div>
+
+                                <button class="export-docx-btn" type="button" data-type="generate-export">יצירה</button>
+                            </div>
                         </div>
                     </div>
                     <button class="btn-icon" id="btn-copy" onclick="window.copyTranscript()" data-i18n-title="copy" title="Copy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>
