@@ -1,5 +1,31 @@
 import { supabase } from './supabaseClient.js'
 
+// Console gate:
+// - Default ON for localhost (dev), OFF for non-local hosts (production-like).
+// - Override via localStorage key `qs_console`:
+//     '1' => force enable, '0' => force disable.
+(() => {
+    let enabled = false;
+    try {
+        const forced = String(localStorage.getItem('qs_console') || '').trim();
+        if (forced === '1') enabled = true;
+        else if (forced === '0') enabled = false;
+        else {
+            const host = String(window.location && window.location.hostname || '').toLowerCase();
+            enabled = (host === 'localhost' || host === '127.0.0.1');
+        }
+    } catch (_) {
+        enabled = false;
+    }
+    window.__QS_CONSOLE_ENABLED = enabled;
+    if (!enabled && window.console) {
+        console.log = () => {};
+        console.info = () => {};
+        console.debug = () => {};
+        console.warn = () => {};
+    }
+})();
+
 // --- GLOBAL STATE ---
 window.isTriggering = false;
 window.aiDiarizationRan = false;
