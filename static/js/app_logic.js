@@ -2267,6 +2267,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             dMenu.style.pointerEvents = 'auto';
             function place() {
                 if (isMobile) {
+                    if (dMenu.parentElement !== document.body) {
+                        document.body.appendChild(dMenu);
+                    }
                     dMenu.classList.add('is-mobile-overlay');
                     const backdrop = ensureMobileMenuBackdrop();
                     if (backdrop) backdrop.classList.add('show');
