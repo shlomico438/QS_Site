@@ -1551,13 +1551,21 @@ def api_export_docx():
             return jsonify({"error": "No transcript text provided"}), 400
 
         # Prefer precomputed formatting from saved JSON/session to avoid GPT on each export.
+        format_source = 'precomputed'
+        allow_gpt_fallback = bool(data.get('allow_gpt_fallback'))
         fmt = data.get('formatted') if isinstance(data.get('formatted'), dict) else None
         if not isinstance(fmt, dict):
-            try:
-                fmt = _format_transcript_and_summary_via_openai(raw_text, target_lang='he')
-            except Exception as ai_err:
-                logging.warning("export_docx: AI format failed (%s), using raw text", ai_err)
+            if allow_gpt_fallback:
+                try:
+                    fmt = _format_transcript_and_summary_via_openai(raw_text, target_lang='he')
+                    format_source = 'gpt_fallback'
+                except Exception as ai_err:
+                    logging.warning("export_docx: AI format failed (%s), using raw text", ai_err)
+                    fmt = {'clean_transcript': raw_text, 'overview': '', 'key_points': []}
+                    format_source = 'raw_no_gpt'
+            else:
                 fmt = {'clean_transcript': raw_text, 'overview': '', 'key_points': []}
+                format_source = 'raw_no_gpt'
 
         if kind == 'summary':
             overview   = str(fmt.get('overview') or '').strip()
@@ -1580,12 +1588,14 @@ def api_export_docx():
         from flask import send_file
         out = BytesIO(docx_bytes)
         out.seek(0)
-        return send_file(
+        resp = send_file(
             out,
             as_attachment=True,
             download_name=dl_name,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
+        resp.headers['X-Docx-Format-Source'] = format_source
+        return resp
     except Exception as e:
         logging.exception("export_docx failed: %s", e)
         return jsonify({"error": str(e)}), 500

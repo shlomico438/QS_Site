@@ -2124,6 +2124,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             if (typeof showStatus === 'function') showStatus(
                 kind === 'summary' ? 'מייצר סיכום…' : 'מייצר תמלול…', false, { duration: 10000 }
             );
+            const t0 = performance.now();
             const res = await fetch('/api/export_docx', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2132,6 +2133,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     text: rawTranscript,
                     segments: window.currentSegments || [],
                     formatted: window.currentFormattedDoc || undefined,
+                    allow_gpt_fallback: false,
                     filename: docBase
                 })
             });
@@ -2139,6 +2141,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 const err = await res.json().catch(() => ({}));
                 throw new Error(err.error || res.statusText || 'export failed');
             }
+            const src = res.headers.get('X-Docx-Format-Source') || 'unknown';
+            console.log(`[docx] export source=${src} kind=${kind} took=${Math.round(performance.now() - t0)}ms`);
             const blob = await res.blob();
             saveAs(blob, dlName);
         };
@@ -2720,6 +2724,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const mainAudio = document.getElementById('main-audio');
     setTranscriptActionButtonsVisible(false);
 
+    function setDiarizationBusyState(isBusy) {
+        if (!diarizationToggle) return;
+        diarizationToggle.disabled = !!isBusy;
+        if (diarizationToggle.parentElement) {
+            diarizationToggle.parentElement.style.opacity = isBusy ? "0.6" : "1";
+        }
+    }
+
     function openFilePickerAfterDisclaimer() {
         resetScreenToInitial();
         if (fileInput) fileInput.click();
@@ -2815,6 +2827,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // Set initial state
     syncSpeakerControls();
+    setDiarizationBusyState(!!window.isTriggering);
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
     window.handleJobUpdate = async function(rawResult) {
         const jobId = rawResult.jobId || (rawResult.output && rawResult.output.jobId) || (rawResult.result && rawResult.result.jobId);
@@ -2832,6 +2845,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 1. CLEAR OVERLAYS & STOP PROGRESS
         window.isTriggering = false;
+        setDiarizationBusyState(false);
         setSeoHomeContentVisibility(false);
         localStorage.removeItem('activeJobId');
         if (window.fakeProgressInterval) {
@@ -2922,6 +2936,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 transcriptWindow.setAttribute('contenteditable', 'false');
             }
             if (typeof showStatus === 'function') showStatus(safeErr, true);
+            setDiarizationBusyState(false);
             return;
         }
 
@@ -3067,6 +3082,29 @@ document.addEventListener('DOMContentLoaded', () => {
                             ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                             : []
                     };
+                    // Persist formatted payload so future exports can use cached formatting.
+                    (async () => {
+                        try {
+                            const { data: { user } } = await supabase.auth.getUser();
+                            const s3Key = localStorage.getItem('lastS3Key');
+                            if (!user || !s3Key || !(window.currentSegments || []).length) return;
+                            await fetch('/api/save_job_result', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    userId: user.id,
+                                    input_s3_key: s3Key,
+                                    segments: window.currentSegments,
+                                    words: window.currentWords || undefined,
+                                    captions: window.currentCaptions || undefined,
+                                    formatted: window.currentFormattedDoc,
+                                    stage: 'gpt'
+                                })
+                            });
+                        } catch (e) {
+                            console.warn('[GPT] save formatted payload failed:', e);
+                        }
+                    })();
                 })
                 .catch((e) => {
                     console.warn('[GPT] format_transcript_summary failed (background), export will fallback:', e);
@@ -4187,6 +4225,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             mainBtn.disabled = false;
                             mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
                         }
+                        setDiarizationBusyState(false);
                         hideProgressBar();
                         if (typeof showStatus === 'function') showStatus('JSON transcript loaded locally.', false, { duration: 5000 });
                     } catch (e) {
@@ -4251,6 +4290,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (progressBar) { progressBar.style.width = "0%"; }
             const uploadLabel = ((typeof window.t === 'function' ? window.t('downloading') : "Downloading...") || '').replace(/\.\.\.?$/, '');
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
+            setDiarizationBusyState(true);
             if (statusTxt) statusTxt.style.display = "none";
             setTranscriptActionButtonsVisible(false);
             var placeholderEl = document.getElementById('placeholder');
@@ -4315,6 +4355,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
                         console.log("✅ File uploaded to S3.");
                         window.isTriggering = true;
+                        setDiarizationBusyState(true);
                         window._triggerRetriedForJobId = null; // allow one auto-retry if trigger gets stuck
                         const dbId = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
@@ -4341,6 +4382,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 const dbId2 = localStorage.getItem('lastJobDbId');
                                 if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                 window.isTriggering = false;
+                                setDiarizationBusyState(false);
                                 localStorage.removeItem('activeJobId');
                                 hideProgressBar();
                                 if (mainBtn) mainBtn.disabled = false;
@@ -4375,6 +4417,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     console.log("❌ Trigger not confirmed:", ts.status);
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
+                                    setDiarizationBusyState(false);
                                     hideProgressBar();
                                     const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
                                     showTriggerErrorDialog(msg, {
@@ -4392,6 +4435,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     console.log("❌ Trigger confirmation timeout");
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
+                                    setDiarizationBusyState(false);
                                     if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
                                     localStorage.removeItem('activeJobId');
                                     hideProgressBar();
@@ -4414,6 +4458,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             const dbId2 = localStorage.getItem('lastJobDbId');
                             if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                             window.isTriggering = false;
+                            setDiarizationBusyState(false);
                             localStorage.removeItem('activeJobId');
                             hideProgressBar();
                             if (mainBtn) mainBtn.disabled = false;
@@ -4424,6 +4469,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const dbId = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                         window.isTriggering = false;
+                        setDiarizationBusyState(false);
                         localStorage.removeItem('activeJobId');
                         hideProgressBar();
                         if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
@@ -4435,6 +4481,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     const dbId = localStorage.getItem('lastJobDbId');
                     if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                     window.isTriggering = false;
+                    setDiarizationBusyState(false);
                     localStorage.removeItem('activeJobId');
                     hideProgressBar();
                 };
@@ -4445,6 +4492,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             catch (err) {
                 console.error("Upload Error:", err);
                 window.isTriggering = false;
+                setDiarizationBusyState(false);
                 localStorage.removeItem('activeJobId');
                 hideProgressBar();
                 if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
