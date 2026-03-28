@@ -3044,14 +3044,29 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
         raise RuntimeError("S3_BUCKET missing")
 
     output_s3_key, safe_name = _build_output_key(user_id, input_s3_key, task_id)
-    subtitle_s3_key = f"users/{user_id}/tmp/subtitles/{task_id}.srt"
-    max_chars = 14 if (subtitle_style == 'tiktok' and is_portrait) else (27 if subtitle_style == 'tiktok' else 9999)
-    subtitle_text = _segments_to_srt_text(segments, max_chars_per_line=max_chars)
+    has_custom_position = any(
+        isinstance((seg or {}).get('style'), dict) and str(((seg or {}).get('style') or {}).get('position') or '').strip().lower() in ('top', 'middle', 'bottom')
+        for seg in (segments or [])
+    )
+    has_word_highlights = any(
+        any(bool((w or {}).get('highlighted')) for w in (((seg or {}).get('words') or []) if isinstance(seg, dict) else []))
+        for seg in (segments or [])
+    )
+    prefer_ass = (subtitle_style in ('tiktok', 'clean', 'cinematic')) or has_custom_position or has_word_highlights
+    subtitle_ext = 'ass' if prefer_ass else 'srt'
+    subtitle_s3_key = f"users/{user_id}/tmp/subtitles/{task_id}.{subtitle_ext}"
+    if prefer_ass:
+        subtitle_text = _build_ass(segments, subtitle_style or 'tiktok', portrait=is_portrait)
+        subtitle_content_type = "text/x-ssa; charset=utf-8"
+    else:
+        max_chars = 14 if (subtitle_style == 'tiktok' and is_portrait) else (27 if subtitle_style == 'tiktok' else 9999)
+        subtitle_text = _segments_to_srt_text(segments, max_chars_per_line=max_chars)
+        subtitle_content_type = "application/x-subrip; charset=utf-8"
     s3_client.put_object(
         Bucket=bucket,
         Key=subtitle_s3_key,
         Body=subtitle_text.encode("utf-8"),
-        ContentType="application/x-subrip; charset=utf-8"
+        ContentType=subtitle_content_type
     )
 
     input_video_url = s3_client.generate_presigned_url(
@@ -3059,7 +3074,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
         Params={'Bucket': bucket, 'Key': input_s3_key},
         ExpiresIn=10800
     )
-    input_srt_url = s3_client.generate_presigned_url(
+    input_subtitle_url = s3_client.generate_presigned_url(
         'get_object',
         Params={'Bucket': bucket, 'Key': subtitle_s3_key},
         ExpiresIn=10800
@@ -3075,7 +3090,8 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
             "task": "burn_subtitles",
             "task_id": task_id,
             "input_video_url": input_video_url,
-            "input_srt_url": input_srt_url,
+            "input_srt_url": input_subtitle_url,
+            "input_subtitle_format": subtitle_ext,
             "output_upload_url": output_upload_url,
             "output_s3_key": output_s3_key,
             "subtitle_style": (subtitle_style or 'tiktok'),
@@ -3095,6 +3111,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
     burn_tasks[task_id] = {
         'status': 'processing',
         'mode': 'runpod',
+        'subtitle_format': subtitle_ext,
         'output_s3_key': output_s3_key,
         'subtitle_s3_key': subtitle_s3_key,
         'safe_name': safe_name
