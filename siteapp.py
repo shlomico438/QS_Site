@@ -25,6 +25,7 @@ import tempfile
 import threading
 import uuid
 import pathlib
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 from io import BytesIO
@@ -505,6 +506,42 @@ def get_presigned_url():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/s3_exists', methods=['POST'])
+def api_s3_exists():
+    """Check whether a given S3 key exists (without frontend hitting S3 and logging 404s)."""
+    try:
+        data = request.json or {}
+        s3_key = data.get('s3Key')
+        user_id = data.get('userId') or data.get('user_id')
+        if not s3_key:
+            return jsonify({"error": "No s3Key provided"}), 400
+
+        # Per-user keys: only allow access to users/{user_id}/...
+        if s3_key.startswith("users/"):
+            if not user_id:
+                return jsonify({"error": "userId required for user-scoped keys"}), 400
+            if not s3_key.startswith(f"users/{user_id}/"):
+                return jsonify({"error": "Access denied: key does not belong to user"}), 403
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION')
+        )
+        try:
+            s3_client.head_object(Bucket=os.environ.get('S3_BUCKET'), Key=s3_key)
+            return jsonify({"exists": True}), 200
+        except ClientError as ce:
+            code = str((ce.response or {}).get('Error', {}).get('Code', '')).strip()
+            if code in ('404', 'NoSuchKey', 'NotFound'):
+                return jsonify({"exists": False}), 200
+            raise
+    except Exception as e:
+        print(f"S3 exists error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 def _derive_output_key_base(user_id, input_s3_key):
     """Base path (without suffix) for storing transcript JSON derived from input_s3_key."""
     if not input_s3_key:
@@ -719,6 +756,160 @@ def save_job_result():
     except Exception as e:
         logging.exception("save_job_result failed")
         return jsonify({"error": str(e)}), 500
+
+
+def _supabase_service_headers(service_key):
+    return {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _delete_s3_keys_batch(keys):
+    keys = [str(k).strip() for k in (keys or []) if str(k).strip()]
+    if not keys:
+        return 0
+    bucket = os.environ.get('S3_BUCKET')
+    if not bucket:
+        return 0
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.environ.get('AWS_REGION')
+    )
+    deleted_count = 0
+    for i in range(0, len(keys), 1000):
+        chunk = keys[i:i + 1000]
+        try:
+            res = s3_client.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True}
+            )
+            deleted_count += len(res.get("Deleted") or [])
+        except Exception:
+            # Best effort cleanup; continue deleting DB row even if some objects fail.
+            continue
+    return deleted_count
+
+
+@app.route('/recording/<file_id>/rename', methods=['POST'])
+def recording_rename(file_id):
+    """Rename a recording display name (stored in jobs.metadata.display_name)."""
+    try:
+        data = request.json or {}
+        user_id = data.get('userId') or data.get('user_id')
+        new_name = str(data.get('new_name') or '').strip()
+        if not user_id or not file_id:
+            return jsonify({"error": "userId and file_id required"}), 400
+        if not new_name:
+            return jsonify({"error": "new_name is required"}), 400
+
+        supabase_url = os.environ.get('SUPABASE_URL', '').rstrip('/')
+        service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+        if not supabase_url or not service_key:
+            return jsonify({"error": "Server not configured for rename"}), 503
+
+        headers = _supabase_service_headers(service_key)
+        get_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}&select=id,metadata"
+        r_get = requests.get(get_url, headers=headers, timeout=12)
+        if r_get.status_code != 200:
+            return jsonify({"error": r_get.text or f"HTTP {r_get.status_code}"}), r_get.status_code
+        rows = r_get.json() if r_get.text else []
+        if not rows:
+            return jsonify({"error": "Recording not found"}), 404
+
+        metadata = rows[0].get('metadata') if isinstance(rows[0].get('metadata'), dict) else {}
+        metadata['display_name'] = new_name
+        patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}"
+        payload = {"metadata": metadata, "updated_at": datetime.utcnow().isoformat() + "Z"}
+        r_patch = requests.patch(patch_url, headers={**headers, "Prefer": "return=representation"}, json=payload, timeout=12)
+        if r_patch.status_code not in (200, 204):
+            return jsonify({"error": r_patch.text or f"HTTP {r_patch.status_code}"}), r_patch.status_code
+
+        return jsonify({"ok": True, "file_id": file_id, "file_name": new_name}), 200
+    except Exception as e:
+        logging.exception("recording_rename failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/recording/<file_id>', methods=['DELETE'])
+def recording_delete(file_id):
+    """Delete recording row and related S3 artifacts (input/transcript/raw/exports by derived prefix)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        user_id = data.get('userId') or data.get('user_id')
+        if not user_id or not file_id:
+            return jsonify({"error": "userId and file_id required"}), 400
+
+        supabase_url = os.environ.get('SUPABASE_URL', '').rstrip('/')
+        service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+        if not supabase_url or not service_key:
+            return jsonify({"error": "Server not configured for delete"}), 503
+        headers = _supabase_service_headers(service_key)
+
+        get_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}&select=id,input_s3_key,result_s3_key,metadata"
+        r_get = requests.get(get_url, headers=headers, timeout=15)
+        if r_get.status_code != 200:
+            return jsonify({"error": r_get.text or f"HTTP {r_get.status_code}"}), r_get.status_code
+        rows = r_get.json() if r_get.text else []
+        if not rows:
+            return jsonify({"error": "Recording not found"}), 404
+        row = rows[0]
+
+        input_key = str(row.get('input_s3_key') or '').strip()
+        result_key = str(row.get('result_s3_key') or '').strip()
+        metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
+        keys_to_delete = set()
+        if input_key:
+            keys_to_delete.add(input_key)
+        if result_key:
+            keys_to_delete.add(result_key)
+        for k in ('result_s3_key', 'resultS3Key', 'raw_result_s3_key', 'rawResultS3Key', 'output_s3_key', 'outputS3Key'):
+            vv = str(metadata.get(k) or '').strip()
+            if vv:
+                keys_to_delete.add(vv)
+
+        # Remove all artifacts sharing the derived output base prefix.
+        if input_key:
+            try:
+                bucket = os.environ.get('S3_BUCKET')
+                if bucket:
+                    s3_client = boto3.client(
+                        's3',
+                        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                        region_name=os.environ.get('AWS_REGION')
+                    )
+                    base = _derive_output_key_base(user_id, input_key)
+                    token = None
+                    while True:
+                        kwargs = {'Bucket': bucket, 'Prefix': base}
+                        if token:
+                            kwargs['ContinuationToken'] = token
+                        res = s3_client.list_objects_v2(**kwargs)
+                        for obj in (res.get('Contents') or []):
+                            kk = str((obj or {}).get('Key') or '').strip()
+                            if kk:
+                                keys_to_delete.add(kk)
+                        if not res.get('IsTruncated'):
+                            break
+                        token = res.get('NextContinuationToken')
+            except Exception:
+                pass
+
+        deleted_s3 = _delete_s3_keys_batch(list(keys_to_delete))
+
+        del_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}"
+        r_del = requests.delete(del_url, headers={**headers, "Prefer": "return=representation"}, timeout=15)
+        if r_del.status_code not in (200, 204):
+            return jsonify({"error": r_del.text or f"HTTP {r_del.status_code}", "deleted": False}), r_del.status_code
+
+        return jsonify({"deleted": True, "deleted_s3_objects": deleted_s3}), 200
+    except Exception as e:
+        logging.exception("recording_delete failed")
+        return jsonify({"error": str(e), "deleted": False}), 500
 
 
 @app.route('/api/delete_job', methods=['POST'])

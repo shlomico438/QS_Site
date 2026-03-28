@@ -968,7 +968,7 @@ async function initPersonalPage() {
     wrap.style.display = 'block';
     const { data: jobs, error } = await supabase
         .from('jobs')
-        .select('id, created_at, input_s3_key, result_s3_key, result, runpod_job_id, metadata')
+        .select('id, created_at, input_s3_key, result_s3_key, runpod_job_id, metadata')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
@@ -985,13 +985,6 @@ async function initPersonalPage() {
         const raw = decodeURIComponent((key.split('/').pop() || key));
         return raw.replace(/^job_\d+_/, '') || raw;
     };
-    const isUploadedToS3 = (job) => {
-        const uploadStatus = job && job.metadata && typeof job.metadata === 'object'
-            ? String(job.metadata.upload_status || '').trim().toLowerCase()
-            : '';
-        if (uploadStatus) return uploadStatus === 'uploaded_to_s3';
-        return !!String((job && job.input_s3_key) || '').trim();
-    };
     const formatDate = (iso) => {
         try {
             const d = new Date(iso);
@@ -1001,6 +994,16 @@ async function initPersonalPage() {
             return String(iso || '');
         }
     };
+    const formatDuration = (seconds) => {
+        const s = Number(seconds);
+        if (!Number.isFinite(s) || s <= 0) return '';
+        if (s < 60) return `${Math.round(s)} sec`;
+        const mins = Math.floor(s / 60);
+        if (mins < 60) return `${mins} min`;
+        const hrs = Math.floor(mins / 60);
+        const rem = mins % 60;
+        return rem ? `${hrs} hr ${rem} min` : `${hrs} hr`;
+    };
     const deriveResultJsonKey = (inputKey) => {
         const s = String(inputKey || '').trim();
         if (!s) return '';
@@ -1008,47 +1011,53 @@ async function initPersonalPage() {
         return s.replace(/\.[^/.]+$/i, '.json');
     };
     const canProbeKeyForUser = (key) => String(key || '').startsWith(`users/${user.id}/`);
+    const extractDurationSeconds = (job) => {
+        const md = (job && job.metadata && typeof job.metadata === 'object') ? job.metadata : {};
+        const vals = [
+            md.duration_seconds, md.duration_sec, md.duration,
+            md.media_duration_seconds, md.media_duration_sec, md.media_duration,
+            md.ffprobe_duration_seconds, md.ffprobe_duration,
+            md.video_duration_seconds, md.audio_duration_seconds
+        ];
+        for (const v of vals) {
+            const n = Number(v);
+            if (Number.isFinite(n) && n > 0) return n;
+        }
+        return null;
+    };
+    const isUploadedToS3 = (job) => {
+        const md = (job && job.metadata && typeof job.metadata === 'object') ? job.metadata : {};
+        const uploadStatus = String(md.upload_status || '').trim().toLowerCase();
+        if (uploadStatus) return uploadStatus === 'uploaded_to_s3';
+        return !!String((job && job.input_s3_key) || '').trim();
+    };
 
     const rows = (Array.isArray(jobs) ? jobs : [])
         .filter((job) => isUploadedToS3(job))
         .map((job) => {
+            const md = (job && job.metadata && typeof job.metadata === 'object') ? job.metadata : {};
             const resultKey = String(job.result_s3_key || '').trim();
-            const resultKeyMeta = String(
-                (job.metadata && (
-                    job.metadata.result_s3_key ||
-                    job.metadata.resultS3Key
-                )) || ''
-            ).trim();
-            const hasResultSegments = !!(job.result && Array.isArray(job.result.segments) && job.result.segments.length > 0);
-            const hasFormattedText = !!(job.result && job.result.formatted && String(job.result.formatted.clean_transcript || '').trim());
-            const transcriptExists = !!(resultKey || resultKeyMeta || hasResultSegments || hasFormattedText);
+            const resultKeyMeta = String(md.result_s3_key || md.resultS3Key || '').trim();
+            const transcriptExists = !!(resultKey || resultKeyMeta || md.transcript_exists === true);
             return {
                 file_id: job.id,
-                file_name: displayNameFromKey(job.input_s3_key),
+                file_name: String(md.display_name || '').trim() || displayNameFromKey(job.input_s3_key),
                 created_at: job.created_at,
+                duration_seconds: extractDurationSeconds(job),
                 transcript_exists: transcriptExists,
                 s3_key: job.input_s3_key,
                 runpod_job_id: job.runpod_job_id || null,
-                derived_result_key: deriveResultJsonKey(job.input_s3_key),
-                _debug: {
-                    result_s3_key: resultKey || null,
-                    metadata_result_s3_key: resultKeyMeta || null,
-                    has_result_segments: hasResultSegments,
-                    has_formatted_text: hasFormattedText,
-                    derived_result_key: deriveResultJsonKey(job.input_s3_key) || null
-                }
+                derived_result_key: deriveResultJsonKey(job.input_s3_key)
             };
         })
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-    // Merge duplicate uploads of the same recording name.
-    // If any duplicate has transcript, show one card with "Open" and route to that transcript-bearing job id.
     const grouped = new Map();
     const normName = (s) => String(s || '').trim().toLowerCase();
     rows.forEach((r) => {
         const key = normName(r.file_name);
-        const existing = grouped.get(key);
-        if (!existing) {
+        const ex = grouped.get(key);
+        if (!ex) {
             grouped.set(key, {
                 ...r,
                 _row_ids: [r.file_id],
@@ -1057,33 +1066,66 @@ async function initPersonalPage() {
             });
             return;
         }
-        existing._row_ids.push(r.file_id);
-        if (r.derived_result_key) existing._probe_keys.push(r.derived_result_key);
-        // Keep newest visible timestamp/name.
-        if (new Date(r.created_at).getTime() > new Date(existing.created_at).getTime()) {
-            existing.created_at = r.created_at;
-            existing.file_name = r.file_name;
-            if (r.s3_key) existing.s3_key = r.s3_key;
+        ex._row_ids.push(r.file_id);
+        if (r.derived_result_key) ex._probe_keys.push(r.derived_result_key);
+        if (!ex.duration_seconds && r.duration_seconds) ex.duration_seconds = r.duration_seconds;
+        if (new Date(r.created_at).getTime() > new Date(ex.created_at).getTime()) {
+            ex.created_at = r.created_at;
+            ex.file_name = r.file_name;
+            if (r.s3_key) ex.s3_key = r.s3_key;
         }
-        // If this row has transcript, prefer opening it (newest transcript row wins).
         if (r.transcript_exists) {
             const ts = new Date(r.created_at).getTime();
-            if (!existing.transcript_exists || ts >= (existing._open_row_ts || 0)) {
-                existing.file_id = r.file_id;
-                existing.runpod_job_id = r.runpod_job_id || existing.runpod_job_id;
-                existing._open_row_ts = ts;
+            if (!ex.transcript_exists || ts >= (ex._open_row_ts || 0)) {
+                ex.file_id = r.file_id;
+                ex.runpod_job_id = r.runpod_job_id || ex.runpod_job_id;
+                ex._open_row_ts = ts;
             }
         }
-        existing.transcript_exists = existing.transcript_exists || r.transcript_exists;
+        ex.transcript_exists = ex.transcript_exists || r.transcript_exists;
     });
 
-    const files = Array.from(grouped.values())
-        .sort((a, b) => {
-            if (a.transcript_exists !== b.transcript_exists) return a.transcript_exists ? 1 : -1;
-            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-        });
+    const files = Array.from(grouped.values()).sort((a, b) => {
+        if (a.transcript_exists !== b.transcript_exists) return a.transcript_exists ? 1 : -1;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
 
     let filtered = files.slice();
+    let openMenuId = null;
+    let renamingId = null;
+    let renameDraft = '';
+
+    const openDeleteConfirm = (fileName) => new Promise((resolve) => {
+        const existing = document.getElementById('recording-delete-overlay');
+        if (existing) existing.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'recording-delete-overlay';
+        overlay.className = 'personal-dialog-overlay';
+        overlay.innerHTML = `
+            <div class="personal-dialog" role="dialog" aria-modal="true">
+                <p class="personal-dialog-message">Delete recording?</p>
+                <p class="personal-delete-file-name">${escapeHtml(fileName)}</p>
+                <p class="personal-delete-subtitle">This will permanently remove:</p>
+                <ul class="personal-delete-list">
+                    <li>video file</li>
+                    <li>transcript</li>
+                    <li>subtitles</li>
+                    <li>exports</li>
+                </ul>
+                <div class="personal-dialog-actions">
+                    <button type="button" class="personal-dialog-btn cancel">Cancel</button>
+                    <button type="button" class="personal-dialog-btn primary danger">Delete</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
+        const delBtn = overlay.querySelector('.personal-dialog-btn.danger');
+        const done = (ok) => { overlay.remove(); resolve(ok); };
+        cancelBtn.onclick = () => done(false);
+        delBtn.onclick = () => done(true);
+        overlay.onclick = (e) => { if (e.target === overlay) done(false); };
+    });
 
     const render = () => {
         listEl.innerHTML = '';
@@ -1103,18 +1145,38 @@ async function initPersonalPage() {
             item.className = 'personal-recording-item';
             item.setAttribute('role', 'listitem');
             const actionLabel = file.transcript_exists ? 'Open' : 'Transcribe';
+            const dateText = formatDate(file.created_at);
+            const durText = formatDuration(file.duration_seconds);
+            const metaText = durText ? `${dateText} • ${durText}` : dateText;
+            const isRenaming = renamingId === file.file_id;
             item.innerHTML = `
                 <div class="personal-recording-main">
-                    <div class="personal-recording-name">🎬 ${escapeHtml(file.file_name)}</div>
-                    <div class="personal-recording-date">${escapeHtml(formatDate(file.created_at))}</div>
+                    ${isRenaming
+                        ? `<div class="personal-rename-inline">
+                                <input class="personal-rename-input" type="text" value="${escapeHtml(renameDraft || file.file_name)}" />
+                                <button type="button" class="personal-rename-save" title="Save">✔</button>
+                                <button type="button" class="personal-rename-cancel" title="Cancel">✖</button>
+                           </div>`
+                        : `<div class="personal-recording-name">🎬 ${escapeHtml(file.file_name)}</div>`
+                    }
+                    <div class="personal-recording-date">${escapeHtml(metaText)}</div>
                 </div>
-                <div class="personal-recording-action-wrap">
-                    <button type="button" class="personal-recording-action" data-id="${escapeHtml(file.file_id)}" data-open="${file.transcript_exists ? '1' : '0'}">${escapeHtml(actionLabel)}</button>
+                <div class="personal-recording-actions-row">
+                    <button type="button" class="personal-recording-action">${escapeHtml(actionLabel)}</button>
+                    <div class="personal-more-wrap">
+                        <button type="button" class="personal-more-btn" aria-label="More actions">⋯</button>
+                        <div class="personal-more-menu ${openMenuId === file.file_id ? 'open' : ''}">
+                            <button type="button" class="personal-more-item" data-action="rename">Rename</button>
+                            <button type="button" class="personal-more-item personal-more-item-danger" data-action="delete">Delete</button>
+                            <button type="button" class="personal-more-item" data-action="cancel">Cancel</button>
+                        </div>
+                    </div>
                 </div>
             `;
-            const btn = item.querySelector('.personal-recording-action');
-            btn.addEventListener('click', async () => {
-                if (btn.disabled) return;
+
+            const actionBtn = item.querySelector('.personal-recording-action');
+            actionBtn.addEventListener('click', async () => {
+                if (actionBtn.disabled) return;
                 if (file.transcript_exists) {
                     window.location.href = '/?open=' + encodeURIComponent(file.file_id);
                     return;
@@ -1123,63 +1185,141 @@ async function initPersonalPage() {
                     if (typeof showStatus === 'function') showStatus('No uploaded file found for this recording.', true);
                     return;
                 }
-                const prevText = btn.textContent;
-                btn.disabled = true;
-                btn.textContent = 'Transcribing...';
+                const prevText = actionBtn.textContent;
+                actionBtn.disabled = true;
+                actionBtn.textContent = 'Transcribing...';
                 try {
-                    const transcribeJobId = file.runpod_job_id || (
-                        (typeof crypto !== 'undefined' && crypto.randomUUID)
-                            ? crypto.randomUUID()
-                            : ('job_' + Date.now() + '_' + Math.floor(Math.random() * 100000))
-                    );
+                    const transcribeJobId = file.runpod_job_id || ((typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('job_' + Date.now()));
                     localStorage.setItem('lastJobId', transcribeJobId);
                     localStorage.setItem('lastJobDbId', file.file_id);
                     localStorage.setItem('lastS3Key', file.s3_key);
                     localStorage.setItem('activeJobId', transcribeJobId);
-
                     try {
-                        await supabase
-                            .from('jobs')
-                            .update({ runpod_job_id: transcribeJobId, updated_at: new Date().toISOString() })
-                            .eq('id', file.file_id)
-                            .eq('user_id', user.id);
+                        await supabase.from('jobs').update({ runpod_job_id: transcribeJobId, updated_at: new Date().toISOString() }).eq('id', file.file_id).eq('user_id', user.id);
                     } catch (_) {}
-
                     const res = await fetch('/api/trigger_processing', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            s3Key: file.s3_key,
-                            jobId: transcribeJobId,
-                            task: 'transcribe',
-                            language: 'he'
-                        })
+                        body: JSON.stringify({ s3Key: file.s3_key, jobId: transcribeJobId, task: 'transcribe', language: 'he' })
                     });
                     const out = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(out.message || out.error || ('HTTP ' + res.status));
+                    if (!res.ok) throw new Error(out.message || out.error || `HTTP ${res.status}`);
                     window.location.href = '/?open=' + encodeURIComponent(file.file_id);
                 } catch (e) {
-                    btn.disabled = false;
-                    btn.textContent = prevText;
+                    actionBtn.disabled = false;
+                    actionBtn.textContent = prevText;
                     if (typeof showStatus === 'function') showStatus('Transcribe failed: ' + (e.message || 'Unknown error'), true);
                 }
             });
+
+            const moreBtn = item.querySelector('.personal-more-btn');
+            moreBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openMenuId = openMenuId === file.file_id ? null : file.file_id;
+                render();
+            });
+            item.querySelectorAll('.personal-more-item').forEach((mi) => {
+                mi.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const action = mi.getAttribute('data-action');
+                    openMenuId = null;
+                    if (action === 'cancel') {
+                        render();
+                        return;
+                    }
+                    if (action === 'rename') {
+                        renamingId = file.file_id;
+                        renameDraft = file.file_name;
+                        render();
+                        return;
+                    }
+                    if (action === 'delete') {
+                        const ok = await openDeleteConfirm(file.file_name);
+                        if (!ok) {
+                            render();
+                            return;
+                        }
+                        try {
+                            const ids = Array.isArray(file._row_ids) && file._row_ids.length ? file._row_ids : [file.file_id];
+                            for (const id of ids) {
+                                const delRes = await fetch(`/recording/${encodeURIComponent(id)}`, {
+                                    method: 'DELETE',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ userId: user.id })
+                                });
+                                const out = await delRes.json().catch(() => ({}));
+                                if (!delRes.ok) throw new Error(out.error || `HTTP ${delRes.status}`);
+                            }
+                            const idx = files.findIndex((f) => f.file_id === file.file_id);
+                            if (idx >= 0) files.splice(idx, 1);
+                            const q = String(searchInput.value || '').trim().toLowerCase();
+                            filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+                            render();
+                            if (typeof showStatus === 'function') showStatus('Recording deleted', false);
+                        } catch (err) {
+                            if (typeof showStatus === 'function') showStatus('Delete failed: ' + (err.message || 'Unknown error'), true);
+                        }
+                        return;
+                    }
+                });
+            });
+
+            if (isRenaming) {
+                const renameInput = item.querySelector('.personal-rename-input');
+                const renameSave = item.querySelector('.personal-rename-save');
+                const renameCancel = item.querySelector('.personal-rename-cancel');
+                setTimeout(() => { try { renameInput.focus(); renameInput.select(); } catch (_) {} }, 0);
+                renameInput.addEventListener('input', () => { renameDraft = renameInput.value; });
+                const doRenameSave = async () => {
+                    const next = String(renameInput.value || '').trim();
+                    if (!next) return;
+                    renameSave.disabled = true;
+                    try {
+                        const rr = await fetch(`/recording/${encodeURIComponent(file.file_id)}/rename`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: user.id, new_name: next })
+                        });
+                        const out = await rr.json().catch(() => ({}));
+                        if (!rr.ok) throw new Error(out.error || `HTTP ${rr.status}`);
+                        file.file_name = next;
+                        renamingId = null;
+                        renameDraft = '';
+                        const q = String(searchInput.value || '').trim().toLowerCase();
+                        filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+                        render();
+                        if (typeof showStatus === 'function') showStatus('Recording renamed', false);
+                    } catch (err) {
+                        renameSave.disabled = false;
+                        if (typeof showStatus === 'function') showStatus('Rename failed: ' + (err.message || 'Unknown error'), true);
+                    }
+                };
+                renameSave.addEventListener('click', doRenameSave);
+                renameCancel.addEventListener('click', () => { renamingId = null; renameDraft = ''; render(); });
+                renameInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') doRenameSave();
+                    if (e.key === 'Escape') { renamingId = null; renameDraft = ''; render(); }
+                });
+            }
             listEl.appendChild(item);
         });
     };
 
     searchInput.addEventListener('input', () => {
         const q = String(searchInput.value || '').trim().toLowerCase();
-        filtered = q
-            ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q))
-            : files.slice();
+        filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+        render();
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!openMenuId) return;
+        if (e.target.closest('.personal-more-wrap')) return;
+        openMenuId = null;
         render();
     });
 
     render();
 
-    // Fallback: some legacy rows have transcript JSON in S3 but DB result_s3_key/result columns are null.
-    // Probe existence of derived output .json and upgrade action to "Open" when found.
     (async () => {
         const toProbe = files.filter((f) => !f.transcript_exists && Array.isArray(f._probe_keys) && f._probe_keys.length > 0);
         if (!toProbe.length) return;
@@ -1189,33 +1329,23 @@ async function initPersonalPage() {
             const batch = toProbe.slice(i, i + concurrency);
             const checks = batch.map(async (f) => {
                 try {
-                    const uniqKeys = Array.from(new Set((f._probe_keys || []).filter((k) => canProbeKeyForUser(k))));
-                    for (const k of uniqKeys) {
-                        const presign = await fetch('/api/get_presigned_url', {
+                    const uniq = Array.from(new Set((f._probe_keys || []).filter((k) => canProbeKeyForUser(k))));
+                    for (const k of uniq) {
+                        const existsRes = await fetch('/api/s3_exists', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ s3Key: k, userId: user.id })
                         });
-                        const pj = await presign.json().catch(() => ({}));
-                        if (!presign.ok || !pj.url) continue;
-                        // Presigned URL is generated for get_object; HEAD may return 403 for signature mismatch.
-                        // Probe existence with a tiny ranged GET instead.
-                        const probe = await fetch(pj.url, {
-                            method: 'GET',
-                            headers: { Range: 'bytes=0-0' }
-                        });
-                        if (probe.ok || probe.status === 206) return true;
+                        const ej = await existsRes.json().catch(() => ({}));
+                        if (existsRes.ok && ej && ej.exists === true) return true;
                     }
-                    return false;
-                } catch (_) {
-                    return false;
-                }
+                } catch (_) {}
+                return false;
             });
             const exists = await Promise.all(checks);
             exists.forEach((ok, idx) => {
                 if (!ok) return;
-                const target = batch[idx];
-                target.transcript_exists = true;
+                batch[idx].transcript_exists = true;
                 changed += 1;
             });
         }
@@ -1225,9 +1355,7 @@ async function initPersonalPage() {
                 return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
             });
             const q = String(searchInput.value || '').trim().toLowerCase();
-            filtered = q
-                ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q))
-                : files.slice();
+            filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
             render();
         }
     })();
@@ -1252,8 +1380,10 @@ async function initOpenInApp(jobId) {
     }
     // Prefer transcript from S3 (result_s3_key); fallback to jobs.result
     let segments = [];
+    let hasTranscriptForOpen = false;
     const { data: keyRow } = await supabase.from('jobs').select('result_s3_key').eq('id', jobId).eq('user_id', user.id).maybeSingle();
     if (keyRow && keyRow.result_s3_key) {
+        hasTranscriptForOpen = true;
         try {
             console.log('[word-edit] open-in-app: fetching transcript JSON', { result_s3_key: keyRow.result_s3_key });
             const urlRes = await fetch('/api/get_presigned_url', {
@@ -1348,9 +1478,13 @@ async function initOpenInApp(jobId) {
         const { data: resultData } = await supabase.from('jobs').select('result').eq('id', jobId).eq('user_id', user.id).maybeSingle();
         if (resultData && resultData.result && Array.isArray(resultData.result.segments)) {
             segments = resultData.result.segments;
+            if (segments.length > 0) hasTranscriptForOpen = true;
         }
         const resFmt = resultData && resultData.result ? pickFormattedFromObject(resultData.result) : null;
-        if (resFmt) window.currentFormattedDoc = resFmt;
+        if (resFmt) {
+            window.currentFormattedDoc = resFmt;
+            hasTranscriptForOpen = true;
+        }
     }
     if (!Array.isArray(window.currentWords) || !Array.isArray(window.currentCaptions)) {
         window.currentWords = null;
@@ -1464,9 +1598,12 @@ async function initOpenInApp(jobId) {
     }
 
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
-    setTranscriptActionButtonsVisible(true);
+    setTranscriptActionButtonsVisible(!!hasTranscriptForOpen);
     const mainBtn = document.getElementById('main-btn');
-    if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
+    if (mainBtn) {
+        mainBtn.disabled = false;
+        setMainButtonAction(hasTranscriptForOpen ? 'upload' : 'transcribe_loaded_file');
+    }
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (typeof window.render === 'function') window.render();
     if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
@@ -2779,6 +2916,19 @@ if (authSubmitBtn) {
     });
 }
 
+function setMainButtonAction(mode) {
+    window.mainBtnAction = mode || 'upload';
+    const mainBtn = document.getElementById('main-btn');
+    if (!mainBtn) return;
+    if (window.mainBtnAction === 'transcribe_loaded_file') {
+        mainBtn.innerText = (typeof window.t === 'function'
+            ? (window.t('transcribe') || window.t('transcribe_btn'))
+            : '') || 'תמלל';
+    } else {
+        mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload';
+    }
+}
+
 /** Reset the main screen to initial state (as on first load) — e.g. when user clicks Upload to start a new file. */
 function resetScreenToInitial() {
     window.isTriggering = false;
@@ -2811,7 +2961,7 @@ function resetScreenToInitial() {
     }
     if (mainBtn) {
         mainBtn.disabled = false;
-        mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload';
+        setMainButtonAction('upload');
     }
 
     if (transcriptWindow) {
@@ -2907,7 +3057,47 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (mainBtn) {
-        mainBtn.addEventListener('click', () => {
+        mainBtn.addEventListener('click', async () => {
+            if (window.mainBtnAction === 'transcribe_loaded_file') {
+                const s3Key = localStorage.getItem('lastS3Key');
+                const dbId = localStorage.getItem('lastJobDbId');
+                if (!s3Key || !dbId) {
+                    if (typeof showStatus === 'function') showStatus('Missing recording context for transcription.', true);
+                    return;
+                }
+                const prev = mainBtn.innerText;
+                mainBtn.disabled = true;
+                mainBtn.innerText = ((typeof window.t === 'function' ? window.t('processing') : 'Processing') || 'Processing').replace(/\.\.\.?$/, '') + ' 0%';
+                setDiarizationBusyState(true);
+                try {
+                    const transcribeJobId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                        ? crypto.randomUUID()
+                        : ('job_' + Date.now() + '_' + Math.floor(Math.random() * 100000));
+                    localStorage.setItem('lastJobId', transcribeJobId);
+                    localStorage.setItem('activeJobId', transcribeJobId);
+                    window._lastProcessedJobId = null;
+                    try {
+                        await supabase
+                            .from('jobs')
+                            .update({ runpod_job_id: transcribeJobId, status: 'processing', updated_at: new Date().toISOString() })
+                            .eq('id', dbId);
+                    } catch (_) {}
+                    const triggerRes = await fetch('/api/trigger_processing', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ s3Key, jobId: transcribeJobId, task: 'transcribe', language: 'he' })
+                    });
+                    const triggerData = await triggerRes.json().catch(() => ({}));
+                    if (!triggerRes.ok) throw new Error(triggerData.message || triggerData.error || `HTTP ${triggerRes.status}`);
+                    if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(transcribeJobId);
+                } catch (e) {
+                    mainBtn.disabled = false;
+                    mainBtn.innerText = prev;
+                    setDiarizationBusyState(false);
+                    if (typeof showStatus === 'function') showStatus('Transcribe failed: ' + (e.message || 'Unknown error'), true);
+                }
+                return;
+            }
             openFilePickerAfterDisclaimer();
         });
     }

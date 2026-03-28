@@ -1687,8 +1687,13 @@ html[dir="rtl"] .upload-status {
   font-size: 13px;
   margin-top: 4px;
 }
+.personal-recording-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .personal-recording-action {
-  width: 100%;
+  flex: 1 1 auto;
   border: none;
   border-radius: 10px;
   padding: 10px 12px;
@@ -1704,6 +1709,131 @@ html[dir="rtl"] .upload-status {
   opacity: 0.7;
   cursor: default;
 }
+.personal-more-wrap {
+  position: relative;
+}
+.personal-more-btn {
+  width: 38px;
+  height: 38px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #fff;
+  color: #111827;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.personal-more-menu {
+  position: absolute;
+  top: 44px;
+  inset-inline-end: 0;
+  min-width: 138px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15);
+  padding: 6px;
+  display: none;
+  z-index: 40;
+}
+.personal-more-menu.open {
+  display: block;
+}
+.personal-more-item {
+  width: 100%;
+  border: 0;
+  background: #fff;
+  color: #111827;
+  text-align: start;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.personal-more-item:hover {
+  background: #f3f4f6;
+}
+.personal-more-item-danger {
+  color: #b91c1c;
+}
+.personal-rename-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.personal-rename-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.personal-rename-save,
+.personal-rename-cancel {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+.personal-delete-file-name {
+  font-weight: 700;
+  margin: 8px 0 2px;
+}
+.personal-delete-subtitle {
+  color: #4b5563;
+  margin: 0;
+}
+.personal-delete-list {
+  margin: 8px 0 2px;
+  padding-inline-start: 20px;
+  color: #374151;
+}
+
+/* Strong, page-independent delete modal styles */
+#recording-delete-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(6px);
+  z-index: 9999;
+}
+#recording-delete-overlay .personal-dialog {
+  background: #fff;
+  width: min(420px, 92vw);
+  border-radius: 14px;
+  box-shadow: 0 20px 40px rgba(2, 6, 23, 0.25);
+  padding: 20px;
+}
+#recording-delete-overlay .personal-dialog-message {
+  margin: 0 0 8px;
+  font-weight: 700;
+  color: #111827;
+}
+#recording-delete-overlay .personal-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+#recording-delete-overlay .personal-dialog-btn {
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#recording-delete-overlay .personal-dialog-btn.cancel {
+  background: #f3f4f6;
+  color: #374151;
+}
+#recording-delete-overlay .personal-dialog-btn.danger {
+  background: #dc2626;
+  color: #fff;
+}
 
 @media (min-width: 768px) {
   .personal-library-wrap {
@@ -1718,11 +1848,13 @@ html[dir="rtl"] .upload-status {
   .personal-recording-main {
     min-width: 0;
   }
-  .personal-recording-action-wrap {
+  .personal-recording-actions-row {
     margin-inline-start: auto;
+    min-width: 220px;
   }
   .personal-recording-action {
     width: 140px;
+    flex: 0 0 140px;
   }
 }
 @media (max-width: 900px) and (orientation: portrait) {
