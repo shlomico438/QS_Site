@@ -1636,6 +1636,95 @@ html[dir="rtl"] .upload-status {
 .personal-rotate-hint {
   display: none;
 }
+
+/* Personal recordings library (mobile-first) */
+.personal-library-wrap {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 8px 0 20px;
+}
+.personal-search-wrap {
+  margin-bottom: 14px;
+}
+.personal-search-input {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  padding: 11px 14px;
+  font-size: 15px;
+  background: #fff;
+  outline: none;
+}
+.personal-search-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
+}
+.personal-empty-msg {
+  color: #6b7280;
+  margin: 10px 0 0;
+}
+.personal-recordings-list {
+  display: grid;
+  gap: 10px;
+}
+.personal-recording-item {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.personal-recording-name {
+  font-weight: 700;
+  color: #111827;
+  word-break: break-word;
+}
+.personal-recording-date {
+  color: #6b7280;
+  font-size: 13px;
+  margin-top: 4px;
+}
+.personal-recording-action {
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #6366f1;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.personal-recording-action:hover {
+  background: #5458ea;
+}
+.personal-recording-action:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+@media (min-width: 768px) {
+  .personal-library-wrap {
+    padding-top: 2px;
+  }
+  .personal-recording-item {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .personal-recording-main {
+    min-width: 0;
+  }
+  .personal-recording-action-wrap {
+    margin-inline-start: auto;
+  }
+  .personal-recording-action {
+    width: 140px;
+  }
+}
 @media (max-width: 900px) and (orientation: portrait) {
   .personal-rotate-hint {
     display: block;

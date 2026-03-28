@@ -3,26 +3,23 @@
 {% block content %}
 <div class="content-page personal-area-page">
     <div class="personal-area-header-row">
-        <h1 data-i18n="personal_area_title">איזור אישי</h1>
+        <h1>My Recordings</h1>
         <a id="personal-close-btn" class="personal-close-btn" href="/" data-i18n="personal_close_window">סגור וחזור לתמלול</a>
     </div>
-    <p class="personal-rotate-hint">לתצוגה נוחה יותר במובייל, מומלץ לסובב את המכשיר לרוחב.</p>
     <p id="personal-guest-msg" style="display: none; color: #6b7280;" data-i18n="personal_guest">התחבר כדי לראות את הקבצים שלך.</p>
-    <div id="personal-table-wrap" class="personal-table-wrap" style="display: none;">
-        <p id="personal-empty-msg" style="display: none; color: #6b7280;" data-i18n="personal_empty">אין עדיין קבצים. העלה קובץ בעמוד הבית להתחלה.</p>
-        <div id="personal-table-container" class="personal-table-container" style="display: none;">
-            <table class="personal-files-table" id="personal-files-table" role="table">
-                <thead>
-                    <tr>
-                        <th data-i18n="personal_th_name">שם</th>
-                        <th data-i18n="personal_th_uploaded">הועלה ב (תאריך)</th>
-                        <th data-i18n="personal_th_status">סטטוס</th>
-                        <th data-i18n="personal_th_actions">פעולות</th>
-                    </tr>
-                </thead>
-                <tbody id="personal-files-tbody"></tbody>
-            </table>
+
+    <div id="personal-library-wrap" class="personal-library-wrap" style="display: none;">
+        <div class="personal-search-wrap">
+            <input
+                id="personal-search-input"
+                class="personal-search-input"
+                type="search"
+                placeholder="🔍 Search recordings..."
+                aria-label="Search recordings"
+            >
         </div>
+        <p id="personal-empty-msg" class="personal-empty-msg" style="display: none;">No recordings available. Upload recordings from the main screen.</p>
+        <div id="personal-recordings-list" class="personal-recordings-list" role="list"></div>
     </div>
 </div>
 {% endblock %}

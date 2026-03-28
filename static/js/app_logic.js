@@ -944,16 +944,14 @@ async function initHistoryPage() {
     }
 }
 
-const PERSONAL_DISPLAY_NAMES_KEY = 'qs_personal_display_names';
-
 async function initPersonalPage() {
     const guestMsg = document.getElementById('personal-guest-msg');
-    const tableWrap = document.getElementById('personal-table-wrap');
+    const wrap = document.getElementById('personal-library-wrap');
     const emptyMsg = document.getElementById('personal-empty-msg');
-    const tableContainer = document.getElementById('personal-table-container');
-    const tbody = document.getElementById('personal-files-tbody');
+    const listEl = document.getElementById('personal-recordings-list');
+    const searchInput = document.getElementById('personal-search-input');
     const closeBtn = document.getElementById('personal-close-btn');
-    if (!tbody) return;
+    if (!wrap || !listEl || !searchInput) return;
 
     if (closeBtn) {
         const lastJobDbId = localStorage.getItem('lastJobDbId');
@@ -963,323 +961,276 @@ async function initPersonalPage() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
         if (guestMsg) guestMsg.style.display = 'block';
-        if (tableWrap) tableWrap.style.display = 'block';
+        wrap.style.display = 'block';
         return;
     }
 
-    tableWrap.style.display = 'block';
+    wrap.style.display = 'block';
     const { data: jobs, error } = await supabase
         .from('jobs')
-        .select('id, status, input_s3_key, created_at, type, result_s3_key')
+        .select('id, created_at, input_s3_key, result_s3_key, result, runpod_job_id, metadata')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
     if (error) {
-        if (emptyMsg) { emptyMsg.textContent = (typeof window.t === 'function' ? window.t('could_not_load_list') : 'Could not load list. ') + (error.message || ''); emptyMsg.style.display = 'block'; }
-        return;
-    }
-    if (!jobs || jobs.length === 0) {
-        if (emptyMsg) emptyMsg.style.display = 'block';
+        if (emptyMsg) {
+            emptyMsg.textContent = (typeof window.t === 'function' ? window.t('could_not_load_list') : 'Could not load list.') + ' ' + (error.message || '');
+            emptyMsg.style.display = 'block';
+        }
         return;
     }
 
-    tableContainer.style.display = 'block';
-    function displayNameFromKey(key) {
-        if (!key) return 'file';
-        const raw = key.split('/').pop() || key;
+    const displayNameFromKey = (key) => {
+        if (!key) return 'recording';
+        const raw = decodeURIComponent((key.split('/').pop() || key));
         return raw.replace(/^job_\d+_/, '') || raw;
-    }
-    const UPLOADED_TIME_OFFSET_HOURS = -2;
-    function formatDate(iso) {
+    };
+    const isUploadedToS3 = (job) => {
+        const uploadStatus = job && job.metadata && typeof job.metadata === 'object'
+            ? String(job.metadata.upload_status || '').trim().toLowerCase()
+            : '';
+        if (uploadStatus) return uploadStatus === 'uploaded_to_s3';
+        return !!String((job && job.input_s3_key) || '').trim();
+    };
+    const formatDate = (iso) => {
         try {
-            let d = new Date(iso);
-            if (isNaN(d.getTime())) return iso || '';
-            if (UPLOADED_TIME_OFFSET_HOURS !== 0) {
-                d = new Date(d.getTime() + UPLOADED_TIME_OFFSET_HOURS * 60 * 60 * 1000);
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return String(iso || '');
+            return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        } catch (_) {
+            return String(iso || '');
+        }
+    };
+    const deriveResultJsonKey = (inputKey) => {
+        const s = String(inputKey || '').trim();
+        if (!s) return '';
+        if (s.includes('/input/')) return s.replace('/input/', '/output/').replace(/\.[^/.]+$/i, '.json');
+        return s.replace(/\.[^/.]+$/i, '.json');
+    };
+    const canProbeKeyForUser = (key) => String(key || '').startsWith(`users/${user.id}/`);
+
+    const rows = (Array.isArray(jobs) ? jobs : [])
+        .filter((job) => isUploadedToS3(job))
+        .map((job) => {
+            const resultKey = String(job.result_s3_key || '').trim();
+            const resultKeyMeta = String(
+                (job.metadata && (
+                    job.metadata.result_s3_key ||
+                    job.metadata.resultS3Key
+                )) || ''
+            ).trim();
+            const hasResultSegments = !!(job.result && Array.isArray(job.result.segments) && job.result.segments.length > 0);
+            const hasFormattedText = !!(job.result && job.result.formatted && String(job.result.formatted.clean_transcript || '').trim());
+            const transcriptExists = !!(resultKey || resultKeyMeta || hasResultSegments || hasFormattedText);
+            return {
+                file_id: job.id,
+                file_name: displayNameFromKey(job.input_s3_key),
+                created_at: job.created_at,
+                transcript_exists: transcriptExists,
+                s3_key: job.input_s3_key,
+                runpod_job_id: job.runpod_job_id || null,
+                derived_result_key: deriveResultJsonKey(job.input_s3_key),
+                _debug: {
+                    result_s3_key: resultKey || null,
+                    metadata_result_s3_key: resultKeyMeta || null,
+                    has_result_segments: hasResultSegments,
+                    has_formatted_text: hasFormattedText,
+                    derived_result_key: deriveResultJsonKey(job.input_s3_key) || null
+                }
+            };
+        })
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    // Merge duplicate uploads of the same recording name.
+    // If any duplicate has transcript, show one card with "Open" and route to that transcript-bearing job id.
+    const grouped = new Map();
+    const normName = (s) => String(s || '').trim().toLowerCase();
+    rows.forEach((r) => {
+        const key = normName(r.file_name);
+        const existing = grouped.get(key);
+        if (!existing) {
+            grouped.set(key, {
+                ...r,
+                _row_ids: [r.file_id],
+                _probe_keys: r.derived_result_key ? [r.derived_result_key] : [],
+                _open_row_ts: r.transcript_exists ? new Date(r.created_at).getTime() : 0
+            });
+            return;
+        }
+        existing._row_ids.push(r.file_id);
+        if (r.derived_result_key) existing._probe_keys.push(r.derived_result_key);
+        // Keep newest visible timestamp/name.
+        if (new Date(r.created_at).getTime() > new Date(existing.created_at).getTime()) {
+            existing.created_at = r.created_at;
+            existing.file_name = r.file_name;
+            if (r.s3_key) existing.s3_key = r.s3_key;
+        }
+        // If this row has transcript, prefer opening it (newest transcript row wins).
+        if (r.transcript_exists) {
+            const ts = new Date(r.created_at).getTime();
+            if (!existing.transcript_exists || ts >= (existing._open_row_ts || 0)) {
+                existing.file_id = r.file_id;
+                existing.runpod_job_id = r.runpod_job_id || existing.runpod_job_id;
+                existing._open_row_ts = ts;
             }
-            return d.toLocaleDateString(undefined, { dateStyle: 'short' }) + ' ' + d.toLocaleTimeString(undefined, { timeStyle: 'short' });
-        } catch (_) { return iso || ''; }
-    }
-    function statusLabel(s) {
-        const t = typeof window.t === 'function' ? window.t : (k) => k;
-        if (s === 'post-processed') return t('status_post_processed') || 'עבר עיבוד';
-        if (s === 'processed' || s === 'completed') return t('status_processed') || 'הושלם';
-        if (s === 'processing') return t('status_processing') || 'מעבד';
-        if (s === 'failed') return t('status_failed') || 'נכשל';
-        if (s === 'uploaded') return t('status_uploaded') || 'הועלה';
-        return s || '—';
-    }
-    let displayNames = {};
-    try {
-        const stored = localStorage.getItem(PERSONAL_DISPLAY_NAMES_KEY);
-        if (stored) displayNames = JSON.parse(stored);
-    } catch (_) {}
-
-    const T = (k) => (typeof window.t === 'function' ? window.t(k) : k);
-    function formatSec(v) {
-        if (v == null || typeof v !== 'number') return '—';
-        return v < 1 ? Math.round(v * 1000) + 'ms' : Math.round(v) + 's';
-    }
-
-    const personalDialogMarkup = `
-        <div class="personal-dialog" role="dialog" aria-modal="true">
-            <p class="personal-dialog-message"></p>
-            <input class="personal-dialog-input" type="text" />
-            <div class="personal-dialog-actions">
-                <button type="button" class="personal-dialog-btn cancel"></button>
-                <button type="button" class="personal-dialog-btn primary"></button>
-            </div>
-        </div>`;
-    function ensurePersonalDialog() {
-        let overlay = document.getElementById('personal-dialog-overlay');
-        if (!overlay) {
-            overlay = document.createElement('div');
-            overlay.id = 'personal-dialog-overlay';
-            overlay.className = 'personal-dialog-overlay';
-            overlay.innerHTML = personalDialogMarkup;
-            document.body.appendChild(overlay);
-        } else if (!overlay.querySelector('.personal-dialog-message')) {
-            overlay.innerHTML = personalDialogMarkup;
         }
-        return overlay;
-    }
-
-    function personalPrompt(message, defaultValue) {
-        const overlay = ensurePersonalDialog();
-        const msgEl = overlay.querySelector('.personal-dialog-message');
-        const inputEl = overlay.querySelector('.personal-dialog-input');
-        const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
-        const okBtn = overlay.querySelector('.personal-dialog-btn.primary');
-        if (!msgEl || !inputEl || !cancelBtn || !okBtn) {
-            return Promise.resolve(prompt(message || '', defaultValue || '') || null);
-        }
-
-        msgEl.textContent = message || '';
-        inputEl.style.display = '';
-        inputEl.value = defaultValue || '';
-        cancelBtn.textContent = T('cancel') || 'ביטול';
-        okBtn.textContent = T('save') || 'שמור';
-        okBtn.classList.remove('danger');
-        okBtn.classList.add('primary');
-
-        overlay.style.display = 'flex';
-        inputEl.focus();
-        inputEl.select();
-
-        return new Promise((resolve) => {
-            const cleanup = (value) => {
-                overlay.style.display = 'none';
-                cancelBtn.onclick = null;
-                okBtn.onclick = null;
-                overlay.onclick = null;
-                window.removeEventListener('keydown', onKey);
-                resolve(value);
-            };
-            const onKey = (e) => {
-                if (e.key === 'Escape') cleanup(null);
-                if (e.key === 'Enter') cleanup(inputEl.value);
-            };
-            window.addEventListener('keydown', onKey);
-            cancelBtn.onclick = () => cleanup(null);
-            okBtn.onclick = () => cleanup(inputEl.value);
-            overlay.onclick = (e) => {
-                if (e.target === overlay) cleanup(null);
-            };
-        });
-    }
-
-    function personalConfirm(message) {
-        const overlay = ensurePersonalDialog();
-        const msgEl = overlay.querySelector('.personal-dialog-message');
-        const inputEl = overlay.querySelector('.personal-dialog-input');
-        const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
-        const okBtn = overlay.querySelector('.personal-dialog-btn.primary');
-        if (!msgEl || !cancelBtn || !okBtn) {
-            return Promise.resolve(confirm(message || ''));
-        }
-
-        msgEl.textContent = message || '';
-        if (inputEl) inputEl.style.display = 'none';
-        cancelBtn.textContent = T('cancel') || 'ביטול';
-        okBtn.textContent = T('confirm') || T('personal_action_delete') || 'אישור';
-        okBtn.classList.remove('primary');
-        okBtn.classList.add('danger');
-
-        overlay.style.display = 'flex';
-
-        return new Promise((resolve) => {
-            const cleanup = (val) => {
-                overlay.style.display = 'none';
-                cancelBtn.onclick = null;
-                okBtn.onclick = null;
-                overlay.onclick = null;
-                window.removeEventListener('keydown', onKey);
-                resolve(val);
-            };
-            const onKey = (e) => {
-                if (e.key === 'Escape') cleanup(false);
-                if (e.key === 'Enter') cleanup(true);
-            };
-            window.addEventListener('keydown', onKey);
-            cancelBtn.onclick = () => cleanup(false);
-            okBtn.onclick = () => cleanup(true);
-            overlay.onclick = (e) => {
-                if (e.target === overlay) cleanup(false);
-            };
-        });
-    }
-
-    const actionsLabel = T('personal_actions_btn') || 'פעולות';
-    const actionsBtnHtml = `<span class="personal-dropdown-btn-text">${escapeHtml(actionsLabel)}</span><span class="personal-dropdown-chevron" aria-hidden="true">▼</span>`;
-    tbody.innerHTML = '';
-    for (const job of jobs) {
-        const name = displayNames[job.id] != null ? displayNames[job.id] : displayNameFromKey(job.input_s3_key);
-        const hasTranscript = Boolean(job.result_s3_key);
-        const tr = document.createElement('tr');
-        const pad = '\u00A0\u00A0\u00A0\u00A0';
-        tr.innerHTML = `
-            <td class="personal-cell-name">${escapeHtml(name)}${pad}</td>
-            <td>${escapeHtml(formatDate(job.created_at))}${pad}</td>
-            <td>${escapeHtml(statusLabel(job.status))}${pad}</td>
-            <td class="personal-row-actions">
-                <button type="button" class="personal-dropdown-btn" data-job-id="${escapeHtml(job.id)}" aria-haspopup="true" aria-expanded="false" aria-label="${escapeHtml(actionsLabel)}">${actionsBtnHtml}</button>
-                <div class="personal-dropdown-menu" role="menu">
-                    <button type="button" role="menuitem" data-action="open" ${hasTranscript ? '' : 'disabled'} class="${hasTranscript ? '' : 'personal-action-disabled'}">${T('personal_action_open') || 'פתיחת המדיה והתמליל'}</button>
-                    <button type="button" role="menuitem" data-action="export" ${hasTranscript ? '' : 'disabled'} class="${hasTranscript ? '' : 'personal-action-disabled'}">${T('personal_action_export') || 'יצוא התמליל'}</button>
-                    <button type="button" role="menuitem" data-action="download">${T('personal_action_download_media') || 'הורדת המדיה'}</button>
-                    <button type="button" role="menuitem" data-action="rename">${T('personal_action_rename') || 'שינוי שם הקובץ'}</button>
-                    <button type="button" role="menuitem" data-action="delete">${T('personal_action_delete') || 'מחיקת הקובץ'}</button>
-                </div>
-            </td>`;
-        const btn = tr.querySelector('.personal-dropdown-btn');
-        const menu = tr.querySelector('.personal-dropdown-menu');
-        const cellName = tr.querySelector('.personal-cell-name');
-        menu.classList.remove('open');
-        menu.style.display = 'none';
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            document.querySelectorAll('.personal-dropdown-menu.open').forEach(m => {
-                m.classList.remove('open');
-                m.style.display = 'none';
-                const otherBtn = m.closest('tr')?.querySelector('.personal-dropdown-btn');
-                if (otherBtn) otherBtn.setAttribute('aria-expanded', 'false');
-            });
-            const willOpen = !menu.classList.contains('open');
-            if (willOpen) {
-                menu.classList.add('open');
-                menu.style.display = 'block';
-                btn.setAttribute('aria-expanded', 'true');
-            } else {
-                menu.classList.remove('open');
-                menu.style.display = 'none';
-                btn.setAttribute('aria-expanded', 'false');
-            }
-        });
-        menu.querySelectorAll('button[data-action]').forEach(b => {
-            b.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                menu.classList.remove('open');
-                menu.style.display = 'none';
-                btn.setAttribute('aria-expanded', 'false');
-                const action = b.getAttribute('data-action');
-                if (action === 'open') {
-                    window.location.href = '/?open=' + encodeURIComponent(job.id);
-                    return;
-                }
-                if (action === 'download') {
-                    if (!job.input_s3_key) { showStatus(T('failed_to_get_link'), true); return; }
-                    try { localStorage.setItem('lastS3Key', job.input_s3_key); } catch (_) {}
-                    try {
-                        const res = await fetch('/api/get_presigned_url', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ s3Key: job.input_s3_key, userId: user.id })
-                        });
-                        const json = await res.json();
-                        if (json.url) {
-                            const blob = await fetch(json.url).then(r => r.blob());
-                            const fname = decodeURIComponent((job.input_s3_key || '').split('/').pop() || 'download');
-                            if (typeof saveAs !== 'undefined') saveAs(blob, fname);
-                            else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; a.click(); URL.revokeObjectURL(a.href); }
-                            showStatus(T('copied_to_clipboard') || 'הורדה התחילה', false);
-                        } else showStatus(json.error || T('failed_to_get_link'), true);
-                    } catch (err) { showStatus(err.message || 'Failed', true); }
-                    return;
-                }
-                if (action === 'export') {
-                    try { if (job.input_s3_key) localStorage.setItem('lastS3Key', job.input_s3_key); } catch (_) {}
-                    const path = (job.input_s3_key || '').replace(/\/input\//, '/output/');
-                    const dot = path.lastIndexOf('.');
-                    const base = dot >= 0 ? path.slice(0, dot) : path;
-                    const resultKey = base ? base + '.json' : null;
-                    if (!resultKey || !resultKey.startsWith('users/' + user.id + '/')) { showStatus(T('no_subtitles_to_download') || 'אין תמליל לייצא', true); return; }
-                    try {
-                        const res = await fetch('/api/get_presigned_url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ s3Key: resultKey, userId: user.id }) });
-                        const json = await res.json();
-                        if (!json.url) { showStatus(json.error || 'Failed', true); return; }
-                        const fetchRes = await fetch(json.url);
-                        const data = await fetchRes.json();
-                        const segments = (data && data.segments) ? data.segments : [];
-                        if (segments.length === 0) { showStatus(T('no_subtitles_to_download') || 'אין תמליל לייצא', true); return; }
-                        const srt = typeof srtFromCues === 'function' ? srtFromCues(segments) : '';
-                        const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
-                        if (typeof saveAs !== 'undefined') saveAs(blob, (displayNameFromKey(job.input_s3_key) || 'transcript').replace(/\.[^.]*$/, '') + '.srt');
-                        else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (displayNameFromKey(job.input_s3_key) || 'transcript').replace(/\.[^.]*$/, '') + '.srt'; a.click(); URL.revokeObjectURL(a.href); }
-                        showStatus(T('copied_to_clipboard') || 'הייבוא הושלם', false);
-                    } catch (err) { showStatus(err.message || 'Export failed', true); }
-                    return;
-                }
-                if (action === 'rename') {
-                    const newName = await personalPrompt(T('personal_rename_prompt') || 'הזן שם חדש לקובץ:', name);
-                    if (newName == null || newName.trim() === '') return;
-                    const trimmed = newName.trim();
-                    try {
-                        const { error: updateErr } = await supabase.from('jobs').update({ display_name: trimmed }).eq('id', job.id).eq('user_id', user.id);
-                        if (updateErr) { /* column may not exist; keep localStorage only */ }
-                    } catch (_) { /* DB may not have display_name column */ }
-                    displayNames[job.id] = trimmed;
-                    try { localStorage.setItem(PERSONAL_DISPLAY_NAMES_KEY, JSON.stringify(displayNames)); } catch (_) {}
-                    cellName.textContent = trimmed;
-                    showStatus(T('personal_renamed') || 'השם עודכן', false);
-                    return;
-                }
-                if (action === 'delete') {
-                    const ok = await personalConfirm(T('personal_delete_confirm') || 'למחוק את הקובץ? פעולה זו לא ניתנת לביטול.');
-                    if (!ok) return;
-                    const { data: deleted, error: delErr } = await supabase.from('jobs').delete().eq('id', job.id).eq('user_id', user.id).select('id');
-                    if (delErr) { showStatus(delErr.message || 'Delete failed', true); return; }
-                    if (!deleted || deleted.length === 0) {
-                        const res = await fetch('/api/delete_job', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ jobId: job.id, userId: user.id })
-                        });
-                        const json = res.ok ? await res.json() : {};
-                        if (json.deleted) {
-                            tr.remove();
-                            showStatus(T('personal_deleted') || 'הקובץ נמחק', false);
-                        } else {
-                            showStatus(json.error || (T('personal_delete_failed') || 'לא ניתן למחוק. ייתכן שאין הרשאה.'), true);
-                        }
-                        return;
-                    }
-                    tr.remove();
-                    showStatus(T('personal_deleted') || 'הקובץ נמחק', false);
-                }
-            });
-        });
-        tbody.appendChild(tr);
-    }
-    document.addEventListener('click', (e) => {
-        if (!e.target.closest('.personal-dropdown-btn') && !e.target.closest('.personal-dropdown-menu')) {
-            document.querySelectorAll('.personal-dropdown-menu.open').forEach(m => {
-                m.classList.remove('open');
-                m.style.display = 'none';
-                const otherBtn = m.closest('tr')?.querySelector('.personal-dropdown-btn');
-                if (otherBtn) otherBtn.setAttribute('aria-expanded', 'false');
-            });
-        }
+        existing.transcript_exists = existing.transcript_exists || r.transcript_exists;
     });
+
+    const files = Array.from(grouped.values())
+        .sort((a, b) => {
+            if (a.transcript_exists !== b.transcript_exists) return a.transcript_exists ? 1 : -1;
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
+
+    let filtered = files.slice();
+
+    const render = () => {
+        listEl.innerHTML = '';
+        if (!filtered.length) {
+            if (emptyMsg) {
+                emptyMsg.style.display = 'block';
+                emptyMsg.textContent = files.length
+                    ? 'No recordings match your search.'
+                    : 'No recordings available. Upload recordings from the main screen.';
+            }
+            return;
+        }
+        if (emptyMsg) emptyMsg.style.display = 'none';
+
+        filtered.forEach((file) => {
+            const item = document.createElement('article');
+            item.className = 'personal-recording-item';
+            item.setAttribute('role', 'listitem');
+            const actionLabel = file.transcript_exists ? 'Open' : 'Transcribe';
+            item.innerHTML = `
+                <div class="personal-recording-main">
+                    <div class="personal-recording-name">🎬 ${escapeHtml(file.file_name)}</div>
+                    <div class="personal-recording-date">${escapeHtml(formatDate(file.created_at))}</div>
+                </div>
+                <div class="personal-recording-action-wrap">
+                    <button type="button" class="personal-recording-action" data-id="${escapeHtml(file.file_id)}" data-open="${file.transcript_exists ? '1' : '0'}">${escapeHtml(actionLabel)}</button>
+                </div>
+            `;
+            const btn = item.querySelector('.personal-recording-action');
+            btn.addEventListener('click', async () => {
+                if (btn.disabled) return;
+                if (file.transcript_exists) {
+                    window.location.href = '/?open=' + encodeURIComponent(file.file_id);
+                    return;
+                }
+                if (!file.s3_key) {
+                    if (typeof showStatus === 'function') showStatus('No uploaded file found for this recording.', true);
+                    return;
+                }
+                const prevText = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = 'Transcribing...';
+                try {
+                    const transcribeJobId = file.runpod_job_id || (
+                        (typeof crypto !== 'undefined' && crypto.randomUUID)
+                            ? crypto.randomUUID()
+                            : ('job_' + Date.now() + '_' + Math.floor(Math.random() * 100000))
+                    );
+                    localStorage.setItem('lastJobId', transcribeJobId);
+                    localStorage.setItem('lastJobDbId', file.file_id);
+                    localStorage.setItem('lastS3Key', file.s3_key);
+                    localStorage.setItem('activeJobId', transcribeJobId);
+
+                    try {
+                        await supabase
+                            .from('jobs')
+                            .update({ runpod_job_id: transcribeJobId, updated_at: new Date().toISOString() })
+                            .eq('id', file.file_id)
+                            .eq('user_id', user.id);
+                    } catch (_) {}
+
+                    const res = await fetch('/api/trigger_processing', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            s3Key: file.s3_key,
+                            jobId: transcribeJobId,
+                            task: 'transcribe',
+                            language: 'he'
+                        })
+                    });
+                    const out = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(out.message || out.error || ('HTTP ' + res.status));
+                    window.location.href = '/?open=' + encodeURIComponent(file.file_id);
+                } catch (e) {
+                    btn.disabled = false;
+                    btn.textContent = prevText;
+                    if (typeof showStatus === 'function') showStatus('Transcribe failed: ' + (e.message || 'Unknown error'), true);
+                }
+            });
+            listEl.appendChild(item);
+        });
+    };
+
+    searchInput.addEventListener('input', () => {
+        const q = String(searchInput.value || '').trim().toLowerCase();
+        filtered = q
+            ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q))
+            : files.slice();
+        render();
+    });
+
+    render();
+
+    // Fallback: some legacy rows have transcript JSON in S3 but DB result_s3_key/result columns are null.
+    // Probe existence of derived output .json and upgrade action to "Open" when found.
+    (async () => {
+        const toProbe = files.filter((f) => !f.transcript_exists && Array.isArray(f._probe_keys) && f._probe_keys.length > 0);
+        if (!toProbe.length) return;
+        let changed = 0;
+        const concurrency = 6;
+        for (let i = 0; i < toProbe.length; i += concurrency) {
+            const batch = toProbe.slice(i, i + concurrency);
+            const checks = batch.map(async (f) => {
+                try {
+                    const uniqKeys = Array.from(new Set((f._probe_keys || []).filter((k) => canProbeKeyForUser(k))));
+                    for (const k of uniqKeys) {
+                        const presign = await fetch('/api/get_presigned_url', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ s3Key: k, userId: user.id })
+                        });
+                        const pj = await presign.json().catch(() => ({}));
+                        if (!presign.ok || !pj.url) continue;
+                        // Presigned URL is generated for get_object; HEAD may return 403 for signature mismatch.
+                        // Probe existence with a tiny ranged GET instead.
+                        const probe = await fetch(pj.url, {
+                            method: 'GET',
+                            headers: { Range: 'bytes=0-0' }
+                        });
+                        if (probe.ok || probe.status === 206) return true;
+                    }
+                    return false;
+                } catch (_) {
+                    return false;
+                }
+            });
+            const exists = await Promise.all(checks);
+            exists.forEach((ok, idx) => {
+                if (!ok) return;
+                const target = batch[idx];
+                target.transcript_exists = true;
+                changed += 1;
+            });
+        }
+        if (changed > 0) {
+            files.sort((a, b) => {
+                if (a.transcript_exists !== b.transcript_exists) return a.transcript_exists ? 1 : -1;
+                return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+            });
+            const q = String(searchInput.value || '').trim().toLowerCase();
+            filtered = q
+                ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q))
+                : files.slice();
+            render();
+        }
+    })();
 }
 
 /** Load a job in the app when user clicks "Open in app" (/?open=jobId). Loads file URL + transcript JSON. */
@@ -1314,15 +1265,18 @@ async function initOpenInApp(jobId) {
             if (urlJson.url) {
                 const tr = await fetch(urlJson.url).then(r => r.json());
                 if (tr) {
-                    if (tr.formatted && typeof tr.formatted === 'object') {
-                        window.currentFormattedDoc = {
-                            clean_transcript: String(tr.formatted.clean_transcript || '').trim(),
-                            overview: String(tr.formatted.overview || '').trim(),
-                            key_points: Array.isArray(tr.formatted.key_points)
-                                ? tr.formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
-                                : []
-                        };
-                    }
+                    const trFmt = pickFormattedFromObject(tr);
+                    if (trFmt) window.currentFormattedDoc = trFmt;
+                    const cleanLen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
+                    console.log('[word-edit] open-in-app: formatted in transcript JSON', {
+                        found: !!trFmt,
+                        clean_transcript_length: cleanLen,
+                        top_level_keys: tr && typeof tr === 'object' ? Object.keys(tr).slice(0, 25) : [],
+                        has_formatted_key: !!(tr && tr.formatted),
+                        note: cleanLen
+                            ? undefined
+                            : 'No `formatted` object in this file — only what you see in keys (e.g. words/captions). Export can run GPT formatting once if needed.',
+                    });
                     if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
                         console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length });
                         window.currentWords = tr.words;
@@ -1395,15 +1349,8 @@ async function initOpenInApp(jobId) {
         if (resultData && resultData.result && Array.isArray(resultData.result.segments)) {
             segments = resultData.result.segments;
         }
-        if (resultData && resultData.result && resultData.result.formatted && typeof resultData.result.formatted === 'object') {
-            window.currentFormattedDoc = {
-                clean_transcript: String(resultData.result.formatted.clean_transcript || '').trim(),
-                overview: String(resultData.result.formatted.overview || '').trim(),
-                key_points: Array.isArray(resultData.result.formatted.key_points)
-                    ? resultData.result.formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
-                    : []
-            };
-        }
+        const resFmt = resultData && resultData.result ? pickFormattedFromObject(resultData.result) : null;
+        if (resFmt) window.currentFormattedDoc = resFmt;
     }
     if (!Array.isArray(window.currentWords) || !Array.isArray(window.currentCaptions)) {
         window.currentWords = null;
@@ -1731,17 +1678,172 @@ function extractSegmentsFromJobPayload(payload) {
     return Array.isArray(segments) ? segments : [];
 }
 
-function extractFormattedFromJobPayload(payload) {
-    const output = (payload && (payload.result || payload.output)) || payload || {};
-    const formatted = (output && output.formatted) || payload?.formatted || null;
-    if (!formatted || typeof formatted !== 'object') return null;
+function normalizeFormattedFields(f) {
+    if (!f || typeof f !== 'object') return null;
     return {
-        clean_transcript: String(formatted.clean_transcript || '').trim(),
-        overview: String(formatted.overview || '').trim(),
-        key_points: Array.isArray(formatted.key_points)
-            ? formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+        clean_transcript: String(f.clean_transcript || '').trim(),
+        overview: String(f.overview || '').trim(),
+        key_points: Array.isArray(f.key_points)
+            ? f.key_points.map((p) => String(p || '').trim()).filter(Boolean)
             : []
     };
+}
+
+/** GPT-shaped formatting: nested `formatted`, flat keys, or under result/output/data (worker payloads). */
+function pickFormattedFromObject(obj, depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 5) return null;
+    const nested = obj.formatted;
+    if (nested && typeof nested === 'object') return normalizeFormattedFields(nested);
+    if (obj.clean_transcript != null || obj.overview != null || Array.isArray(obj.key_points)) {
+        return normalizeFormattedFields(obj);
+    }
+    for (const k of ['result', 'output', 'data', 'transcript']) {
+        const inner = obj[k];
+        if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+            const got = pickFormattedFromObject(inner, depth + 1);
+            if (got) return got;
+        }
+    }
+    return null;
+}
+
+function extractFormattedFromJobPayload(payload) {
+    const output = (payload && (payload.result || payload.output)) || payload || {};
+    return pickFormattedFromObject(output) || pickFormattedFromObject(payload);
+}
+
+/**
+ * If in-memory GPT formatting is missing, reload transcript JSON from S3 (same row as Open in app)
+ * so export_docx receives formatted. Logs explain misses for debugging.
+ */
+async function hydrateFormattedFromSavedTranscript() {
+    const hasClean = !!(window.currentFormattedDoc && String(window.currentFormattedDoc.clean_transcript || '').trim());
+    if (hasClean) return true;
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            console.warn('[export] hydrate formatted: not signed in');
+            return false;
+        }
+        const dbId = localStorage.getItem('lastJobDbId');
+        if (!dbId) {
+            console.warn('[export] hydrate formatted: no lastJobDbId (open a job from history or finish upload in this tab)');
+            return false;
+        }
+        const { data: row } = await supabase
+            .from('jobs')
+            .select('result_s3_key')
+            .eq('id', dbId)
+            .eq('user_id', user.id)
+            .maybeSingle();
+        if (!row || !row.result_s3_key) {
+            console.warn('[export] hydrate formatted: jobs.result_s3_key missing');
+            return false;
+        }
+        const urlRes = await fetch('/api/get_presigned_url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ s3Key: row.result_s3_key, userId: user.id })
+        });
+        const urlJson = await urlRes.json();
+        if (!urlJson.url) {
+            console.warn('[export] hydrate formatted: presign failed', urlJson.error || urlJson);
+            return false;
+        }
+        const tr = await fetch(urlJson.url).then((r) => r.json());
+        const trFmt = pickFormattedFromObject(tr);
+        const clen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
+        if (trFmt && clen > 0) {
+            window.currentFormattedDoc = trFmt;
+            console.log('[export] hydrated formatted from S3 (clean_transcript length=%s)', clen);
+            return true;
+        }
+        const topKeys = tr && typeof tr === 'object' ? Object.keys(tr) : [];
+        console.warn(
+            '[export] Transcript JSON at result_s3_key has no `formatted` block (keys=%s). ' +
+                'That is the file the app loads — it is not a different “GPT” object in S3 unless you use another key. ' +
+                'Old saves without `formatted` match this. We will try to build formatting on export if needed.',
+            topKeys.join(', ')
+        );
+        return false;
+    } catch (e) {
+        console.warn('[export] hydrate formatted failed:', e);
+        return false;
+    }
+}
+
+/**
+ * When S3/ memory lack GPT formatting, run /api/format_transcript_summary once and persist to S3 (same as post-job flow).
+ */
+/** Join cue texts for GPT format pass: spaces, not newlines, so the model does not lock in ~27-char “subtitle” lines. */
+function buildTranscriptTextForGptFormat() {
+    return (window.currentSegments || [])
+        .map((s) => String((s && s.text) || '').trim())
+        .filter(Boolean)
+        .join(' ');
+}
+
+async function ensureFormattedViaApiForExport() {
+    const fullText = buildTranscriptTextForGptFormat();
+    if (!fullText.trim()) return false;
+    const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
+    if (typeof showStatus === 'function') {
+        showStatus('מעצב תמלול לייצוא…', false, { duration: 720000 });
+    }
+    try {
+        const res = await fetch('/api/format_transcript_summary', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: fullText, target_lang: targetLang })
+        });
+        const fmt = await res.json().catch(() => ({}));
+        if (!res.ok || !fmt || typeof fmt !== 'object' || fmt.error) {
+            const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
+            console.warn('[export] format_transcript_summary failed', res.status, errMsg);
+            if (typeof showStatus === 'function') {
+                showStatus('עיצוב התמלול נכשל: ' + errMsg.slice(0, 200), true);
+            }
+            return false;
+        }
+        window.currentFormattedDoc = {
+            clean_transcript: String(fmt.clean_transcript || '').trim(),
+            overview: String(fmt.overview || '').trim(),
+            key_points: Array.isArray(fmt.key_points)
+                ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                : []
+        };
+        console.log(
+            '[export] GPT formatting computed for export (clean_transcript length=%s)',
+            String(window.currentFormattedDoc.clean_transcript || '').length
+        );
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            const s3Key = localStorage.getItem('lastS3Key');
+            if (user && s3Key && (window.currentSegments || []).length) {
+                const saveRes = await fetch('/api/save_job_result', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId: user.id,
+                        input_s3_key: s3Key,
+                        segments: window.currentSegments,
+                        words: window.currentWords || undefined,
+                        captions: window.currentCaptions || undefined,
+                        formatted: window.currentFormattedDoc,
+                        stage: 'gpt'
+                    })
+                });
+                if (saveRes.ok) console.log('[export] saved transcript JSON with formatted to S3 for next open');
+                else console.warn('[export] save_job_result after format failed', saveRes.status);
+            }
+        } catch (e) {
+            console.warn('[export] persist formatted after API format:', e);
+        }
+        return true;
+    } catch (e) {
+        console.warn('[export] ensureFormattedViaApiForExport:', e);
+        return false;
+    }
 }
 
 async function tryRecoverSegmentsForExport() {
@@ -2106,7 +2208,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         return;
     }
 
-    if (type === 'docx') {
+    if (type === 'docx' || type === 'txt') {
+        await hydrateFormattedFromSavedTranscript();
         const docBase = (String(baseName || '').trim() || 'transcript').replace(/[\\/:*?"<>|]+/g, '_');
         const requestedKinds = Array.isArray(options && options.docxKinds)
             ? options.docxKinds.map((k) => String(k || '').toLowerCase()).filter((k) => k === 'transcript' || k === 'summary')
@@ -2115,22 +2218,62 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         const effectiveKinds = requestedKinds.length ? requestedKinds : [docxKind];
         const wantTranscript = effectiveKinds.includes('transcript');
         const wantSummary    = effectiveKinds.includes('summary');
-        const rawTranscript = (window.currentSegments || [])
+        const fmtDoc = window.currentFormattedDoc;
+        const hasClean = !!(fmtDoc && String(fmtDoc.clean_transcript || '').trim());
+        const hasSummaryBits = !!(
+            fmtDoc &&
+            (String(fmtDoc.overview || '').trim() ||
+                (Array.isArray(fmtDoc.key_points) && fmtDoc.key_points.length))
+        );
+        if ((wantTranscript && !hasClean) || (wantSummary && !hasSummaryBits)) {
+            await ensureFormattedViaApiForExport();
+        }
+        // Caption cues are reflowed (~27 chars per line); do not use newline-joined segments as export body.
+        const segmentFlowFallback = (window.currentSegments || [])
             .map(s => String((s && s.text) || '').trim())
             .filter(Boolean)
-            .join('\n');
+            .join(' ');
 
-        const _exportKind = async (kind, dlName) => {
+        const _buildExportPayload = () => {
+            const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : null;
+            const clean = String((fmt && fmt.clean_transcript) || '').trim() || segmentFlowFallback;
+            const overview = String((fmt && fmt.overview) || '').trim();
+            const keyPoints = Array.isArray(fmt && fmt.key_points)
+                ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                : [];
+            return { clean, overview, keyPoints };
+        };
+        const _buildKindText = (kind, payload) => {
+            if (kind === 'summary') {
+                const lines = [];
+                lines.push('סקירה:');
+                lines.push(payload.overview || 'N/A');
+                lines.push('');
+                lines.push('נקודות מפתח:');
+                (payload.keyPoints.length ? payload.keyPoints : ['לא הוחזרו נקודות מפתח.']).forEach((p) => lines.push(p));
+                return lines.join('\n').trim();
+            }
+            return payload.clean;
+        };
+        const _downloadTxt = (text, name) => {
+            saveAs(new Blob([text], { type: 'text/plain;charset=utf-8' }), name);
+        };
+
+        const _exportKindDocx = async (kind, dlName) => {
             if (typeof showStatus === 'function') showStatus(
                 kind === 'summary' ? 'מייצר סיכום…' : 'מייצר תמלול…', false, { duration: 10000 }
             );
+            const payload = _buildExportPayload();
+            const textForServer = String(payload.clean || segmentFlowFallback || '').trim();
             const t0 = performance.now();
             const res = await fetch('/api/export_docx', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     kind,
-                    text: rawTranscript,
+                    text: textForServer,
                     segments: window.currentSegments || [],
                     formatted: window.currentFormattedDoc || undefined,
                     allow_gpt_fallback: false,
@@ -2143,15 +2286,45 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
             const src = res.headers.get('X-Docx-Format-Source') || 'unknown';
             console.log(`[docx] export source=${src} kind=${kind} took=${Math.round(performance.now() - t0)}ms`);
+            if (src === 'raw_no_gpt') {
+                console.warn(
+                    '[docx] raw_no_gpt: POST body had no usable `formatted` dict (or empty clean_transcript). ' +
+                        'Check [word-edit] open-in-app / [export] hydrate logs; S3 JSON may lack formatted after an old save.'
+                );
+            }
             const blob = await res.blob();
             saveAs(blob, dlName);
         };
+        const _exportKindTxt = async (kind) => {
+            const payload = _buildExportPayload();
+            let outText = _buildKindText(kind, payload);
+            if (kind === 'transcript' && outText && String(outText).trim()) {
+                try {
+                    const wres = await fetch('/api/wrap_transcript_text', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text: outText })
+                    });
+                    const wjson = await wres.json().catch(() => ({}));
+                    if (wres.ok && wjson.text) outText = wjson.text;
+                } catch (e) {
+                    console.warn('[txt] wrap_transcript_text failed, using raw clean_transcript:', e);
+                }
+            }
+            const dlName = kind === 'summary' ? `${docBase}_summary.txt` : `${docBase}.txt`;
+            _downloadTxt(outText, dlName);
+        };
 
         try {
-            if (wantTranscript) await _exportKind('transcript', `${docBase}.docx`);
-            if (wantSummary)    await _exportKind('summary',    `${docBase}_summary.docx`);
+            if (type === 'docx') {
+                if (wantTranscript) await _exportKindDocx('transcript', `${docBase}.docx`);
+                if (wantSummary)    await _exportKindDocx('summary',    `${docBase}_summary.docx`);
+            } else {
+                if (wantTranscript) await _exportKindTxt('transcript');
+                if (wantSummary)    await _exportKindTxt('summary');
+            }
         } catch (e) {
-            console.error('[docx] export_docx failed:', e);
+            console.error('[docx/txt] export failed:', e);
             if (typeof showStatus === 'function') showStatus('שגיאה בייצוא: ' + e.message, true);
         }
     } else if (type === 'srt') {
@@ -2425,13 +2598,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (typeof showStatus === 'function') showStatus('Select at least one output to generate.', true);
                 return;
             }
-            if (selectedDocKinds.length && selectedDocFormat !== 'docx') {
-                if (typeof showStatus === 'function') showStatus('Only DOCX is available right now for this export.', true);
-                return;
-            }
             closeDownloadMenu();
             if (selectedDocKinds.length) {
-                window.downloadFile('docx', null, { docxKinds: selectedDocKinds });
+                window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds });
             }
             selectedExtraKinds.forEach((kind) => {
                 window.downloadFile(kind, null, {});
@@ -3062,10 +3231,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // One-time doc formatting pass (clean transcript + summary), reused by exports.
         // IMPORTANT: run in background so transcript rendering is never blocked by this request.
         (() => {
-            const fullText = (window.currentSegments || [])
-                .map((s) => String((s && s.text) || '').trim())
-                .filter(Boolean)
-                .join('\n');
+            const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return;
             fetch('/api/format_transcript_summary', {
                 method: 'POST',
@@ -4169,19 +4335,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const words = Array.isArray(tr.words) ? tr.words : null;
                         const captions = Array.isArray(tr.captions) ? tr.captions : null;
                         const segments = Array.isArray(tr.segments) ? tr.segments : [];
-                        const formatted = (tr.formatted && typeof tr.formatted === 'object') ? tr.formatted : null;
-
-                        if (formatted) {
-                            window.currentFormattedDoc = {
-                                clean_transcript: String(formatted.clean_transcript || '').trim(),
-                                overview: String(formatted.overview || '').trim(),
-                                key_points: Array.isArray(formatted.key_points)
-                                    ? formatted.key_points.map((p) => String(p || '').trim()).filter(Boolean)
-                                    : []
-                            };
-                        } else {
-                            window.currentFormattedDoc = null;
-                        }
+                        const trFmt = pickFormattedFromObject(tr);
+                        window.currentFormattedDoc = trFmt || null;
 
                         if (words && captions && words.length > 0 && captions.length > 0) {
                             window.currentWords = words;

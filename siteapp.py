@@ -15,6 +15,7 @@ import requests  # Added for RunPod API calls
 import time
 import logging
 import boto3
+from botocore.exceptions import ClientError
 import os
 import re
 import subprocess
@@ -24,6 +25,7 @@ import tempfile
 import threading
 import uuid
 import pathlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 from io import BytesIO
 
@@ -37,6 +39,9 @@ APP_ROOT = pathlib.Path(__file__).resolve().parent
 TRANSLATE_SCRIPT = APP_ROOT / 'scripts' / 'translate.js'
 
 S3_BUCKET = os.environ.get("S3_BUCKET")
+
+# GPT clean transcript + DOCX export: max characters per wrapped line (override with TRANSCRIPT_LINE_MAX_CHARS).
+TRANSCRIPT_LINE_MAX_CHARS = int(os.environ.get("TRANSCRIPT_LINE_MAX_CHARS", "200"))
 
 app = Flask(__name__) 
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
@@ -71,8 +76,47 @@ def _xml_esc(text):
             .replace('"', '&quot;'))
 
 
-def _wrap_line_max_chars(text, max_chars=150):
+def _merge_caption_lines_into_paragraphs(text):
+    """Normalize transcript text before wrap: cue-style newlines and GPT 'micro-paragraphs'.
+
+    1) Split on blank lines, collapse single newlines inside each block to spaces.
+    2) Merge *runs* of short blocks (typical ~27-char subtitle cues, or GPT using \\n\\n
+       between every cue line) into one paragraph so DOCX does not stay narrow from line 1.
+    """
+    text = str(text or "").strip()
+    if not text:
+        return text
+    blocks = re.split(r'(?:\r?\n\s*){2,}', text)
+    collapsed = []
+    for block in blocks:
+        line = re.sub(r'\s*\r?\n\s*', ' ', block)
+        line = re.sub(r' {2,}', ' ', line).strip()
+        if line:
+            collapsed.append(line)
+    if not collapsed:
+        return ""
+    # GPT often uses \n\n between hard-wrapped ~30–80 char fragments; merge those runs into real paragraphs.
+    # Threshold just below line wrap so typical cue/GPT fragments merge; longer \n\n-separated blocks stay separate.
+    short_thresh = min(TRANSCRIPT_LINE_MAX_CHARS, int(os.environ.get('FORMAT_SHORT_PARA_MERGE_CHARS', '120')))
+    merged = []
+    buf = []
+    for p in collapsed:
+        if len(p) <= short_thresh:
+            buf.append(p)
+        else:
+            if buf:
+                merged.append(' '.join(buf))
+                buf = []
+            merged.append(p)
+    if buf:
+        merged.append(' '.join(buf))
+    return '\n\n'.join(merged)
+
+
+def _wrap_line_max_chars(text, max_chars=None):
     """Wrap a single line by spaces so each physical line is <= max_chars."""
+    if max_chars is None:
+        max_chars = TRANSCRIPT_LINE_MAX_CHARS
     s = str(text or "").strip()
     if not s:
         return []
@@ -89,8 +133,11 @@ def _wrap_line_max_chars(text, max_chars=150):
     return out
 
 
-def _wrap_text_to_max_chars(text, max_chars=150):
+def _wrap_text_to_max_chars(text, max_chars=None):
     """Wrap multi-line text to max chars per line, preserving paragraph breaks."""
+    if max_chars is None:
+        max_chars = TRANSCRIPT_LINE_MAX_CHARS
+    text = _merge_caption_lines_into_paragraphs(text)
     result = []
     for raw_line in str(text or "").splitlines():
         if not raw_line.strip():
@@ -568,6 +615,39 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
     return result_s3_key
 
 
+def _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt'):
+    """Read existing transcript JSON from S3 (same key we would write). Returns dict or None."""
+    bucket = os.environ.get('S3_BUCKET')
+    if not bucket or not input_s3_key:
+        return None
+    base = _derive_output_key_base(user_id, input_s3_key)
+    stage = (stage or 'gpt').strip().lower()
+    key = (base + '_raw.json') if stage == 'raw' else (base + '.json')
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION')
+        )
+        resp = s3_client.get_object(Bucket=bucket, Key=key)
+        raw = resp['Body'].read().decode('utf-8')
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except ClientError as e:
+        code = (e.response or {}).get('Error', {}).get('Code', '')
+        if code in ('NoSuchKey', '404'):
+            return None
+        logging.warning("_get_transcript_json_from_s3 ClientError %s key=%s", code, key)
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logging.warning("_get_transcript_json_from_s3 decode error key=%s: %s", key, e)
+        return None
+    except Exception as e:
+        logging.warning("_get_transcript_json_from_s3 failed key=%s: %s", key, e)
+        return None
+
+
 @app.route('/api/save_job_result', methods=['POST'])
 def save_job_result():
     """Save transcript JSON to S3; return the result_s3_key. Store only the key in DB, not the full JSON."""
@@ -578,6 +658,7 @@ def save_job_result():
         segments = data.get('segments')
         words = data.get('words')
         captions = data.get('captions')
+        has_formatted_key = 'formatted' in data
         formatted = data.get('formatted')
         stage = (data.get('stage') or 'gpt').strip().lower()
         if not user_id or not input_s3_key:
@@ -596,14 +677,32 @@ def save_job_result():
             if not isinstance(captions, list):
                 return jsonify({"error": "captions must be an array"}), 400
             transcript["captions"] = captions
-        if formatted is not None:
-            if not isinstance(formatted, dict):
-                return jsonify({"error": "formatted must be an object"}), 400
-            transcript["formatted"] = {
-                "clean_transcript": str(formatted.get("clean_transcript") or "").strip(),
-                "overview": str(formatted.get("overview") or "").strip(),
-                "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
-            }
+        if has_formatted_key:
+            if formatted is not None:
+                if not isinstance(formatted, dict):
+                    return jsonify({"error": "formatted must be an object"}), 400
+                transcript["formatted"] = {
+                    "clean_transcript": str(formatted.get("clean_transcript") or "").strip(),
+                    "overview": str(formatted.get("overview") or "").strip(),
+                    "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
+                }
+            # JSON null: omit formatted from new object (explicit clear)
+        else:
+            # Client omitted `formatted` (e.g. saveEdits) — do not wipe GPT block already on S3.
+            existing = _get_transcript_json_from_s3(user_id, input_s3_key, stage=stage)
+            exf = existing.get("formatted") if isinstance(existing, dict) else None
+            if isinstance(exf, dict):
+                transcript["formatted"] = {
+                    "clean_transcript": str(exf.get("clean_transcript") or "").strip(),
+                    "overview": str(exf.get("overview") or "").strip(),
+                    "key_points": [str(p).strip() for p in (exf.get("key_points") or []) if str(p).strip()],
+                }
+
+        # Canonical clean_transcript in S3: same merge+wrap as DOCX (fixes GPT \\n\\n micro-lines in JSON).
+        if isinstance(transcript.get("formatted"), dict):
+            _ct = str(transcript["formatted"].get("clean_transcript") or "").strip()
+            if _ct:
+                transcript["formatted"]["clean_transcript"] = _wrap_text_to_max_chars(_ct)
 
         if "segments" not in transcript and "words" not in transcript:
             return jsonify({"error": "segments or words required"}), 400
@@ -1219,23 +1318,195 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
         "model": model_used,
     }
 
-def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he'):
-    """Generate clean transcript paragraphs + separate summary payload."""
+def _split_text_for_format_chunks(text, max_chunk_chars):
+    """Split long transcript into chunks at newlines/spaces so each OpenAI request stays small."""
+    text = str(text or "").strip()
+    if not text:
+        return []
+    max_chunk_chars = max(2000, int(max_chunk_chars))
+    if len(text) <= max_chunk_chars:
+        return [text]
+    chunks = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + max_chunk_chars, n)
+        if end < n:
+            window = text[start:end]
+            nl = window.rfind("\n")
+            if nl > int(max_chunk_chars * 0.45):
+                end = start + nl + 1
+            else:
+                sp = window.rfind(" ")
+                if sp > int(max_chunk_chars * 0.45):
+                    end = start + sp + 1
+        piece = text[start:end].strip()
+        if piece:
+            chunks.append(piece)
+        start = end
+    return chunks
+
+
+def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=0):
+    """POST chat completions; return parsed JSON object from message content.
+
+    Uses (connect, read) timeouts so slow generations get the full read budget.
+    read_retries: extra attempts after ReadTimeout (formatting large Hebrew chunks often needs this).
+    """
     api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
     if not api_key:
         raise RuntimeError("GPT_API_KEY missing")
     model = (os.environ.get('GPT_MODEL') or 'gpt-4o-mini').strip()
-    timeout_sec = int(os.environ.get('GPT_TIMEOUT_SEC', '90') or 90)
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    read_t = max(60, int(timeout_sec))
+    connect_t = min(30, max(10, read_t // 8))
+    timeout_tuple = (connect_t, read_t)
+    last_timeout_exc = None
+    for attempt in range(read_retries + 1):
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=timeout_tuple,
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(f"OpenAI API {resp.status_code}: {(resp.text or '')[:500]}")
+            data = resp.json()
+            content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            if not content:
+                raise RuntimeError("OpenAI returned empty content")
+            content = re.sub(r'^```json\s*', '', content, flags=re.IGNORECASE)
+            content = re.sub(r'^```\s*', '', content)
+            content = re.sub(r'```$', '', content).strip()
+            return json.loads(content)
+        except requests.exceptions.ReadTimeout as e:
+            last_timeout_exc = e
+            if attempt >= read_retries:
+                raise RuntimeError(
+                    f"OpenAI read timed out after {read_t}s (connect {connect_t}s), "
+                    f"{read_retries + 1} attempt(s). "
+                    f"Try GPT_FORMAT_TIMEOUT_SEC=360 or smaller FORMAT_TRANSCRIPT_CHUNK_CHARS."
+                ) from e
+            logging.warning(
+                "OpenAI ReadTimeout format attempt %s/%s; retrying in %ss",
+                attempt + 1,
+                read_retries + 1,
+                2 * (attempt + 1),
+            )
+            time.sleep(min(12, 2 * (attempt + 1)))
+    raise RuntimeError(f"OpenAI read timed out: {last_timeout_exc}") from last_timeout_exc
 
+
+def _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew):
+    if not want_hebrew:
+        return overview, key_points
+    he_char_re = re.compile(r'[\u0590-\u05FF]')
+
+    def _has_hebrew(s):
+        return bool(he_char_re.search(str(s or "")))
+
+    needs_translate = (overview and not _has_hebrew(overview)) or any(
+        (p and not _has_hebrew(p)) for p in key_points
+    )
+    if not needs_translate:
+        return overview, key_points
+    to_translate = []
+    if overview:
+        to_translate.append({"id": 0, "text": overview})
+    for i, p in enumerate(key_points):
+        to_translate.append({"id": i + 1, "text": p})
+    translated, _meta = translate_segments(to_translate, target_lang='he')
+    translated_map = {
+        int((seg or {}).get("id")): str((seg or {}).get("translated_text") or "").strip()
+        for seg in (translated or [])
+        if isinstance(seg, dict)
+    }
+    if overview:
+        overview = translated_map.get(0) or overview
+    key_points = [
+        translated_map.get(i + 1) or p
+        for i, p in enumerate(key_points)
+    ]
+    return overview, key_points
+
+
+def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, read_retries=0):
+    """Format one transcript fragment into clean_transcript only (paragraphs, wrapped to TRANSCRIPT_LINE_MAX_CHARS)."""
+    lang_hint = str(target_lang or 'he').strip().lower()[:8]
+    want_hebrew = lang_hint.startswith('he')
+    output_lang_label = 'Hebrew' if want_hebrew else target_lang
+    system_prompt = (
+        "You are an expert transcript editor. "
+        "Return ONLY valid JSON: {\"clean_transcript\":string} . "
+        "No markdown fences. Keep original language and directionality."
+    )
+    user_prompt = (
+        "Edit this transcript fragment.\n\n"
+        "* Correct grammar and punctuation; keep the original wording as much as possible.\n"
+        "* Split into clear paragraphs (2–4 sentences each); new paragraph when the topic changes.\n"
+        f"* Each LINE in clean_transcript must be at most {TRANSCRIPT_LINE_MAX_CHARS} characters; use line breaks.\n"
+        "* Do NOT summarize or omit content.\n\n"
+        f"Output language: {output_lang_label}\n\n"
+        f"Fragment:\n\n{chunk_text}"
+    )
+    parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
+    clean = str((parsed or {}).get("clean_transcript") or "").strip()
+    return _wrap_text_to_max_chars(clean)
+
+
+def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0):
+    """Produce overview + key_points from (possibly truncated) transcript text."""
+    lang_hint = str(target_lang or 'he').strip().lower()[:8]
+    want_hebrew = lang_hint.startswith('he')
+    output_lang_label = 'Hebrew' if want_hebrew else target_lang
+    system_prompt = (
+        "You are an expert analyst. "
+        "Return ONLY valid JSON: {\"overview\":string,\"key_points\":[string]} . "
+        "No markdown fences."
+    )
+    user_prompt = (
+        "Summarize this transcript.\n\n"
+        "* A short 3–4 sentence overview.\n"
+        "* 5–8 key points (strings in the array).\n"
+        "Focus on decisions, insights, and actionable ideas. Ignore filler.\n\n"
+        f"Output language must be {output_lang_label}.\n\n"
+        f"Transcript:\n\n{transcript_excerpt}"
+    )
+    parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
+    overview = str((parsed or {}).get("overview") or "").strip()
+    key_points = (parsed or {}).get("key_points")
+    if not isinstance(key_points, list):
+        key_points = []
+    key_points = [str(p).strip() for p in key_points if str(p).strip()]
+    overview, key_points = _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew)
+    return {"overview": overview, "key_points": key_points}
+
+
+def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'):
+    """One OpenAI call: full transcript + summary (only for moderately sized input)."""
+    timeout_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
+    read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
+    lang_hint = str(target_lang or 'he').strip().lower()[:8]
+    want_hebrew = lang_hint.startswith('he')
+    output_lang_label = 'Hebrew' if want_hebrew else target_lang
     system_prompt = (
         "You are an expert transcript editor. "
         "Return ONLY valid JSON in this exact shape: "
         "{\"clean_transcript\":string,\"overview\":string,\"key_points\":[string]} . "
         "Do not include markdown fences. Keep original language and directionality."
     )
-    lang_hint = str(target_lang or 'he').strip().lower()[:8]
-    want_hebrew = lang_hint.startswith('he')
-    output_lang_label = 'Hebrew' if want_hebrew else target_lang
     user_prompt = (
         "You are editing a transcript.\n\n"
         "Task 1 – Clean Transcript\n\n"
@@ -1243,8 +1514,8 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he')
         "* Keep the original wording as much as possible.\n"
         "* Split the text into clear paragraphs (2–4 sentences each).\n"
         "* Start a new paragraph when the topic changes.\n"
-        "* IMPORTANT: each line in clean_transcript must be at most 150 characters.\n"
-        "* Add line breaks as needed to keep line length <= 150 characters.\n"
+        f"* IMPORTANT: each line in clean_transcript must be at most {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
+        f"* Add line breaks as needed to keep line length <= {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
         "* Do NOT summarize or remove content.\n\n"
         "Task 2 – Summary\n"
         "Create a separate summary including:\n\n"
@@ -1258,77 +1529,89 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he')
         "Transcript:\n\n"
         f"{transcript_text}"
     )
-    payload = {
-        "model": model,
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
-    resp = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=timeout_sec,
-    )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"OpenAI API {resp.status_code}: {(resp.text or '')[:500]}")
-    data = resp.json()
-    content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-    if not content:
-        raise RuntimeError("OpenAI returned empty content")
-    # Allow occasional accidental code fences.
-    content = re.sub(r'^```json\s*', '', content, flags=re.IGNORECASE)
-    content = re.sub(r'^```\s*', '', content)
-    content = re.sub(r'```$', '', content).strip()
-    parsed = json.loads(content)
-
+    parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
     clean_transcript = str((parsed or {}).get("clean_transcript") or "").strip()
-    clean_transcript = _wrap_text_to_max_chars(clean_transcript, max_chars=150)
+    clean_transcript = _wrap_text_to_max_chars(clean_transcript)
     overview = str((parsed or {}).get("overview") or "").strip()
     key_points = (parsed or {}).get("key_points")
     if not isinstance(key_points, list):
         key_points = []
     key_points = [str(p).strip() for p in key_points if str(p).strip()]
-
-    # Safety net: if Hebrew is requested but summary fields came back non-Hebrew,
-    # run a focused translation pass for overview/key points only.
-    if want_hebrew:
-        he_char_re = re.compile(r'[\u0590-\u05FF]')
-
-        def _has_hebrew(s):
-            return bool(he_char_re.search(str(s or "")))
-
-        needs_translate = (overview and not _has_hebrew(overview)) or any(
-            (p and not _has_hebrew(p)) for p in key_points
-        )
-        if needs_translate:
-            to_translate = []
-            if overview:
-                to_translate.append({"id": 0, "text": overview})
-            for i, p in enumerate(key_points):
-                to_translate.append({"id": i + 1, "text": p})
-            translated, _meta = translate_segments(to_translate, target_lang='he')
-            translated_map = {
-                int((seg or {}).get("id")): str((seg or {}).get("translated_text") or "").strip()
-                for seg in (translated or [])
-                if isinstance(seg, dict)
-            }
-            if overview:
-                overview = translated_map.get(0) or overview
-            key_points = [
-                translated_map.get(i + 1) or p
-                for i, p in enumerate(key_points)
-            ]
+    overview, key_points = _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew)
     return {
         "clean_transcript": clean_transcript,
         "overview": overview,
         "key_points": key_points
+    }
+
+
+def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he'):
+    """Generate clean transcript paragraphs + summary. Uses chunked calls when input is very long."""
+    transcript_text = str(transcript_text or "").strip()
+    if not transcript_text:
+        raise RuntimeError("empty transcript")
+
+    max_single = int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '14000'))
+    chunk_chars = int(os.environ.get('FORMAT_TRANSCRIPT_CHUNK_CHARS', '8000'))
+    summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '48000'))
+    format_read_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
+    read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
+    parallel = max(1, min(8, int(os.environ.get('FORMAT_TRANSCRIPT_PARALLEL', '2'))))
+
+    if len(transcript_text) <= max_single:
+        return _format_transcript_and_summary_single_shot(transcript_text, target_lang=target_lang)
+
+    logging.info(
+        "format_transcript: chunked path total_chars=%s chunk≈%s parallel=%s",
+        len(transcript_text),
+        chunk_chars,
+        parallel,
+    )
+    parts = _split_text_for_format_chunks(transcript_text, chunk_chars)
+    if not parts:
+        raise RuntimeError("no chunks after split")
+
+    clean_parts = [None] * len(parts)
+
+    def _run_chunk(idx_part):
+        idx, part = idx_part
+        logging.info(
+            "format_transcript: chunk %s/%s chars=%s",
+            idx + 1,
+            len(parts),
+            len(part),
+        )
+        return idx, _format_transcript_clean_chunk_openai(part, target_lang, format_read_sec, read_retries)
+
+    if parallel <= 1 or len(parts) == 1:
+        for i, part in enumerate(parts):
+            _, c = _run_chunk((i, part))
+            clean_parts[i] = c
+    else:
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            futures = [pool.submit(_run_chunk, (i, p)) for i, p in enumerate(parts)]
+            for fut in as_completed(futures):
+                try:
+                    idx, c = fut.result()
+                    clean_parts[idx] = c
+                except Exception as e:
+                    raise RuntimeError(f"OpenAI format chunk failed: {e}") from e
+
+    clean_merged = "\n\n".join(p.strip() for p in clean_parts if p and str(p).strip())
+    clean_merged = _wrap_text_to_max_chars(clean_merged)
+
+    summ_input = clean_merged
+    if len(summ_input) > summary_in_max:
+        summ_input = (
+            clean_merged[: summary_in_max // 2]
+            + "\n\n[… פסקה מקוצרת — המשך התמלול …]\n\n"
+            + clean_merged[-(summary_in_max // 2) :]
+        )
+    summary = _format_summary_only_openai(summ_input, target_lang, format_read_sec, read_retries)
+    return {
+        "clean_transcript": clean_merged,
+        "overview": summary.get("overview") or "",
+        "key_points": summary.get("key_points") or [],
     }
 
 
@@ -1472,6 +1755,20 @@ def api_translate_segments():
         _translate_in_flight -= 1
 
 
+@app.route('/api/wrap_transcript_text', methods=['POST'])
+def api_wrap_transcript_text():
+    """Re-flow clean_transcript for TXT export (same merge+wrap as DOCX). Client TXT was raw GPT line breaks (~30 chars)."""
+    data = request.json or {}
+    text = str(data.get('text') or '').strip()
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+    try:
+        return jsonify({"text": _wrap_text_to_max_chars(text)}), 200
+    except Exception as e:
+        logging.warning("wrap_transcript_text failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/format_transcript_summary', methods=['POST'])
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export."""
@@ -1489,6 +1786,9 @@ def api_format_transcript_summary():
         return jsonify({"error": "No transcript text provided"}), 400
     try:
         out = _format_transcript_and_summary_via_openai(raw_text, target_lang=target_lang)
+        ct = str((out or {}).get('clean_transcript') or '').strip()
+        if ct:
+            out['clean_transcript'] = _wrap_text_to_max_chars(ct)
         return jsonify(out), 200
     except Exception as e:
         logging.warning("format_transcript_summary failed: %s", e)
@@ -1579,7 +1879,7 @@ def api_export_docx():
             dl_name = filename + '_summary.docx'
         else:
             clean = str(fmt.get('clean_transcript') or '').strip() or raw_text
-            clean = _wrap_text_to_max_chars(clean, max_chars=150)
+            clean = _wrap_text_to_max_chars(clean)
             lines = [l for l in clean.split('\n') if l.strip()]
             dl_name = filename + '.docx'
 
