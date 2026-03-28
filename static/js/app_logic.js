@@ -2395,7 +2395,17 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             return payload.clean;
         };
         const _downloadTxt = (text, name) => {
-            saveAs(new Blob([text], { type: 'text/plain;charset=utf-8' }), name);
+            const toRtlTxt = (src) => {
+                const s = String(src || '');
+                // Plain TXT has no direction metadata; inject RLM so Hebrew content opens RTL.
+                if (!/[\u0590-\u05FF]/.test(s)) return s;
+                const rlm = '\u200F';
+                return s
+                    .split('\n')
+                    .map((line) => (line.trim() ? (rlm + line) : line))
+                    .join('\n');
+            };
+            saveAs(new Blob([toRtlTxt(text)], { type: 'text/plain;charset=utf-8' }), name);
         };
 
         const _exportKindDocx = async (kind, dlName) => {

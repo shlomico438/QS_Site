@@ -44,6 +44,16 @@ S3_BUCKET = os.environ.get("S3_BUCKET")
 # GPT clean transcript + DOCX export: max characters per wrapped line (override with TRANSCRIPT_LINE_MAX_CHARS).
 TRANSCRIPT_LINE_MAX_CHARS = int(os.environ.get("TRANSCRIPT_LINE_MAX_CHARS", "200"))
 
+
+def _safe_rsid(value, fallback):
+    s = str(value or '').strip().upper()
+    return s if re.fullmatch(r'[0-9A-F]{8}', s) else fallback
+
+
+# DOCX RSIDs (override only if you know what you're doing; must be 8-char hex).
+DOCX_RSID_ROOT = _safe_rsid(os.environ.get("DOCX_RSID_ROOT"), "00CA5FDD")
+DOCX_RSID_P = _safe_rsid(os.environ.get("DOCX_RSID_P"), "009F2D46")
+
 app = Flask(__name__) 
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
@@ -160,9 +170,11 @@ def _build_rtl_docx(lines, bold_first=False):
     for i, line in enumerate(lines):
         line_s = str(line or '').strip()
         bold = bold_first and i == 0
-        ppr = '<w:pPr><w:bidi w:val="1"/><w:jc w:val="right"/></w:pPr>'
+        # Match empiric Word LTR->RTL diff: rsidP on paragraph + jc="left" within bidi paragraph.
+        ppr = '<w:pPr><w:bidi w:val="1"/><w:jc w:val="left"/></w:pPr>'
+        p_open = f'<w:p w:rsidP="{DOCX_RSID_P}">'
         if not line_s:
-            para_xmls.append(f'<w:p>{ppr}</w:p>')
+            para_xmls.append(f'{p_open}{ppr}</w:p>')
         else:
             b_tags = '<w:b/><w:bCs/>' if bold else ''
             rpr = (f'<w:rPr>{b_tags}'
@@ -171,7 +183,7 @@ def _build_rtl_docx(lines, bold_first=False):
                    '<w:rtl w:val="1"/>'
                    '<w:lang w:val="he-IL" w:bidi="he-IL"/></w:rPr>')
             t   = f'<w:t xml:space="preserve">{_xml_esc(line_s)}</w:t>'
-            para_xmls.append(f'<w:p>{ppr}<w:r>{rpr}{t}</w:r></w:p>')
+            para_xmls.append(f'{p_open}{ppr}<w:r>{rpr}{t}</w:r></w:p>')
 
     body = '\n'.join(para_xmls)
 
@@ -249,6 +261,11 @@ def _build_rtl_docx(lines, bold_first=False):
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         '<w:defaultTabStop w:val="720"/>'
+        '<w:rsids>'
+        f'<w:rsidRoot w:val="{DOCX_RSID_ROOT}"/>'
+        f'<w:rsid w:val="{DOCX_RSID_P}"/>'
+        f'<w:rsid w:val="{DOCX_RSID_ROOT}"/>'
+        '</w:rsids>'
         '</w:settings>'
     )
 
@@ -1647,6 +1664,8 @@ def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, 
         "Edit this transcript fragment.\n\n"
         "* Correct grammar and punctuation; keep the original wording as much as possible.\n"
         "* Split into clear paragraphs (2–4 sentences each); new paragraph when the topic changes.\n"
+        "* Prefer paragraph length under 350-450 characters.\n"
+        "* Avoid sentences longer than 120 characters.\n"
         f"* Each LINE in clean_transcript must be at most {TRANSCRIPT_LINE_MAX_CHARS} characters; use line breaks.\n"
         "* Do NOT summarize or omit content.\n\n"
         f"Output language: {output_lang_label}\n\n"
@@ -1705,6 +1724,8 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         "* Keep the original wording as much as possible.\n"
         "* Split the text into clear paragraphs (2–4 sentences each).\n"
         "* Start a new paragraph when the topic changes.\n"
+        "* Prefer paragraph length under 350-450 characters.\n"
+        "* Avoid sentences longer than 120 characters.\n"
         f"* IMPORTANT: each line in clean_transcript must be at most {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
         f"* Add line breaks as needed to keep line length <= {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
         "* Do NOT summarize or remove content.\n\n"
