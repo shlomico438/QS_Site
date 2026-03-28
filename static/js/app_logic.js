@@ -447,10 +447,55 @@ function splitLongSegments(segments, maxChars = 40) {
  */
 function showStatus(message, isError = false, options = {}) {
     if (!message && message !== 0) return;
-    const str = String(message);
+    const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+    const _translateStatusMessage = (msg) => {
+        const raw = String(msg || '');
+        if (!isHebrewUi) return raw;
+        const unknownErr = 'שגיאה לא ידועה';
+        if (raw === 'Retry failed') return 'הניסיון החוזר נכשל';
+        if (raw === 'No uploaded file found for this recording.') return 'לא נמצא קובץ שהועלה עבור ההקלטה הזאת.';
+        if (raw.startsWith('Transcribe failed: ')) {
+            const tail = raw.slice('Transcribe failed: '.length).trim();
+            const heTail = tail === 'Unknown error' ? unknownErr : tail;
+            return `התמלול נכשל: ${heTail}`;
+        }
+        if (raw === 'Recording deleted') return 'ההקלטה נמחקה';
+        if (raw.startsWith('Delete failed: ')) {
+            const tail = raw.slice('Delete failed: '.length).trim();
+            const heTail = tail === 'Unknown error' ? unknownErr : tail;
+            return `המחיקה נכשלה: ${heTail}`;
+        }
+        if (raw === 'Recording renamed') return 'שם ההקלטה עודכן';
+        if (raw.startsWith('Rename failed: ')) {
+            const tail = raw.slice('Rename failed: '.length).trim();
+            const heTail = tail === 'Unknown error' ? unknownErr : tail;
+            return `שינוי השם נכשל: ${heTail}`;
+        }
+        if (raw === 'Could not load file.') return 'לא ניתן לטעון את הקובץ.';
+        if (raw === 'Please sign in to download the movie.') return 'יש להתחבר כדי להוריד את הווידאו.';
+        if (raw === 'No transcript available to export.') return 'אין תמלול זמין לייצוא.';
+        if (raw === 'Load a video first, then use Styled Subtitles before downloading the movie.') {
+            return 'יש לטעון קודם וידאו, להשתמש בכתוביות מעוצבות ואז להוריד את הסרטון.';
+        }
+        if (raw === 'Video must be from your uploads (save and use Styled Subtitles from an uploaded video).') {
+            return 'הווידאו חייב להיות מהקבצים שהעלית (יש לשמור ולהשתמש בכתוביות מעוצבות על וידאו שהועלה).';
+        }
+        if (raw === 'Error: FileSaver library not loaded.') return 'שגיאה: ספריית FileSaver לא נטענה.';
+        if (raw.startsWith('Google Login Error: ')) {
+            return `שגיאת התחברות עם Google: ${raw.slice('Google Login Error: '.length).trim()}`;
+        }
+        if (raw === 'Select at least one output to generate.') return 'יש לבחור לפחות פלט אחד ליצירה.';
+        if (raw === 'Missing recording context for transcription.') return 'חסר מידע הקשרי להקלטה לצורך תמלול.';
+        if (raw === 'JSON transcript loaded locally.') return 'קובץ תמלול JSON נטען מקומית.';
+        if (raw === 'No subtitle cues detected in this file. Please use a standard .srt/.vtt format.') {
+            return 'לא זוהו מקטעי כתוביות בקובץ. יש להשתמש בפורמט תקני ‎.srt/.vtt‎.';
+        }
+        if (raw === 'Unknown error') return unknownErr;
+        return raw;
+    };
+    const str = _translateStatusMessage(String(message));
     if (isError) {
-        const isHebrew = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
-        showGlobalAlert(str, { confirmText: isHebrew ? 'אישור' : 'OK' });
+        showGlobalAlert(str, { confirmText: isHebrewUi ? 'אישור' : 'OK' });
     } else {
         _showToast(str, options.duration ?? 3000);
     }
@@ -5514,20 +5559,22 @@ function renderWordCaptionEditor() {
                 return `<span class="word-token" contenteditable="false" tabindex="0" data-wi="${wi}" data-highlighted="${hl}" data-empty="${isEmpty ? '1' : '0'}" data-start="${wStart}" data-end="${wEnd}" title="${title}" style="display:inline-block; min-width:0.8ch;">${display}</span>`;
             })
             .join(' ');
+        const posLabelMap = { bottom: 'תחתון', middle: 'אמצע', top: 'עליון' };
         const posSeg = ['bottom', 'middle', 'top'].map(p =>
-            `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${p.charAt(0).toUpperCase() + p.slice(1)}</button>`
+            `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${posLabelMap[p] || p}</button>`
         ).join('');
+        const styleTooltip = 'עיצוב שורה. גררו כדי לבחור כמה שורות.';
         const toolbarHtml = isEditing ? `
             <div class="qs-caption-toolbar" style="display:flex;align-items:center;gap:6px;flex-shrink:0;opacity:0;transition:opacity .12s ease;">
               <span class="qs-timing-inline" style="display:none;font-size:10px;color:#6b7280;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;"></span>
               <button type="button" class="qs-nudge-btn" data-nudge="later" title="Later">←</button>
               <button type="button" class="qs-nudge-btn" data-nudge="earlier" title="Earlier">→</button>
-              <button type="button" class="qs-style-btn" data-ci="${ci}" title="Style">🎨</button>
+              <button type="button" class="qs-style-btn" data-ci="${ci}" title="${styleTooltip}" aria-label="${styleTooltip}">🎨</button>
             </div>` : '';
         const panelHtml = isEditing ? `
             <div class="qs-inline-style-panel" data-ci="${ci}" style="display:none;width:100%;padding:10px 12px;border-radius:10px;background:#f9fafb;border:1px solid #e5e7eb;margin-top:6px;box-sizing:border-box;">
               <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-                <span style="font-size:11px;color:#6b7280;width:64px;">Position</span>
+                <span style="font-size:11px;color:#6b7280;width:64px;">מיקום</span>
                 <div class="qs-inline-seg qs-pos-seg" data-ci="${ci}" style="display:flex;gap:4px;flex-wrap:wrap;">${posSeg}</div>
               </div>
             </div>` : '';
@@ -5543,7 +5590,24 @@ function renderWordCaptionEditor() {
         `;
     }).join('');
 
-    container.innerHTML = rows;
+    const globalPosLabelMap = { bottom: 'תחתון', middle: 'אמצע', top: 'עליון' };
+    const globalPosSeg = ['bottom', 'middle', 'top'].map(p =>
+        `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${globalPosLabelMap[p] || p}</button>`
+    ).join('');
+    const selectAllUiHtml = isEditing ? `
+      <div class="qs-global-style-wrap">
+        <label class="qs-select-all-label">
+          <input type="checkbox" class="qs-select-all-checkbox" />
+          <span>בחר הכול</span>
+        </label>
+        <div class="qs-global-style-panel" style="display:none;">
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <span style="font-size:11px;color:#6b7280;width:64px;">מיקום</span>
+            <div class="qs-inline-seg qs-global-pos-seg" style="display:flex;gap:4px;flex-wrap:wrap;">${globalPosSeg}</div>
+          </div>
+        </div>
+      </div>` : '';
+    container.innerHTML = `${selectAllUiHtml}${rows}`;
     container.style.direction = textDirection;
     container.style.textAlign = textAlign;
     container.contentEditable = 'false';
@@ -5571,7 +5635,7 @@ function renderWordCaptionEditor() {
             opacity: 1 !important;
           }
           #transcript-window.transcript-editing .caption-row.qs-line-selected {
-            background: rgba(0,0,0,0.08);
+            background: rgba(0,0,0,0.08) !important;
             border-radius: 10px;
           }
           /* Timestamps: hidden until user selects a line (edit mode) */
@@ -5613,10 +5677,14 @@ function renderWordCaptionEditor() {
           /* RTL visual correction: swap which physical side is highlighted. */
           #transcript-window.qs-rtl .word-token.qs-handle-start { box-shadow: inset 0 0 0 2px rgba(59,130,246,0.95), inset -6px 0 0 rgba(59,130,246,0.95); border-radius: 6px; background: rgba(59,130,246,0.12); }
           #transcript-window.qs-rtl .word-token.qs-handle-end { box-shadow: inset 0 0 0 2px rgba(59,130,246,0.95), inset 6px 0 0 rgba(59,130,246,0.95); border-radius: 6px; background: rgba(59,130,246,0.12); }
-          #transcript-window .caption-row.qs-sel-caption { background: rgba(0,0,0,0.08); border-radius: 10px; padding: 1px 0; }
+          #transcript-window .caption-row.qs-sel-caption { background: rgba(0,0,0,0.08) !important; border-radius: 10px; padding: 1px 0; }
           #transcript-window[data-multi-select="1"] .caption-row.qs-line-selected,
           #transcript-window[data-multi-select="1"] .caption-row.qs-sel-caption {
-            background: rgba(0,0,0,0.08);
+            background: rgba(0,0,0,0.08) !important;
+          }
+          #transcript-window[data-select-all="1"] .caption-row.qs-line-selected,
+          #transcript-window[data-select-all="1"] .caption-row.qs-sel-caption {
+            background: rgba(107,114,128,0.22) !important;
           }
           .qs-boundary-pipe {
             display: inline-block;
@@ -5651,6 +5719,46 @@ function renderWordCaptionEditor() {
             line-height: 1;
             box-shadow: 0 4px 14px rgba(0,0,0,0.08);
             padding: 0;
+          }
+          #transcript-window .qs-global-style-wrap {
+            margin-bottom: 10px;
+            padding: 6px 0 2px 0;
+            border-bottom: 1px solid rgba(229,231,235,0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end !important;
+            text-align: right;
+            direction: rtl;
+            width: 100%;
+          }
+          #transcript-window .qs-select-all-label {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            font-size: 12px;
+            color: #374151;
+            user-select: none;
+            cursor: pointer;
+            direction: rtl;
+            width: auto;
+            align-self: flex-end !important;
+            margin: 0;
+          }
+          #transcript-window .qs-select-all-checkbox {
+            width: 14px;
+            height: 14px;
+            margin: 0;
+            accent-color: #1e3a8a;
+          }
+          #transcript-window .qs-global-style-panel {
+            margin-top: 8px;
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            box-sizing: border-box;
           }
           #transcript-window[data-multi-select="1"] .caption-row.qs-line-selected .qs-style-btn {
             display: none;
@@ -6067,6 +6175,19 @@ function renderWordCaptionEditor() {
     function _isMultiSelectActive() {
         return _getSelectedRowSet().size > 1;
     }
+    function _syncGlobalSelectAllUI() {
+        if (!isEditing) return;
+        const checkbox = container.querySelector('.qs-select-all-checkbox');
+        const panel = container.querySelector('.qs-global-style-panel');
+        if (!checkbox || !panel) return;
+        const totalCaps = Array.isArray(window.currentCaptions) ? window.currentCaptions.length : 0;
+        const selectedCount = _getSelectedRowSet().size;
+        const allSelected = totalCaps > 0 && selectedCount === totalCaps;
+        checkbox.checked = allSelected;
+        panel.style.display = allSelected ? 'block' : 'none';
+        if (allSelected) container.setAttribute('data-select-all', '1');
+        else container.removeAttribute('data-select-all');
+    }
     function _setSelectedRows(cis, opts = {}) {
         const { setAnchor = false } = opts || {};
         const maxLen = Array.isArray(window.currentCaptions) ? window.currentCaptions.length : 0;
@@ -6092,6 +6213,7 @@ function renderWordCaptionEditor() {
         } else {
             window._qsUserSelectedRowCi = null;
         }
+        _syncGlobalSelectAllUI();
     }
     function _selectRangeTo(ci) {
         const maxLen = Array.isArray(window.currentCaptions) ? window.currentCaptions.length : 0;
@@ -6205,12 +6327,6 @@ function renderWordCaptionEditor() {
             container.addEventListener('click', (e) => {
                 const styleBtn = e.target && e.target.closest ? e.target.closest('.qs-style-btn') : null;
                 if (styleBtn && container.contains(styleBtn)) {
-                    if (window._qsSuppressNextStyleClick) {
-                        window._qsSuppressNextStyleClick = false;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        return;
-                    }
                     if (window._qsRowDragMoved) {
                         window._qsRowDragMoved = false;
                         return;
@@ -6243,6 +6359,48 @@ function renderWordCaptionEditor() {
                     }
                     return;
                 }
+                const selectAllCheckbox = e.target && e.target.closest ? e.target.closest('.qs-select-all-checkbox') : null;
+                if (selectAllCheckbox && container.contains(selectAllCheckbox)) {
+                    const totalCaps = Array.isArray(window.currentCaptions) ? window.currentCaptions.length : 0;
+                    if (selectAllCheckbox.checked && totalCaps > 0) {
+                        const allCis = [];
+                        for (let i = 0; i < totalCaps; i++) allCis.push(i);
+                        _setSelectedRows(allCis, { setAnchor: false });
+                        setTimingHandle(null);
+                    } else {
+                        const fallbackCi = Number.isFinite(window._qsUserSelectedRowCi) ? window._qsUserSelectedRowCi : 0;
+                        setActiveRow(fallbackCi, { user: true });
+                        setTimingHandle({ type: 'caption', ci: fallbackCi });
+                    }
+                    return;
+                }
+                const globalSeg = e.target && e.target.closest ? e.target.closest('.qs-global-pos-seg .qs-inline-seg-btn') : null;
+                if (globalSeg && container.contains(globalSeg)) {
+                    if (!window.currentCaptions || !window.currentCaptions.length) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const pos = globalSeg.getAttribute('data-pos');
+                    if (!pos) return;
+                    window.currentCaptions.forEach((cap) => {
+                        if (!cap) return;
+                        cap.style = cap.style && typeof cap.style === 'object' ? { ...cap.style } : {};
+                        cap.style.position = pos;
+                    });
+                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                    if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                    const t = _mediaNow();
+                    if (typeof highlightActiveCaptionRowByTime === 'function') highlightActiveCaptionRowByTime(t);
+                    if (typeof window.updateVideoWordOverlay === 'function') window.updateVideoWordOverlay(t);
+                    container.querySelectorAll('.qs-global-pos-seg .qs-inline-seg-btn').forEach(btn => {
+                        btn.classList.toggle('is-selected', btn.getAttribute('data-pos') === pos);
+                    });
+                    // Keep inline panel toggles in sync if one is open.
+                    container.querySelectorAll('.qs-inline-style-panel[data-ci]').forEach((panelEl) => {
+                        const ci = parseInt(panelEl.getAttribute('data-ci'), 10);
+                        if (Number.isFinite(ci)) syncInlineStylePanel(ci);
+                    });
+                    return;
+                }
                 const seg = e.target && e.target.closest ? e.target.closest('.qs-inline-seg-btn') : null;
                 if (seg && container.contains(seg)) {
                     const wrap = seg.closest('.qs-inline-style-panel');
@@ -6269,49 +6427,6 @@ function renderWordCaptionEditor() {
                     targetCis.forEach((ti) => syncInlineStylePanel(ti));
                 }
             });
-        }
-
-        // Style icon behavior:
-        // - Double-click 🎨 selects ALL caption rows.
-        // - Next click 🎨 collapses selection back to only the clicked row.
-        if (!container._qsInlineStyleDblClickBound) {
-            container._qsInlineStyleDblClickBound = true;
-            container.addEventListener('dblclick', (e) => {
-                const styleBtn = e.target && e.target.closest ? e.target.closest('.qs-style-btn') : null;
-                if (!styleBtn || !container.contains(styleBtn)) return;
-                e.preventDefault();
-                e.stopPropagation();
-
-                if (window._qsRowDragMoved) {
-                    window._qsRowDragMoved = false;
-                    return;
-                }
-
-                const cci = parseInt(styleBtn.getAttribute('data-ci'), 10);
-                if (!Number.isFinite(cci)) return;
-
-                const totalCaps = Array.isArray(window.currentCaptions) ? window.currentCaptions.length : 0;
-                if (totalCaps <= 0) return;
-
-                // Suppress the click that immediately follows the dblclick.
-                window._qsSuppressNextStyleClick = true;
-
-                const allCis = [];
-                for (let i = 0; i < totalCaps; i++) allCis.push(i);
-                _setSelectedRows(allCis, { setAnchor: false });
-
-                // Arrows are disabled for multi-select (keep timing handle off).
-                setTimingHandle(null);
-
-                // Open inline panel under the row whose icon was double-clicked.
-                const panel = container.querySelector(`.qs-inline-style-panel[data-ci="${cci}"]`);
-                container.querySelectorAll('.qs-inline-style-panel').forEach(p => { p.style.display = 'none'; });
-                if (panel) {
-                    panel.style.display = 'block';
-                    window._qsStylePanelOpenCi = cci;
-                    syncInlineStylePanel(cci);
-                }
-            }, true);
         }
 
         clearActiveRowUI();
@@ -6407,6 +6522,7 @@ function renderWordCaptionEditor() {
                 syncInlineStylePanel(window._qsStylePanelOpenCi);
             }
         }
+        _syncGlobalSelectAllUI();
         _updateTimingOverlay();
         _updateNudgeButtonsState();
     }
