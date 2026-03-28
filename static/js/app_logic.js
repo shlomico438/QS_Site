@@ -2080,10 +2080,20 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const baseName = rawBaseName.replace(/^job_\d+_/, '').trim() || "transcript";
 
     if (type === 'movie') {
-        console.log('[movie export] Start');
+        const movieStageT0 = Date.now();
+        const _movieTs = () => new Date().toISOString();
+        const _movieElapsed = () => ((Date.now() - movieStageT0) / 1000).toFixed(2) + 's';
+        const logMovieStage = (stage, extra) => {
+            if (typeof extra !== 'undefined') {
+                console.log(`[movie export][${_movieTs()}][+${_movieElapsed()}] ${stage}`, extra);
+            } else {
+                console.log(`[movie export][${_movieTs()}][+${_movieElapsed()}] ${stage}`);
+            }
+        };
+        logMovieStage('Start');
         const { data: { user: movieUser } } = await supabase.auth.getUser();
         if (!movieUser) {
-            console.log('[movie export] No user – show sign-in');
+            logMovieStage('No user – show sign-in');
             if (typeof showStatus === 'function') showStatus("Please sign in to download the movie.", true);
             window.pendingExportType = 'movie';
             localStorage.setItem('pendingExportType', 'movie');
@@ -2092,9 +2102,11 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
             return;
         }
-        console.log('[movie export] User OK');
+        logMovieStage('User OK', { userId: movieUser.id });
         if (!window.currentSegments.length) {
+            logMovieStage('Segments missing – trying recovery');
             await tryRecoverSegmentsForExport();
+            logMovieStage('Segment recovery finished', { segments: (window.currentSegments || []).length });
         }
         if (!window.currentSegments.length) {
             if (typeof showStatus === 'function') showStatus("No transcript available to export.", true);
@@ -2112,21 +2124,26 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         const widthPx = (video.videoWidth && video.videoWidth > 0) ? video.videoWidth : 0;
         const heightPx = (video.videoHeight && video.videoHeight > 0) ? video.videoHeight : 0;
         const isPortrait = heightPx > 0 && widthPx > 0 && heightPx > widthPx;
-        console.log('[movie export] Video OK – duration', durationSec, 's, width', widthPx, ', portrait', isPortrait);
+        logMovieStage('Video OK', { durationSec, widthPx, heightPx, isPortrait });
         const inputS3Key = localStorage.getItem('lastS3Key');
         if (!inputS3Key || !inputS3Key.startsWith('users/')) {
-            console.log('[movie export] No/invalid lastS3Key:', inputS3Key ? inputS3Key.substring(0, 30) + '…' : 'null');
+            logMovieStage('No/invalid lastS3Key', inputS3Key ? inputS3Key.substring(0, 30) + '…' : 'null');
             if (typeof showStatus === 'function') {
-                const baseErr = typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed.";
+                const baseErr = movieT('movie_burn_failed', 'יצירת סרטון נכשלה');
                 showStatus(baseErr, true);
                 showStatus("Video must be from your uploads (save and use Styled Subtitles from an uploaded video).", true);
             }
             return;
         }
-        console.log('[movie export] S3 key OK');
+        logMovieStage('S3 key OK');
 
         const mainBtn = document.getElementById('main-btn');
         const creatingMovieText = (typeof window.t === 'function' ? (window.t('creating_movie') || 'Creating movie...') : 'Creating movie...');
+        const movieT = (key, fallback) => {
+            if (typeof window.t !== 'function') return fallback;
+            const val = window.t(key);
+            return (!val || val === key) ? fallback : val;
+        };
         if (mainBtn) {
             mainBtn.disabled = true;
             mainBtn.innerText = creatingMovieText;
@@ -2134,27 +2151,36 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
 
         try {
             if (typeof ensureJobRecordOnExport === 'function') {
-                console.log('[movie export] Ensuring job record…');
+                const tJob = Date.now();
+                logMovieStage('Ensuring job record');
                 await ensureJobRecordOnExport();
-                console.log('[movie export] Job record done');
+                logMovieStage('Job record done', { tookMs: Date.now() - tJob });
             }
-            console.log('[movie export] Fetching simulation_mode…');
+            logMovieStage('Fetching simulation_mode');
             let isSimulation = false;
             try {
+                const tSim = Date.now();
                 const simRes = await fetch('/api/simulation_mode', { cache: 'no-store' });
                 const simJson = simRes.ok ? await simRes.json() : {};
                 isSimulation = simJson.simulation === true;
-                console.log('[movie export] Simulation mode:', isSimulation);
+                logMovieStage('simulation_mode fetched', { simulation: isSimulation, tookMs: Date.now() - tSim });
             } catch (e) {
                 // Network/proxy hiccup on this check should not block production export.
                 isSimulation = false;
-                console.warn('[movie export] simulation_mode check failed; assuming production mode:', e);
+                console.warn(`[movie export][${_movieTs()}][+${_movieElapsed()}] simulation_mode check failed; assuming production mode:`, e);
             }
-            if (isSimulation === true) {
-                console.log('[movie export] Simulation branch – burn subtitles via server');
+            const useLegacySimulationBurn = false;
+            if (isSimulation === true && !useLegacySimulationBurn) {
+                logMovieStage('Simulation mode detected – using worker/server async pipeline (legacy direct burn disabled)');
+            }
+            if (isSimulation === true && useLegacySimulationBurn) {
+                logMovieStage('Simulation branch – direct burn_subtitles route');
                 const segments = window.currentSegments || [];
                 const normSegs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(segments, 0.5) : segments;
+                const tBlob = Date.now();
+                logMovieStage('Fetching video blob for simulation burn');
                 const videoBlob = await fetch(videoUrl).then(r => r.blob());
+                logMovieStage('Video blob fetched', { tookMs: Date.now() - tBlob, sizeBytes: videoBlob.size });
                 const ext = (videoUrl.match(/\.(mp4|mov|webm|m4v|mkv|avi)(\?|$)/i) || [])[1] || 'mp4';
                 const filename = (baseName || 'video') + '.' + ext.toLowerCase();
                 const form = new FormData();
@@ -2162,9 +2188,14 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 form.append('segments', JSON.stringify(normSegs.map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }))));
                 form.append('filename', filename);
                 try {
+                    const tBurnReq = Date.now();
+                    logMovieStage('POST /api/burn_subtitles start', { segments: normSegs.length, filename });
                     const burnRes = await fetch('/api/burn_subtitles', { method: 'POST', body: form });
+                    logMovieStage('POST /api/burn_subtitles done', { status: burnRes.status, tookMs: Date.now() - tBurnReq });
                     if (burnRes.ok) {
+                        const tOutBlob = Date.now();
                         const outBlob = await burnRes.blob();
+                        logMovieStage('Burned movie blob received', { tookMs: Date.now() - tOutBlob, sizeBytes: outBlob.size });
                         const outName = (burnRes.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)"?/);
                         const downloadName = outName ? outName[1] : 'video_with_subtitles.' + ext;
                         if (typeof saveAs !== 'undefined') saveAs(outBlob, downloadName);
@@ -2174,16 +2205,17 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                         throw new Error(err.error || burnRes.statusText);
                     }
                 } catch (e) {
-                    console.warn('[movie export] Burn failed, falling back to video+SRT:', e);
+                    console.warn(`[movie export][${_movieTs()}][+${_movieElapsed()}] Burn failed, falling back to video+SRT:`, e);
                     if (typeof saveAs !== 'undefined') saveAs(videoBlob, filename);
                     const srt = typeof srtFromCues === 'function' ? srtFromCues(normSegs) : '';
                     if (srt && typeof saveAs !== 'undefined') saveAs(new Blob([srt], { type: 'text/plain;charset=utf-8' }), (baseName || 'video') + '.srt');
-                    let errMsg = (typeof window.t === 'function' ? window.t('movie_burn_failed') : 'Burn failed') + '. ';
+                    let errMsg = movieT('movie_burn_failed', 'יצירת סרטון נכשלה') + '. ';
                     if (e && e.message) errMsg += e.message + '. ';
-                    errMsg += (typeof window.t === 'function' ? window.t('download_fallback_hint') : 'Downloaded video + SRT instead. Install ffmpeg for burned subtitles.');
+                    errMsg += movieT('download_fallback_hint', 'הווידאו וקובץ SRT הורדו במקום צריבה. ודא/י ש־ffmpeg זמין בשרת.');
                     if (typeof showStatus === 'function') showStatus(errMsg, true);
                 }
                 if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
+                logMovieStage('Simulation movie export finished');
                 return;
             }
 
@@ -2229,7 +2261,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 if (!completed) hideBurnProgress();
             };
             startBurnProgress();
-            console.log('[movie export] Calling burn_subtitles_server…');
+            logMovieStage('Preparing segments for burn request');
             const rawSegments = (() => {
                 if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
                     const out = [];
@@ -2273,6 +2305,17 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 return false;
             });
             const hasWordHighlights = Array.isArray(window.currentWords) && window.currentWords.some((w) => !!(w && w.highlighted));
+            const forceLocalBurn = false; // Always prefer worker burn when available.
+            logMovieStage('Segments prepared', {
+                rawSegments: rawSegments.length,
+                finalSegments: segments.length,
+                subtitleStyle,
+                hasCustomFormatting,
+                hasWordHighlights,
+                forceLocalBurn
+            });
+            const tBurnStart = Date.now();
+            logMovieStage('POST /api/burn_subtitles_server start');
             const burnRes = await fetch('/api/burn_subtitles_server', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2286,44 +2329,57 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     is_portrait: isPortrait,
                     notify_email: movieUser.email || undefined,
                     job_id: localStorage.getItem('lastJobId') || undefined,
-                    force_local_burn: !!(hasCustomFormatting || hasWordHighlights)
+                    force_local_burn: forceLocalBurn
                 })
             });
             const burnData = burnRes.ok ? await burnRes.json() : {};
-            console.log('[movie export] Burn response:', burnRes.status, burnData);
+            logMovieStage('POST /api/burn_subtitles_server done', {
+                status: burnRes.status,
+                tookMs: Date.now() - tBurnStart,
+                mode: burnData && burnData.mode ? burnData.mode : 'unknown'
+            });
             if (!burnRes.ok) {
                 const err = burnData.error || burnRes.statusText;
                 throw new Error(err);
             }
             const taskId = burnData.task_id;
             if (!taskId) throw new Error("No task_id");
-            console.log('[movie export] Task id:', taskId);
+            logMovieStage('Task accepted', { taskId });
 
             const pollInterval = 2500;
             const maxWait = 600000;
             const start = Date.now();
             let statusJson = { status: 'processing' };
             let pollCount = 0;
+            const tPollStart = Date.now();
+            logMovieStage('Polling burn status started', { pollIntervalMs: pollInterval, maxWaitMs: maxWait });
             while (statusJson.status === 'processing' && (Date.now() - start) < maxWait) {
                 await new Promise(r => setTimeout(r, pollInterval));
                 pollCount++;
                 if (pollCount === 1 || pollCount % 10 === 0) {
-                    console.log('[movie export] Poll', pollCount, '…');
+                    logMovieStage('Polling burn status', { pollCount });
                 }
                 const statusRes = await fetch(`/api/burn_subtitles_status?task_id=${encodeURIComponent(taskId)}`);
                 statusJson = statusRes.ok ? await statusRes.json() : {};
             }
+            logMovieStage('Polling burn status ended', {
+                finalStatus: statusJson && statusJson.status ? statusJson.status : 'unknown',
+                polls: pollCount,
+                tookMs: Date.now() - tPollStart
+            });
             if (statusJson.status === 'failed') {
                 stopBurnProgress(false);
-                console.log('[movie export] Failed:', statusJson.error);
+                logMovieStage('Burn failed', { error: statusJson.error || 'Burn failed' });
                 throw new Error(statusJson.error || "Burn failed");
             }
             if (statusJson.status === 'completed' && statusJson.output_url) {
                 stopBurnProgress(true);
-                console.log('[movie export] Completed – downloading');
+                logMovieStage('Burn completed – downloading output');
                 const outName = (baseName || 'video') + '.mp4';
                 if (typeof saveAs !== 'undefined') {
+                    const tOutDownload = Date.now();
                     const blob = await fetch(statusJson.output_url).then(r => r.blob());
+                    logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
                     saveAs(blob, outName);
                 } else {
                     const a = document.createElement('a');
@@ -2334,13 +2390,13 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 }
             } else {
                 stopBurnProgress(false);
-                console.log('[movie export] Timeout or no output_url:', statusJson);
+                logMovieStage('Timeout or no output_url', statusJson);
                 throw new Error("Burn did not complete in time");
             }
         } catch (e) {
-            console.error('[movie export] Error:', e);
+            console.error(`[movie export][${_movieTs()}][+${_movieElapsed()}] Error:`, e);
             if (typeof showStatus === 'function') {
-                const baseErr = typeof window.t === 'function' ? window.t('movie_burn_failed') : "Movie burn failed.";
+                const baseErr = movieT('movie_burn_failed', 'יצירת סרטון נכשלה');
                 const hint = typeof window.t === 'function'
                     ? ""
                     : " Please try again later.";
@@ -2351,6 +2407,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 mainBtn.disabled = false;
                 mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
             }
+            logMovieStage('Movie export finished');
         }
         return;
     }

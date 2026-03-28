@@ -2816,12 +2816,12 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
 
 
 def _build_ass(segments, style='tiktok', portrait=False):
-    """Build ASS content. style: tiktok (bold yellow centered), clean, cinematic. portrait=True uses 14 chars/line."""
+    """Build ASS content. style: tiktok (bold white centered), clean, cinematic. portrait=True uses 14 chars/line."""
     # PlayRes chosen for scale; ffmpeg will scale
     play_res_x, play_res_y = 384, 288
     if style == 'tiktok':
-        # Bold, large, yellow #ffd700, black outline, center. ASS colour &HAABBGGRR
-        style_line = "Style: Default,Arial,28,&H0000D7FF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,10,10,40,1"
+        # Bold, large, white, black outline, center. ASS colour &HAABBGGRR
+        style_line = "Style: Default,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,10,10,40,1"
     elif style == 'cinematic':
         style_line = "Style: Default,Times New Roman,22,&H00F5F5F5,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
     else:
@@ -3215,7 +3215,9 @@ def burn_subtitles_server():
         task_id = str(uuid.uuid4())
         burn_tasks[task_id] = {'status': 'processing'}
 
-        use_runpod = bool((RUNPOD_API_KEY or '').strip() and (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()) and not SIMULATION_MODE and not force_local_burn
+        allow_runpod_in_simulation = str(os.environ.get('RUNPOD_ALLOW_IN_SIMULATION', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
+        simulation_blocks_runpod = SIMULATION_MODE and not allow_runpod_in_simulation
+        use_runpod = bool((RUNPOD_API_KEY or '').strip() and (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()) and not simulation_blocks_runpod and not force_local_burn
         if use_runpod:
             public_base = _public_base_url(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"
