@@ -91,6 +91,8 @@ window.translations = {
         creating_movie: "יוצר סרטון...",
         // Upload zone
         detect_speakers: "זיהוי דוברים",
+        new_session: "סשן חדש",
+        start_new_session_confirm: "להתחיל סשן חדש? התמלול והמדיה הנוכחיים ינוקו מהמסך.",
         ready: "מוכן",
         upload_and_process: "העלה",
         upload_placeholder: "העלה קובץ להתחלה",
@@ -270,6 +272,8 @@ window.translations = {
         movie_download: "Create movie",
         creating_movie: "Creating movie...",
         detect_speakers: "Detect Speakers",
+        new_session: "New Session",
+        start_new_session_confirm: "Start a new session? Current transcript and media will be cleared from the screen.",
         ready: "Ready",
         upload_and_process: "Upload",
         upload_placeholder: "Upload a file to start",

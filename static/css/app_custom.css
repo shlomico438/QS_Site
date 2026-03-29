@@ -964,6 +964,17 @@ input:checked + .slider:before { transform: translateX(16px); }
 .upload-controls-row .btn.btn-primary {
     justify-self: center;
 }
+.mobile-new-session-btn {
+    display: none;
+    margin: 0 auto 8px auto;
+    padding: 9px 16px;
+    border-radius: 16px;
+    font-size: 0.88rem;
+    box-shadow: 0 3px 10px rgba(93, 93, 255, 0.22);
+}
+.nav-new-session-item {
+    display: none;
+}
 .upload-status {
     justify-self: end;
     margin: 0;
@@ -1147,9 +1158,32 @@ html[dir="rtl"] .upload-status {
 
     #subtitle-style-selector .subtitle-style-card {
         flex: 0 0 auto !important;
-        width: 108px !important;
-        min-width: 108px !important;
-        padding: 8px 6px !important;
+        width: 124px !important;
+        min-width: 124px !important;
+        padding: 6px 8px !important;
+        border-radius: 10px !important;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    #subtitle-style-selector .subtitle-style-card > div:first-child {
+        font-size: 0.76rem !important;
+        line-height: 1.1 !important;
+        margin: 0 !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    #subtitle-style-selector .subtitle-style-card > div:not(:first-child) {
+        display: none !important;
+    }
+
+    /* Save vertical space on mobile only when a video session is loaded */
+    body.mobile-video-session .upload-controls-row {
+        display: none !important;
+    }
+    .mobile-new-session-btn {
+        display: none !important;
     }
 
     /* Mobile transcript toolbar: no horizontal scrolling, compact layout */
@@ -1198,6 +1232,7 @@ html[dir="rtl"] .upload-status {
         height: 34px;
     }
 }
+
 /* --- MOBILE "APP MODE" (One Page Layout) --- */
 @media screen and (max-width: 768px) {
     /* 1. LOCK THE VIEWPORT */
@@ -1330,6 +1365,9 @@ html[dir="rtl"] .upload-status {
         padding: 15px;
         display: block;
         border-bottom: 1px solid #f0f0f0;
+    }
+    .nav-new-session-item {
+        display: block !important;
     }
     .paragraph-row {
     border-radius: 4px;

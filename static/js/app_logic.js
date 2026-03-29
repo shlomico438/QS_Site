@@ -1586,6 +1586,10 @@ async function initOpenInApp(jobId) {
         if (audioContainer) audioContainer.style.display = 'none';
         if (video) video.style.display = '';
         if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+        try {
+            const isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+            if (isMobile) document.body.classList.add('mobile-video-session');
+        } catch (_) {}
         if (src) {
             src.src = json.url;
             // Use video/mp4 for .mov so Chrome/Firefox use MP4 decoder (many .mov are H.264 in QuickTime container)
@@ -1623,6 +1627,7 @@ async function initOpenInApp(jobId) {
         const audioSource = document.getElementById('audio-source');
         const mainAudio = document.getElementById('main-audio');
         if (videoWrapper) { videoWrapper.style.display = 'none'; videoWrapper.classList.remove('visible'); }
+        try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
         if (video) video.style.display = 'none';
         const movHint = document.getElementById('video-mov-hint');
         if (movHint) movHint.style.display = 'none';
@@ -3105,6 +3110,7 @@ function resetScreenToInitial() {
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
+    try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
 }
 
 /** Show progress bar in place and scroll it into view so it stays visible during processing. */
@@ -3147,6 +3153,8 @@ function setTranscriptActionButtonsVisible(visible) {
 document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
     const fileInput = document.getElementById('fileInput');
+    const mobileSessionBtn = document.getElementById('mobile-new-session-btn');
+    const navNewSessionBtn = document.getElementById('nav-new-session-btn');
     const statusTxt = document.getElementById('upload-status');
     const progressBar = document.getElementById('progress-bar');
     const mainBtn = document.getElementById('main-btn');
@@ -3167,6 +3175,39 @@ document.addEventListener('DOMContentLoaded', () => {
         resetScreenToInitial();
         if (fileInput) fileInput.click();
     }
+
+    function syncMobileVideoSessionState() {
+        try {
+            const isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+            const videoWrapper = document.getElementById('video-wrapper');
+            const hasLoadedVideo = !!(videoWrapper && videoWrapper.classList.contains('visible'));
+            document.body.classList.toggle('mobile-video-session', !!(isMobile && hasLoadedVideo));
+        } catch (_) {}
+    }
+
+    if (mobileSessionBtn) {
+        mobileSessionBtn.addEventListener('click', () => {
+            if (window.isTriggering) return;
+            openFilePickerAfterDisclaimer();
+        });
+    }
+    if (navNewSessionBtn) {
+        navNewSessionBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (window.isTriggering) return;
+            if (!fileInput) {
+                window.location.href = '/';
+                return;
+            }
+            openFilePickerAfterDisclaimer();
+            const navMenu = document.getElementById('nav-menu');
+            const hamburger = document.querySelector('.hamburger-menu');
+            if (navMenu) navMenu.classList.remove('active');
+            if (hamburger) hamburger.classList.remove('open');
+        });
+    }
+    window.addEventListener('resize', syncMobileVideoSessionState);
+    syncMobileVideoSessionState();
 
     if (mainBtn) {
         mainBtn.addEventListener('click', async () => {
@@ -3390,6 +3431,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 mainAudio.load();
             }
         }
+        syncMobileVideoSessionState();
 
         // 2. UNHIDE CORE COMPONENTS (Styled Subtitles button removed; video is shown immediately for video uploads)
         document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
