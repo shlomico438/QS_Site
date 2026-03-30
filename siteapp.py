@@ -29,6 +29,9 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 from io import BytesIO
+import smtplib
+import ssl
+from email.message import EmailMessage
 
 
 # --- CONFIGURATION ---
@@ -1769,9 +1772,9 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he')
     if not transcript_text:
         raise RuntimeError("empty transcript")
 
-    max_single = int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '14000'))
-    chunk_chars = int(os.environ.get('FORMAT_TRANSCRIPT_CHUNK_CHARS', '8000'))
-    summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '48000'))
+    max_single = int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '9000'))
+    chunk_chars = int(os.environ.get('FORMAT_TRANSCRIPT_CHUNK_CHARS', '5000'))
+    summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000'))
     format_read_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
     read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
     parallel = max(1, min(8, int(os.environ.get('FORMAT_TRANSCRIPT_PARALLEL', '2'))))
@@ -2990,32 +2993,53 @@ def _build_ass(segments, style='tiktok', portrait=False):
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 
-def _send_burn_ready_email(to_email, download_url, base_name):
-    """Send 'your video is ready' email via SendGrid if SENDGRID_API_KEY is set."""
-    api_key = os.environ.get('SENDGRID_API_KEY')
-    if not api_key or not to_email:
-        return
+def _send_email_via_zoho(to_email, subject, body_text):
+    """Send a plain-text email through Zoho SMTP. Returns True on success."""
+    smtp_host = 'smtp.zoho.com'
+    smtp_port = 465
+    smtp_user = 'info@getquickscribe.com'
+    smtp_pass = (os.environ.get('ZOHO_SMTP_PASS') or '').strip()
+    from_email = smtp_user
+    from_name = 'QuickScribe'
+    if not to_email or not smtp_user or not smtp_pass:
+        return False
+
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = f"{from_name} <{from_email}>"
+    msg['To'] = to_email
+    msg.set_content(body_text or "")
+
     try:
-        from_email = os.environ.get('SENDGRID_FROM', 'noreply@getquickscribe.com')
-        payload = {
-            "personalizations": [{"to": [{"email": to_email}]}],
-            "from": {"email": from_email, "name": "QuickScribe"},
-            "subject": "Your video with subtitles is ready",
-            "content": [{
-                "type": "text/plain",
-                "value": f"Your video '{base_name}' with burned-in subtitles is ready.\n\nDownload (link valid 24 hours):\n{download_url}\n\n— QuickScribe"
-            }]
-        }
-        r = requests.post(
-            "https://api.sendgrid.com/v3/mail/send",
-            json=payload,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            timeout=10
-        )
-        if r.status_code >= 400:
-            logging.warning("SendGrid send failed: %s %s", r.status_code, r.text[:200])
+        if smtp_port == 465:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=15) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+                server.ehlo()
+                server.starttls(context=ssl.create_default_context())
+                server.ehlo()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        return True
     except Exception as e:
-        logging.warning("Send burn-ready email failed: %s", e)
+        logging.warning("Zoho SMTP send failed: %s", e)
+        return False
+
+
+def _send_burn_ready_email(to_email, download_url, base_name):
+    """Send 'video ready' email via Zoho SMTP."""
+    if not to_email:
+        return
+    subject = "Your video with subtitles is ready"
+    body = (
+        f"Your video '{base_name}' with burned-in subtitles is ready.\n\n"
+        f"Download (link valid 24 hours):\n{download_url}\n\n"
+        "— QuickScribe"
+    )
+    _send_email_via_zoho(to_email, subject, body)
 
 
 def _get_job_notification_info(runpod_job_id, user_id=None):
@@ -3061,43 +3085,22 @@ def _get_job_notification_info(runpod_job_id, user_id=None):
 
 
 def _send_transcription_ready_email(to_email, user_name, open_url):
-    """Send transcription-complete email via SendGrid."""
-    api_key = os.environ.get('SENDGRID_API_KEY')
-    if not api_key or not to_email:
+    """Send transcription-complete email via Zoho SMTP."""
+    if not to_email:
         return False
-    try:
-        from_email = os.environ.get('SENDGRID_FROM', 'noreply@getquickscribe.com')
-        display_name = str(user_name or '').strip() or 'שם המשתמש'
-        subject = "הוידאו שלך מוכן! 🎬 הכתוביות מחכות לך ב-QuickScribe"
-        body = (
-            f"היי {display_name},\n\n"
-            "חדשות טובות! מנועי ה-AI שלנו סיימו את העבודה. הוידאו שלך תומלל, והכתוביות מסונכרנות ומוכנות על גבי הסאונד.\n\n"
-            "זה הזמן להיכנס למערכת, לעבור ברפרוף על הטקסט כדי לוודא שהכל מושלם (בכל זאת, אנחנו עומדים על 94% דיוק 😉), "
-            "לעשות פינישים קטנים אם צריך – ולהוריד את הוידאו מוכן להפצה.\n\n"
-            f"👉 למעבר לוידאו שלך: {open_url}\n\n"
-            "אם יש לך שאלות או פידבק על התוצאה, אפשר פשוט להשיב למייל הזה, אני קורא הכל.\n\n"
-            "יצירה נעימה,\n"
-            "QuickScribe"
-        )
-        payload = {
-            "personalizations": [{"to": [{"email": to_email}]}],
-            "from": {"email": from_email, "name": "QuickScribe"},
-            "subject": subject,
-            "content": [{"type": "text/plain", "value": body}],
-        }
-        r = requests.post(
-            "https://api.sendgrid.com/v3/mail/send",
-            json=payload,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            timeout=10
-        )
-        if r.status_code >= 400:
-            logging.warning("SendGrid transcription-ready send failed: %s %s", r.status_code, r.text[:200])
-            return False
-        return True
-    except Exception as e:
-        logging.warning("Send transcription-ready email failed: %s", e)
-        return False
+    display_name = str(user_name or '').strip() or 'שם המשתמש'
+    subject = "הוידאו שלך מוכן! 🎬 הכתוביות מחכות לך ב-QuickScribe"
+    body = (
+        f"היי {display_name},\n\n"
+        "חדשות טובות! מנועי ה-AI שלנו סיימו את העבודה. הוידאו שלך תומלל, והכתוביות מסונכרנות ומוכנות על גבי הסאונד.\n\n"
+        "זה הזמן להיכנס למערכת, לעבור ברפרוף על הטקסט כדי לוודא שהכל מושלם (בכל זאת, אנחנו עומדים על 94% דיוק 😉), "
+        "לעשות פינישים קטנים אם צריך – ולהוריד את הוידאו מוכן להפצה.\n\n"
+        f"👉 למעבר לוידאו שלך: {open_url}\n\n"
+        "אם יש לך שאלות או פידבק על התוצאה, אפשר פשוט להשיב למייל הזה, אני קורא הכל.\n\n"
+        "יצירה נעימה,\n"
+        "QuickScribe"
+    )
+    return _send_email_via_zoho(to_email, subject, body)
 
 
 def _segments_to_srt_text(segments, max_chars_per_line=None):
