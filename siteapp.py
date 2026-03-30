@@ -1159,6 +1159,8 @@ def _get_trigger_timings(job_id):
                 "trigger_sec": data.get("trigger_sec"),
                 "trigger_completed_at": data.get("trigger_completed_at"),
                 "gpu_started_at": data.get("gpu_started_at"),
+                "upload_complete": bool(data.get("upload_complete")),
+                "upload_complete_at": data.get("upload_complete_at"),
             }
     except Exception:
         pass
@@ -1178,6 +1180,16 @@ def _update_trigger_timings(job_id, **updates):
             json.dump(data, f)
     except Exception as e:
         logging.warning("Could not update trigger timings for %s: %s", job_id, e)
+
+
+def _mark_upload_complete(job_id):
+    """Persist upload-complete signal so worker polling survives process/instance changes."""
+    try:
+        status, _ = _get_trigger_state(job_id)
+        current_status = status or pending_trigger.get(job_id, "queued")
+        _set_trigger_state(job_id, current_status, upload_complete=True, upload_complete_at=time.time())
+    except Exception as e:
+        logging.warning("Could not persist upload_complete for %s: %s", job_id, e)
 
 
 def _set_last_callback_for_gpt(job_id: str, at: float, user_id: str = None) -> None:
@@ -2508,7 +2520,9 @@ def upload_status():
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
-    status = "complete" if job_id in upload_complete else "pending"
+    file_timings = _get_trigger_timings(job_id)
+    is_complete = (job_id in upload_complete) or bool(file_timings.get("upload_complete"))
+    status = "complete" if is_complete else "pending"
     return jsonify({"job_id": job_id, "status": status}), 200
 
 
@@ -2550,6 +2564,7 @@ def trigger_processing():
                 upload_complete[job_id] = True
                 pending_trigger[job_id] = "triggered"
                 _set_trigger_state(job_id, "triggered")
+                _mark_upload_complete(job_id)
             return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
 
         if not s3_key or not job_id:
@@ -2557,6 +2572,7 @@ def trigger_processing():
 
         # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
         upload_complete[job_id] = True
+        _mark_upload_complete(job_id)
         logging.info(
             "upload_complete set for job_id=%s (worker upload_status will see complete); s3_key_suffix=%s",
             job_id,
@@ -2675,6 +2691,7 @@ def retry_trigger():
             }
         }
         upload_complete[job_id] = True  # retry: upload was already done
+        _mark_upload_complete(job_id)
         t_queued = time.time()
         pending_trigger[job_id] = "queued"
         pending_trigger_at[job_id] = t_queued
