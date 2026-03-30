@@ -132,7 +132,7 @@
             <div class="controls-bar">
                 <div class="toggles-group">
                     <label><div class="toggle-switch"><input type="checkbox" id="toggle-time" onchange="document.getElementById('transcript-window').classList.toggle('hide-time', !this.checked)"><span class="slider"></span></div><span data-i18n="time">Time</span></label>
-                    <label><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
+                    <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
                 </div>
                 <div class="toolbar-group">
                     <div style="position: relative;">
@@ -208,44 +208,19 @@
                 </div>
             </div>
             <div id="transcript-window" contenteditable="false">
-                <p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:80px;" data-i18n="upload_placeholder">Upload a file to start</p>
             </div>
         </div>
 
         <div class="upload-zone">
             <div class="upload-controls-row">
-                <div class="upload-control-left control-item" style="display:flex; align-items:center; gap:8px;">
-                    <label class="toggle-switch" style="position: relative; display: inline-block; width: 40px; height: 22px;">
-                        <input type="checkbox" id="diarization-toggle" onchange="toggleSpeakerInput()">
-                        <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px;"></span>
-                        <style>
-                            .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
-                            .switch input { opacity: 0; width: 0; height: 0; }
-                            .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: .4s; border-radius: 34px; }
-                            .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
-                            input:checked + .slider { background-color: #5d5dff !important; }
-                            input:checked + .slider:before { transform: translateX(20px); }
-                            input:disabled + .slider { background-color: #e2e8f0; opacity: 0.6; cursor: not-allowed; }
-                        </style>
-                    </label>
-                    <span class="control-label" data-i18n="detect_speakers">Detect Speakers</span>
-                    <input type="number" id="speaker-count" value="2" min="1" max="10" class="styled-input" style="display:none; width:50px; padding: 5px;">
-                </div>
                 <input type="file" id="fileInput" hidden>
-                <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">Upload and Process</button>
-                <p id="upload-status" class="upload-status" data-i18n="ready">Ready</p>
+                <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">העלה מדיה</button>
             </div>
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
             <div class="progress-container" id="p-container" style="display:none;">
                 <div id="progress-bar"></div>
             </div>
-            <script>
-                function toggleSpeakerInput() {
-                    var isChecked = document.getElementById('diarization-toggle').checked;
-                    var speakerInput = document.getElementById('speaker-count');
-                    if(speakerInput) speakerInput.style.display = isChecked ? 'block' : 'none';
-                }
-            </script>
+            <!-- diarization toggle removed on mobile upload UI -->
         </div>
     </div>
 </div>

@@ -3139,12 +3139,10 @@ function resetScreenToInitial() {
     }
 
     if (transcriptWindow) {
-        const placeholderText = typeof window.t === 'function' ? window.t('upload_placeholder') : 'Upload a file to start';
-        transcriptWindow.innerHTML = `<p id="placeholder" style="color:#9ca3af; text-align:center; margin-top:80px;" data-i18n="upload_placeholder">${placeholderText}</p>`;
+        // Do not render `upload_placeholder` anywhere; keep transcript-window empty.
+        transcriptWindow.innerHTML = '';
     }
-    if (placeholder && !transcriptWindow.querySelector('#placeholder')) {
-        placeholder.style.display = 'block';
-    }
+    if (placeholder) placeholder.style.display = 'none';
 
     if (audioPlayerContainer) audioPlayerContainer.style.display = 'none';
     if (audioSource) audioSource.removeAttribute('src');

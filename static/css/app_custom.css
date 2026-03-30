@@ -451,6 +451,11 @@ audio {
     font-size: 0.85rem;
 }
 
+/* Hide the "Speaker" toggle from the toolbar UI */
+#toggle-speaker-wrap {
+    display: none !important;
+}
+
 .toggle-switch {
     position: relative;
     display: inline-block;
@@ -929,6 +934,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     border: none;
     border-radius: 25px;
     font-weight: 600;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1;
     cursor: pointer;
     box-shadow: 0 3px 8px rgba(93, 93, 255, 0.2);
     transition: all 0.2s;
@@ -944,6 +952,11 @@ input:checked + .slider:before { transform: translateX(16px); }
     cursor: not-allowed;
     opacity: 0.7;
     box-shadow: none;
+}
+
+/* Native-feel tap feedback on mobile */
+#main-btn:active {
+    opacity: 0.7;
 }
 /* --- NEW CONTROLS STYLING --- */
 
@@ -1077,24 +1090,26 @@ html[dir="rtl"] .upload-status {
 
     /* Upload row: keep one row, compact — more space for transcript */
     .upload-controls-row {
-        gap: 8px;
+        display: flex;
+        justify-content: center;
+        gap: 0;
         margin-bottom: 8px;
     }
     .upload-control-left .control-label {
         font-size: 0.85rem;
     }
     .upload-controls-row .btn.btn-primary {
-        font-size: 0.9rem;
-        padding: 10px 14px;
+        width: calc(100% - 32px);
+        margin: 0 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 50px;
+        border-radius: 12px;
+        padding: 0;
+        font-size: 17px;
     }
-    .upload-status {
-        font-size: 0.8rem;
-        max-width: 35%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        justify-self: end;
-    }
+    .upload-status { display: none; }
 
     /* 1. Stack the controls vertically (legacy controls-row) */
     .controls-row {
