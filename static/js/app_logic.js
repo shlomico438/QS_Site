@@ -5100,18 +5100,17 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     statusTxt.style.display = 'none';
                                 }
                                 const pollInterval = 2000;
-                                const triggerConfirmTimeoutMs = 5 * 60 * 1000; // 5 min for cold startup
-                                const start = Date.now();
+                                let waitPct = 0;
                                 let ts = { status: '' };
-                                while (ts.status !== 'triggered' && ts.status !== 'failed' && ts.status !== 'stale_queued' && (Date.now() - start) < triggerConfirmTimeoutMs) {
+                                while (ts.status !== 'triggered' && ts.status !== 'failed') {
                                     await new Promise(r => setTimeout(r, pollInterval));
-                                    const elapsed = Date.now() - start;
-                                    const pct = Math.min(95, Math.round((elapsed / triggerConfirmTimeoutMs) * 100));
-                                    if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + pct + '%';
+                                    // Keep progressing slowly and cap at 95% while we wait.
+                                    if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
+                                    if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
                                     const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
                                     ts = stRes.ok ? await stRes.json() : {};
                                 }
-                                if (ts.status === 'failed' || ts.status === 'stale_queued') {
+                                if (ts.status === 'failed') {
                                     console.log("trigger nack", ts.status);
                                     console.log("❌ Trigger not confirmed:", ts.status);
                                     const dbId2 = localStorage.getItem('lastJobDbId');
@@ -5127,21 +5126,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                             if (mainBtn) mainBtn.disabled = false;
                                         }
                                     });
-                                    return;
-                                }
-                                if (ts.status !== 'triggered') {
-                                    // timeout: only console, no popup
-                                    console.log("trigger nack", "timeout");
-                                    console.log("❌ Trigger confirmation timeout");
-                                    const dbId2 = localStorage.getItem('lastJobDbId');
-                                    window.isTriggering = false;
-                                    setDiarizationBusyState(false);
-                                    if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
-                                    localStorage.removeItem('activeJobId');
-                                    stopProcessingStateUI();
-                                    hideProgressBar();
-                                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
-                                    if (mainBtn) mainBtn.disabled = false;
                                     return;
                                 }
                                 console.log("trigger ack (triggered)");
