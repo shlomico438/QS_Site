@@ -177,7 +177,10 @@
                                 </div>
 
                                 <div class="export-panel-section">
-                                    <div class="export-panel-label">וידאו</div>
+                                    <div class="export-panel-label export-panel-label-with-icon">
+                                        <span>וידאו</span>
+                                        <img src="{{ url_for('static', filename='images/styled-subtitles-btn.png') }}" alt="Styled subtitles" class="export-video-header-icon">
+                                    </div>
                                     <label class="export-check-item">
                                         <input class="export-extra-choice" type="checkbox" data-export-kind="movie">
                                         <span class="export-check-ui" aria-hidden="true"></span>
@@ -213,7 +216,7 @@
 
         <div class="upload-zone">
             <div class="upload-controls-row">
-                <input type="file" id="fileInput" hidden>
+                <input type="file" id="fileInput" accept="video/*,audio/*" hidden>
                 <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">העלה מדיה</button>
             </div>
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>

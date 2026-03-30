@@ -142,7 +142,14 @@ supabase.auth.onAuthStateChange((event, session) => {
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
         if (window.location.hash && /access_token/.test(window.location.hash)) {
-            window.location.replace(window.location.pathname + window.location.search);
+            // Keep the current in-memory transcript/video UI state.
+            // Remove auth hash from URL without forcing a page reload.
+            try {
+                window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+            } catch (_) {
+                // Fallback only if History API is unavailable.
+                window.location.hash = '';
+            }
         }
     }
 });
@@ -191,8 +198,14 @@ function showGlobalConfirm(message, options = {}) {
             if (e.key === 'Escape') cleanup(false);
         };
         window.addEventListener('keydown', onKey);
-        cancelBtn.onclick = () => cleanup(false);
-        okBtn.onclick = () => cleanup(true);
+        cancelBtn.onclick = (e) => {
+            try { e && e.stopPropagation && e.stopPropagation(); } catch (_) {}
+            cleanup(false);
+        };
+        okBtn.onclick = (e) => {
+            try { e && e.stopPropagation && e.stopPropagation(); } catch (_) {}
+            cleanup(true);
+        };
         overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
     });
 }
@@ -1471,21 +1484,38 @@ async function initOpenInApp(jobId) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     // Fetch job without result first so we never 400 if result column is missing.
+    // Accept both jobs.id (UUID) and runpod_job_id values like "job_..." / "job_sim_...".
     // Use maybeSingle() to avoid 406 when no row matches (PostgREST returns 406 for .single() when 0 rows).
-    const { data: job, error } = await supabase
-        .from('jobs')
-        .select('id, input_s3_key')
-        .eq('id', jobId)
-        .eq('user_id', user.id)
-        .maybeSingle();
+    const _looksLikeUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(v || '').trim());
+    const jobIdStr = String(jobId || '').trim();
+    const tryByUuidFirst = _looksLikeUuid(jobIdStr);
+
+    let job = null;
+    let error = null;
+    if (tryByUuidFirst) {
+        ({ data: job, error } = await supabase
+            .from('jobs')
+            .select('id, input_s3_key')
+            .eq('id', jobIdStr)
+            .eq('user_id', user.id)
+            .maybeSingle());
+    } else {
+        ({ data: job, error } = await supabase
+            .from('jobs')
+            .select('id, input_s3_key')
+            .eq('runpod_job_id', jobIdStr)
+            .eq('user_id', user.id)
+            .maybeSingle());
+    }
     if (error || !job || !job.input_s3_key) {
         if (typeof showStatus === 'function') showStatus('Could not load file.', true);
         return;
     }
+    const resolvedJobId = job.id;
     // Prefer transcript from S3 (result_s3_key); fallback to jobs.result
     let segments = [];
     let hasTranscriptForOpen = false;
-    const { data: keyRow } = await supabase.from('jobs').select('result_s3_key').eq('id', jobId).eq('user_id', user.id).maybeSingle();
+    const { data: keyRow } = await supabase.from('jobs').select('result_s3_key').eq('id', resolvedJobId).eq('user_id', user.id).maybeSingle();
     if (keyRow && keyRow.result_s3_key) {
         hasTranscriptForOpen = true;
         try {
@@ -1531,53 +1561,14 @@ async function initOpenInApp(jobId) {
                             window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 27);
                             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                             segments = window.currentSegments;
-                        } else {
-                            // Fallback for older jobs: try to load the raw transcript JSON (often contains word timestamps).
-                            const rawKey = String(keyRow.result_s3_key).replace(/\.json$/i, '_raw.json');
-                            if (rawKey !== keyRow.result_s3_key) {
-                                try {
-                                    console.log('[word-edit] open-in-app: trying raw transcript JSON for word timestamps', { rawKey });
-                                    const rawRes = await fetch('/api/get_presigned_url', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ s3Key: rawKey, userId: user.id })
-                                    });
-                                    const rawJson = await rawRes.json();
-                                    if (rawJson.url) {
-                                        const rawTr = await fetch(rawJson.url).then(r => r.json());
-                                        if (rawTr && Array.isArray(rawTr.words) && Array.isArray(rawTr.captions) && rawTr.words.length > 0 && rawTr.captions.length > 0) {
-                                            console.log('[word-edit] open-in-app: loaded words/captions from raw transcript JSON', { words: rawTr.words.length, captions: rawTr.captions.length });
-                                            window.currentWords = rawTr.words;
-                                            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, rawTr.captions, 27);
-                                            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                                            segments = window.currentSegments;
-                                        } else if (rawTr && Array.isArray(rawTr.segments)) {
-                                            const model2 = _tryBuildWordModelFromSegmentsAndFlat(rawTr.segments, rawTr.word_segments);
-                                            if (model2) {
-                                                console.log('[word-edit] open-in-app: derived words/captions from raw segments or word_segments', { words: model2.words.length, captions: model2.captions.length });
-                                                window.currentWords = model2.words;
-                                                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model2.captions, 27);
-                                                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                                                segments = window.currentSegments;
-                                            }
-                                        } else {
-                                            console.log('[word-edit] open-in-app: raw transcript JSON had no word timestamps');
-                                        }
-                                    } else {
-                                        console.log('[word-edit] open-in-app: raw transcript JSON not found / no url returned', { rawKey, error: rawJson && (rawJson.error || rawJson.message) });
-                                    }
-                                } catch (_) {
-                                    console.log('[word-edit] open-in-app: raw transcript JSON fetch failed (exception)');
-                                }
-                            }
-                        }
+                        } // No raw-transcript fallback here: avoids noisy 404s for jobs that never saved *_raw.json.
                     }
                 }
             }
         } catch (_) { /* fallback to result */ }
     }
     if (segments.length === 0) {
-        const { data: resultData } = await supabase.from('jobs').select('result').eq('id', jobId).eq('user_id', user.id).maybeSingle();
+        const { data: resultData } = await supabase.from('jobs').select('result').eq('id', resolvedJobId).eq('user_id', user.id).maybeSingle();
         if (resultData && resultData.result && Array.isArray(resultData.result.segments)) {
             segments = resultData.result.segments;
             if (segments.length > 0) hasTranscriptForOpen = true;
@@ -2003,7 +1994,7 @@ async function hydrateFormattedFromSavedTranscript() {
             return true;
         }
         const topKeys = tr && typeof tr === 'object' ? Object.keys(tr) : [];
-        console.warn(
+        console.info(
             '[export] Transcript JSON at result_s3_key has no `formatted` block (keys=%s). ' +
                 'That is the file the app loads — it is not a different “GPT” object in S3 unless you use another key. ' +
                 'Old saves without `formatted` match this. We will try to build formatting on export if needed.',
@@ -2900,7 +2891,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     const docExportBtn = document.querySelector('#docx-submenu [data-type="generate-export"]');
     if (docExportBtn) {
-        docExportBtn.addEventListener('click', function(e) {
+        docExportBtn.addEventListener('click', async function(e) {
             e.preventDefault();
             e.stopPropagation();
             const selectedDocKinds = getSelectedDocxKinds();
@@ -2909,6 +2900,67 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (typeof showStatus === 'function') showStatus('Select at least one output to generate.', true);
                 return;
             }
+
+            // If not signed in, we delay the auth modal until the user explicitly confirms.
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) {
+                const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+                const wantsDoc = selectedDocKinds.length > 0;
+                const wantsMovie = selectedExtraKinds.includes('movie');
+                const wantsSubtitles = selectedExtraKinds.includes('srt') || selectedExtraKinds.includes('vtt');
+
+                const msg = isHebrewUi
+                    ? (
+                        (() => {
+                            // 2 sentences only (required). Sentence 1 depends on what was selected.
+                            if (wantsDoc && wantsMovie && wantsSubtitles) return 'כדי ליצור את המסמך, את הווידאו ואת הכתוביות יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                            if (wantsDoc && wantsMovie) return 'כדי ליצור את המסמך וגם את הווידאו יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                            if (wantsDoc && wantsSubtitles) return 'כדי ליצור את המסמך וגם את הכתוביות יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                            if (wantsMovie && wantsSubtitles) return 'כדי ליצור את הווידאו וגם את הכתוביות יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                            if (wantsDoc) return 'כדי ליצור את המסמך יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                            if (wantsMovie) return 'כדי ליצור את הווידאו יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                            if (wantsSubtitles) return 'כדי ליצור את הכתוביות יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                            return 'כדי ליצור את המסמך יש להתחבר למערכת.\nלהתחבר עכשיו?';
+                        })()
+                    )
+                    : 'To generate this document/movie, you need to be connected.\nDo you want to connect now?';
+
+                const wantsConnect = await showGlobalConfirm(msg, {
+                    confirmText: isHebrewUi ? 'כן' : 'Yes',
+                    cancelText: isHebrewUi ? 'לא' : 'No'
+                });
+                if (!wantsConnect) return; // Keep the generate menu open
+
+                // Do NOT auto-resume export after sign-in for this flow.
+                // User should explicitly press "Generate" again.
+                window.pendingExportType = null;
+                localStorage.removeItem('pendingExportType');
+                localStorage.removeItem('pendingS3Key');
+                localStorage.removeItem('pendingJobId');
+                localStorage.setItem('pendingOpenGenerateMenu', '1');
+
+                // Force the modal into "Sign Up" (registration) mode.
+                try {
+                    isSignUpMode = true;
+                    const T = typeof window.t === 'function' ? window.t : (k) => k;
+                    const modalTitleEl = document.getElementById('modal-title');
+                    const signupFieldsEl = document.getElementById('signup-fields');
+                    const authSubmitBtnEl = document.getElementById('auth-submit-btn');
+                    const authSwitchTextEl = document.getElementById('auth-switch-text');
+                    const toggleAuthModeEl = document.getElementById('toggle-auth-mode');
+
+                    if (modalTitleEl) modalTitleEl.innerText = T('get_started');
+                    if (signupFieldsEl) signupFieldsEl.style.display = 'block';
+                    if (authSubmitBtnEl) authSubmitBtnEl.innerText = T('send_magic_link');
+                    if (authSwitchTextEl) authSwitchTextEl.innerText = T('already_have');
+                    if (toggleAuthModeEl) toggleAuthModeEl.innerText = T('log_in');
+                } catch (_) {}
+
+                closeDownloadMenu();
+                if (typeof window.toggleModal === 'function') window.toggleModal(true);
+                return;
+            }
+
             closeDownloadMenu();
             if (selectedDocKinds.length) {
                 window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds });
@@ -3021,6 +3073,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             window.pendingExportType = null;
             localStorage.removeItem('pendingExportType');
             // Intentionally no status toast here (user requested no export popup for DOCX flow).
+        }
+
+        // Re-open Generate menu after auth (without auto-export), when requested by flow.
+        const shouldReopenGenerateMenu = localStorage.getItem('pendingOpenGenerateMenu') === '1';
+        if (shouldReopenGenerateMenu) {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && dBtn && dMenu) {
+                try {
+                    const lastJobIdForReopen = localStorage.getItem('lastJobDbId') || localStorage.getItem('lastJobId');
+                    const hasTranscriptInMemory = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+                    if (!hasTranscriptInMemory && lastJobIdForReopen && typeof initOpenInApp === 'function') {
+                        await initOpenInApp(lastJobIdForReopen);
+                    }
+                    const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
+                    if (isHidden) dBtn.click();
+                } catch (_) {}
+            }
+            localStorage.removeItem('pendingOpenGenerateMenu');
         }
 
 
@@ -3203,6 +3273,9 @@ function setTranscriptActionButtonsVisible(visible) {
         if (editActions) editActions.style.display = 'none';
         if (downloadMenu) downloadMenu.style.display = 'none';
     }
+    try {
+        document.body.classList.toggle('has-transcript-actions', !!visible);
+    } catch (_) {}
 }
 
 document.addEventListener('DOMContentLoaded', () => {

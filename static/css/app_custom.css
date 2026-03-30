@@ -89,6 +89,8 @@ main.main-content:has(.blog-page) {
     width: min(420px, 92vw);
     box-shadow: 0 20px 48px rgba(15, 23, 42, 0.2);
     animation: globalDialogIn 160ms ease;
+    display: flex;
+    flex-direction: column;
 }
 @keyframes globalDialogIn {
     from { opacity: 0; transform: scale(0.96); }
@@ -99,11 +101,17 @@ main.main-content:has(.blog-page) {
     font-size: 1rem;
     line-height: 1.5;
     color: #0f172a;
+    text-align: center;
+    white-space: pre-line;
 }
 #global-confirm-overlay .personal-dialog-actions {
     display: flex;
     gap: 12px;
-    justify-content: flex-end;
+    justify-content: center !important;
+    width: 100% !important;
+    box-sizing: border-box;
+    padding: 0 !important;
+    margin: 0 !important;
 }
 #global-confirm-overlay .personal-dialog-btn {
     padding: 10px 18px;
@@ -747,6 +755,19 @@ input:checked + .slider:before { transform: translateX(16px); }
     margin-bottom: 8px;
 }
 
+.export-panel-label-with-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.export-video-header-icon {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    border-radius: 4px;
+}
+
 .export-check-item {
     display: flex;
     align-items: center;
@@ -965,6 +986,7 @@ input:checked + .slider:before { transform: translateX(16px); }
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
+    justify-items: center;
     gap: 12px;
     margin-bottom: 10px;
     direction: rtl;
@@ -976,6 +998,8 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 .upload-controls-row .btn.btn-primary {
     justify-self: center;
+    align-self: center;
+    margin: 0 auto;
 }
 .mobile-new-session-btn {
     display: none;
@@ -1196,6 +1220,22 @@ html[dir="rtl"] .upload-status {
     /* Save vertical space on mobile only when a video session is loaded */
     body.mobile-video-session .upload-controls-row {
         display: none !important;
+    }
+    /* Replace the hidden upload-zone area with the transcription toolbar */
+    body.mobile-video-session .upload-zone {
+        display: none !important;
+    }
+    body.mobile-video-session .transcription-wrapper {
+        flex-direction: column-reverse !important;
+        margin-bottom: 0 !important;
+    }
+    body.mobile-video-session .transcription-wrapper .controls-bar {
+        border-radius: 0 0 8px 8px !important;
+        border-bottom: 1px solid #e5e7eb !important;
+        border-top: none !important;
+    }
+    body.mobile-video-session #transcript-window {
+        border-radius: 8px 8px 0 0 !important;
     }
     .mobile-new-session-btn {
         display: none !important;
@@ -1923,4 +1963,57 @@ html[dir="rtl"] .upload-status {
 [dir="ltr"] .upload-disclaimer-box {
     text-align: left;
     direction: ltr;
+}
+
+/* Desktop: keep upload button centered to viewport, right under navbar/logo */
+@media (min-width: 769px) {
+  .main-app-container > .upload-zone {
+    order: initial;
+    width: 100%;
+    position: static;
+    left: auto;
+    transform: none;
+    background: transparent;
+    border-top: none;
+    box-shadow: none;
+    padding: 8px 0 12px;
+    margin: 0;
+  }
+
+  .main-app-container > .upload-zone .upload-controls-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin: 0;
+    gap: 0;
+    direction: ltr;
+  }
+
+  .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary {
+    margin: 0 auto !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 220px;
+    height: 50px;
+    border-radius: 12px;
+  }
+
+  /* Desktop behavior like mobile: transcript toolbar replaces upload area */
+  body.has-transcript-actions .upload-zone {
+    display: none !important;
+  }
+  body.has-transcript-actions .transcription-wrapper {
+    flex-direction: column-reverse !important;
+    margin-bottom: 0 !important;
+  }
+  body.has-transcript-actions .transcription-wrapper .controls-bar {
+    border-radius: 0 0 8px 8px !important;
+    border-bottom: 1px solid #e5e7eb !important;
+    border-top: none !important;
+  }
+  body.has-transcript-actions #transcript-window {
+    border-radius: 8px 8px 0 0 !important;
+  }
 }
