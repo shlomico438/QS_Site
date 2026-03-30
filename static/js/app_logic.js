@@ -3535,7 +3535,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 1. CLEAR OVERLAYS & STOP PROGRESS
         window.isTriggering = false;
-        stopProcessingStateUI();
         setDiarizationBusyState(false);
         setSeoHomeContentVisibility(false);
         localStorage.removeItem('activeJobId');
@@ -3629,6 +3628,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (typeof showStatus === 'function') showStatus(safeErr, true);
             setDiarizationBusyState(false);
+            stopProcessingStateUI();
             return;
         }
 
@@ -3897,6 +3897,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (ps) ps.style.display = 'none';
             }, 3000);
         }
+        stopProcessingStateUI();
     };
 
 function groupSegmentsBySpeaker(segments, enableGlue = true) {
