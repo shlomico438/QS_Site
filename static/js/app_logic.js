@@ -3173,6 +3173,53 @@ function setMainButtonAction(mode) {
     }
 }
 
+const PROCESSING_PHASES_HE = [
+    "מפעיל שרתים מרוחקים...",
+    "מנתח את האודיו ומזהה מילים...",
+    "מייצר כתוביות ומסנכרן לוידאו...",
+    "מבצע פינישים אחרונים..."
+];
+
+function stopProcessingStateUI() {
+    const panel = document.getElementById('processing-state-panel');
+    const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
+    if (window.processingStateTimer) {
+        clearInterval(window.processingStateTimer);
+        window.processingStateTimer = null;
+    }
+    window.processingPhaseIndex = 0;
+    if (panel) panel.style.display = 'none';
+    if (controlsRow) controlsRow.style.display = '';
+}
+
+function startProcessingStateUI() {
+    const panel = document.getElementById('processing-state-panel');
+    const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
+    const phaseEl = document.getElementById('processing-state-phase');
+    if (!panel || !phaseEl) return;
+
+    if (window.processingStateTimer) {
+        clearInterval(window.processingStateTimer);
+        window.processingStateTimer = null;
+    }
+
+    window.processingPhaseIndex = 0;
+    phaseEl.textContent = PROCESSING_PHASES_HE[0];
+    panel.style.display = 'flex';
+    if (controlsRow) controlsRow.style.display = 'none';
+
+    window.processingStateTimer = setInterval(() => {
+        const currentIndex = Number(window.processingPhaseIndex || 0);
+        if (currentIndex >= PROCESSING_PHASES_HE.length - 1) {
+            clearInterval(window.processingStateTimer);
+            window.processingStateTimer = null;
+            return;
+        }
+        window.processingPhaseIndex = currentIndex + 1;
+        phaseEl.textContent = PROCESSING_PHASES_HE[window.processingPhaseIndex];
+    }, 15000);
+}
+
 /** Reset the main screen to initial state (as on first load) — e.g. when user clicks Upload to start a new file. */
 function resetScreenToInitial() {
     window.isTriggering = false;
@@ -3181,6 +3228,7 @@ function resetScreenToInitial() {
     window.currentSegments = [];
     window.currentFormattedDoc = null;
     setSeoHomeContentVisibility(true);
+    stopProcessingStateUI();
 
     const placeholder = document.getElementById('placeholder');
     const transcriptWindow = document.getElementById('transcript-window');
@@ -3349,6 +3397,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const prev = mainBtn.innerText;
                 mainBtn.disabled = true;
                 mainBtn.innerText = ((typeof window.t === 'function' ? window.t('processing') : 'Processing') || 'Processing').replace(/\.\.\.?$/, '') + ' 0%';
+                startProcessingStateUI();
                 setDiarizationBusyState(true);
                 try {
                     const transcribeJobId = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -3372,6 +3421,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!triggerRes.ok) throw new Error(triggerData.message || triggerData.error || `HTTP ${triggerRes.status}`);
                     if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(transcribeJobId);
                 } catch (e) {
+                    stopProcessingStateUI();
                     mainBtn.disabled = false;
                     mainBtn.innerText = prev;
                     setDiarizationBusyState(false);
@@ -3485,6 +3535,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 1. CLEAR OVERLAYS & STOP PROGRESS
         window.isTriggering = false;
+        stopProcessingStateUI();
         setDiarizationBusyState(false);
         setSeoHomeContentVisibility(false);
         localStorage.removeItem('activeJobId');
@@ -4752,6 +4803,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (!window.isTriggering) {
                 clearInterval(window.fakeProgressInterval);
                 window.fakeProgressInterval = null;
+                stopProcessingStateUI();
                 return;
             }
             if (current < 95) {
@@ -4905,6 +4957,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (progressBar) { progressBar.style.width = "0%"; }
             const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : "Uploading...") || '').replace(/\.\.\.?$/, '');
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
+            startProcessingStateUI();
             setDiarizationBusyState(true);
             if (statusTxt) statusTxt.style.display = "none";
             setTranscriptActionButtonsVisible(false);
@@ -5028,6 +5081,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 window.isTriggering = false;
                                 setDiarizationBusyState(false);
                                 localStorage.removeItem('activeJobId');
+                                stopProcessingStateUI();
                                 hideProgressBar();
                                 if (mainBtn) mainBtn.disabled = false;
                                 return;
@@ -5062,6 +5116,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
                                     setDiarizationBusyState(false);
+                                    stopProcessingStateUI();
                                     hideProgressBar();
                                     const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
                                     showTriggerErrorDialog(msg, {
@@ -5082,6 +5137,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     setDiarizationBusyState(false);
                                     if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
                                     localStorage.removeItem('activeJobId');
+                                    stopProcessingStateUI();
                                     hideProgressBar();
                                     if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                                     if (mainBtn) mainBtn.disabled = false;
@@ -5105,6 +5161,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             window.isTriggering = false;
                             setDiarizationBusyState(false);
                             localStorage.removeItem('activeJobId');
+                            stopProcessingStateUI();
                             hideProgressBar();
                             if (mainBtn) mainBtn.disabled = false;
                             throw err;
@@ -5117,6 +5174,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         window.isTriggering = false;
                         setDiarizationBusyState(false);
                         localStorage.removeItem('activeJobId');
+                        stopProcessingStateUI();
                         hideProgressBar();
                         if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                     }
@@ -5134,6 +5192,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     window.isTriggering = false;
                     setDiarizationBusyState(false);
                     localStorage.removeItem('activeJobId');
+                    stopProcessingStateUI();
                     hideProgressBar();
                 };
 
@@ -5151,6 +5210,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window.isTriggering = false;
                 setDiarizationBusyState(false);
                 localStorage.removeItem('activeJobId');
+                stopProcessingStateUI();
                 hideProgressBar();
                 if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                 if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('error_starting_upload') : "Error starting upload."), true);
