@@ -284,6 +284,65 @@ function showGlobalAlert(message, options = {}) {
     });
 }
 
+// --- Upload pipeline (S3 PUT + trigger_processing): logging, wake lock, trigger retries ---
+function qsUploadTrace(phase, detail) {
+    try {
+        console.log('[qs-upload]', Object.assign({ phase, ts: new Date().toISOString() }, detail || {}));
+    } catch (_) {}
+}
+
+async function qsAcquireUploadWakeLock() {
+    try {
+        if (typeof navigator !== 'undefined' && navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
+            const wl = await navigator.wakeLock.request('screen');
+            qsUploadTrace('wake_lock_acquired', {});
+            return wl;
+        }
+    } catch (e) {
+        qsUploadTrace('wake_lock_denied', { err: String((e && e.message) || e) });
+    }
+    return null;
+}
+
+function qsReleaseUploadWakeLock(wl) {
+    if (!wl) return;
+    try {
+        if (typeof wl.release === 'function') wl.release();
+        qsUploadTrace('wake_lock_released', {});
+    } catch (_) {}
+}
+
+async function qsPostTriggerProcessingWithRetry(body, jobId) {
+    const max = 4;
+    let lastRes = null;
+    let lastData = {};
+    for (let attempt = 1; attempt <= max; attempt++) {
+        qsUploadTrace('trigger_processing_attempt', { jobId, attempt });
+        try {
+            lastRes = await fetch('/api/trigger_processing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            lastData = await lastRes.json().catch(() => ({}));
+            if (lastRes.ok) {
+                qsUploadTrace('trigger_processing_ok', { jobId, attempt, httpStatus: lastRes.status });
+                return { triggerRes: lastRes, triggerData: lastData };
+            }
+            const retryable = lastRes.status === 502 || lastRes.status === 503 || lastRes.status === 504 || lastRes.status === 429;
+            qsUploadTrace('trigger_processing_http_nack', { jobId, attempt, httpStatus: lastRes.status, retryable });
+            if (!retryable || attempt === max) {
+                return { triggerRes: lastRes, triggerData: lastData };
+            }
+        } catch (e) {
+            qsUploadTrace('trigger_processing_fetch_error', { jobId, attempt, err: String((e && e.message) || e) });
+            if (attempt === max) throw e;
+        }
+        await new Promise((r) => setTimeout(r, 600 * attempt));
+    }
+    return { triggerRes: lastRes, triggerData: lastData };
+}
+
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
@@ -1465,15 +1524,13 @@ async function initOpenInApp(jobId) {
                             console.log('[word-edit] open-in-app: legacy segment start sample', segments.slice(0, 5).map(s => s && s.start));
                         } catch (_) {}
                         // If segments contain real word timestamps, build the word/caption model.
-                        if (_hasWordTimestampsInSegments(segments)) {
-                            const model = _buildWordModelFromSegments(segments);
-                            if (model) {
-                                console.log('[word-edit] open-in-app: derived words/captions from segments[*].words', { words: model.words.length, captions: model.captions.length });
-                                window.currentWords = model.words;
-                                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 27);
-                                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                                segments = window.currentSegments;
-                            }
+                        const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
+                        if (model) {
+                            console.log('[word-edit] open-in-app: derived words/captions from segments[*].words or word_segments', { words: model.words.length, captions: model.captions.length });
+                            window.currentWords = model.words;
+                            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 27);
+                            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                            segments = window.currentSegments;
                         } else {
                             // Fallback for older jobs: try to load the raw transcript JSON (often contains word timestamps).
                             const rawKey = String(keyRow.result_s3_key).replace(/\.json$/i, '_raw.json');
@@ -1494,10 +1551,10 @@ async function initOpenInApp(jobId) {
                                             window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, rawTr.captions, 27);
                                             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                                             segments = window.currentSegments;
-                                        } else if (rawTr && Array.isArray(rawTr.segments) && _hasWordTimestampsInSegments(rawTr.segments)) {
-                                            const model2 = _buildWordModelFromSegments(rawTr.segments);
+                                        } else if (rawTr && Array.isArray(rawTr.segments)) {
+                                            const model2 = _tryBuildWordModelFromSegmentsAndFlat(rawTr.segments, rawTr.word_segments);
                                             if (model2) {
-                                                console.log('[word-edit] open-in-app: derived words/captions from raw segments[*].words', { words: model2.words.length, captions: model2.captions.length });
+                                                console.log('[word-edit] open-in-app: derived words/captions from raw segments or word_segments', { words: model2.words.length, captions: model2.captions.length });
                                                 window.currentWords = model2.words;
                                                 window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model2.captions, 27);
                                                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
@@ -3458,19 +3515,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
         if (!Array.isArray(segments)) segments = [];
-        // If we have real word timestamps (WhisperX), build a word-level model and derive captions from word ranges.
-        // Never estimate timings in the frontend.
-        if (_hasWordTimestampsInSegments(segments)) {
-            const model = _buildWordModelFromSegments(segments);
-            if (model) {
-                window.currentWords = model.words;
-                window.currentCaptions = model.captions;
-                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-            } else {
-                window.currentWords = null;
-                window.currentCaptions = null;
-                window.currentSegments = segments;
-            }
+        const flatWordSegments = (output && output.word_segments) || rawResult.word_segments || (rawResult.result && rawResult.result.word_segments);
+        // Real word timestamps → word/caption model (coerces numeric strings; optional flat `word_segments`).
+        const wordModel = _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
+        if (wordModel) {
+            window.currentWords = wordModel.words;
+            window.currentCaptions = wordModel.captions;
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
         } else {
             window.currentWords = null;
             window.currentCaptions = null;
@@ -4687,17 +4738,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             window.currentCaptions = captions;
                             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                         } else if (segments.length > 0) {
-                            if (_hasWordTimestampsInSegments(segments)) {
-                                const model = _buildWordModelFromSegments(segments);
-                                if (model) {
-                                    window.currentWords = model.words;
-                                    window.currentCaptions = model.captions;
-                                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                                } else {
-                                    window.currentWords = null;
-                                    window.currentCaptions = null;
-                                    window.currentSegments = segments;
-                                }
+                            const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
+                            if (model) {
+                                window.currentWords = model.words;
+                                window.currentCaptions = model.captions;
+                                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                             } else {
                                 window.currentWords = null;
                                 window.currentCaptions = null;
@@ -4787,7 +4832,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // Show progress bar for upload; processing phase uses % in button only
             showProgressBar();
             if (progressBar) { progressBar.style.width = "0%"; }
-            const uploadLabel = ((typeof window.t === 'function' ? window.t('downloading') : "Downloading...") || '').replace(/\.\.\.?$/, '');
+            const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : "Uploading...") || '').replace(/\.\.\.?$/, '');
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
             setDiarizationBusyState(true);
             if (statusTxt) statusTxt.style.display = "none";
@@ -4835,10 +4880,39 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     socket.emit('join', { room: jobId });
                 }
 
-                // 4. Proceed with S3 Upload (XHR for progress tracking)
+                // 4. Proceed with S3 Upload (XHR for progress tracking) + wake lock + visibility hint
+                let uploadWakeLock = null;
+                let uploadPhase = 'signing_done';
+                let onVisibilityDuringUpload = null;
+                let hiddenHintShown = false;
+                try {
+                    uploadWakeLock = await qsAcquireUploadWakeLock();
+                } catch (_) {}
+
+                onVisibilityDuringUpload = function () {
+                    if (!document.hidden || uploadPhase !== 's3_put' || hiddenHintShown) return;
+                    hiddenHintShown = true;
+                    qsUploadTrace('visibility_hidden_during_upload', { jobId, bytes: currentFile && currentFile.size });
+                    const T = typeof window.t === 'function' ? window.t : function (k) { return k; };
+                    if (typeof showStatus === 'function') {
+                        showStatus(T('upload_keep_screen_on') || 'Keep the screen on until upload finishes.', false, { duration: 8000 });
+                    }
+                };
+                document.addEventListener('visibilitychange', onVisibilityDuringUpload);
+
+                const cleanupUploadMonitors = function () {
+                    try {
+                        if (onVisibilityDuringUpload) document.removeEventListener('visibilitychange', onVisibilityDuringUpload);
+                    } catch (_) {}
+                    onVisibilityDuringUpload = null;
+                    qsReleaseUploadWakeLock(uploadWakeLock);
+                    uploadWakeLock = null;
+                };
+
                 const xhr = new XMLHttpRequest();
                 xhr.open('PUT', url, true);
                 xhr.setRequestHeader('Content-Type', currentFile.type);
+                xhr.timeout = 0;
 
                 xhr.upload.onprogress = (e) => {
                     if (e.lengthComputable && progressBar) {
@@ -4849,9 +4923,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 };
 
                 xhr.onload = async () => {
-                    if (xhr.status === 200 || xhr.status === 201) {
+                    try {
+                        if (xhr.status === 200 || xhr.status === 201) {
+                        uploadPhase = 's3_done';
                         if (progressBar) progressBar.style.width = "100%";
                         if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
+                        qsUploadTrace('s3_put_complete', { jobId, bytes: currentFile && currentFile.size, status: xhr.status });
                         console.log("✅ File uploaded to S3.");
                         window.isTriggering = true;
                         setDiarizationBusyState(true);
@@ -4860,19 +4937,16 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
 
                         try {
-                            console.log("Triggering");
-                            const triggerRes = await fetch('/api/trigger_processing', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    s3Key: s3Key,
-                                    jobId: jobId,
-                                    diarization: diarizationValue,
-                                    language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
-                                })
-                            });
-                            let triggerData = {};
-                            try { triggerData = await triggerRes.json(); } catch (_) {}
+                            uploadPhase = 'trigger_processing';
+                            // Always runs after S3 PUT: tells server upload is complete (upload_status for worker).
+                            console.log("Upload complete → /api/trigger_processing");
+                            const triggerPayload = {
+                                s3Key: s3Key,
+                                jobId: jobId,
+                                diarization: diarizationValue,
+                                language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
+                            };
+                            const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, jobId);
                             if (!triggerRes.ok) {
                                 console.log("trigger nack", triggerRes.status, triggerData);
                                 console.log("❌ Triggering processing failed:", triggerRes.status, triggerData);
@@ -4954,6 +5028,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             }
                         } catch (err) {
                             console.log("trigger nack", "exception", err && err.message);
+                            qsUploadTrace('trigger_processing_exception', { jobId, err: String((err && err.message) || err) });
                             const dbId2 = localStorage.getItem('lastJobDbId');
                             if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                             window.isTriggering = false;
@@ -4963,7 +5038,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             if (mainBtn) mainBtn.disabled = false;
                             throw err;
                         }
-                    } else {
+                        } else {
+                        qsUploadTrace('s3_put_http_error', { jobId, status: xhr.status, statusText: xhr.statusText });
                         console.error("S3 Upload Failed:", xhr.statusText);
                         const dbId = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
@@ -4973,10 +5049,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         hideProgressBar();
                         if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                     }
+                    } finally {
+                        cleanupUploadMonitors();
+                    }
                 };
 
                 xhr.onerror = () => {
+                    qsUploadTrace('s3_put_xhr_network_error', { jobId });
                     console.error("XHR Network Error during upload.");
+                    cleanupUploadMonitors();
                     const dbId = localStorage.getItem('lastJobDbId');
                     if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
                     window.isTriggering = false;
@@ -4985,6 +5066,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     hideProgressBar();
                 };
 
+                xhr.onabort = () => {
+                    qsUploadTrace('s3_put_aborted', { jobId });
+                    cleanupUploadMonitors();
+                };
+
+                uploadPhase = 's3_put';
                 xhr.send(currentFile);
 
             }
@@ -5166,15 +5253,25 @@ function renderTranscriptFromCues(cues) {
     container.contentEditable = 'false';
 }
 
+/** Coerce Whisper word/segment times (API may send numbers or numeric strings). */
+function _asTranscriptTime(v) {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v.trim() !== '') {
+        const n = Number(v.trim());
+        if (Number.isFinite(n)) return n;
+    }
+    return NaN;
+}
+
 function _hasWordTimestampsInSegments(segments) {
     if (!Array.isArray(segments) || segments.length === 0) return false;
     for (const seg of segments) {
         const ws = seg && seg.words;
         if (!Array.isArray(ws) || ws.length === 0) continue;
         const w0 = ws[0];
-        const s = w0 && (w0.start ?? w0['start']);
-        const e = w0 && (w0.end ?? w0['end']);
-        if (typeof s === 'number' && typeof e === 'number') return true;
+        const s = _asTranscriptTime(w0 && (w0.start ?? w0['start']));
+        const e = _asTranscriptTime(w0 && (w0.end ?? w0['end']));
+        if (Number.isFinite(s) && Number.isFinite(e)) return true;
     }
     return false;
 }
@@ -5208,9 +5305,9 @@ function _buildWordModelFromSegments(segments) {
         for (let j = 0; j < ws.length; j++) {
             const w = ws[j] || {};
             const text = (w.text ?? w.word ?? '').toString();
-            const start = w.start;
-            const end = w.end;
-            if (typeof start !== 'number' || typeof end !== 'number') return null;
+            const start = _asTranscriptTime(w.start);
+            const end = _asTranscriptTime(w.end);
+            if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
             words.push({ id: `w${wi}`, text, start, end, highlighted: false });
             wi++;
         }
@@ -5221,6 +5318,55 @@ function _buildWordModelFromSegments(segments) {
     }
     if (words.length === 0 || captions.length === 0) return null;
     return { words, captions };
+}
+
+/** When the worker sends `word_segments` (flat) but no per-segment `words`, group captions by silence gaps. */
+function _buildWordModelFromFlatWordSegments(flatWords, gapSec) {
+    const gap = gapSec == null ? 1.25 : Number(gapSec);
+    const gapOk = Number.isFinite(gap) && gap > 0 ? gap : 1.25;
+    if (!Array.isArray(flatWords) || flatWords.length === 0) return null;
+    const words = [];
+    for (let i = 0; i < flatWords.length; i++) {
+        const w = flatWords[i] || {};
+        const text = (w.text != null ? w.text : w.word);
+        const start = _asTranscriptTime(w.start);
+        const end = _asTranscriptTime(w.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+        words.push({
+            id: `w${i}`,
+            text: String(text != null ? text : '').trim(),
+            start,
+            end,
+            highlighted: false
+        });
+    }
+    const captions = [];
+    let startIdx = 0;
+    for (let i = 0; i < words.length; i++) {
+        const next = words[i + 1];
+        const silence = next ? (next.start - words[i].end) : gapOk + 1;
+        if (silence > gapOk || !next) {
+            captions.push({ id: `c${captions.length}`, wordStartIndex: startIdx, wordEndIndex: i });
+            startIdx = i + 1;
+        }
+    }
+    if (words.length && captions.length === 0) {
+        captions.push({ id: 'c0', wordStartIndex: 0, wordEndIndex: words.length - 1 });
+    }
+    if (words.length === 0 || captions.length === 0) return null;
+    return { words, captions };
+}
+
+function _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments) {
+    const segs = Array.isArray(segments) ? segments : [];
+    if (_hasWordTimestampsInSegments(segs)) {
+        const m = _buildWordModelFromSegments(segs);
+        if (m) return m;
+    }
+    if (Array.isArray(flatWordSegments) && flatWordSegments.length) {
+        return _buildWordModelFromFlatWordSegments(flatWordSegments);
+    }
+    return null;
 }
 
 function getCaptionText(caption, words) {
@@ -7311,10 +7457,10 @@ async function handleSubtitleFile(file) {
             renderWordCaptionEditor();
             return;
         }
-        if (tr && Array.isArray(tr.segments) && _hasWordTimestampsInSegments(tr.segments)) {
-            const model = _buildWordModelFromSegments(tr.segments);
+        if (tr && Array.isArray(tr.segments)) {
+            const model = _tryBuildWordModelFromSegmentsAndFlat(tr.segments, tr.word_segments);
             if (model) {
-                console.log('[word-edit] derived words/captions from transcript JSON segments[*].words for subtitle import', { words: model.words.length, captions: model.captions.length });
+                console.log('[word-edit] derived words/captions from transcript JSON (segments.words or word_segments) for subtitle import', { words: model.words.length, captions: model.captions.length });
                 window.currentWords = model.words;
                 window.currentCaptions = model.captions;
                 _applyCueTextsOntoWordModel(cues, window.currentWords, window.currentCaptions);

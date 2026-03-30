@@ -65,6 +65,12 @@ RUNPOD_MOVIE_ENDPOINT_ID = os.environ.get('RUNPOD_MOVIE_ENDPOINT_ID') or RUNPOD_
 BUCKET_NAME = "quickscribe-v2-12345"
 
 
+def _runpod_skip_warmup():
+    """If true, do not POST RunPod /run from sign-s3; first /run happens in trigger_processing after upload."""
+    v = (os.environ.get('RUNPOD_SKIP_WARMUP') or '').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
 def _public_base_url(req):
     """Best-effort public base URL for third-party callbacks (RunPod -> site)."""
     explicit = (os.environ.get('PUBLIC_BASE_URL') or '').strip().rstrip('/')
@@ -2351,16 +2357,19 @@ def sign_s3():
             ExpiresIn=3600
         )
 
-        # Trigger RunPod early (before upload) so container is warming during upload
-        _start_trigger_if_configured(
-            job_id=job_id,
-            s3_key=s3_key,
-            request=request,
-            task='transcribe',
-            language=data.get('language', 'he'),
-            diarization=data.get('diarization', False),
-            speaker_count=2,
-        )
+        # Trigger RunPod early (before upload) so container warms during upload — unless RUNPOD_SKIP_WARMUP.
+        if not _runpod_skip_warmup():
+            _start_trigger_if_configured(
+                job_id=job_id,
+                s3_key=s3_key,
+                request=request,
+                task='transcribe',
+                language=data.get('language', 'he'),
+                diarization=data.get('diarization', False),
+                speaker_count=2,
+            )
+        else:
+            logging.info("RUNPOD_SKIP_WARMUP: skipping sign-s3 RunPod trigger for %s", job_id)
 
         return jsonify({
             'data': {
@@ -2509,6 +2518,7 @@ def trigger_processing():
         data = request.json if request.is_json else {}
         if not data:
             data = {}
+        logging.info("trigger_processing request: job_id=%s has_s3_key=%s", data.get('jobId'), bool(data.get('s3Key')))
         print(f"📩 Received Trigger Request: {data}")
 
         s3_key = data.get('s3Key')
@@ -2526,9 +2536,15 @@ def trigger_processing():
 
         # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
         upload_complete[job_id] = True
+        logging.info(
+            "upload_complete set for job_id=%s (worker upload_status will see complete); s3_key_suffix=%s",
+            job_id,
+            (s3_key[-64:] if isinstance(s3_key, str) and len(s3_key) > 64 else s3_key),
+        )
 
         # Trigger already running; just confirm
         if job_id in pending_trigger and pending_trigger.get(job_id) not in ("failed", None):
+            logging.info("trigger_processing: job_id=%s already queued/triggered, skipping second RunPod /run", job_id)
             return jsonify({"status": "started", "job_id": job_id}), 202
 
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')

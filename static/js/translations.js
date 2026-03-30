@@ -116,6 +116,7 @@ window.translations = {
         processing: "מעבד...",
         job_queued_waiting_gpu: "מחכה בתור",
         error_starting_upload: "שגיאה בהתחלת ההעלאה.",
+        upload_keep_screen_on: "השאר/י את המסך דולק עד סיום ההעלאה — נעילה עלולה לעצור את ההעברה.",
         could_not_load_list: "לא ניתן לטעון את הרשימה. ",
         failed_to_get_link: "לא ניתן לקבל קישור",
         // Settings
@@ -296,6 +297,7 @@ window.translations = {
         processing: "Processing...",
         job_queued_waiting_gpu: "Job queued. Waiting for GPU…",
         error_starting_upload: "Error starting upload.",
+        upload_keep_screen_on: "Keep the screen on until upload finishes — locking may stop the transfer.",
         could_not_load_list: "Could not load list. ",
         failed_to_get_link: "Failed to get link",
         settings: "Settings",

@@ -1,6 +1,16 @@
 -- Add PROCESS TIMING columns to jobs table for human-readable display.
--- Run this in Supabase SQL Editor or via psql.
--- If you already ran an earlier version, run the ALTER again (ADD COLUMN IF NOT EXISTS is safe).
+--
+-- HOW TO APPLY (Supabase):
+--   1. Supabase Dashboard → SQL Editor → paste this file → Run.
+--   2. Refresh PostgREST schema cache (fixes PGRST204 "Could not find column ... in schema cache"):
+--      - Dashboard → Project Settings → API → click "Reload schema" / restart API if available, OR
+--      - SQL Editor: run once (if your role allows):
+--          NOTIFY pgrst, 'reload schema';
+--      - Or wait ~1–2 minutes; PostgREST may auto-reload.
+--   3. Re-run your app; _update_job_timings in siteapp.py should stop logging PGRST204 for
+--      trigger_completed_at / gpu_started_at.
+--
+-- If you already ran an earlier version, the ALTER is safe (IF NOT EXISTS).
 
 ALTER TABLE jobs
   ADD COLUMN IF NOT EXISTS runpod_job_id text,
