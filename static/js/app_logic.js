@@ -44,26 +44,12 @@ let isSignUpMode = true;
 window.startJobStatusPolling = function(jobId) {
     if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
     const pollMs = 4000;
-    const maxPolls = 150; // ~10 min
     let polls = 0;
     window._checkStatusPollInterval = setInterval(async () => {
         polls++;
-        if (polls > maxPolls || !localStorage.getItem('activeJobId')) {
+        if (!localStorage.getItem('activeJobId')) {
             if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
             window._checkStatusPollInterval = null;
-            if (polls > maxPolls && localStorage.getItem('activeJobId') === jobId) {
-                window.isTriggering = false;
-                if (window.fakeProgressInterval) { clearInterval(window.fakeProgressInterval); window.fakeProgressInterval = null; }
-                const msg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
-                    ? 'העיבוד ארך יותר מדי או נכשל בשרת.' : 'Job timed out or may have failed on the server.';
-                showTriggerErrorDialog(msg, {
-                    onClose: () => {
-                        localStorage.removeItem('activeJobId');
-                        const mb = document.getElementById('main-btn');
-                        if (mb) mb.disabled = false;
-                    }
-                });
-            }
             return;
         }
         try {
@@ -5107,8 +5093,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     // Keep progressing slowly and cap at 95% while we wait.
                                     if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
                                     if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
-                                    const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
-                                    ts = stRes.ok ? await stRes.json() : {};
+                                    try {
+                                        const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
+                                        ts = stRes.ok ? await stRes.json() : {};
+                                    } catch (_) {
+                                        // Keep waiting on transient network issues instead of failing the job UI.
+                                        ts = ts || { status: '' };
+                                    }
                                 }
                                 if (ts.status === 'failed') {
                                     console.log("trigger nack", ts.status);
