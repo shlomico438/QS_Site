@@ -467,6 +467,7 @@ socketio = SocketIO(app,
 
 # --- GLOBAL CACHE ---
 job_results_cache = {}
+transcription_email_sent = set()
 
 logging.basicConfig(level=logging.INFO)
 
@@ -2225,6 +2226,23 @@ def gpu_callback():
         total_sec=total_sec,
     )
 
+    # Optional transcription completion email.
+    # Sends once per runpod job id for this process lifetime.
+    try:
+        if job_id not in transcription_email_sent:
+            notify = _get_job_notification_info(job_id, user_id=user_id)
+            to_email = (notify.get("user_email") or "").strip()
+            open_job_id = (notify.get("job_id") or job_id)
+            if to_email and open_job_id:
+                from urllib.parse import quote
+                public_base = _public_base_url(request)
+                open_url = f"{public_base}/?open={quote(str(open_job_id), safe='')}"
+                sent_ok = _send_transcription_ready_email(to_email, notify.get("user_name"), open_url)
+                if sent_ok:
+                    transcription_email_sent.add(job_id)
+    except Exception as _email_err:
+        logging.warning("transcription ready email flow failed for %s: %s", job_id, _email_err)
+
     return jsonify({
         "ok": True,
         "received": True,
@@ -2998,6 +3016,88 @@ def _send_burn_ready_email(to_email, download_url, base_name):
             logging.warning("SendGrid send failed: %s %s", r.status_code, r.text[:200])
     except Exception as e:
         logging.warning("Send burn-ready email failed: %s", e)
+
+
+def _get_job_notification_info(runpod_job_id, user_id=None):
+    """Best-effort fetch for job id + user_email + user_name by runpod_job_id."""
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key or not runpod_job_id:
+        return {}
+
+    from urllib.parse import quote
+    rj = quote(str(runpod_job_id), safe='')
+    uid = quote(str(user_id), safe='') if user_id else None
+    where = f"runpod_job_id=eq.{rj}"
+    if uid:
+        where += f"&user_id=eq.{uid}"
+
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Accept": "application/json",
+    }
+
+    # Try richer columns first; gracefully fallback if columns are missing.
+    selects = ("id,user_email,user_name", "id")
+    for sel in selects:
+        try:
+            url = f"{supabase_url}/rest/v1/jobs?{where}&select={sel}&order=created_at.desc&limit=1"
+            r = requests.get(url, headers=headers, timeout=8)
+            if not r.ok:
+                continue
+            rows = r.json() if r.content else []
+            if not rows:
+                continue
+            row = rows[0] or {}
+            return {
+                "job_id": row.get("id"),
+                "user_email": row.get("user_email"),
+                "user_name": row.get("user_name"),
+            }
+        except Exception:
+            continue
+    return {}
+
+
+def _send_transcription_ready_email(to_email, user_name, open_url):
+    """Send transcription-complete email via SendGrid."""
+    api_key = os.environ.get('SENDGRID_API_KEY')
+    if not api_key or not to_email:
+        return False
+    try:
+        from_email = os.environ.get('SENDGRID_FROM', 'noreply@getquickscribe.com')
+        display_name = str(user_name or '').strip() or 'שם המשתמש'
+        subject = "הוידאו שלך מוכן! 🎬 הכתוביות מחכות לך ב-QuickScribe"
+        body = (
+            f"היי {display_name},\n\n"
+            "חדשות טובות! מנועי ה-AI שלנו סיימו את העבודה. הוידאו שלך תומלל, והכתוביות מסונכרנות ומוכנות על גבי הסאונד.\n\n"
+            "זה הזמן להיכנס למערכת, לעבור ברפרוף על הטקסט כדי לוודא שהכל מושלם (בכל זאת, אנחנו עומדים על 94% דיוק 😉), "
+            "לעשות פינישים קטנים אם צריך – ולהוריד את הוידאו מוכן להפצה.\n\n"
+            f"👉 למעבר לוידאו שלך: {open_url}\n\n"
+            "אם יש לך שאלות או פידבק על התוצאה, אפשר פשוט להשיב למייל הזה, אני קורא הכל.\n\n"
+            "יצירה נעימה,\n"
+            "QuickScribe"
+        )
+        payload = {
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "from": {"email": from_email, "name": "QuickScribe"},
+            "subject": subject,
+            "content": [{"type": "text/plain", "value": body}],
+        }
+        r = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=10
+        )
+        if r.status_code >= 400:
+            logging.warning("SendGrid transcription-ready send failed: %s %s", r.status_code, r.text[:200])
+            return False
+        return True
+    except Exception as e:
+        logging.warning("Send transcription-ready email failed: %s", e)
+        return False
 
 
 def _segments_to_srt_text(segments, max_chars_per_line=None):
