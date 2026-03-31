@@ -2140,12 +2140,32 @@ async function deliverBlobToUser(blob, filename, mimeType) {
         saveAs(blob, safeName);
         return;
     }
+    if (isMobileClient()) {
+        const mobileUrl = URL.createObjectURL(blob);
+        try {
+            window.open(mobileUrl, '_blank');
+        } catch (_) {
+            window.location.href = mobileUrl;
+        }
+        setTimeout(() => { try { URL.revokeObjectURL(mobileUrl); } catch (_) {} }, 120000);
+        return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = safeName;
     a.click();
     URL.revokeObjectURL(url);
+}
+
+async function tryShareUrlOnMobile(url, title) {
+    if (!isMobileClient() || !navigator.share || !url) return false;
+    try {
+        await navigator.share({ url: String(url), title: String(title || '') });
+        return true;
+    } catch (_) {
+        return false;
+    }
 }
 
 window.downloadFile = async function(type, bypassUser = null, options = {}) {
@@ -2448,6 +2468,12 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 stopBurnProgress(true);
                 logMovieStage('Burn completed – downloading output');
                 const outName = (baseName || 'video') + '.mp4';
+                const sharedByUrl = await tryShareUrlOnMobile(statusJson.output_url, outName);
+                if (sharedByUrl) {
+                    logMovieStage('Shared output via native share URL');
+                    if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
+                    return;
+                }
                 if (typeof saveAs !== 'undefined') {
                     const tOutDownload = Date.now();
                     const blob = await fetch(statusJson.output_url).then(r => r.blob());
