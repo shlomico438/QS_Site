@@ -2115,7 +2115,37 @@ async function _serverForceRtlDocx(blob, filename) {
 
 async function _saveDocxWithRtl(blob, filename) {
     const fixedBlob = await _serverForceRtlDocx(blob, filename);
-    saveAs(fixedBlob, filename);
+    await deliverBlobToUser(fixedBlob, filename);
+}
+
+function isMobileClient() {
+    const ua = (navigator.userAgent || navigator.vendor || '').toLowerCase();
+    return /iphone|ipad|ipod|android|mobile/.test(ua);
+}
+
+async function deliverBlobToUser(blob, filename, mimeType) {
+    const safeName = String(filename || 'download.bin');
+    const fileType = String(mimeType || blob?.type || 'application/octet-stream');
+    if (isMobileClient() && navigator.share && typeof File !== 'undefined') {
+        try {
+            const file = new File([blob], safeName, { type: fileType });
+            const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
+            if (canShare) {
+                await navigator.share({ files: [file], title: safeName });
+                return;
+            }
+        } catch (_) {}
+    }
+    if (typeof saveAs !== 'undefined') {
+        saveAs(blob, safeName);
+        return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = safeName;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 window.downloadFile = async function(type, bypassUser = null, options = {}) {
@@ -2241,17 +2271,16 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                         logMovieStage('Burned movie blob received', { tookMs: Date.now() - tOutBlob, sizeBytes: outBlob.size });
                         const outName = (burnRes.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)"?/);
                         const downloadName = outName ? outName[1] : 'video_with_subtitles.' + ext;
-                        if (typeof saveAs !== 'undefined') saveAs(outBlob, downloadName);
-                        else { const a = document.createElement('a'); a.href = URL.createObjectURL(outBlob); a.download = downloadName; a.click(); URL.revokeObjectURL(a.href); }
+                        await deliverBlobToUser(outBlob, downloadName);
                     } else {
                         const err = await burnRes.json().catch(() => ({}));
                         throw new Error(err.error || burnRes.statusText);
                     }
                 } catch (e) {
                     console.warn(`[movie export][${_movieTs()}][+${_movieElapsed()}] Burn failed, falling back to video+SRT:`, e);
-                    if (typeof saveAs !== 'undefined') saveAs(videoBlob, filename);
+                    await deliverBlobToUser(videoBlob, filename);
                     const srt = typeof srtFromCues === 'function' ? srtFromCues(normSegs) : '';
-                    if (srt && typeof saveAs !== 'undefined') saveAs(new Blob([srt], { type: 'text/plain;charset=utf-8' }), (baseName || 'video') + '.srt');
+                    if (srt) await deliverBlobToUser(new Blob([srt], { type: 'text/plain;charset=utf-8' }), (baseName || 'video') + '.srt', 'text/plain;charset=utf-8');
                     let errMsg = movieT('movie_burn_failed', 'יצירת סרטון נכשלה') + '. ';
                     if (e && e.message) errMsg += e.message + '. ';
                     errMsg += movieT('download_fallback_hint', 'הווידאו וקובץ SRT הורדו במקום צריבה. ודא/י ש־ffmpeg זמין בשרת.');
@@ -2423,7 +2452,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     const tOutDownload = Date.now();
                     const blob = await fetch(statusJson.output_url).then(r => r.blob());
                     logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
-                    saveAs(blob, outName);
+                    await deliverBlobToUser(blob, outName);
                 } else {
                     const a = document.createElement('a');
                     a.href = statusJson.output_url;
@@ -2539,7 +2568,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
             return payload.clean;
         };
-        const _downloadTxt = (text, name) => {
+        const _downloadTxt = async (text, name) => {
             const toRtlTxt = (src) => {
                 const s = String(src || '');
                 // Plain TXT has no direction metadata; inject RLM so Hebrew content opens RTL.
@@ -2550,7 +2579,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     .map((line) => (line.trim() ? (rlm + line) : line))
                     .join('\n');
             };
-            saveAs(new Blob([toRtlTxt(text)], { type: 'text/plain;charset=utf-8' }), name);
+            await deliverBlobToUser(new Blob([toRtlTxt(text)], { type: 'text/plain;charset=utf-8' }), name, 'text/plain;charset=utf-8');
         };
 
         const _exportKindDocx = async (kind, dlName) => {
@@ -2585,7 +2614,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 );
             }
             const blob = await res.blob();
-            saveAs(blob, dlName);
+            await deliverBlobToUser(blob, dlName);
         };
         const _exportKindTxt = async (kind) => {
             const payload = _buildExportPayload();
@@ -2604,7 +2633,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 }
             }
             const dlName = kind === 'summary' ? `${docBase}_summary.txt` : `${docBase}.txt`;
-            _downloadTxt(outText, dlName);
+            await _downloadTxt(outText, dlName);
         };
 
         try {
@@ -2622,7 +2651,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     } else if (type === 'srt') {
         const segs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(window.currentSegments, 0.5) : window.currentSegments;
         const content = typeof srtFromCues === 'function' ? srtFromCues(segs) : '';
-        saveAs(new Blob([content], { type: 'text/plain;charset=utf-8' }), `${baseName}.srt`);
+        await deliverBlobToUser(new Blob([content], { type: 'text/plain;charset=utf-8' }), `${baseName}.srt`, 'text/plain;charset=utf-8');
     } else {
         let content = type === 'vtt' ? "WEBVTT\n\n" : "";
         const segs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(window.currentSegments, 0.5) : window.currentSegments;
@@ -2634,7 +2663,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             };
             content += `${ts(seg.start)} --> ${ts(seg.end)}\n${seg.text.trim()}\n\n`;
         });
-        saveAs(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`);
+        await deliverBlobToUser(new Blob([content], {type: "text/plain;charset=utf-8"}), `${baseName}.${type}`, "text/plain;charset=utf-8");
     }
 };
 
