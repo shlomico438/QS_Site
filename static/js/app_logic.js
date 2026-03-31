@@ -580,6 +580,13 @@ function _showToast(message, duration = 3000) {
     toast._hideTimer = setTimeout(() => { toast.style.opacity = '0'; }, duration);
 }
 
+function _hideToastNow() {
+    const toast = document.getElementById('qs-toast');
+    if (!toast) return;
+    try { clearTimeout(toast._hideTimer); } catch (_) {}
+    toast.style.opacity = '0';
+}
+
 function setSeoHomeContentVisibility(visible) {
     const seo = document.getElementById('seo-home-content');
     if (!seo) return;
@@ -2174,6 +2181,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
 
     if (type === 'movie') {
         const movieStageT0 = Date.now();
+        let movieExportSucceeded = false;
         const _movieTs = () => new Date().toISOString();
         const _movieElapsed = () => ((Date.now() - movieStageT0) / 1000).toFixed(2) + 's';
         const logMovieStage = (stage, extra) => {
@@ -2471,29 +2479,13 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 stopBurnProgress(true);
                 logMovieStage('Burn completed – downloading output');
                 const outName = (baseName || 'video') + '.mp4';
-                const sharedByUrl = await tryShareUrlOnMobile(statusJson.output_url, outName);
-                if (sharedByUrl) {
-                    logMovieStage('Shared output via native share URL');
-                    if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
-                    return;
-                }
-                if (isMobileClient()) {
-                    // On mobile, avoid forced download prompts; open the hosted file instead.
-                    window.location.href = statusJson.output_url;
-                    if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
-                    return;
-                }
-                if (typeof saveAs !== 'undefined') {
-                    const tOutDownload = Date.now();
-                    const blob = await fetch(statusJson.output_url).then(r => r.blob());
-                    logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
-                    await deliverBlobToUser(blob, outName);
-                } else {
-                    const a = document.createElement('a');
-                    a.href = statusJson.output_url;
-                    a.download = outName;
-                    a.target = '_blank';
-                    a.click();
+                const tOutDownload = Date.now();
+                const blob = await fetch(statusJson.output_url).then(r => r.blob());
+                logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
+                await deliverBlobToUser(blob, outName);
+                movieExportSucceeded = true;
+                if (typeof showStatus === 'function') {
+                    showStatus('הסרטון מוכן! אפשר לשמור או לשתף.', false, { duration: 5000 });
                 }
             } else {
                 stopBurnProgress(false);
@@ -2510,6 +2502,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 showStatus(baseErr + hint, true);
             }
         } finally {
+            if (!movieExportSucceeded) _hideToastNow();
             if (mainBtn) {
                 mainBtn.disabled = false;
                 mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
