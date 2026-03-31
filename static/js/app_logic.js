@@ -2136,10 +2136,6 @@ async function deliverBlobToUser(blob, filename, mimeType) {
             }
         } catch (_) {}
     }
-    if (typeof saveAs !== 'undefined') {
-        saveAs(blob, safeName);
-        return;
-    }
     if (isMobileClient()) {
         const mobileUrl = URL.createObjectURL(blob);
         try {
@@ -2148,6 +2144,10 @@ async function deliverBlobToUser(blob, filename, mimeType) {
             window.location.href = mobileUrl;
         }
         setTimeout(() => { try { URL.revokeObjectURL(mobileUrl); } catch (_) {} }, 120000);
+        return;
+    }
+    if (typeof saveAs !== 'undefined') {
+        saveAs(blob, safeName);
         return;
     }
     const url = URL.createObjectURL(blob);
@@ -2184,6 +2184,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
         };
         logMovieStage('Start');
+        if (typeof showStatus === 'function') {
+            showStatus('מתחילים ליצור את הסרטון... זה עשוי לקחת כמה דקות.', false, { duration: 900000 });
+        }
         const { data: { user: movieUser } } = await supabase.auth.getUser();
         if (!movieUser) {
             logMovieStage('No user – show sign-in');
@@ -2471,6 +2474,12 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 const sharedByUrl = await tryShareUrlOnMobile(statusJson.output_url, outName);
                 if (sharedByUrl) {
                     logMovieStage('Shared output via native share URL');
+                    if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
+                    return;
+                }
+                if (isMobileClient()) {
+                    // On mobile, avoid forced download prompts; open the hosted file instead.
+                    window.location.href = statusJson.output_url;
                     if (mainBtn) { mainBtn.disabled = false; mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload'); }
                     return;
                 }
