@@ -3228,6 +3228,15 @@ function wrapTextByMaxChars(text, maxChars) {
     return lines.join('<br>');
 }
 
+function getDocFormatParagraphs() {
+    const clean = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+    if (!clean) return [];
+    return clean
+        .split(/\r?\n+/)
+        .map((line) => String(line || '').trim())
+        .filter(Boolean);
+}
+
 const PROCESSING_PHASES_HE = [
     "מפעיל שרתים מרוחקים...",
     "מנתח את האודיו ומזהה מילים...",
@@ -4100,6 +4109,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
         // Subtitle mode = per-segment lines; Doc mode = glued paragraphs by speaker.
         window.isDocumentMode = isDocumentFormatEnabled();
+        if (window.isDocumentMode) {
+            const docParagraphs = getDocFormatParagraphs();
+            if (docParagraphs.length) {
+                const htmlDoc = docParagraphs.map((p) => {
+                    const safe = p.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    return `<div class="paragraph-row" style="margin-bottom: 0.35em;"><p style="margin: 0; line-height: 1.7; cursor: text;">${safe}</p></div>`;
+                }).join('');
+                transcriptWindow.innerHTML = htmlDoc;
+                transcriptWindow.contentEditable = 'false';
+                return;
+            }
+        }
         const groupedData = groupSegmentsBySpeaker(window.currentSegments, window.isDocumentMode);
 
 
