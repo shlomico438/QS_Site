@@ -1223,7 +1223,7 @@ def _get_job_timings_from_db(runpod_job_id: str, user_id: str = None) -> dict:
         return {}
     from urllib.parse import quote
     rj = quote(str(runpod_job_id), safe='')
-    url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}&select=trigger_sec,trigger_completed_at,gpu_started_at,runpod_wakeup_sec"
+    url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}&select=trigger_sec,trigger_completed_at,gpu_started_at,runpod_wakeup_sec,gpt_sec,gpt_format_sec"
     if user_id:
         url += f"&user_id=eq.{quote(str(user_id), safe='')}"
     try:
@@ -1405,8 +1405,67 @@ def check_job_status(job_id):
         print(f"馃攷 Client checked status for {job_id} -> Found completed result!")
         return jsonify(job_results_cache[job_id])
 
-    # If not in cache, it's still processing (or lost, but let's assume processing)
-    return jsonify({"status": "processing"}), 202
+    # If trigger already failed, surface it immediately.
+    file_status, _ = _get_trigger_state(job_id)
+    mem_status = pending_trigger.get(job_id)
+    status = file_status or mem_status
+    if status == "failed":
+        return jsonify({"jobId": job_id, "status": "failed", "error": "Processing trigger failed"}), 200
+
+    # Guard against endless "processing" when callback is never received.
+    timings = _get_trigger_timings(job_id)
+    queued_at = timings.get("queued_at") or pending_trigger_at.get(job_id) or 0
+    gpu_started = timings.get("gpu_started_at") or gpu_started_at.get(job_id) or 0
+    now = time.time()
+    max_sec_after_gpu_started = int(os.environ.get('CHECK_STATUS_MAX_AFTER_GPU_STARTED_SEC', '3600') or 3600)
+    max_sec_after_queued = int(os.environ.get('CHECK_STATUS_MAX_AFTER_QUEUED_SEC', '5400') or 5400)
+
+    if gpu_started and (now - float(gpu_started)) > max_sec_after_gpu_started:
+        return jsonify({
+            "jobId": job_id,
+            "status": "failed",
+            "error": "Processing timed out after worker start"
+        }), 200
+
+    if queued_at and (now - float(queued_at)) > max_sec_after_queued:
+        return jsonify({
+            "jobId": job_id,
+            "status": "failed",
+            "error": "Processing timed out while waiting for completion"
+        }), 200
+
+    # Not complete yet.
+    return jsonify({"jobId": job_id, "status": "processing"}), 202
+
+
+@app.route('/api/debug_job/<job_id>', methods=['GET'])
+def debug_job(job_id):
+    """Inspect server-side job state for troubleshooting stuck jobs."""
+    try:
+        file_status, file_at = _get_trigger_state(job_id)
+        timings = _get_trigger_timings(job_id) or {}
+        now = time.time()
+        queued_at = timings.get("queued_at") or pending_trigger_at.get(job_id)
+        gpu_started = timings.get("gpu_started_at") or gpu_started_at.get(job_id)
+        upload_marked = bool((job_id in upload_complete) or timings.get("upload_complete"))
+
+        out = {
+            "job_id": job_id,
+            "has_cached_result": bool(job_id in job_results_cache),
+            "trigger_status_file": file_status,
+            "trigger_status_memory": pending_trigger.get(job_id),
+            "trigger_status_at": file_at,
+            "upload_complete": upload_marked,
+            "queued_at": queued_at,
+            "gpu_started_at": gpu_started,
+            "pending_info_exists": bool(job_id in pending_job_info),
+            "elapsed_sec_since_queued": (int(now - queued_at) if queued_at else None),
+            "elapsed_sec_since_gpu_started": (int(now - gpu_started) if gpu_started else None),
+        }
+        return jsonify(out), 200
+    except Exception as e:
+        logging.exception("debug_job failed for %s", job_id)
+        return jsonify({"job_id": job_id, "error": str(e)}), 500
 
 # --- GPU FEEDBACK API ---
 def _translate_segments_via_python_openai(segments, target_lang='he'):
@@ -2005,8 +2064,11 @@ def api_wrap_transcript_text():
 @app.route('/api/format_transcript_summary', methods=['POST'])
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export."""
+    t0 = time.time()
     data = request.json or {}
     target_lang = data.get('targetLang') or data.get('target_lang') or 'he'
+    req_job_id = (data.get('jobId') or data.get('job_id') or '').strip() or None
+    req_user_id = (data.get('userId') or data.get('user_id') or '').strip() or None
     raw_text = str(data.get('text') or '').strip()
     segments = data.get('segments') or []
     if not raw_text and isinstance(segments, list):
@@ -2022,6 +2084,17 @@ def api_format_transcript_summary():
         ct = str((out or {}).get('clean_transcript') or '').strip()
         if ct:
             out['clean_transcript'] = _wrap_text_to_max_chars(ct)
+        elapsed = time.time() - t0
+        timing_job_id = req_job_id
+        timing_user_id = req_user_id
+        if not timing_job_id:
+            last_job, callback_at, last_user_id = _get_last_callback_for_gpt()
+            if last_job and callback_at is not None and (time.time() - callback_at) < 600:
+                timing_job_id = last_job
+                timing_user_id = timing_user_id or last_user_id
+        if timing_job_id:
+            _update_job_timings(timing_job_id, user_id=timing_user_id, gpt_format_sec=elapsed)
+        out['gpt_format_sec'] = round(float(elapsed), 3)
         return jsonify(out), 200
     except Exception as e:
         logging.warning("format_transcript_summary failed: %s", e)
@@ -2255,6 +2328,15 @@ def gpu_callback():
                 sent_ok = _send_transcription_ready_email(to_email, notify.get("user_name"), open_url)
                 if sent_ok:
                     transcription_email_sent.add(job_id)
+                else:
+                    logging.warning("transcription ready email not sent for %s: SMTP send returned false", job_id)
+            else:
+                logging.warning(
+                    "transcription ready email skipped for %s: missing to_email or open_job_id (to_email=%s, open_job_id=%s)",
+                    job_id,
+                    bool(to_email),
+                    bool(open_job_id),
+                )
     except Exception as _email_err:
         logging.warning("transcription ready email flow failed for %s: %s", job_id, _email_err)
 
@@ -3027,23 +3109,34 @@ def _send_email_via_zoho(to_email, subject, body_text):
     msg['To'] = to_email
     msg.set_content(body_text or "")
 
-    try:
-        if smtp_port == 465:
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=15) as server:
-                server.login(smtp_user, smtp_pass)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
-                server.ehlo()
-                server.starttls(context=ssl.create_default_context())
-                server.ehlo()
-                server.login(smtp_user, smtp_pass)
-                server.send_message(msg)
-        return True
-    except Exception as e:
-        logging.warning("Zoho SMTP send failed: %s", e)
-        return False
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        try:
+            if smtp_port == 465:
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=20) as server:
+                    server.login(smtp_user, smtp_pass)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+                    server.ehlo()
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                    server.login(smtp_user, smtp_pass)
+                    server.send_message(msg)
+            return True
+        except Exception as e:
+            logging.warning(
+                "Zoho SMTP send failed (attempt %s/%s) to=%s subject=%s: %s",
+                attempt,
+                attempts,
+                to_email,
+                subject,
+                e,
+            )
+            if attempt < attempts:
+                time.sleep(1.5 * attempt)
+    return False
 
 
 def _send_burn_ready_email(to_email, download_url, base_name):
@@ -3069,9 +3162,10 @@ def _get_job_notification_info(runpod_job_id, user_id=None):
     from urllib.parse import quote
     rj = quote(str(runpod_job_id), safe='')
     uid = quote(str(user_id), safe='') if user_id else None
-    where = f"runpod_job_id=eq.{rj}"
+    where_with_user = f"runpod_job_id=eq.{rj}"
     if uid:
-        where += f"&user_id=eq.{uid}"
+        where_with_user += f"&user_id=eq.{uid}"
+    where_no_user = f"runpod_job_id=eq.{rj}"
 
     headers = {
         "apikey": service_key,
@@ -3081,23 +3175,25 @@ def _get_job_notification_info(runpod_job_id, user_id=None):
 
     # Try richer columns first; gracefully fallback if columns are missing.
     selects = ("id,user_email,user_name", "id")
-    for sel in selects:
-        try:
-            url = f"{supabase_url}/rest/v1/jobs?{where}&select={sel}&order=created_at.desc&limit=1"
-            r = requests.get(url, headers=headers, timeout=8)
-            if not r.ok:
+    wheres = (where_with_user, where_no_user) if uid else (where_no_user,)
+    for where in wheres:
+        for sel in selects:
+            try:
+                url = f"{supabase_url}/rest/v1/jobs?{where}&select={sel}&order=created_at.desc&limit=1"
+                r = requests.get(url, headers=headers, timeout=8)
+                if not r.ok:
+                    continue
+                rows = r.json() if r.content else []
+                if not rows:
+                    continue
+                row = rows[0] or {}
+                return {
+                    "job_id": row.get("id"),
+                    "user_email": row.get("user_email"),
+                    "user_name": row.get("user_name"),
+                }
+            except Exception:
                 continue
-            rows = r.json() if r.content else []
-            if not rows:
-                continue
-            row = rows[0] or {}
-            return {
-                "job_id": row.get("id"),
-                "user_email": row.get("user_email"),
-                "user_name": row.get("user_name"),
-            }
-        except Exception:
-            continue
     return {}
 
 

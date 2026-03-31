@@ -2015,7 +2015,11 @@ async function ensureFormattedViaApiForExport() {
         const res = await fetch('/api/format_transcript_summary', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: fullText, target_lang: targetLang })
+            body: JSON.stringify({
+                text: fullText,
+                target_lang: targetLang,
+                jobId: localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined
+            })
         });
         const fmt = await res.json().catch(() => ({}));
         if (!res.ok || !fmt || typeof fmt !== 'object' || fmt.error) {
@@ -2948,12 +2952,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             closeDownloadMenu();
+            // Run exports sequentially to avoid browser multi-download prompt.
             if (selectedDocKinds.length) {
-                window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds });
+                await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds });
             }
-            selectedExtraKinds.forEach((kind) => {
-                window.downloadFile(kind, null, {});
-            });
+            for (const kind of selectedExtraKinds) {
+                await window.downloadFile(kind, null, {});
+            }
         });
     }
     updateMovieGenerateAvailability();
@@ -3739,7 +3744,11 @@ document.addEventListener('DOMContentLoaded', () => {
             fetch('/api/format_transcript_summary', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: fullText, target_lang: userLang || 'he' })
+                body: JSON.stringify({
+                    text: fullText,
+                    target_lang: userLang || 'he',
+                    jobId: localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined
+                })
             })
                 .then((fmtRes) => (fmtRes.ok ? fmtRes.json() : null))
                 .then((fmt) => {

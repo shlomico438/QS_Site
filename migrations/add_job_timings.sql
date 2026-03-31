@@ -21,6 +21,7 @@ ALTER TABLE jobs
   ADD COLUMN IF NOT EXISTS runpod_wakeup_sec real,
   ADD COLUMN IF NOT EXISTS runpod_process_sec real,
   ADD COLUMN IF NOT EXISTS gpt_sec real,
+  ADD COLUMN IF NOT EXISTS gpt_format_sec real,
   ADD COLUMN IF NOT EXISTS total_sec real;
 
 -- Optional: index for lookups when gpu_callback updates by runpod_job_id
