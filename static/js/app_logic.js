@@ -5760,6 +5760,7 @@ function renderWordCaptionEditor() {
     const textDirection = isRtl ? 'rtl' : 'ltr';
     const textAlign = isRtl ? 'right' : 'left';
     const isEditing = container.classList.contains('transcript-editing');
+    const timingAdjustEnabled = !isMobileClient();
     container.classList.toggle('qs-rtl', !!isRtl);
 
     function clampWordTiming(index, nextStart, prevEnd, newStart, newEnd) {
@@ -5930,6 +5931,9 @@ function renderWordCaptionEditor() {
     }
 
     function setTimingHandle(sel) {
+        if (!timingAdjustEnabled && sel) {
+            sel = null;
+        }
         window._qsTimingHandle = sel;
         _clearTimingSelectionUI();
         if (!sel) {
@@ -6084,7 +6088,7 @@ function renderWordCaptionEditor() {
             `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${posLabelMap[p] || p}</button>`
         ).join('');
         const styleTooltip = 'עיצוב שורה. גררו כדי לבחור כמה שורות.';
-        const toolbarHtml = isEditing ? `
+        const toolbarHtml = (isEditing && timingAdjustEnabled) ? `
             <div class="qs-caption-toolbar" style="display:flex;align-items:center;gap:6px;flex-shrink:0;opacity:0;transition:opacity .12s ease;">
               <span class="qs-timing-inline" style="display:none;font-size:10px;color:#6b7280;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;"></span>
               <button type="button" class="qs-nudge-btn" data-nudge="later" title="Later">←</button>
@@ -6560,7 +6564,7 @@ function renderWordCaptionEditor() {
                 }
             } catch (_) {}
             // Single click: caption mode (shift whole line timing).
-            if (isEditing && Number.isFinite(ci)) {
+            if (isEditing && timingAdjustEnabled && Number.isFinite(ci)) {
                 if (_isMultiSelectActive()) {
                     setTimingHandle(null);
                 } else {
@@ -6589,7 +6593,7 @@ function renderWordCaptionEditor() {
                 ci = row ? parseInt(row.getAttribute('data-ci'), 10) : null;
                 if (Number.isFinite(ci) && typeof setActiveRow === 'function') setActiveRow(ci, { user: true });
             } catch (_) {}
-            if (e.shiftKey) {
+            if (timingAdjustEnabled && e.shiftKey) {
                 // Shift+double-click: boundary timing (visual side → logical boundary).
                 try {
                     const r = el.getBoundingClientRect();
