@@ -497,6 +497,31 @@ audio {
 input:checked + .slider { background-color: #5d5dff; }
 input:checked + .slider:before { transform: translateX(16px); }
 
+.format-ab-switch {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    background: #f3f4f6;
+    overflow: hidden;
+}
+
+.format-ab-option {
+    border: 0;
+    background: transparent;
+    color: #374151;
+    font-size: 0.8rem;
+    padding: 6px 10px;
+    cursor: pointer;
+    line-height: 1.2;
+}
+
+.format-ab-option.is-active {
+    background: #5d5dff;
+    color: #fff;
+    font-weight: 600;
+}
+
 /* --- TOOLBAR BUTTONS --- */
 .btn-icon {
     background: #fff;

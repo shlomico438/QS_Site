@@ -3164,6 +3164,41 @@ function setMainButtonAction(mode) {
     }
 }
 
+function isTimeToggleVisible() {
+    const el = document.getElementById('toggle-time');
+    // Default is ON when toggle is missing/not initialized yet.
+    return !el || el.checked !== false;
+}
+
+function isDocumentFormatEnabled() {
+    const subBtn = document.getElementById('format-mode-subtitle');
+    const docBtn = document.getElementById('format-mode-doc');
+    if (subBtn && docBtn) {
+        return docBtn.classList.contains('is-active');
+    }
+    const el = document.getElementById('toggle-doc-format');
+    return !!(el && el.checked);
+}
+
+function wrapTextByMaxChars(text, maxChars) {
+    const s = String(text || '').trim();
+    if (!s || !maxChars || s.length <= maxChars) return s;
+    const words = s.split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const w of words) {
+        const next = line ? (line + ' ' + w) : w;
+        if (next.length <= maxChars) {
+            line = next;
+        } else {
+            if (line) lines.push(line);
+            line = w;
+        }
+    }
+    if (line) lines.push(line);
+    return lines.join('<br>');
+}
+
 const PROCESSING_PHASES_HE = [
     "מפעיל שרתים מרוחקים...",
     "מנתח את האודיו ומזהה מילים...",
@@ -3425,8 +3460,38 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Ensure toggles refresh the view immediately
-    document.getElementById('toggle-time')?.addEventListener('change', () => render());
-    document.getElementById('toggle-speaker')?.addEventListener('change', () => render());
+    const toggleTimeEl = document.getElementById('toggle-time');
+    const transcriptWindowEl = document.getElementById('transcript-window');
+    if (toggleTimeEl && transcriptWindowEl) {
+        transcriptWindowEl.classList.toggle('hide-time', !isTimeToggleVisible());
+    }
+    const rerenderTranscriptView = () => {
+        if (typeof window.render === 'function') {
+            window.render();
+            return;
+        }
+        if (typeof renderTranscriptFromCues === 'function') {
+            renderTranscriptFromCues(window.currentSegments || []);
+        }
+    };
+    document.getElementById('toggle-time')?.addEventListener('change', () => rerenderTranscriptView());
+    const subtitleModeBtn = document.getElementById('format-mode-subtitle');
+    const docModeBtn = document.getElementById('format-mode-doc');
+    if (subtitleModeBtn && docModeBtn) {
+        const setFormatMode = (mode) => {
+            const isDoc = mode === 'doc';
+            docModeBtn.classList.toggle('is-active', isDoc);
+            subtitleModeBtn.classList.toggle('is-active', !isDoc);
+            rerenderTranscriptView();
+        };
+        subtitleModeBtn.addEventListener('click', () => setFormatMode('subtitle'));
+        docModeBtn.addEventListener('click', () => setFormatMode('doc'));
+        // Default to subtitle mode (better for subtitle editing/readability).
+        setFormatMode('subtitle');
+    } else {
+        document.getElementById('toggle-doc-format')?.addEventListener('change', () => rerenderTranscriptView());
+    }
+    document.getElementById('toggle-speaker')?.addEventListener('change', () => rerenderTranscriptView());
     if (mainAudio) {
         mainAudio.addEventListener('timeupdate', () => {
             const currentTime = mainAudio.currentTime;
@@ -4004,16 +4069,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const transcriptWindow = document.getElementById('transcript-window');
         if (!transcriptWindow || !window.currentSegments) return;
 
-        // Placeholder variable: Set to 'false' for Subtitles, 'true' for Docx
-        // Later, you can attach this to a toggle switch like: document.getElementById('view-mode-toggle').checked;
-        window.isDocumentMode = false; 
+        // Subtitle mode = per-segment lines; Doc mode = glued paragraphs by speaker.
+        window.isDocumentMode = isDocumentFormatEnabled();
         const groupedData = groupSegmentsBySpeaker(window.currentSegments, window.isDocumentMode);
 
 
         const html = groupedData.map((g, rowIndex) => {
             // 2. Fixed: Get state of both toggles
             const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
-            const isTimeVisible = document.getElementById('toggle-time')?.checked;
+            const isTimeVisible = isTimeToggleVisible();
 
             const showLabel = isSpeakerVisible && window.aiDiarizationRan;
 
@@ -4028,7 +4092,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     <span style="display: ${showLabel ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(g.speaker)}">
                         ${isTimeVisible ? '| ' : ''}${g.speaker.replace('SPEAKER_', 'דובר ')}
                     </span>
-                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${g.start})">${g.text}</p>
+                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${g.start})">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
             </div>`;
         }).join('');
 
@@ -4059,6 +4123,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     // --- 4. RENDER LOGIC ---
     function renderParagraphs(segments) {
         if (!segments || segments.length === 0) return "";
+
+        window.isDocumentMode = isDocumentFormatEnabled();
+        if (!window.isDocumentMode) {
+            return segments.map(seg => buildGroupHTML({
+                speaker: seg.speaker,
+                start: seg.start,
+                sentences: [seg]
+            })).join('');
+        }
 
         let html = "", group = null;
 
@@ -4681,7 +4754,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (end <= seg.start) end = seg.start + 1;
                 const newSeg = { start: end, end: end + 0.1, text: '', speaker: seg.speaker || 'SPEAKER_00' };
                 window.currentSegments.splice(idx + 1, 0, newSeg);
-                const isTimeVisible = document.getElementById('toggle-time')?.checked;
+                const isTimeVisible = isTimeToggleVisible();
                 const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
                 const row = p.closest('.paragraph-row');
                 const newRowHtml = `
@@ -4726,7 +4799,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             p.innerText = beforeText;
 
-            const isTimeVisible = document.getElementById('toggle-time')?.checked;
+            const isTimeVisible = isTimeToggleVisible();
             const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
             const row = p.closest('.paragraph-row');
             const newRowHtml = `
@@ -4764,11 +4837,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
     function buildGroupHTML(group) {
         const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
-        const isTimeVisible = document.getElementById('toggle-time')?.checked;
+        const isTimeVisible = isTimeToggleVisible();
 
         const rawSpeaker = group.speaker || "SPEAKER_00";
         const speakerDisplay = rawSpeaker.replace('SPEAKER_', 'דובר ');
-        const fullText = group.sentences.map(s => s.text).join(" ");
+        const fullTextRaw = group.sentences.map(s => s.text).join(" ");
+        const fullText = window.isDocumentMode ? fullTextRaw : wrapTextByMaxChars(fullTextRaw, 50);
         const translatedParts = group.sentences.map(s => s.translated_text).filter(Boolean);
         const translatedLine = translatedParts.length ? translatedParts.join(" ").replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
 

@@ -132,6 +132,10 @@
             <div class="controls-bar">
                 <div class="toggles-group">
                     <label><div class="toggle-switch"><input type="checkbox" id="toggle-time" checked onchange="document.getElementById('transcript-window').classList.toggle('hide-time', !this.checked)"><span class="slider"></span></div><span data-i18n="time">Time</span></label>
+                    <div class="format-ab-switch" id="format-mode-switch" role="group" aria-label="פורמט תצוגה">
+                        <button type="button" class="format-ab-option is-active" id="format-mode-subtitle">פורמט כתוביות</button>
+                        <button type="button" class="format-ab-option" id="format-mode-doc">פורמט מסמך</button>
+                    </div>
                     <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
                 </div>
                 <div class="toolbar-group">
