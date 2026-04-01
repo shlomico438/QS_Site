@@ -2139,23 +2139,26 @@ async function deliverBlobToUser(blob, filename, mimeType) {
             const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
             if (canShare) {
                 await navigator.share({ files: [file], title: safeName });
-                return;
+                return true;
             }
         } catch (_) {}
     }
     if (isMobileClient()) {
         const mobileUrl = URL.createObjectURL(blob);
         try {
-            window.open(mobileUrl, '_blank');
+            const winRef = window.open(mobileUrl, '_blank');
+            if (!winRef) {
+                window.location.href = mobileUrl;
+            }
         } catch (_) {
             window.location.href = mobileUrl;
         }
         setTimeout(() => { try { URL.revokeObjectURL(mobileUrl); } catch (_) {} }, 120000);
-        return;
+        return true;
     }
     if (typeof saveAs !== 'undefined') {
         saveAs(blob, safeName);
-        return;
+        return true;
     }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2163,6 +2166,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
     a.download = safeName;
     a.click();
     URL.revokeObjectURL(url);
+    return true;
 }
 
 async function tryShareUrlOnMobile(url, title) {
@@ -2482,7 +2486,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 const tOutDownload = Date.now();
                 const blob = await fetch(statusJson.output_url).then(r => r.blob());
                 logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
-                await deliverBlobToUser(blob, outName);
+                const delivered = await deliverBlobToUser(blob, outName);
+                if (!delivered) {
+                    throw new Error('Could not open save/share dialog on this device');
+                }
                 movieExportSucceeded = true;
                 if (typeof showStatus === 'function') {
                     showStatus('הסרטון מוכן! אפשר לשמור או לשתף.', false, { duration: 5000 });
