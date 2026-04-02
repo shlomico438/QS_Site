@@ -2483,13 +2483,38 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 stopBurnProgress(true);
                 logMovieStage('Burn completed – downloading output');
                 const outName = (baseName || 'video') + '.mp4';
+                if (isMobileClient()) {
+                    // On iOS, calling downloads/open directly often prevents the "save to Files" UX.
+                    // Ask user what they want and trigger the share sheet via URL so it uses system save options.
+                    _hideToastNow();
+                    const wantsShare = await showGlobalConfirm(
+                        'הסרטון מוכן.\nאיך תרצה/י לשמור אותו?',
+                        { confirmText: 'שיתוף/שמירה', cancelText: 'רק צפייה' }
+                    );
+                    if (wantsShare) {
+                        const ok = await tryShareUrlOnMobile(statusJson.output_url, outName);
+                        if (!ok) {
+                            showStatus('לא הצלחתי לפתוח אפשרויות שמירה. נפתח צפייה במקום.', true, { duration: 4000 });
+                            try { window.open(statusJson.output_url, '_blank'); } catch (_) {}
+                        } else {
+                            showStatus('הסרטון נשלח לשיתוף/שמירה.', false, { duration: 4000 });
+                        }
+                        movieExportSucceeded = true;
+                        return;
+                    } else {
+                        // User chose only viewing.
+                        try { window.open(statusJson.output_url, '_blank'); } catch (_) {}
+                        showStatus('פותחים לצפייה.', false, { duration: 2500 });
+                        movieExportSucceeded = true;
+                        return;
+                    }
+                }
+
                 const tOutDownload = Date.now();
                 const blob = await fetch(statusJson.output_url).then(r => r.blob());
                 logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
                 const delivered = await deliverBlobToUser(blob, outName);
-                if (!delivered) {
-                    throw new Error('Could not open save/share dialog on this device');
-                }
+                if (!delivered) throw new Error('Could not open save/share dialog on this device');
                 movieExportSucceeded = true;
                 if (typeof showStatus === 'function') {
                     showStatus('הסרטון מוכן! אפשר לשמור או לשתף.', false, { duration: 5000 });
