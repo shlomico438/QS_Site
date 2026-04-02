@@ -2198,6 +2198,24 @@ async function tryShareMovieBlobOnMobile(outputUrl, filename, mimeType) {
     }
 }
 
+async function downloadBlobAsFileOnly(blob, filename) {
+    try {
+        const safeName = String(filename || 'movie.mp4');
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = safeName;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => { try { URL.revokeObjectURL(u); } catch (_) {} }, 10000);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const rawBaseName = ((window.originalFileName || '').trim()) || "transcript";
     const baseName = rawBaseName.replace(/^job_\d+_/, '').trim() || "transcript";
@@ -2511,14 +2529,16 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                         { confirmText: 'שיתוף/שמירה', cancelText: 'רק צפייה' }
                     );
                     if (wantsShare) {
-                        // Prefer sharing the actual MP4 file (not just the URL) so iOS offers "Save to Files".
-                        const ok = await tryShareMovieBlobOnMobile(statusJson.output_url, outName, 'video/mp4');
+                        // File-only path: avoid share-sheet URL/video options and extra link/text artifacts.
+                        const tOutDownload = Date.now();
+                        const blob = await fetch(statusJson.output_url).then(r => r.blob());
+                        logMovieStage('Output downloaded for file-only save', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
+                        const ok = await downloadBlobAsFileOnly(blob, outName);
                         if (!ok) {
-                            // Do NOT share URL as fallback: it can create extra "link/text" items in Files/Dropbox.
-                            showStatus('לא הצלחתי לפתוח אפשרויות שמירה. נפתח צפייה במקום.', true, { duration: 4000 });
+                            showStatus('לא הצלחתי לשמור לקבצים. נפתח צפייה במקום.', true, { duration: 4000 });
                             try { window.open(statusJson.output_url, '_blank'); } catch (_) {}
                         } else {
-                            showStatus('הסרטון מוכן — אפשר לשמור/לשתף.', false, { duration: 4000 });
+                            showStatus('הסרטון נשמר כקובץ.', false, { duration: 4000 });
                         }
                         movieExportSucceeded = true;
                         return;
@@ -7551,6 +7571,9 @@ window.getActiveCaptionIndexAtTime = function(time) {
     if (!Array.isArray(window.currentCaptions) || !Array.isArray(window.currentWords)) return -1;
     const captions = window.currentCaptions;
     const words = window.currentWords;
+    const t = Number(time);
+    if (!Number.isFinite(t)) return -1;
+    const EPS = 0.06; // tolerate small gaps/rounding mismatches
     for (let i = 0; i < captions.length; i++) {
         const cap = captions[i];
         const ws = words[cap.wordStartIndex];
@@ -7559,8 +7582,21 @@ window.getActiveCaptionIndexAtTime = function(time) {
         const start = Number(ws.start);
         const end = Number(we.end);
         if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-        if (time >= start && time <= end) return i;
+        if (t >= (start - EPS) && t <= (end + EPS)) return i;
     }
+    // Fallback: nearest caption start within a small window (prevents overlay "missing" on gaps).
+    let bestI = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < captions.length; i++) {
+        const cap = captions[i];
+        const ws = words[cap.wordStartIndex];
+        if (!ws) continue;
+        const start = Number(ws.start);
+        if (!Number.isFinite(start)) continue;
+        const d = Math.abs(t - start);
+        if (d < bestD) { bestD = d; bestI = i; }
+    }
+    if (bestI >= 0 && bestD <= 0.25) return bestI;
     return -1;
 };
 
@@ -7639,8 +7675,17 @@ window.updateVideoWordOverlay = function(currentTime) {
 
         // Overlay is ONLY used for highlighted-word display. Keep native track visible if overlay fails.
         inner.style.display = 'inline-block';
-        inner.style.top = (pos === 'top') ? '8%' : (pos === 'middle' ? '46%' : '86%');
-        inner.style.transform = 'translateX(-50%)';
+        // Keep overlay inside visible video area.
+        inner.style.top = '';
+        inner.style.bottom = '';
+        if (pos === 'top') {
+            inner.style.top = '10%';
+        } else if (pos === 'middle') {
+            inner.style.top = '50%';
+        } else {
+            inner.style.bottom = '12%';
+        }
+        inner.style.transform = (pos === 'middle') ? 'translate(-50%, -50%)' : 'translateX(-50%)';
         const isRtl = (() => {
             try {
                 const lang = String(document.documentElement.lang || '').toLowerCase();
@@ -7653,10 +7698,9 @@ window.updateVideoWordOverlay = function(currentTime) {
         inner.style.direction = isRtl ? 'rtl' : 'ltr';
         inner.style.textAlign = 'center';
         inner.innerHTML = `<span dir="${isRtl ? 'rtl' : 'ltr'}" style="display:inline-block;max-width:100%;white-space:normal;line-height:1.2;text-shadow:0 2px 6px rgba(0,0,0,0.75);">${chunks.join(' ')}</span>`;
-        // Keep native subtitles visible to avoid any "blank line" cases.
-        // The overlay is purely additive for highlights and sits above the native track.
+        // For highlighted mode, use only overlay to avoid duplicate lines.
         ov.style.display = 'block';
-        setNativeTrackMode('showing');
+        setNativeTrackMode('hidden');
         try {
             const canvas = ov.querySelector('#qs-video-word-overlay-canvas');
             if (canvas) canvas.style.display = 'none';
