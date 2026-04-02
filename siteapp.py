@@ -3335,9 +3335,40 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
     }
     endpoint_url = f"https://api.runpod.ai/v2/{endpoint_id}/run"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    r = requests.post(endpoint_url, json=payload, headers=headers, timeout=20)
-    if r.status_code not in (200, 201, 202):
-        raise RuntimeError(f"RunPod movie dispatch failed ({r.status_code}): {r.text[:300]}")
+    dispatch_timeout = int((os.environ.get('RUNPOD_BURN_DISPATCH_TIMEOUT_SEC') or '35').strip() or 35)
+    max_attempts = int((os.environ.get('RUNPOD_BURN_DISPATCH_RETRIES') or '4').strip() or 4)
+    backoff_sec = float((os.environ.get('RUNPOD_BURN_DISPATCH_BACKOFF_SEC') or '1.5').strip() or 1.5)
+    r = None
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = requests.post(endpoint_url, json=payload, headers=headers, timeout=dispatch_timeout)
+            if r.status_code in (200, 201, 202):
+                break
+            # Retry transient upstream statuses.
+            if r.status_code in (408, 409, 425, 429, 500, 502, 503, 504) and attempt < max_attempts:
+                sleep_s = backoff_sec * attempt
+                logging.warning(
+                    "RunPod burn dispatch transient HTTP %s (attempt %s/%s), retrying in %.1fs",
+                    r.status_code, attempt, max_attempts, sleep_s
+                )
+                time.sleep(sleep_s)
+                continue
+            raise RuntimeError(f"RunPod movie dispatch failed ({r.status_code}): {str(r.text)[:300]}")
+        except Exception as e:
+            last_err = e
+            if attempt >= max_attempts:
+                break
+            sleep_s = backoff_sec * attempt
+            logging.warning(
+                "RunPod burn dispatch exception (attempt %s/%s): %s; retrying in %.1fs",
+                attempt, max_attempts, e, sleep_s
+            )
+            time.sleep(sleep_s)
+    if not r or r.status_code not in (200, 201, 202):
+        if last_err:
+            raise RuntimeError(f"RunPod movie dispatch failed after {max_attempts} attempts: {last_err}")
+        raise RuntimeError(f"RunPod movie dispatch failed after {max_attempts} attempts")
 
     burn_tasks[task_id] = {
         'status': 'processing',
@@ -3484,6 +3515,10 @@ def burn_subtitles_server():
                 return jsonify({"task_id": task_id, "status": "processing", "mode": "runpod"}), 202
             except Exception as e:
                 logging.warning("RunPod burn dispatch failed; falling back to local ffmpeg: %s", e)
+                allow_local_fallback = str(os.environ.get('RUNPOD_BURN_ALLOW_LOCAL_FALLBACK', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
+                if not allow_local_fallback:
+                    burn_tasks[task_id] = {'status': 'failed', 'mode': 'runpod', 'error': f'RunPod dispatch failed: {e}'}
+                    return jsonify({"task_id": task_id, "status": "failed", "mode": "runpod", "error": "RunPod dispatch failed"}), 503
 
         # Local fallback (existing behavior)
         t = threading.Thread(

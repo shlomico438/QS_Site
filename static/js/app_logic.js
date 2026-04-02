@@ -3103,17 +3103,43 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Run exports sequentially. On mobile with multiple outputs, collect files
             // and open a single system share/save chooser for all of them.
             const totalSelected = selectedDocKinds.length + selectedExtraKinds.length;
-            const useBatchShare = isMobileClient() && totalSelected > 1;
+            // iOS often blocks multi-share sequences in one flow; prefer per-file save dialogs.
+            const useBatchShare = false;
+            const orderedExtraKinds = selectedExtraKinds.slice().sort((a, b) => {
+                if (a === 'movie' && b !== 'movie') return -1;
+                if (b === 'movie' && a !== 'movie') return 1;
+                return 0;
+            });
+            const exportTasks = [];
+            if (orderedExtraKinds.includes('movie')) {
+                exportTasks.push(async () => { await window.downloadFile('movie', null, {}); });
+            }
+            if (selectedDocKinds.length) {
+                exportTasks.push(async () => { await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds }); });
+            }
+            for (const kind of orderedExtraKinds) {
+                if (kind === 'movie') continue;
+                exportTasks.push(async () => { await window.downloadFile(kind, null, {}); });
+            }
             if (useBatchShare) {
                 window._qsMobileBatchShareMode = true;
                 window._qsMobileBatchFiles = [];
             }
             try {
-                if (selectedDocKinds.length) {
-                    await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds });
-                }
-                for (const kind of selectedExtraKinds) {
-                    await window.downloadFile(kind, null, {});
+                const mobileMulti = isMobileClient() && exportTasks.length > 1;
+                const isHebrewUi2 = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+                for (let i = 0; i < exportTasks.length; i++) {
+                    if (i > 0 && mobileMulti) {
+                        const proceed = await showGlobalConfirm(
+                            isHebrewUi2 ? 'האם לשמור את הקובץ הבא?' : 'Save next file?',
+                            {
+                                confirmText: isHebrewUi2 ? 'שמור' : 'Save',
+                                cancelText: isHebrewUi2 ? 'עצור' : 'Stop'
+                            }
+                        );
+                        if (!proceed) break;
+                    }
+                    await exportTasks[i]();
                 }
             } finally {
                 if (useBatchShare) {
