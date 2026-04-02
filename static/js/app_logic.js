@@ -2251,6 +2251,55 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         const movieStageT0 = Date.now();
         let movieExportSucceeded = false;
         let movieBurnCompleted = false;
+        const forceSubtitleFormatForMovie = true;
+        const toMovieSubtitleText = (text) => {
+            const src = String(text || '').trim();
+            if (!src) return '';
+            if (!forceSubtitleFormatForMovie) return src;
+            const wrapped = (typeof wrapTextByMaxChars === 'function')
+                ? wrapTextByMaxChars(src, 50)
+                : src;
+            return String(wrapped || src).replace(/<br\s*\/?>/gi, '\n');
+        };
+        const buildMovieSubtitleSegments = () => {
+            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
+                const out = [];
+                for (let ci = 0; ci < window.currentCaptions.length; ci++) {
+                    const c = window.currentCaptions[ci];
+                    const ws = window.currentWords[c.wordStartIndex];
+                    const we = window.currentWords[c.wordEndIndex];
+                    if (!ws || !we) continue;
+                    const segWords = [];
+                    const textParts = [];
+                    for (let wi = c.wordStartIndex; wi <= c.wordEndIndex; wi++) {
+                        const w = window.currentWords[wi];
+                        if (!w) continue;
+                        const wt = String(w.text || '').trim();
+                        if (!wt) continue;
+                        textParts.push(wt);
+                        segWords.push({
+                            text: wt,
+                            start: Number(w.start),
+                            end: Number(w.end),
+                            highlighted: !!w.highlighted
+                        });
+                    }
+                    out.push({
+                        start: Number(ws.start),
+                        end: Number(we.end) || (Number(ws.start) + 1),
+                        text: toMovieSubtitleText(textParts.join(' ')),
+                        style: (c.style && typeof c.style === 'object') ? { ...c.style } : {},
+                        words: segWords
+                    });
+                }
+                if (out.length) return out;
+            }
+            return (window.currentSegments || []).map(s => ({
+                start: s.start,
+                end: s.end || s.start + 1,
+                text: toMovieSubtitleText(s.text || '')
+            }));
+        };
         const _movieTs = () => new Date().toISOString();
         const _movieElapsed = () => ((Date.now() - movieStageT0) / 1000).toFixed(2) + 's';
         const logMovieStage = (stage, extra) => {
@@ -2348,7 +2397,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
             if (isSimulation === true && useLegacySimulationBurn) {
                 logMovieStage('Simulation branch – direct burn_subtitles route');
-                const segments = window.currentSegments || [];
+                const segments = buildMovieSubtitleSegments();
                 const normSegs = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(segments, 0.5) : segments;
                 const tBlob = Date.now();
                 logMovieStage('Fetching video blob for simulation burn');
@@ -2434,41 +2483,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             };
             startBurnProgress();
             logMovieStage('Preparing segments for burn request');
-            const rawSegments = (() => {
-                if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
-                    const out = [];
-                    for (let ci = 0; ci < window.currentCaptions.length; ci++) {
-                        const c = window.currentCaptions[ci];
-                        const ws = window.currentWords[c.wordStartIndex];
-                        const we = window.currentWords[c.wordEndIndex];
-                        if (!ws || !we) continue;
-                        const segWords = [];
-                        const textParts = [];
-                        for (let wi = c.wordStartIndex; wi <= c.wordEndIndex; wi++) {
-                            const w = window.currentWords[wi];
-                            if (!w) continue;
-                            const wt = String(w.text || '').trim();
-                            if (!wt) continue;
-                            textParts.push(wt);
-                            segWords.push({
-                                text: wt,
-                                start: Number(w.start),
-                                end: Number(w.end),
-                                highlighted: !!w.highlighted
-                            });
-                        }
-                        out.push({
-                            start: Number(ws.start),
-                            end: Number(we.end) || (Number(ws.start) + 1),
-                            text: textParts.join(' '),
-                            style: (c.style && typeof c.style === 'object') ? { ...c.style } : {},
-                            words: segWords
-                        });
-                    }
-                    if (out.length) return out;
-                }
-                return (window.currentSegments || []).map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }));
-            })();
+            const rawSegments = buildMovieSubtitleSegments();
             const segments = typeof normalizeSegmentDurations === 'function' ? normalizeSegmentDurations(rawSegments, 0.5) : rawSegments;
             const subtitleStyle = (typeof window.currentSubtitleStyle === 'string' && window.currentSubtitleStyle) ? window.currentSubtitleStyle : 'tiktok';
             const hasCustomFormatting = Array.isArray(window.currentCaptions) && window.currentCaptions.some((c) => {
@@ -2498,6 +2513,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     width_px: widthPx || undefined,
                     userId: movieUser.id,
                     subtitle_style: subtitleStyle,
+                    export_format_mode: 'subtitle',
                     is_portrait: isPortrait,
                     notify_email: movieUser.email || undefined,
                     job_id: localStorage.getItem('lastJobId') || undefined,
@@ -2755,11 +2771,20 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             await _downloadTxt(outText, dlName);
         };
 
-        const _confirmNextDocExportOnMobile = async () => {
+        const _confirmNextDocExportOnMobile = async (nextKind, fileType) => {
             if (!isMobileClient()) return true;
             const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+            const label = (() => {
+                if (String(nextKind || '').toLowerCase() === 'summary') {
+                    return isHebrewUi ? 'סיכום' : 'summary';
+                }
+                return isHebrewUi ? 'תמלול' : 'transcript';
+            })();
+            const ext = String(fileType || type || '').toLowerCase() === 'txt' ? 'txt' : 'docx';
             return await showGlobalConfirm(
-                isHebrewUi ? 'האם לשמור את הקובץ הבא?' : 'Save next file?',
+                isHebrewUi
+                    ? `האם לשמור את קובץ ה-${label} (${ext})?`
+                    : `Save the ${label} file (${ext})?`,
                 {
                     confirmText: isHebrewUi ? 'שמור' : 'Save',
                     cancelText: isHebrewUi ? 'עצור' : 'Stop'
@@ -2770,14 +2795,14 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             if (type === 'docx') {
                 if (wantTranscript) await _exportKindDocx('transcript', `${docBase}.docx`);
                 if (wantTranscript && wantSummary) {
-                    const proceed = await _confirmNextDocExportOnMobile();
+                    const proceed = await _confirmNextDocExportOnMobile('summary', 'docx');
                     if (!proceed) return;
                 }
                 if (wantSummary) await _exportKindDocx('summary', `${docBase}_summary.docx`);
             } else {
                 if (wantTranscript) await _exportKindTxt('transcript');
                 if (wantTranscript && wantSummary) {
-                    const proceed = await _confirmNextDocExportOnMobile();
+                    const proceed = await _confirmNextDocExportOnMobile('summary', 'txt');
                     if (!proceed) return;
                 }
                 if (wantSummary) await _exportKindTxt('summary');
@@ -3131,14 +3156,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             const exportTasks = [];
             if (orderedExtraKinds.includes('movie')) {
-                exportTasks.push(async () => { await window.downloadFile('movie', null, {}); });
+                exportTasks.push({
+                    label: 'movie',
+                    run: async () => { await window.downloadFile('movie', null, {}); }
+                });
             }
             if (selectedDocKinds.length) {
-                exportTasks.push(async () => { await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds }); });
+                const primaryDocLabel = selectedDocKinds.includes('transcript')
+                    ? 'transcript'
+                    : (selectedDocKinds.includes('summary') ? 'summary' : 'transcript');
+                exportTasks.push({
+                    label: primaryDocLabel,
+                    run: async () => { await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds }); }
+                });
             }
             for (const kind of orderedExtraKinds) {
                 if (kind === 'movie') continue;
-                exportTasks.push(async () => { await window.downloadFile(kind, null, {}); });
+                exportTasks.push({
+                    label: kind,
+                    run: async () => { await window.downloadFile(kind, null, {}); }
+                });
             }
             if (useBatchShare) {
                 window._qsMobileBatchShareMode = true;
@@ -3147,10 +3184,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 const mobileMulti = isMobileClient() && exportTasks.length > 1;
                 const isHebrewUi2 = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+                const getExportLabel = (labelKey) => {
+                    const key = String(labelKey || '').toLowerCase();
+                    if (isHebrewUi2) {
+                        if (key === 'movie') return 'וידאו';
+                        if (key === 'srt') return 'SRT';
+                        if (key === 'vtt') return 'VTT';
+                        if (key === 'summary') return 'סיכום';
+                        return 'תמלול';
+                    }
+                    if (key === 'movie') return 'movie';
+                    if (key === 'srt') return 'SRT';
+                    if (key === 'vtt') return 'VTT';
+                    if (key === 'summary') return 'summary';
+                    return 'transcript';
+                };
                 for (let i = 0; i < exportTasks.length; i++) {
                     if (i > 0 && mobileMulti) {
+                        const nextLabel = getExportLabel(exportTasks[i].label);
                         const proceed = await showGlobalConfirm(
-                            isHebrewUi2 ? 'האם לשמור את הקובץ הבא?' : 'Save next file?',
+                            isHebrewUi2
+                                ? `האם לשמור את קובץ ה-${nextLabel}?`
+                                : `Save the ${nextLabel} file?`,
                             {
                                 confirmText: isHebrewUi2 ? 'שמור' : 'Save',
                                 cancelText: isHebrewUi2 ? 'עצור' : 'Stop'
@@ -3158,7 +3213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         );
                         if (!proceed) break;
                     }
-                    await exportTasks[i]();
+                    await exportTasks[i].run();
                 }
             } finally {
                 if (useBatchShare) {
@@ -4018,6 +4073,10 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
         }
+
+        // Hide the "waking AI" processing panel as soon as GPT translation phase is done.
+        // Do not wait for later background/persistence steps.
+        stopProcessingStateUI();
 
         // One-time doc formatting pass (clean transcript + summary), reused by exports.
         // IMPORTANT: run in background so transcript rendering is never blocked by this request.
