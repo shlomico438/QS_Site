@@ -2130,9 +2130,42 @@ function isMobileClient() {
     return /iphone|ipad|ipod|android|mobile/.test(ua);
 }
 
+window._qsMobileBatchShareMode = false;
+window._qsMobileBatchFiles = [];
+
+function _queueMobileBatchFile(blob, filename, mimeType) {
+    window._qsMobileBatchFiles = Array.isArray(window._qsMobileBatchFiles) ? window._qsMobileBatchFiles : [];
+    window._qsMobileBatchFiles.push({
+        blob,
+        filename: String(filename || 'download.bin'),
+        mimeType: String(mimeType || blob?.type || 'application/octet-stream')
+    });
+}
+
+async function _flushMobileBatchShare() {
+    const items = Array.isArray(window._qsMobileBatchFiles) ? window._qsMobileBatchFiles : [];
+    if (!items.length) return true;
+    if (!isMobileClient() || !navigator.share || typeof File === 'undefined') return false;
+    try {
+        const files = items.map((it) => new File([it.blob], it.filename, { type: it.mimeType }));
+        const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files });
+        if (!canShare) return false;
+        await navigator.share({ files, title: 'QuickScribe export' });
+        return true;
+    } catch (_) {
+        return false;
+    } finally {
+        window._qsMobileBatchFiles = [];
+    }
+}
+
 async function deliverBlobToUser(blob, filename, mimeType) {
     const safeName = String(filename || 'download.bin');
     const fileType = String(mimeType || blob?.type || 'application/octet-stream');
+    if (isMobileClient() && window._qsMobileBatchShareMode) {
+        _queueMobileBatchFile(blob, safeName, fileType);
+        return true;
+    }
     if (isMobileClient() && navigator.share && typeof File !== 'undefined') {
         try {
             const file = new File([blob], safeName, { type: fileType });
@@ -2144,17 +2177,8 @@ async function deliverBlobToUser(blob, filename, mimeType) {
         } catch (_) {}
     }
     if (isMobileClient()) {
-        const mobileUrl = URL.createObjectURL(blob);
-        try {
-            const winRef = window.open(mobileUrl, '_blank');
-            if (!winRef) {
-                window.location.href = mobileUrl;
-            }
-        } catch (_) {
-            window.location.href = mobileUrl;
-        }
-        setTimeout(() => { try { URL.revokeObjectURL(mobileUrl); } catch (_) {} }, 120000);
-        return true;
+        // On mobile require system share/save chooser; avoid forced open/download fallbacks.
+        return false;
     }
     if (typeof saveAs !== 'undefined') {
         saveAs(blob, safeName);
@@ -2520,37 +2544,6 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 stopBurnProgress(true);
                 logMovieStage('Burn completed – downloading output');
                 const outName = (baseName || 'video') + '.mp4';
-                if (isMobileClient()) {
-                    // On iOS, calling downloads/open directly often prevents the "save to Files" UX.
-                    // Ask user what they want and trigger the share sheet via URL so it uses system save options.
-                    _hideToastNow();
-                    const wantsShare = await showGlobalConfirm(
-                        'הסרטון מוכן.\nאיך תרצה/י לשמור אותו?',
-                        { confirmText: 'שיתוף/שמירה', cancelText: 'רק צפייה' }
-                    );
-                    if (wantsShare) {
-                        // File-only path: avoid share-sheet URL/video options and extra link/text artifacts.
-                        const tOutDownload = Date.now();
-                        const blob = await fetch(statusJson.output_url).then(r => r.blob());
-                        logMovieStage('Output downloaded for file-only save', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
-                        const ok = await downloadBlobAsFileOnly(blob, outName);
-                        if (!ok) {
-                            showStatus('לא הצלחתי לשמור לקבצים. נפתח צפייה במקום.', true, { duration: 4000 });
-                            try { window.open(statusJson.output_url, '_blank'); } catch (_) {}
-                        } else {
-                            showStatus('הסרטון נשמר כקובץ.', false, { duration: 4000 });
-                        }
-                        movieExportSucceeded = true;
-                        return;
-                    } else {
-                        // User chose only viewing.
-                        try { window.open(statusJson.output_url, '_blank'); } catch (_) {}
-                        showStatus('פותחים לצפייה.', false, { duration: 2500 });
-                        movieExportSucceeded = true;
-                        return;
-                    }
-                }
-
                 const tOutDownload = Date.now();
                 const blob = await fetch(statusJson.output_url).then(r => r.blob());
                 logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
@@ -3082,12 +3075,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             closeDownloadMenu();
-            // Run exports sequentially to avoid browser multi-download prompt.
-            if (selectedDocKinds.length) {
-                await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds });
+            // Run exports sequentially. On mobile with multiple outputs, collect files
+            // and open a single system share/save chooser for all of them.
+            const totalSelected = selectedDocKinds.length + selectedExtraKinds.length;
+            const useBatchShare = isMobileClient() && totalSelected > 1;
+            if (useBatchShare) {
+                window._qsMobileBatchShareMode = true;
+                window._qsMobileBatchFiles = [];
             }
-            for (const kind of selectedExtraKinds) {
-                await window.downloadFile(kind, null, {});
+            try {
+                if (selectedDocKinds.length) {
+                    await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds });
+                }
+                for (const kind of selectedExtraKinds) {
+                    await window.downloadFile(kind, null, {});
+                }
+            } finally {
+                if (useBatchShare) {
+                    window._qsMobileBatchShareMode = false;
+                    const ok = await _flushMobileBatchShare();
+                    if (!ok && typeof showStatus === 'function') {
+                        showStatus('לא הצלחתי לפתוח שמירה עבור כל הקבצים. נסה/י לייצא קובץ אחד בכל פעם.', true);
+                    }
+                }
             }
         });
     }
@@ -5816,6 +5826,12 @@ function renderWordCaptionEditor() {
     const words = window.currentWords;
     const captions = window.currentCaptions;
     _normalizeWordsCaptionsModel(words, captions);
+    // Highlight feature removed: clear any existing flags.
+    if (Array.isArray(words)) {
+        for (const w of words) {
+            if (w && typeof w === 'object') w.highlighted = false;
+        }
+    }
     if (!Array.isArray(words) || !Array.isArray(captions) || captions.length === 0) {
         renderTranscriptFromCues(window.currentSegments || []);
         return;
@@ -6675,25 +6691,8 @@ function renderWordCaptionEditor() {
                 } catch (_) {}
                 return;
             }
-            // Double-click toggles pinned per-word highlight (constant, non-karaoke).
-            const wi = parseInt(el.getAttribute('data-wi'), 10);
-            if (!Number.isFinite(wi) || !window.currentWords || !window.currentWords[wi]) return;
-            window.currentWords[wi].highlighted = !window.currentWords[wi].highlighted;
-            el.setAttribute('data-highlighted', window.currentWords[wi].highlighted ? '1' : '0');
-            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-            renderWordCaptionEditor();
-            const reEl = container.querySelector(`span.word-token[data-wi="${wi}"]`);
-            if (reEl) setActiveToken(reEl);
-            if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-            const t = (() => {
-                const v = document.getElementById('main-video');
-                const au = document.getElementById('main-audio');
-                if (v && Number.isFinite(v.currentTime)) return v.currentTime;
-                if (au && Number.isFinite(au.currentTime)) return au.currentTime;
-                return 0;
-            })();
-            if (typeof highlightActiveCaptionRowByTime === 'function') highlightActiveCaptionRowByTime(t);
-            if (typeof window.updateVideoWordOverlay === 'function') window.updateVideoWordOverlay(t);
+            // Highlight feature removed.
+            return;
         });
         el.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); return; }
@@ -7605,6 +7604,7 @@ window.updateVideoWordOverlay = function(currentTime) {
         const ov = window.ensureVideoWordOverlay();
         if (!ov) return;
         const video = document.getElementById('main-video');
+        const videoWrapper = document.getElementById('video-player-container');
         const setNativeTrackMode = (mode) => {
             if (!video || !video.textTracks || !video.textTracks.length) return;
             const targetMode = mode === 'hidden' ? 'disabled' : mode;
@@ -7612,6 +7612,25 @@ window.updateVideoWordOverlay = function(currentTime) {
                 try { video.textTracks[i].mode = targetMode; } catch (_) {}
             }
         };
+        // Highlight preview removed: always keep native subtitle rendering only.
+        ov.style.display = 'none';
+        setNativeTrackMode('showing');
+        return;
+
+        // Align overlay bounds to actual visible video rectangle.
+        try {
+            if (video && videoWrapper) {
+                const vr = video.getBoundingClientRect();
+                const wr = videoWrapper.getBoundingClientRect();
+                if (vr.width > 0 && vr.height > 0) {
+                    ov.style.top = `${Math.round(vr.top - wr.top)}px`;
+                    ov.style.left = `${Math.round(vr.left - wr.left)}px`;
+                    ov.style.right = 'auto';
+                    ov.style.width = `${Math.round(vr.width)}px`;
+                    ov.style.height = `${Math.round(vr.height)}px`;
+                }
+            }
+        } catch (_) {}
 
         if (!Array.isArray(window.currentCaptions) || !Array.isArray(window.currentWords) || !window.currentWords.length) {
             ov.style.display = 'none';
@@ -7632,18 +7651,36 @@ window.updateVideoWordOverlay = function(currentTime) {
             setNativeTrackMode('showing');
             return;
         }
-        let hasPinnedWord = false;
-        for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
-            const ww = words[wi];
-            if (ww && ww.highlighted) { hasPinnedWord = true; break; }
-        }
-        // If there are no highlighted words, do not hide the subtitle line.
-        // Show native VTT (or the normal overlay if you later add it), but never blank the line.
-        if (!hasPinnedWord) {
-            ov.style.display = 'none';
-            setNativeTrackMode('showing');
-            return;
-        }
+        const activeSeg = (typeof window.getActiveSegmentAtTime === 'function')
+            ? window.getActiveSegmentAtTime(window.currentSegments || [], currentTime)
+            : null;
+        let activeCueText = '';
+        try {
+            if (video && video.textTracks && video.textTracks.length > 0) {
+                const tt = video.textTracks[0];
+                // Use full cues list by time instead of activeCues (activeCues can be empty when track is hidden).
+                const cueList = tt && tt.cues ? tt.cues : null;
+                if (cueList && cueList.length) {
+                    for (let i = 0; i < cueList.length; i++) {
+                        const c = cueList[i];
+                        if (!c) continue;
+                        const st = Number(c.startTime);
+                        const et = Number(c.endTime);
+                        if (!Number.isFinite(st) || !Number.isFinite(et)) continue;
+                        if (Number(currentTime) >= st && Number(currentTime) <= et) {
+                            activeCueText = String(c.text || '').replace(/\n+/g, ' ').trim();
+                            break;
+                        }
+                    }
+                }
+                if (!activeCueText) {
+                    const cues = tt && tt.activeCues ? tt.activeCues : null;
+                    if (cues && cues.length > 0 && cues[0] && typeof cues[0].text === 'string') {
+                        activeCueText = String(cues[0].text || '').replace(/\n+/g, ' ').trim();
+                    }
+                }
+            }
+        } catch (_) {}
 
         const st = (typeof window.getResolvedCaptionStyle === 'function')
             ? window.getResolvedCaptionStyle(ci)
@@ -7656,35 +7693,49 @@ window.updateVideoWordOverlay = function(currentTime) {
             return;
         }
 
-        const chunks = [];
-        for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
-            const w = words[wi];
-            if (!w || w.text == null) continue;
-            const txt = _escapeHtml(w.text);
-            if (w.highlighted) {
-                chunks.push(`<span style="display:inline-block;margin:0 .16em;padding:0 .22em;border-radius:4px;background:#000000;color:#ffffff;font-weight:700;">${txt}</span>`);
-            } else {
-                chunks.push(`<span style="display:inline-block;margin:0 .16em;color:#ffffff;font-weight:700;">${txt}</span>`);
-            }
-        }
-        if (!chunks.length) {
+        const highlightedWords = (window.currentWords || [])
+            .filter((w) => w && w.highlighted && String(w.text || '').trim())
+            .map((w) => String(w.text || '').trim());
+        const segText = String((activeSeg && activeSeg.text) || '').trim();
+        const capText = String((cap && cap.text) || '').trim();
+        const baseLine = (activeCueText || segText || capText).trim();
+        if (!baseLine) {
             ov.style.display = 'none';
             setNativeTrackMode('showing');
             return;
         }
+        const normToken = (s) => String(s || '').replace(/[^\w\u0590-\u05FF]+/g, '').toLowerCase();
+        const hlSet = new Set(highlightedWords.map(normToken).filter(Boolean));
+        const baseTokens = baseLine.split(/\s+/).filter(Boolean);
+        const hasPinnedWord = baseTokens.some((tok) => hlSet.has(normToken(tok)));
+        if (!hasPinnedWord) {
+            ov.style.display = 'none';
+            setNativeTrackMode('showing');
+            return;
+        }
+        const renderedTokens = baseTokens.map((tok) => {
+            const safeTok = _escapeHtml(tok);
+            const isHl = hlSet.has(normToken(tok));
+            if (isHl) {
+                return `<span style="display:inline;padding:0 .22em;border-radius:4px;background:#000000;color:#ffffff;font-weight:700;">${safeTok}</span>`;
+            }
+            return `<span style="display:inline;color:#ffffff;font-weight:700;">${safeTok}</span>`;
+        });
 
         // Overlay is ONLY used for highlighted-word display. Keep native track visible if overlay fails.
         inner.style.display = 'inline-block';
-        // Keep overlay inside visible video area.
+        const videoH = (Number.isFinite(video.clientHeight) && video.clientHeight > 0) ? video.clientHeight : 0;
+        if (videoH <= 0) {
+            ov.style.display = 'none';
+            setNativeTrackMode('showing');
+            return;
+        }
         inner.style.top = '';
         inner.style.bottom = '';
-        if (pos === 'top') {
-            inner.style.top = '10%';
-        } else if (pos === 'middle') {
-            inner.style.top = '50%';
-        } else {
-            inner.style.bottom = '12%';
-        }
+        let anchorY = (videoH * 0.86); // bottom default within overlay box
+        if (pos === 'top') anchorY = (videoH * 0.10);
+        else if (pos === 'middle') anchorY = (videoH * 0.50);
+        inner.style.top = `${Math.round(anchorY)}px`;
         inner.style.transform = (pos === 'middle') ? 'translate(-50%, -50%)' : 'translateX(-50%)';
         const isRtl = (() => {
             try {
@@ -7697,7 +7748,7 @@ window.updateVideoWordOverlay = function(currentTime) {
         })();
         inner.style.direction = isRtl ? 'rtl' : 'ltr';
         inner.style.textAlign = 'center';
-        inner.innerHTML = `<span dir="${isRtl ? 'rtl' : 'ltr'}" style="display:inline-block;max-width:100%;white-space:normal;line-height:1.2;text-shadow:0 2px 6px rgba(0,0,0,0.75);">${chunks.join(' ')}</span>`;
+        inner.innerHTML = `<span dir="${isRtl ? 'rtl' : 'ltr'}" style="display:block;max-width:100%;white-space:normal;word-break:break-word;line-height:1.25;text-shadow:0 2px 6px rgba(0,0,0,0.85);unicode-bidi:plaintext;">${renderedTokens.join('<span aria-hidden="true">&nbsp;</span>')}</span>`;
         // For highlighted mode, use only overlay to avoid duplicate lines.
         ov.style.display = 'block';
         setNativeTrackMode('hidden');
