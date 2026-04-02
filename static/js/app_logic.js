@@ -2549,6 +2549,20 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 const tOutDownload = Date.now();
                 const blob = await fetch(statusJson.output_url).then(r => r.blob());
                 logMovieStage('Output downloaded', { tookMs: Date.now() - tOutDownload, sizeBytes: blob.size, outName });
+                if (isMobileClient()) {
+                    _hideToastNow();
+                    const saveNow = await showGlobalConfirm(
+                        'הסרטון מוכן.\nלשמור עכשיו?',
+                        { confirmText: 'שמור', cancelText: 'אחר כך' }
+                    );
+                    if (!saveNow) {
+                        movieExportSucceeded = true;
+                        if (typeof showStatus === 'function') {
+                            showStatus('הסרטון מוכן. אפשר לשמור אותו בהמשך מתפריט הייצוא.', false, { duration: 4000 });
+                        }
+                        return;
+                    }
+                }
                 const delivered = await deliverBlobToUser(blob, outName);
                 if (!delivered) throw new Error('Could not open save/share dialog on this device');
                 movieExportSucceeded = true;
