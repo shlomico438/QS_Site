@@ -2186,7 +2186,8 @@ async function tryShareMovieBlobOnMobile(outputUrl, filename, mimeType) {
         if (!res.ok) return false;
         const blob = await res.blob();
         const safeName = String(filename || 'movie.mp4');
-        const type = mimeType || blob?.type || 'video/mp4';
+        // Share as a generic file to encourage "Save to Files" instead of "Save Video" (Photos).
+        const type = 'application/octet-stream';
         const file = new File([blob], safeName, { type });
         const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
         if (!canShare) return false;
@@ -2511,9 +2512,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     );
                     if (wantsShare) {
                         // Prefer sharing the actual MP4 file (not just the URL) so iOS offers "Save to Files".
-                        let ok = await tryShareMovieBlobOnMobile(statusJson.output_url, outName, 'video/mp4');
-                        if (!ok) ok = await tryShareUrlOnMobile(statusJson.output_url, outName);
+                        const ok = await tryShareMovieBlobOnMobile(statusJson.output_url, outName, 'video/mp4');
                         if (!ok) {
+                            // Do NOT share URL as fallback: it can create extra "link/text" items in Files/Dropbox.
                             showStatus('לא הצלחתי לפתוח אפשרויות שמירה. נפתח צפייה במקום.', true, { duration: 4000 });
                             try { window.open(statusJson.output_url, '_blank'); } catch (_) {}
                         } else {
@@ -7628,14 +7629,24 @@ window.updateVideoWordOverlay = function(currentTime) {
             return;
         }
 
-        ov.style.display = 'block';
-        setNativeTrackMode('hidden');
+        // Render overlay first; only hide native track once overlay has content.
         inner.style.display = 'inline-block';
         inner.style.top = (pos === 'top') ? '8%' : (pos === 'middle' ? '46%' : '86%');
         inner.style.transform = 'translateX(-50%)';
-        inner.style.direction = 'ltr';
+        const isRtl = (() => {
+            try {
+                const lang = String(document.documentElement.lang || '').toLowerCase();
+                const dir = String(document.documentElement.dir || '').toLowerCase();
+                return dir === 'rtl' || lang.startsWith('he') || lang.startsWith('ar');
+            } catch (_) {
+                return true;
+            }
+        })();
+        inner.style.direction = isRtl ? 'rtl' : 'ltr';
         inner.style.textAlign = 'center';
-        inner.innerHTML = `<span dir="ltr" style="display:inline-block;max-width:100%;white-space:normal;line-height:1.2;text-shadow:0 2px 6px rgba(0,0,0,0.75);">${chunks.join('')}</span>`;
+        inner.innerHTML = `<span dir="${isRtl ? 'rtl' : 'ltr'}" style="display:inline-block;max-width:100%;white-space:normal;line-height:1.2;text-shadow:0 2px 6px rgba(0,0,0,0.75);">${chunks.join(' ')}</span>`;
+        ov.style.display = 'block';
+        setNativeTrackMode('hidden');
         try {
             const canvas = ov.querySelector('#qs-video-word-overlay-canvas');
             if (canvas) canvas.style.display = 'none';
