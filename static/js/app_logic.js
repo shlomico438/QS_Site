@@ -6459,11 +6459,15 @@ function renderWordCaptionEditor() {
         input.style.font = 'inherit';
         input.style.border = '1px solid rgba(59,130,246,0.7)';
         input.style.borderRadius = '4px';
-        input.style.padding = '0 4px';
+        input.style.padding = '0 6px';
         input.style.margin = '0';
         input.style.background = 'rgba(255,255,255,0.95)';
         input.style.direction = tokenEl.closest('.caption-row')?.style?.direction || '';
-        input.style.width = Math.max(16, (Math.max(1, input.value.length) * 10)) + 'px';
+        input.style.boxSizing = 'content-box';
+        input.style.letterSpacing = 'normal';
+        input.style.textIndent = '0';
+        input.style.width = Math.max(28, (Math.max(1, input.value.length) * 11)) + 'px';
+        input.style.minWidth = '28px';
 
         tokenEl.innerHTML = '';
         tokenEl.appendChild(input);
@@ -7484,9 +7488,11 @@ window.ensureVideoWordOverlay = function() {
     // This avoids stale inline CSS from older builds causing persistent misalignment.
     ov.style.cssText = `
       position:absolute;
+      top:0;
       left:0;
       right:0;
       width:100%;
+      height:100%;
       pointer-events:none;
       z-index:9998;
       display:none;
@@ -7595,6 +7601,8 @@ window.updateVideoWordOverlay = function(currentTime) {
             const ww = words[wi];
             if (ww && ww.highlighted) { hasPinnedWord = true; break; }
         }
+        // If there are no highlighted words, do not hide the subtitle line.
+        // Show native VTT (or the normal overlay if you later add it), but never blank the line.
         if (!hasPinnedWord) {
             ov.style.display = 'none';
             setNativeTrackMode('showing');
@@ -7629,7 +7637,7 @@ window.updateVideoWordOverlay = function(currentTime) {
             return;
         }
 
-        // Render overlay first; only hide native track once overlay has content.
+        // Overlay is ONLY used for highlighted-word display. Keep native track visible if overlay fails.
         inner.style.display = 'inline-block';
         inner.style.top = (pos === 'top') ? '8%' : (pos === 'middle' ? '46%' : '86%');
         inner.style.transform = 'translateX(-50%)';
@@ -7645,8 +7653,10 @@ window.updateVideoWordOverlay = function(currentTime) {
         inner.style.direction = isRtl ? 'rtl' : 'ltr';
         inner.style.textAlign = 'center';
         inner.innerHTML = `<span dir="${isRtl ? 'rtl' : 'ltr'}" style="display:inline-block;max-width:100%;white-space:normal;line-height:1.2;text-shadow:0 2px 6px rgba(0,0,0,0.75);">${chunks.join(' ')}</span>`;
+        // Keep native subtitles visible to avoid any "blank line" cases.
+        // The overlay is purely additive for highlights and sits above the native track.
         ov.style.display = 'block';
-        setNativeTrackMode('hidden');
+        setNativeTrackMode('showing');
         try {
             const canvas = ov.querySelector('#qs-video-word-overlay-canvas');
             if (canvas) canvas.style.display = 'none';
