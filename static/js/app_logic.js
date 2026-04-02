@@ -2247,6 +2247,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     if (type === 'movie') {
         const movieStageT0 = Date.now();
         let movieExportSucceeded = false;
+        let movieBurnCompleted = false;
         const _movieTs = () => new Date().toISOString();
         const _movieElapsed = () => ((Date.now() - movieStageT0) / 1000).toFixed(2) + 's';
         const logMovieStage = (stage, extra) => {
@@ -2542,6 +2543,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
             if (statusJson.status === 'completed' && statusJson.output_url) {
                 stopBurnProgress(true);
+                movieBurnCompleted = true;
                 logMovieStage('Burn completed – downloading output');
                 const outName = (baseName || 'video') + '.mp4';
                 const tOutDownload = Date.now();
@@ -2561,11 +2563,17 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         } catch (e) {
             console.error(`[movie export][${_movieTs()}][+${_movieElapsed()}] Error:`, e);
             if (typeof showStatus === 'function') {
-                const baseErr = movieT('movie_burn_failed', 'יצירת סרטון נכשלה');
-                const hint = typeof window.t === 'function'
-                    ? ""
-                    : " Please try again later.";
-                showStatus(baseErr + hint, true);
+                const errMsg = String((e && e.message) || '');
+                const isDeliveryIssue = movieBurnCompleted || /save\/share dialog|save|share|delivery/i.test(errMsg);
+                if (isDeliveryIssue) {
+                    showStatus('הסרטון נוצר, אבל פתיחת חלון השמירה נכשלה. נסה/י שוב לשמור.', true);
+                } else {
+                    const baseErr = movieT('movie_burn_failed', 'יצירת סרטון נכשלה');
+                    const hint = typeof window.t === 'function'
+                        ? ""
+                        : " Please try again later.";
+                    showStatus(baseErr + hint, true);
+                }
             }
         } finally {
             if (!movieExportSucceeded) _hideToastNow();
