@@ -5073,7 +5073,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (!window.isTriggering) {
                 clearInterval(window.fakeProgressInterval);
                 window.fakeProgressInterval = null;
-                stopProcessingStateUI();
                 return;
             }
             if (current < 95) {
@@ -6283,16 +6282,9 @@ function renderWordCaptionEditor() {
             background: rgba(0,0,0,0.08) !important;
             border-radius: 10px;
           }
-          /* Timestamps: hidden until user selects a line (edit mode) */
-          #transcript-window.transcript-editing .caption-ts {
-            opacity: 0;
-            transition: opacity 120ms ease;
-          }
-          #transcript-window.transcript-editing .caption-row.qs-line-selected .caption-ts {
-            opacity: 1;
-          }
-          #transcript-window:not(.transcript-editing) .caption-ts {
-            opacity: 0 !important;
+          /* Keep timestamps visible by default; hide only when time toggle is OFF. */
+          #transcript-window.hide-time .caption-ts {
+            display: none !important;
           }
           #transcript-window .qs-inline-seg-btn {
             font-size: 11px;
