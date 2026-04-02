@@ -2147,10 +2147,13 @@ async function _flushMobileBatchShare() {
     if (!items.length) return true;
     if (!isMobileClient() || !navigator.share || typeof File === 'undefined') return false;
     try {
-        const files = items.map((it) => new File([it.blob], it.filename, { type: it.mimeType }));
-        const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files });
-        if (!canShare) return false;
-        await navigator.share({ files, title: 'QuickScribe export' });
+        // Share one file at a time for better iOS compatibility with mixed types (e.g. mp4 + docx).
+        for (const it of items) {
+            const file = new File([it.blob], it.filename, { type: it.mimeType });
+            const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
+            if (!canShare) return false;
+            await navigator.share({ files: [file] });
+        }
         return true;
     } catch (_) {
         return false;
@@ -2171,7 +2174,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
             const file = new File([blob], safeName, { type: fileType });
             const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
             if (canShare) {
-                await navigator.share({ files: [file], title: safeName });
+                await navigator.share({ files: [file] });
                 return true;
             }
         } catch (_) {}
@@ -2196,7 +2199,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
 async function tryShareUrlOnMobile(url, title) {
     if (!isMobileClient() || !navigator.share || !url) return false;
     try {
-        await navigator.share({ url: String(url), title: String(title || '') });
+        await navigator.share({ url: String(url) });
         return true;
     } catch (_) {
         return false;
@@ -2215,7 +2218,7 @@ async function tryShareMovieBlobOnMobile(outputUrl, filename, mimeType) {
         const file = new File([blob], safeName, { type });
         const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
         if (!canShare) return false;
-        await navigator.share({ files: [file], title: safeName });
+        await navigator.share({ files: [file] });
         return true;
     } catch (_) {
         return false;
