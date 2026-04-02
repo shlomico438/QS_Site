@@ -2755,13 +2755,32 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             await _downloadTxt(outText, dlName);
         };
 
+        const _confirmNextDocExportOnMobile = async () => {
+            if (!isMobileClient()) return true;
+            const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+            return await showGlobalConfirm(
+                isHebrewUi ? 'האם לשמור את הקובץ הבא?' : 'Save next file?',
+                {
+                    confirmText: isHebrewUi ? 'שמור' : 'Save',
+                    cancelText: isHebrewUi ? 'עצור' : 'Stop'
+                }
+            );
+        };
         try {
             if (type === 'docx') {
                 if (wantTranscript) await _exportKindDocx('transcript', `${docBase}.docx`);
-                if (wantSummary)    await _exportKindDocx('summary',    `${docBase}_summary.docx`);
+                if (wantTranscript && wantSummary) {
+                    const proceed = await _confirmNextDocExportOnMobile();
+                    if (!proceed) return;
+                }
+                if (wantSummary) await _exportKindDocx('summary', `${docBase}_summary.docx`);
             } else {
                 if (wantTranscript) await _exportKindTxt('transcript');
-                if (wantSummary)    await _exportKindTxt('summary');
+                if (wantTranscript && wantSummary) {
+                    const proceed = await _confirmNextDocExportOnMobile();
+                    if (!proceed) return;
+                }
+                if (wantSummary) await _exportKindTxt('summary');
             }
         } catch (e) {
             console.error('[docx/txt] export failed:', e);
@@ -3533,13 +3552,12 @@ function hideProgressBar() {
 
 function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
-    const copyBtn = document.getElementById('btn-copy') || document.querySelector('.toolbar-group button[onclick="window.copyTranscript()"]');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
     const togglesGroup = document.querySelector('.controls-bar .toggles-group');
     const editActions = document.getElementById('edit-actions');
     const downloadMenu = document.getElementById('download-menu');
 
-    [downloadBtn, copyBtn, editBtn].forEach((el) => {
+    [downloadBtn, editBtn].forEach((el) => {
         if (el) el.style.display = visible ? '' : 'none';
     });
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
@@ -4388,36 +4406,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     };
 
 
-    window.copyTranscript = async function() {
-        const text = document.getElementById('transcript-window').innerText;
-        if (!text || !text.trim()) return;
-
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-            localStorage.setItem('pendingTranscript', JSON.stringify(window.currentSegments));
-            const currentKey = localStorage.getItem('lastS3Key');
-            if (currentKey) localStorage.setItem('pendingS3Key', currentKey);
-
-            window.toggleModal(true);
-            return;
-        }
-
-        // Copy to clipboard
-        navigator.clipboard.writeText(text).then(async () => {
-            showStatus(typeof window.t === 'function' ? window.t('copied_to_clipboard') : "Copied to clipboard!"); // Using our new toast!
-
-            // --- NEW: Add the 'copy' type here ---
-            const currentS3Key = localStorage.getItem('lastS3Key');
-            try {
-                if (typeof ensureJobRecordOnExport === 'function') {
-                    await ensureJobRecordOnExport();
-                }
-            } catch (err) {
-                console.error("Failed to log copy event:", err);
-            }
-        });
-    };
-    
     window.saveEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
