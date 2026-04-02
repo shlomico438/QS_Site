@@ -2179,6 +2179,24 @@ async function tryShareUrlOnMobile(url, title) {
     }
 }
 
+async function tryShareMovieBlobOnMobile(outputUrl, filename, mimeType) {
+    if (!isMobileClient() || !navigator.share || typeof File === 'undefined' || !outputUrl) return false;
+    try {
+        const res = await fetch(outputUrl);
+        if (!res.ok) return false;
+        const blob = await res.blob();
+        const safeName = String(filename || 'movie.mp4');
+        const type = mimeType || blob?.type || 'video/mp4';
+        const file = new File([blob], safeName, { type });
+        const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
+        if (!canShare) return false;
+        await navigator.share({ files: [file], title: safeName });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const rawBaseName = ((window.originalFileName || '').trim()) || "transcript";
     const baseName = rawBaseName.replace(/^job_\d+_/, '').trim() || "transcript";
@@ -2492,12 +2510,14 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                         { confirmText: 'שיתוף/שמירה', cancelText: 'רק צפייה' }
                     );
                     if (wantsShare) {
-                        const ok = await tryShareUrlOnMobile(statusJson.output_url, outName);
+                        // Prefer sharing the actual MP4 file (not just the URL) so iOS offers "Save to Files".
+                        let ok = await tryShareMovieBlobOnMobile(statusJson.output_url, outName, 'video/mp4');
+                        if (!ok) ok = await tryShareUrlOnMobile(statusJson.output_url, outName);
                         if (!ok) {
                             showStatus('לא הצלחתי לפתוח אפשרויות שמירה. נפתח צפייה במקום.', true, { duration: 4000 });
                             try { window.open(statusJson.output_url, '_blank'); } catch (_) {}
                         } else {
-                            showStatus('הסרטון נשלח לשיתוף/שמירה.', false, { duration: 4000 });
+                            showStatus('הסרטון מוכן — אפשר לשמור/לשתף.', false, { duration: 4000 });
                         }
                         movieExportSucceeded = true;
                         return;
