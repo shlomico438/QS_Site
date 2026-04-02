@@ -5226,7 +5226,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (progressBar) { progressBar.style.width = "0%"; }
             const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : "Uploading...") || '').replace(/\.\.\.?$/, '');
             if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
-            startProcessingStateUI();
             setDiarizationBusyState(true);
             if (statusTxt) statusTxt.style.display = "none";
             setTranscriptActionButtonsVisible(false);
@@ -5328,6 +5327,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         window._triggerRetriedForJobId = null; // allow one auto-retry if trigger gets stuck
                         const dbId = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
+                        // Phase split: upload progress UI first, then "waking AI" processing UI.
+                        hideProgressBar();
+                        startProcessingStateUI();
+                        if (statusTxt) statusTxt.style.display = 'none';
 
                         try {
                             uploadPhase = 'trigger_processing';
