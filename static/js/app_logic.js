@@ -2011,6 +2011,22 @@ function buildTranscriptTextForGptFormat() {
         .join(' ');
 }
 
+/** Keep document-format source in sync after manual subtitle edits. */
+function syncFormattedDocWithCurrentSegments() {
+    const clean = String(buildTranscriptTextForGptFormat() || '').trim();
+    if (!clean) return;
+    const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : {};
+    window.currentFormattedDoc = {
+        clean_transcript: clean,
+        overview: String(prev.overview || '').trim(),
+        key_points: Array.isArray(prev.key_points)
+            ? prev.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+            : []
+    };
+}
+
 async function ensureFormattedViaApiForExport() {
     const fullText = buildTranscriptTextForGptFormat();
     if (!fullText.trim()) return false;
@@ -2586,7 +2602,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 if (!delivered) throw new Error('Could not open save/share dialog on this device');
                 movieExportSucceeded = true;
                 if (typeof showStatus === 'function') {
-                    showStatus('הסרטון מוכן! אפשר לשמור או לשתף.', false, { duration: 5000 });
+                    const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+                    showStatus(isHebrewUi ? 'הסרטון נשמר בהצלחה.' : 'Movie successfully saved.', false, { duration: 5000 });
                 }
             } else {
                 stopBurnProgress(false);
@@ -3658,6 +3675,25 @@ document.addEventListener('DOMContentLoaded', () => {
             const hasLoadedVideo = !!(videoWrapper && videoWrapper.classList.contains('visible'));
             document.body.classList.toggle('mobile-video-session', !!(isMobile && hasLoadedVideo));
         } catch (_) {}
+        syncLandingLogoSize();
+    }
+
+    function syncLandingLogoSize() {
+        const bodyEl = document.body;
+        if (!bodyEl) return;
+        // Apply only on the main app screen where upload CTA exists.
+        const isMainUploadScreen = !!document.getElementById('main-btn');
+        if (!isMainUploadScreen) {
+            bodyEl.classList.remove('landing-logo-large');
+            return;
+        }
+        const videoWrapper = document.getElementById('video-wrapper');
+        const videoShown = !!(
+            videoWrapper &&
+            videoWrapper.classList.contains('visible') &&
+            videoWrapper.style.display !== 'none'
+        );
+        bodyEl.classList.toggle('landing-logo-large', !videoShown);
     }
 
     if (mobileSessionBtn) {
@@ -3683,6 +3719,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     window.addEventListener('resize', syncMobileVideoSessionState);
     syncMobileVideoSessionState();
+    try {
+        const videoWrapper = document.getElementById('video-wrapper');
+        if (videoWrapper && typeof MutationObserver !== 'undefined') {
+            const logoSizeObserver = new MutationObserver(() => syncLandingLogoSize());
+            logoSizeObserver.observe(videoWrapper, { attributes: true, attributeFilter: ['class', 'style'] });
+        }
+    } catch (_) {}
 
     if (mainBtn) {
         mainBtn.addEventListener('click', async () => {
@@ -4472,6 +4515,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // Word-level caption editor: persist model directly (no DOM paragraph extraction; no timing estimation).
         if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            syncFormattedDocWithCurrentSegments();
 
             // Refresh subtitles (VTT) immediately
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
@@ -4492,7 +4536,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     input_s3_key: s3Key,
                                     segments: window.currentSegments,
                                     words: window.currentWords,
-                                    captions: window.currentCaptions
+                                    captions: window.currentCaptions,
+                                    formatted: window.currentFormattedDoc || undefined
                                 })
                             });
                             const data = res.ok ? await res.json() : {};
@@ -4598,6 +4643,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (last.end == null || last.end <= last.start) last.end = last.start + 1;
             }
         }
+        syncFormattedDocWithCurrentSegments();
 
         // 2. ELIMINATE CACHE: Force the video to use the fresh edits
         window.refreshVideoSubtitles();
@@ -4613,7 +4659,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const res = await fetch('/api/save_job_result', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ userId: user.id, input_s3_key: s3Key, segments: window.currentSegments })
+                            body: JSON.stringify({
+                                userId: user.id,
+                                input_s3_key: s3Key,
+                                segments: window.currentSegments,
+                                formatted: window.currentFormattedDoc || undefined
+                            })
                         });
                         const data = res.ok ? await res.json() : {};
                         if (data.result_s3_key) {
@@ -5684,7 +5735,15 @@ function renderTranscriptFromCues(cues) {
     const textDirection = isRtl ? 'rtl' : 'ltr';
     const textAlign = isRtl ? 'right' : 'left';
     if (!cues || cues.length === 0) {
-        container.innerHTML = '<p style="color:#9ca3af; text-align:center; margin-top:40px;">No subtitles loaded</p>';
+        container.innerHTML = `
+            <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">
+                <div>🎥 וידאו</div>
+                <div>🎙️ אודיו</div>
+                <div>📁 קובץ</div>
+                <br>
+                <div>לחץ למטה כדי להתחיל</div>
+            </div>
+        `;
         return;
     }
     // Legacy rendering path for cue-only transcripts (no word timestamps).

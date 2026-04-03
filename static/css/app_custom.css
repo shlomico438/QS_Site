@@ -41,6 +41,14 @@ main.main-content:has(.blog-page) {
     margin: 0 0 16px;
     color: #4b5563;
     font-size: 1rem;
+    text-align: center;
+}
+
+/* Landing state: larger navbar logo until video player is shown */
+body.landing-logo-large .nav-logo img {
+    height: 72px !important;
+    width: auto;
+    transition: height 0.22s ease;
 }
 .seo-home-content section {
     margin-top: 14px;
@@ -1044,6 +1052,56 @@ input:checked + .slider:before { transform: translateX(16px); }
     cursor: not-allowed;
     opacity: 0.7;
     box-shadow: none;
+}
+
+/* Main upload CTA: soft vertical gradient like native game-style buttons */
+#main-btn {
+    background: linear-gradient(180deg, #7c73ff 0%, #6a5dff 52%, #5647e8 100%);
+    border: 1px solid rgba(64, 47, 189, 0.55);
+    border-radius: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    box-shadow:
+        0 3px 0 rgba(54, 39, 161, 0.9),
+        0 10px 22px rgba(73, 58, 197, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.35);
+    text-shadow: 0 1px 0 rgba(31, 24, 107, 0.28);
+    transition: transform 0.08s ease, box-shadow 0.16s ease, filter 0.16s ease, opacity 0.16s ease;
+}
+
+#main-btn:hover:not(:disabled) {
+    filter: brightness(1.03);
+}
+
+#main-btn:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow:
+        0 2px 0 rgba(54, 39, 161, 0.9),
+        0 7px 14px rgba(73, 58, 197, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+#main-btn::before {
+    content: '←';
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #5d5dff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    line-height: 1;
+    font-weight: 900;
+    -webkit-text-stroke: 0.35px currentColor;
+    box-shadow: 0 1px 2px rgba(17, 24, 39, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+html[dir="ltr"] #main-btn::before {
+    content: '→';
 }
 
 /* Native-feel tap feedback on mobile */
