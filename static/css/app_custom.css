@@ -765,6 +765,22 @@ input:checked + .slider:before { transform: translateX(16px); }
     gap: 12px;
 }
 
+.export-panel-intro {
+    text-align: right;
+}
+
+.export-panel-intro-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #111827;
+    margin-bottom: 2px;
+}
+
+.export-panel-intro-subtitle {
+    font-size: 0.82rem;
+    color: #6b7280;
+}
+
 .export-panel-section {
     margin-bottom: 0;
 }
@@ -940,22 +956,23 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 .export-format-choice {
     flex: 0 0 auto;
-    min-width: 46px;
-    height: 22px;
-    padding: 0 8px;
-    border-radius: 6px;
+    min-width: 44px;
+    height: 15px;
+    padding: 0 6px;
+    border-radius: 5px;
     border: 1px solid #cbd5e1;
     background: #fff;
     color: #334155;
     font-weight: 600;
-    font-size: 0.68rem;
+    font-size: 0.56rem;
+    line-height: 1;
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
 .export-format-group--subtitle .export-format-choice {
     flex: 0 0 auto;
-    min-width: 46px;
+    min-width: 44px;
 }
 
 .option-format-row {
