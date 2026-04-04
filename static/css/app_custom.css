@@ -763,6 +763,27 @@ input:checked + .slider:before { transform: translateX(16px); }
     display: flex;
     flex-direction: column;
     gap: 12px;
+    position: relative;
+}
+
+.export-panel-close-icon {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #6b7280;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.export-panel-close-icon:hover {
+    background: #f3f4f6;
+    color: #374151;
 }
 
 .export-panel-intro {
@@ -1060,21 +1081,6 @@ input:checked + .slider:before { transform: translateX(16px); }
     border-top: 1px solid #eef2ff;
 }
 
-.export-panel-close-text {
-    flex: 0 0 auto;
-    align-self: center;
-    color: #6b7280;
-    font-size: 0.9rem;
-    font-weight: 600;
-    cursor: pointer;
-    user-select: none;
-    text-decoration: none;
-}
-
-.export-panel-close-text:hover {
-    color: #4338ca;
-    text-decoration: underline;
-}
 
 /* --- BAR-GRAPH (PROGRESS BAR) --- */
 .progress-container {

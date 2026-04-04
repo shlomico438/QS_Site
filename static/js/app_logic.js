@@ -4253,10 +4253,6 @@ document.addEventListener('DOMContentLoaded', () => {
             console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
         }
 
-        // Hide the "waking AI" processing panel as soon as GPT translation phase is done.
-        // Do not wait for later background/persistence steps.
-        stopProcessingStateUI();
-
         // One-time doc formatting pass (clean transcript + summary), reused by exports.
         // IMPORTANT: run in background so transcript rendering is never blocked by this request.
         (() => {
