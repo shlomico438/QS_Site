@@ -144,55 +144,65 @@
                         <div class="dropdown-menu" id="download-menu">
                             <div class="export-panel-card" id="docx-submenu">
 
-                                <div class="export-panel-section">
-                                    <div class="export-panel-label">מסמכים</div>
-                                    <label class="export-check-item">
-                                        <input class="export-doc-choice" type="checkbox" data-docx-kind="transcript" checked>
-                                        <span class="export-check-ui" aria-hidden="true"></span>
-                                        <span class="export-check-text">תמלול</span>
-                                    </label>
-                                    <label class="export-check-item">
-                                        <input class="export-doc-choice" type="checkbox" data-docx-kind="summary">
-                                        <span class="export-check-ui" aria-hidden="true"></span>
-                                        <span class="export-check-text">סיכום</span>
-                                    </label>
-                                </div>
-
-                                <div class="export-panel-section export-panel-section--inline">
-                                    <div class="export-panel-label">פורמט</div>
-                                    <div class="export-format-group" role="group" aria-label="Export format">
-                                        <button class="export-format-choice is-selected" type="button" data-format="docx">DOCX</button>
-                                        <button class="export-format-choice" type="button" data-format="txt">TXT</button>
+                                <div class="export-panel-section option-card" data-card-kind="transcript">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">📝 תמלול מלא</div>
+                                    </div>
+                                    <input class="export-doc-choice" type="checkbox" data-docx-kind="transcript" checked hidden>
+                                    <div class="export-panel-desc">קובץ טקסט של כל הדיבור</div>
+                                    <div class="option-format-row">
+                                        <div class="export-panel-label">פורמט:</div>
+                                        <div class="export-format-group" role="group" aria-label="Transcript format">
+                                            <button class="export-format-choice is-selected" type="button" data-docx-kind="transcript" data-format="docx">DOCX</button>
+                                            <button class="export-format-choice" type="button" data-docx-kind="transcript" data-format="txt">TXT</button>
+                                        </div>
                                     </div>
                                 </div>
 
-                                <div class="export-panel-section">
-                                    <div class="export-panel-label">כתוביות</div>
-                                    <label class="export-check-item">
-                                        <input class="export-extra-choice" type="checkbox" data-export-kind="srt">
-                                        <span class="export-check-ui" aria-hidden="true"></span>
-                                        <span class="export-check-text">SRT</span>
-                                    </label>
-                                    <label class="export-check-item">
-                                        <input class="export-extra-choice" type="checkbox" data-export-kind="vtt">
-                                        <span class="export-check-ui" aria-hidden="true"></span>
-                                        <span class="export-check-text">VTT</span>
-                                    </label>
-                                </div>
-
-                                <div class="export-panel-section">
-                                    <div class="export-panel-label export-panel-label-with-icon">
-                                        <span>וידאו</span>
-                                        <img src="{{ url_for('static', filename='images/styled-subtitles-btn.png') }}" alt="Styled subtitles" class="export-video-header-icon">
+                                <div class="export-panel-section option-card" data-card-kind="summary">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">📄 סיכום</div>
                                     </div>
-                                    <label class="export-check-item">
-                                        <input class="export-extra-choice" type="checkbox" data-export-kind="movie">
-                                        <span class="export-check-ui" aria-hidden="true"></span>
-                                        <span class="export-check-text">יצירת וידאו</span>
-                                    </label>
+                                    <input class="export-doc-choice" type="checkbox" data-docx-kind="summary" hidden>
+                                    <div class="export-panel-desc">סיכום קצר של הסרטון</div>
+                                    <div class="option-format-row">
+                                        <div class="export-panel-label">פורמט:</div>
+                                        <div class="export-format-group" role="group" aria-label="Summary format">
+                                            <button class="export-format-choice is-selected" type="button" data-docx-kind="summary" data-format="docx">DOCX</button>
+                                            <button class="export-format-choice" type="button" data-docx-kind="summary" data-format="txt">TXT</button>
+                                        </div>
+                                    </div>
                                 </div>
 
-                                <button class="export-docx-btn" type="button" data-type="generate-export">יצירה</button>
+                                <div class="export-panel-section option-card" data-card-kind="movie">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">🎬 סרטון עם כתוביות</div>
+                                    </div>
+                                    <input class="export-extra-choice" type="checkbox" data-export-kind="movie" hidden>
+                                    <div class="export-panel-desc">וידאו חדש עם כתוביות צרובות</div>
+                                </div>
+
+                                <div class="export-panel-section option-card" data-card-kind="subtitles">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">💬 כתוביות</div>
+                                    </div>
+                                    <input class="export-subtitles-enable" type="checkbox" checked hidden>
+                                    <div class="export-panel-desc">קובץ כתוביות לסרטון</div>
+                                    <div class="option-format-row">
+                                        <div class="export-panel-label">פורמט:</div>
+                                        <input class="export-extra-choice" type="checkbox" data-export-kind="srt" checked hidden>
+                                        <input class="export-extra-choice" type="checkbox" data-export-kind="vtt" hidden>
+                                        <div class="export-format-group export-format-group--subtitle" role="group" aria-label="Subtitle format">
+                                            <button class="export-format-choice export-format-choice--toggle is-selected" type="button" data-extra-kind="srt">SRT</button>
+                                            <button class="export-format-choice export-format-choice--toggle" type="button" data-extra-kind="vtt">VTT</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="export-panel-actions">
+                                    <span class="export-panel-close-text" data-type="close-export-panel" role="button" tabindex="0">סגור</span>
+                                    <button class="export-docx-btn" type="button" data-type="generate-export">יצירה</button>
+                                </div>
                             </div>
                         </div>
                     </div>

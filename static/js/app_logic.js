@@ -1285,7 +1285,7 @@ async function initPersonalPage() {
             `;
 
             const actionBtn = item.querySelector('.personal-recording-action');
-            actionBtn.addEventListener('click', async () => {
+            const handlePrimaryOpenAction = async () => {
                 if (actionBtn.disabled) return;
                 if (file.transcript_exists) {
                     window.location.href = '/?open=' + encodeURIComponent(file.file_id);
@@ -1320,7 +1320,17 @@ async function initPersonalPage() {
                     actionBtn.textContent = prevText;
                     if (typeof showStatus === 'function') showStatus('Transcribe failed: ' + (e.message || 'Unknown error'), true);
                 }
-            });
+            };
+            actionBtn.addEventListener('click', handlePrimaryOpenAction);
+            const nameEl = item.querySelector('.personal-recording-name');
+            if (nameEl) {
+                nameEl.style.cursor = 'pointer';
+                nameEl.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handlePrimaryOpenAction();
+                });
+            }
 
             const moreBtn = item.querySelector('.personal-more-btn');
             moreBtn.addEventListener('click', (e) => {
@@ -3020,6 +3030,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 dMenu.style.display = 'flex';
                 dMenu.classList.add('show');
+                try { syncSubtitleFormatSwitches(); } catch (_) {}
                 positionDownloadMenuOpen();
             } else {
                 dMenu.style.display = 'none';
@@ -3036,7 +3047,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    let selectedDocFormat = 'docx';
+    const selectedDocFormatByKind = {
+        transcript: 'docx',
+        summary: 'docx'
+    };
     const closeDownloadMenu = () => {
         const menu = document.getElementById('download-menu');
         if (menu) {
@@ -3072,23 +3086,131 @@ document.addEventListener('DOMContentLoaded', async () => {
     const updateMovieGenerateAvailability = () => {
         const movieInput = document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="movie"]');
         if (!movieInput) return;
-        const label = movieInput.closest('.export-check-item');
+        const card = movieInput.closest('.option-card');
         const hasVideo = Boolean(window.uploadWasVideo);
         movieInput.disabled = !hasVideo;
         if (!hasVideo) movieInput.checked = false;
-        if (label) label.classList.toggle('is-disabled', !hasVideo);
+        if (card) card.classList.toggle('is-disabled', !hasVideo);
     };
-    document.querySelectorAll('#docx-submenu .export-format-choice').forEach((btn) => {
+    const setSubtitlesEnabled = (enabled) => {
+        const srtInput = document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="srt"]');
+        const vttInput = document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="vtt"]');
+        if (!srtInput || !vttInput) return;
+        if (enabled) {
+            if (!srtInput.checked && !vttInput.checked) srtInput.checked = true;
+        } else {
+            srtInput.checked = false;
+            vttInput.checked = false;
+        }
+    };
+    const syncGenerateCardState = () => {
+        const transcriptEnabled = !!document.querySelector('#docx-submenu .export-doc-choice[data-docx-kind="transcript"]')?.checked;
+        const summaryEnabled = !!document.querySelector('#docx-submenu .export-doc-choice[data-docx-kind="summary"]')?.checked;
+        const movieEnabled = !!document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="movie"]')?.checked;
+        const subtitlesEnabled = !!(
+            document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="srt"]')?.checked ||
+            document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="vtt"]')?.checked
+        );
+        const subtitlesEnableInput = document.querySelector('#docx-submenu .export-subtitles-enable');
+        if (subtitlesEnableInput) subtitlesEnableInput.checked = subtitlesEnabled;
+        document.querySelectorAll('#docx-submenu .option-card[data-card-kind]').forEach((card) => {
+            const kind = (card.getAttribute('data-card-kind') || '').toLowerCase();
+            const on = (kind === 'transcript' && transcriptEnabled)
+                || (kind === 'summary' && summaryEnabled)
+                || (kind === 'movie' && movieEnabled)
+                || (kind === 'subtitles' && subtitlesEnabled);
+            card.classList.toggle('is-selected', !!on);
+        });
+    };
+    const syncSubtitleFormatSwitches = () => {
+        document.querySelectorAll('#docx-submenu .export-format-choice[data-extra-kind]').forEach((btn) => {
+            const kind = (btn.getAttribute('data-extra-kind') || '').toLowerCase();
+            const input = document.querySelector(`#docx-submenu .export-extra-choice[data-export-kind="${kind}"]`);
+            btn.classList.toggle('is-selected', !!(input && input.checked));
+        });
+        syncGenerateCardState();
+    };
+    document.querySelectorAll('#docx-submenu .export-format-choice[data-docx-kind]').forEach((btn) => {
         btn.addEventListener('click', function(e) {
             e.preventDefault();
             e.stopPropagation();
-            selectedDocFormat = this.getAttribute('data-format') || 'docx';
-            document.querySelectorAll('#docx-submenu .export-format-choice').forEach((it) => {
+            const kind = (this.getAttribute('data-docx-kind') || '').toLowerCase();
+            const fmt = (this.getAttribute('data-format') || 'docx').toLowerCase();
+            if (kind !== 'transcript' && kind !== 'summary') return;
+            selectedDocFormatByKind[kind] = (fmt === 'txt') ? 'txt' : 'docx';
+            document.querySelectorAll(`#docx-submenu .export-format-choice[data-docx-kind="${kind}"]`).forEach((it) => {
                 it.classList.toggle('is-selected', it === this);
             });
+            syncGenerateCardState();
         });
     });
+    document.querySelectorAll('#docx-submenu .export-format-choice[data-extra-kind]').forEach((btn) => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const kind = (this.getAttribute('data-extra-kind') || '').toLowerCase();
+            const input = document.querySelector(`#docx-submenu .export-extra-choice[data-export-kind="${kind}"]`);
+            if (!input || input.disabled) return;
+            // Subtitle format behaves as segmented switch (single-choice), like DOCX/TXT.
+            document.querySelectorAll('#docx-submenu .export-extra-choice[data-export-kind="srt"], #docx-submenu .export-extra-choice[data-export-kind="vtt"]').forEach((el) => {
+                el.checked = (el === input);
+            });
+            syncSubtitleFormatSwitches();
+        });
+    });
+    document.querySelectorAll('#docx-submenu .export-doc-choice, #docx-submenu .export-extra-choice[data-export-kind="movie"]').forEach((input) => {
+        input.addEventListener('change', () => syncGenerateCardState());
+    });
+    const subtitlesEnableInput = document.querySelector('#docx-submenu .export-subtitles-enable');
+    if (subtitlesEnableInput) {
+        subtitlesEnableInput.addEventListener('change', () => {
+            setSubtitlesEnabled(!!subtitlesEnableInput.checked);
+            syncSubtitleFormatSwitches();
+        });
+    }
+    document.querySelectorAll('#docx-submenu .option-card[data-card-kind]').forEach((card) => {
+        card.addEventListener('click', (e) => {
+            if (e.target.closest('button') || e.target.closest('input') || e.target.closest('.export-check-ui')) return;
+            const kind = (card.getAttribute('data-card-kind') || '').toLowerCase();
+            if (kind === 'transcript' || kind === 'summary') {
+                const cb = card.querySelector(`.export-doc-choice[data-docx-kind="${kind}"]`);
+                if (!cb || cb.disabled) return;
+                cb.checked = !cb.checked;
+                syncGenerateCardState();
+                return;
+            }
+            if (kind === 'movie') {
+                const cb = card.querySelector('.export-extra-choice[data-export-kind="movie"]');
+                if (!cb || cb.disabled) return;
+                cb.checked = !cb.checked;
+                syncGenerateCardState();
+                return;
+            }
+            if (kind === 'subtitles') {
+                const cb = card.querySelector('.export-subtitles-enable');
+                if (!cb || cb.disabled) return;
+                cb.checked = !cb.checked;
+                setSubtitlesEnabled(!!cb.checked);
+                syncSubtitleFormatSwitches();
+            }
+        });
+    });
+    syncSubtitleFormatSwitches();
+    syncGenerateCardState();
     const docExportBtn = document.querySelector('#docx-submenu [data-type="generate-export"]');
+    const closeExportPanelBtn = document.querySelector('#docx-submenu [data-type="close-export-panel"]');
+    if (closeExportPanelBtn) {
+        const closePanel = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeDownloadMenu();
+        };
+        closeExportPanelBtn.addEventListener('click', closePanel);
+        closeExportPanelBtn.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            closePanel(e);
+        });
+    }
     if (docExportBtn) {
         docExportBtn.addEventListener('click', async function(e) {
             e.preventDefault();
@@ -3163,7 +3285,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             closeDownloadMenu();
             // Run exports sequentially. On mobile with multiple outputs, collect files
             // and open a single system share/save chooser for all of them.
-            const totalSelected = selectedDocKinds.length + selectedExtraKinds.length;
             // iOS often blocks multi-share sequences in one flow; prefer per-file save dialogs.
             const useBatchShare = false;
             const orderedExtraKinds = selectedExtraKinds.slice().sort((a, b) => {
@@ -3179,13 +3300,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
             }
             if (selectedDocKinds.length) {
-                const primaryDocLabel = selectedDocKinds.includes('transcript')
-                    ? 'transcript'
-                    : (selectedDocKinds.includes('summary') ? 'summary' : 'transcript');
-                exportTasks.push({
-                    label: primaryDocLabel,
-                    run: async () => { await window.downloadFile(selectedDocFormat, null, { docxKinds: selectedDocKinds }); }
-                });
+                const orderedDocKinds = ['transcript', 'summary'].filter((k) => selectedDocKinds.includes(k));
+                for (const docKind of orderedDocKinds) {
+                    const selectedFmt = selectedDocFormatByKind[docKind] === 'txt' ? 'txt' : 'docx';
+                    exportTasks.push({
+                        label: docKind,
+                        run: async () => {
+                            await window.downloadFile(selectedFmt, null, { docxKinds: [docKind], docxKind: docKind });
+                        }
+                    });
+                }
             }
             for (const kind of orderedExtraKinds) {
                 if (kind === 'movie') continue;
@@ -3772,6 +3896,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             openFilePickerAfterDisclaimer();
+        });
+    }
+
+    if (transcriptWindow && mainBtn) {
+        transcriptWindow.addEventListener('click', (e) => {
+            if (window.isTriggering) return;
+            if (transcriptWindow.classList.contains('transcript-editing')) return;
+            if (document.body.classList.contains('has-transcript-actions')) return;
+            if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return;
+            const t = e && e.target;
+            if (t && t.closest && t.closest('button,a,input,textarea,select,[role="button"]')) return;
+            mainBtn.click();
         });
     }
 
@@ -5737,11 +5873,13 @@ function renderTranscriptFromCues(cues) {
     if (!cues || cues.length === 0) {
         container.innerHTML = `
             <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">
-                <div>🎥 וידאו</div>
-                <div>🎙️ אודיו</div>
-                <div>📁 קובץ</div>
+                <div style="font-weight:600;">🎥 וידאו</div>
+                <div style="font-size:0.9em; color:#9ca3af;">MP4, MOV, WEBM, M4V, MKV, AVI</div>
+                <div style="font-weight:600; margin-top:4px;">🎙️ אודיו</div>
+                <div style="font-size:0.9em; color:#9ca3af;">M4A, MP3, WAV, AAC, OGG, FLAC</div>
+                <div style="font-weight:600; margin-top:4px;">📁 קובץ</div>
                 <br>
-                <div>לחץ למטה כדי להתחיל</div>
+                <div>בחר וידאו או אודיו כדי להתחיל</div>
             </div>
         `;
         return;
@@ -6346,7 +6484,7 @@ function renderWordCaptionEditor() {
         return `
           <div class="caption-row" data-ci="${ci}" data-start="${start}" style="margin-bottom:0.35em; direction:${textDirection}; text-align:${textAlign}; display:flex; flex-direction:column; align-items:stretch;">
             <div class="caption-row-main" style="display:flex; gap:10px; align-items:baseline;">
-              <div class="caption-ts" style="font-size:0.85em; color:#6b7280; white-space:nowrap;">${formatTime(start)} – ${formatTime(endT)}</div>
+              <div class="caption-ts" style="font-size:0.85em; color:#6b7280; white-space:nowrap;">${formatTime(start)}</div>
               <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0; line-height:1.8; flex:1;">${tokenHtml}</div>
               ${toolbarHtml}
             </div>
