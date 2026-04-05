@@ -102,23 +102,7 @@
                 Your browser does not support the audio tag.
             </audio>
         </div>
-        <div id="video-wrapper" style="display: none; gap: 12px; margin-bottom: 12px; align-items: flex-start;">
-            <div id="subtitle-style-selector" style="display: none; flex-shrink: 0; width: 140px;">
-                <div id="subtitle-style-list" style="display: flex; flex-direction: column; gap: 8px;">
-                    <button class="subtitle-style-card" data-style="tiktok" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
-                        <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;" data-i18n="tiktok_bold">TikTok Bold</div>
-                        <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="tiktok_desc">Big • Bold</div>
-                    </button>
-                    <button class="subtitle-style-card" data-style="clean" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
-                        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="clean_pro">Clean Pro</div>
-                        <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="clean_desc">Minimal • Soft</div>
-                    </button>
-                    <button class="subtitle-style-card" data-style="cinematic" style="width: 100%; padding: 12px 8px; background: white; border: 2px solid #e5e7eb; border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;">
-                        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="cinematic">Cinematic</div>
-                        <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="cinematic_desc">Serif • Caps</div>
-                    </button>
-                </div>
-            </div>
+        <div id="video-wrapper" style="display: none; margin-bottom: 12px; align-items: stretch;">
             <div id="video-player-container" style="flex: 1;">
                 <video id="main-video" controls crossorigin="anonymous" playsinline webkit-playsinline>
                     <source id="video-source" src="" type="video/mp4">
@@ -129,18 +113,21 @@
         </div>
 
         <div class="transcription-wrapper">
-            <div class="controls-bar">
+            <div class="switches-top-bar">
                 <div class="toggles-group">
-                    <label><div class="toggle-switch"><input type="checkbox" id="toggle-time" checked onchange="document.getElementById('transcript-window').classList.toggle('hide-time', !this.checked)"><span class="slider"></span></div><span data-i18n="time">Time</span></label>
                     <div class="format-ab-switch" id="format-mode-switch" role="group" aria-label="פורמט תצוגה">
                         <button type="button" class="format-ab-option is-active" id="format-mode-subtitle">כתוביות</button>
                         <button type="button" class="format-ab-option" id="format-mode-doc">מסמך</button>
                     </div>
                     <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
                 </div>
+            </div>
+            <div id="transcript-window" contenteditable="false">
+            </div>
+            <div class="controls-bar">
                 <div class="toolbar-group">
-                    <div style="position: relative;">
-                        <button class="btn-icon" id="btn-download" data-i18n-title="download" title="Download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>
+                    <div class="generate-btn-wrap" style="position: relative;">
+                        <button class="generate-select-btn" id="btn-download" type="button">בחר מה ליצור</button>
                         <div class="dropdown-menu" id="download-menu">
                             <div class="export-panel-card" id="docx-submenu">
                                 <button class="export-panel-close-icon" type="button" data-type="close-export-panel" aria-label="Close">✕</button>
@@ -210,7 +197,45 @@
                             </div>
                         </div>
                     </div>
-                    <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>
+                    <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><img src="{{ url_for('static', filename='images/edit.png') }}" alt="Edit" style="width:20px; height:20px; object-fit:contain;"></button>
+                    <div id="subtitle-style-selector" class="subtitle-style-drawer-host" style="display: none;">
+                        <button id="subtitle-style-toggle" class="subtitle-style-toggle-btn" type="button" aria-label="Subtitle styles" title="Subtitle styles">Aa</button>
+                        <div id="subtitle-style-drawer" class="subtitle-style-drawer-panel">
+                            <div class="subtitle-drawer-section-title">מיקום כתוביות</div>
+                            <div class="subtitle-global-pos-wrap" role="group" aria-label="Global subtitle position">
+                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="top" title="Top">
+                                    <span class="subtitle-frame-icon subtitle-frame-icon--top" aria-hidden="true"></span>
+                                </button>
+                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="middle" title="Middle">
+                                    <span class="subtitle-frame-icon subtitle-frame-icon--middle" aria-hidden="true"></span>
+                                </button>
+                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="bottom" title="Bottom">
+                                    <span class="subtitle-frame-icon subtitle-frame-icon--bottom" aria-hidden="true"></span>
+                                </button>
+                            </div>
+                            <div class="subtitle-drawer-section-title">צבע כתוביות</div>
+                            <div class="subtitle-color-wrap" role="group" aria-label="Subtitle color">
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="black" title="Black"></button>
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="red" title="Red"></button>
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="yellow" title="Yellow"></button>
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="white" title="White"></button>
+                            </div>
+                            <div id="subtitle-style-list" class="subtitle-style-drawer-list">
+                                <button class="subtitle-style-card" data-style="tiktok" type="button">
+                                    <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;" data-i18n="tiktok_bold">TikTok Bold</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="tiktok_desc">Big • Bold</div>
+                                </button>
+                                <button class="subtitle-style-card" data-style="clean" type="button">
+                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="clean_pro">Clean Pro</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="clean_desc">Minimal • Soft</div>
+                                </button>
+                                <button class="subtitle-style-card" data-style="cinematic" type="button">
+                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="cinematic">Cinematic</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="cinematic_desc">Serif • Caps</div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="action-buttons" id="edit-actions" style="display:none; gap: 10px;">
                         <button class="btn-icon" onclick="window.saveEdits()" style="color:green;" data-i18n-title="save" title="Save">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -226,8 +251,6 @@
                         </button>
                     </div>
                 </div>
-            </div>
-            <div id="transcript-window" contenteditable="false">
             </div>
         </div>
 

@@ -74,7 +74,7 @@ window.translations = {
         cinematic: "Cinematic",
         cinematic_desc: "סריף • אותיות גדולות",
         // Toolbar
-        time: "זמן",
+        time: "חתימת זמן",
         speaker: "דובר",
         download: "הורד",
         edit: "ערוך",
@@ -256,7 +256,7 @@ window.translations = {
         clean_desc: "Minimal • Soft",
         cinematic: "Cinematic",
         cinematic_desc: "Serif • Caps",
-        time: "Time",
+        time: "Timestamp",
         speaker: "Speaker",
         download: "Download",
         edit: "Edit",

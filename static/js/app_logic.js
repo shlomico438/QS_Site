@@ -2664,7 +2664,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         if (typeof showStatus === 'function') showStatus("No transcript available to export.", true);
         return;
     }
-    const showTime = document.getElementById('toggle-time')?.checked;
+    const showTime = isTimeToggleVisible();
     const showSpeaker = document.getElementById('toggle-speaker')?.checked;
 
     // Update job to exported, or create job if user signed in after upload
@@ -3749,7 +3749,9 @@ function hideProgressBar() {
 function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
-    const togglesGroup = document.querySelector('.controls-bar .toggles-group');
+    const togglesGroup = document.querySelector('.switches-top-bar .toggles-group') || document.querySelector('.controls-bar .toggles-group');
+    const switchesTopBar = document.querySelector('.switches-top-bar');
+    const controlsBar = document.querySelector('.controls-bar');
     const editActions = document.getElementById('edit-actions');
     const downloadMenu = document.getElementById('download-menu');
 
@@ -3757,6 +3759,8 @@ function setTranscriptActionButtonsVisible(visible) {
         if (el) el.style.display = visible ? '' : 'none';
     });
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
+    if (switchesTopBar) switchesTopBar.classList.toggle('is-visible', !!visible);
+    if (controlsBar) controlsBar.classList.toggle('is-visible', !!visible);
     if (!visible) {
         if (editActions) editActions.style.display = 'none';
         if (downloadMenu) downloadMenu.style.display = 'none';
@@ -4528,7 +4532,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (docParagraphs.length) {
                 const htmlDoc = docParagraphs.map((p) => {
                     const safe = p.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    return `<div class="paragraph-row" style="margin-bottom: 0.35em;"><p style="margin: 0; line-height: 1.7; cursor: text;">${safe}</p></div>`;
+                    return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em;"><p style="margin: 0; line-height: 1.7; cursor: text;">${safe}</p></div>`;
                 }).join('');
                 transcriptWindow.innerHTML = htmlDoc;
                 transcriptWindow.contentEditable = 'false';
@@ -4546,17 +4550,17 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const showLabel = isSpeakerVisible && window.aiDiarizationRan;
 
             return `
-            <div class="paragraph-row" id="seg-row-${rowIndex}" style="margin-bottom: 0.1em;">
-                <div style="font-size: 0.85em; color: #888; margin-bottom: 2px;">
+            <div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom: 2px;">
+                <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
 
-                    <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
+                    <span class="timestamp" style="display: ${isTimeVisible ? 'block' : 'none'};">
                         ${formatTime(g.start)}
                     </span>
 
-                    <span style="display: ${showLabel ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(g.speaker)}">
-                        ${isTimeVisible ? '| ' : ''}${g.speaker.replace('SPEAKER_', 'דובר ')}
+                    <span style="display: ${showLabel ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(g.speaker)};">
+                        ${g.speaker.replace('SPEAKER_', 'דובר ')}
                     </span>
-                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${g.start})">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
+                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2;" onclick="window.jumpTo(${g.start})">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
             </div>`;
         }).join('');
 
@@ -4850,6 +4854,32 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
     // --- SUBTITLE STYLE MANAGEMENT ---
     window.currentSubtitleStyle = localStorage.getItem('subtitleStyle') || 'tiktok';
+    window.currentSubtitleColor = localStorage.getItem('subtitleColor') || 'yellow';
+    const _subtitleColorMap = {
+        black: '#111111',
+        red: '#ef4444',
+        yellow: '#facc15',
+        white: '#ffffff',
+    };
+    const _sanitizeSubtitleColor = (c) => (c === 'black' || c === 'red' || c === 'yellow' || c === 'white') ? c : 'yellow';
+    window.applySubtitleColor = function(colorKey) {
+        const video = document.getElementById('main-video');
+        const safeKey = _sanitizeSubtitleColor(colorKey);
+        const colorHex = _subtitleColorMap[safeKey] || _subtitleColorMap.yellow;
+        window.currentSubtitleColor = safeKey;
+        try { localStorage.setItem('subtitleColor', safeKey); } catch (_) {}
+        if (video) {
+            video.style.setProperty('--qs-subtitle-color', colorHex);
+            video.classList.remove('subtitle-color-black', 'subtitle-color-red', 'subtitle-color-yellow', 'subtitle-color-white');
+            video.classList.add(`subtitle-color-${safeKey}`);
+        }
+        if (typeof window.syncSubtitleDrawerColorUI === 'function') {
+            window.syncSubtitleDrawerColorUI();
+        }
+        if (window.currentSegments && window.currentSegments.length && typeof window.refreshVideoSubtitles === 'function') {
+            window.refreshVideoSubtitles();
+        }
+    };
     
     window.applySubtitleStyle = function(style) {
         const video = document.getElementById('main-video');
@@ -4863,6 +4893,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             video.classList.add(`subtitle-style-${style}`);
             window.currentSubtitleStyle = style;
             localStorage.setItem('subtitleStyle', style);
+        }
+        if (typeof window.applySubtitleColor === 'function') {
+            window.applySubtitleColor(window.currentSubtitleColor);
         }
         
         // Update card selection
@@ -4880,45 +4913,16 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     
     window.showSubtitleStyleSelector = function() {
         const selector = document.getElementById('subtitle-style-selector');
-        const list = document.getElementById('subtitle-style-list');
         const video = document.getElementById('main-video');
         if (selector && video && window.currentSegments && window.currentSegments.length > 0) {
             try { selector.querySelector('#caption-style-timeline-ui')?.remove(); } catch (_) {}
             selector.style.display = 'flex';
-            selector.style.gap = '10px';
-            selector.style.alignItems = 'flex-start';
-            if (window.innerWidth <= 768) {
-                selector.style.width = '100%';
-                selector.style.overflowX = 'auto';
-                selector.style.overflowY = 'hidden';
-                if (list) {
-                    list.style.display = 'flex';
-                    list.style.flexDirection = 'row';
-                    list.style.flexWrap = 'nowrap';
-                    list.style.gap = '8px';
-                    list.style.width = 'max-content';
-                }
-                selector.querySelectorAll('.subtitle-style-card').forEach((card) => {
-                    card.style.width = '108px';
-                    card.style.minWidth = '108px';
-                    card.style.padding = '8px 6px';
-                });
-            } else {
-                selector.style.width = 'auto';
-                selector.style.overflowX = '';
-                selector.style.overflowY = '';
-                if (list) {
-                    list.style.display = '';
-                    list.style.flexDirection = '';
-                    list.style.flexWrap = '';
-                    list.style.gap = '';
-                    list.style.width = '';
-                }
-                selector.querySelectorAll('.subtitle-style-card').forEach((card) => {
-                    card.style.width = '';
-                    card.style.minWidth = '';
-                    card.style.padding = '';
-                });
+            selector.classList.remove('is-open');
+            if (typeof window.syncSubtitleDrawerGlobalPositionUI === 'function') {
+                window.syncSubtitleDrawerGlobalPositionUI();
+            }
+            if (typeof window.syncSubtitleDrawerColorUI === 'function') {
+                window.syncSubtitleDrawerColorUI();
             }
             window.applySubtitleStyle(window.currentSubtitleStyle);
         }
@@ -4927,7 +4931,70 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.hideSubtitleStyleSelector = function() {
         const selector = document.getElementById('subtitle-style-selector');
         if (selector) {
+            selector.classList.remove('is-open');
             selector.style.display = 'none';
+        }
+    };
+
+    window.toggleSubtitleStyleDrawer = function(forceOpen) {
+        const selector = document.getElementById('subtitle-style-selector');
+        if (!selector || selector.style.display === 'none') return;
+        const drawer = document.getElementById('subtitle-style-drawer');
+        const toggleBtn = document.getElementById('subtitle-style-toggle');
+
+        const positionDrawerNearToggle = () => {
+            if (!drawer || !toggleBtn) return;
+            const margin = 8;
+            const btnRect = toggleBtn.getBoundingClientRect();
+            const panelRect = drawer.getBoundingClientRect();
+            const panelW = panelRect.width || 320;
+            const panelH = panelRect.height || 220;
+            const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+            const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+            const isMobile = (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) || vw <= 768;
+            const boundsEl = !isMobile
+                ? (document.querySelector('.transcription-wrapper') || document.getElementById('transcript-window'))
+                : null;
+            const boundsRect = boundsEl ? boundsEl.getBoundingClientRect() : null;
+            const minLeft = boundsRect ? (boundsRect.left + margin) : margin;
+            const maxLeft = boundsRect ? (boundsRect.right - panelW - margin) : (vw - panelW - margin);
+            const minTop = boundsRect ? (boundsRect.top + margin) : margin;
+            const maxTop = boundsRect ? (boundsRect.bottom - panelH - margin) : (vh - panelH - margin);
+
+            let left = btnRect.right - panelW;
+            left = Math.max(minLeft, Math.min(left, maxLeft));
+
+            let top = btnRect.top - panelH - 8;
+            // Fallback when there isn't enough room above.
+            if (top < minTop) top = Math.min(maxTop, btnRect.bottom + 8);
+            top = Math.max(minTop, Math.min(top, maxTop));
+
+            drawer.style.left = `${Math.round(left)}px`;
+            drawer.style.top = `${Math.round(top)}px`;
+        };
+
+        if (typeof forceOpen === 'boolean') {
+            selector.classList.toggle('is-open', forceOpen);
+            if (forceOpen) {
+                positionDrawerNearToggle();
+                if (typeof window.syncSubtitleDrawerGlobalPositionUI === 'function') {
+                    window.syncSubtitleDrawerGlobalPositionUI();
+                }
+                if (typeof window.syncSubtitleDrawerColorUI === 'function') {
+                    window.syncSubtitleDrawerColorUI();
+                }
+            }
+            return;
+        }
+        selector.classList.toggle('is-open');
+        if (selector.classList.contains('is-open')) {
+            positionDrawerNearToggle();
+            if (typeof window.syncSubtitleDrawerGlobalPositionUI === 'function') {
+                window.syncSubtitleDrawerGlobalPositionUI();
+            }
+            if (typeof window.syncSubtitleDrawerColorUI === 'function') {
+                window.syncSubtitleDrawerColorUI();
+            }
         }
     };
 
@@ -5014,6 +5081,47 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (typeof highlightActiveCaptionRowByTime === 'function') highlightActiveCaptionRowByTime(now);
             if (typeof window.updateVideoWordOverlay === 'function') window.updateVideoWordOverlay(now);
         } catch (_) {}
+    };
+    window.syncSubtitleDrawerGlobalPositionUI = function() {
+        _loadGlobalCaptionLayoutStyle();
+        const currentPos = _sanitizePosition((window.globalCaptionLayoutStyle || {}).position);
+        document.querySelectorAll('#subtitle-style-drawer .subtitle-global-pos-btn').forEach((btn) => {
+            btn.classList.toggle('is-selected', btn.getAttribute('data-global-pos') === currentPos);
+        });
+    };
+    window.syncSubtitleDrawerColorUI = function() {
+        const currentColor = _sanitizeSubtitleColor(window.currentSubtitleColor);
+        document.querySelectorAll('#subtitle-style-drawer .subtitle-color-btn').forEach((btn) => {
+            btn.classList.toggle('is-selected', btn.getAttribute('data-subtitle-color') === currentColor);
+        });
+    };
+    window.applyGlobalCaptionPosition = function(pos) {
+        const safePos = _sanitizePosition(pos);
+        if (!window.currentCaptions || !window.currentCaptions.length) {
+            window.setGlobalCaptionStyle({ position: safePos });
+            window.syncSubtitleDrawerGlobalPositionUI();
+            return;
+        }
+        window.currentCaptions.forEach((cap) => {
+            if (!cap) return;
+            cap.style = cap.style && typeof cap.style === 'object' ? { ...cap.style } : {};
+            cap.style.position = safePos;
+        });
+        window.setGlobalCaptionStyle({ position: safePos });
+        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+        if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+        try {
+            const now = _getCurrentMediaTime();
+            if (typeof highlightActiveCaptionRowByTime === 'function') highlightActiveCaptionRowByTime(now);
+            if (typeof window.updateVideoWordOverlay === 'function') window.updateVideoWordOverlay(now);
+        } catch (_) {}
+        if (typeof renderWordCaptionEditor === 'function') {
+            const win = document.getElementById('transcript-window');
+            if (win && win.classList.contains('transcript-editing')) {
+                try { renderWordCaptionEditor(); } catch (_) {}
+            }
+        }
+        window.syncSubtitleDrawerGlobalPositionUI();
     };
     window.ensureCaptionStyleTimelineUI = function() { /* removed — use inline per-caption editor in transcript */ };
 
@@ -5200,16 +5308,16 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
                 const row = p.closest('.paragraph-row');
                 const newRowHtml = `
-                <div class="paragraph-row" style="margin-bottom: 0.1em;">
-                    <div style="font-size: 0.85em; color: #888; margin-bottom: 2px;">
-                        <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
+                <div class="paragraph-row" style="display:block; margin-bottom: 2px;">
+                    <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
+                        <span class="timestamp" style="display: ${isTimeVisible ? 'block' : 'none'};">
                             ${formatTime(newSeg.start)}
                         </span>
-                        <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(seg.speaker)}">
-                            ${isTimeVisible ? '| ' : ''}${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
+                        <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
+                            ${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
                         </span>
                     </div>
-                    <p data-idx="${idx + 1}" style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${newSeg.start})"><br></p>
+                    <p data-idx="${idx + 1}" style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2;" onclick="window.jumpTo(${newSeg.start})"><br></p>
                 </div>`;
                 const div = document.createElement('div');
                 div.innerHTML = newRowHtml.trim();
@@ -5245,16 +5353,16 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
             const row = p.closest('.paragraph-row');
             const newRowHtml = `
-            <div class="paragraph-row" style="margin-bottom: 0.1em;">
-                <div style="font-size: 0.85em; color: #888; margin-bottom: 2px;">
-                    <span class="timestamp" style="display: ${isTimeVisible ? 'inline' : 'none'};">
+            <div class="paragraph-row" style="display:block; margin-bottom: 2px;">
+                <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
+                    <span class="timestamp" style="display: ${isTimeVisible ? 'block' : 'none'};">
                         ${formatTime(splitTime)}
                     </span>
-                    <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'inline' : 'none'}; font-weight: bold; margin-right: 10px; color: ${getSpeakerColor(seg.speaker)}">
-                        ${isTimeVisible ? '| ' : ''}${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
+                    <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
+                        ${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
                     </span>
                 </div>
-                <p data-idx="${idx + 1}" style="margin: 0; cursor: pointer; line-height: 1.6;" onclick="window.jumpTo(${splitTime})"></p>
+                <p data-idx="${idx + 1}" style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2;" onclick="window.jumpTo(${splitTime})"></p>
             </div>`;
             const div = document.createElement('div');
             div.innerHTML = newRowHtml.trim();
@@ -5289,21 +5397,17 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const translatedLine = translatedParts.length ? translatedParts.join(" ").replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
 
         return `
-        <div class="paragraph-row" style="display: flex; justify-content: flex-end; width: 100%; margin-bottom: 0.1em; direction: rtl;">
-
-            <div style="min-width: 90px; text-align: right; margin-left: 15px; flex-shrink: 0; font-size: 0.85em; color: #888;">
+        <div class="paragraph-row" style="display:block; width: 100%; margin-bottom: 2px; direction: rtl; text-align: right;">
+            <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
                 <div style="display: ${isTimeVisible ? 'block' : 'none'};">${formatTime(group.start)}</div>
-                <div style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: bold; color: ${getSpeakerColor(rawSpeaker)};">
+                <div style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(rawSpeaker)};">
                     ${speakerDisplay}
                 </div>
             </div>
-
-            <div style="flex-grow: 1; text-align: right;">
-                <p style="margin: 0; cursor: pointer; line-height: 1.7; font-size: 1.1em;" onclick="window.jumpTo(${group.start})">
-                    ${fullText}
-                </p>
-                ${translatedLine ? `<p class="translated-line" style="margin: 4px 0 0 0; font-size: 0.9em; color: #6b7280; direction: ltr; text-align: left;">${translatedLine}</p>` : ''}
-            </div>
+            <p style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2; font-size: 1.1em;" onclick="window.jumpTo(${group.start})">
+                ${fullText}
+            </p>
+            ${translatedLine ? `<p class="translated-line" style="margin: 4px 0 0 0; font-size: 0.9em; color: #6b7280; direction: ltr; text-align: left;">${translatedLine}</p>` : ''}
         </div>`;
     }
     function startFakeProgress() {
@@ -5885,9 +5989,9 @@ function renderTranscriptFromCues(cues) {
         const mainText = String(c.translated_text || c.text || '').trim();
         const safe = mainText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
         return `
-        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
-            <div style="font-size:0.85em; color:#6b7280; margin-bottom:2px;">[${formatTime(c.start)}]</div>
-            <p data-idx="${idx}" style="margin:0; line-height:1.6; white-space:pre-wrap;">${safe}</p>
+        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
+            <div style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.05;">[${formatTime(c.start)}]</div>
+            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;">${safe}</p>
         </div>`;
     }).join('');
 
@@ -6478,35 +6582,20 @@ function renderWordCaptionEditor() {
               </div>
             </div>` : '';
         return `
-          <div class="caption-row" data-ci="${ci}" data-start="${start}" style="margin-bottom:0.35em; direction:${textDirection}; text-align:${textAlign}; display:flex; flex-direction:column; align-items:stretch;">
-            <div class="caption-row-main" style="display:flex; gap:10px; align-items:baseline;">
-              <div class="caption-ts" style="font-size:0.85em; color:#6b7280; white-space:nowrap;">${formatTime(start)}</div>
-              <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0; line-height:1.8; flex:1;">${tokenHtml}</div>
-              ${toolbarHtml}
+          <div class="caption-row" data-ci="${ci}" data-start="${start}" style="margin-bottom:2px; direction:${textDirection}; text-align:${textAlign}; display:flex; flex-direction:column; align-items:stretch;">
+            <div class="caption-row-main" style="display:flex; flex-direction:column; gap:0; align-items:stretch;">
+              <div class="caption-ts" style="font-size:0.74em; color:#9ca3af; white-space:nowrap; line-height:1.05; margin-bottom:0;">${formatTime(start)}</div>
+              <div class="caption-row-body" style="display:flex; gap:10px; align-items:flex-start; margin-top:0;">
+                <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1;">${tokenHtml}</div>
+                ${toolbarHtml}
+              </div>
             </div>
             ${panelHtml}
           </div>
         `;
     }).join('');
 
-    const globalPosLabelMap = { bottom: 'תחתון', middle: 'אמצע', top: 'עליון' };
-    const globalPosSeg = ['bottom', 'middle', 'top'].map(p =>
-        `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${globalPosLabelMap[p] || p}</button>`
-    ).join('');
-    const selectAllUiHtml = isEditing ? `
-      <div class="qs-global-style-wrap">
-        <label class="qs-select-all-label">
-          <input type="checkbox" class="qs-select-all-checkbox" />
-          <span>בחר הכול</span>
-        </label>
-        <div class="qs-global-style-panel" style="display:none;">
-          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-            <span style="font-size:11px;color:#6b7280;width:64px;">מיקום</span>
-            <div class="qs-inline-seg qs-global-pos-seg" style="display:flex;gap:4px;flex-wrap:wrap;">${globalPosSeg}</div>
-          </div>
-        </div>
-      </div>` : '';
-    container.innerHTML = `${selectAllUiHtml}${rows}`;
+    container.innerHTML = rows;
     container.style.direction = textDirection;
     container.style.textAlign = textAlign;
     container.contentEditable = 'false';
@@ -6524,6 +6613,31 @@ function renderWordCaptionEditor() {
           }
           #transcript-window .caption-row {
             transition: background-color 150ms ease;
+            margin-bottom: 2px !important;
+          }
+          #transcript-window .caption-row-main {
+            display: grid !important;
+            grid-template-rows: auto auto;
+            row-gap: 0 !important;
+          }
+          #transcript-window .caption-ts {
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1 !important;
+          }
+          #transcript-window .caption-row-body {
+            margin-top: 0 !important;
+            padding-top: 0 !important;
+            align-items: flex-start !important;
+          }
+          #transcript-window .caption-text {
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1.2 !important;
+          }
+          #transcript-window .caption-text .word-token {
+            line-height: 1.2 !important;
+            vertical-align: top !important;
           }
           #transcript-window.transcript-editing .caption-row:hover {
             background: rgba(0,0,0,0.03);
@@ -7055,17 +7169,8 @@ function renderWordCaptionEditor() {
         return _getSelectedRowSet().size > 1;
     }
     function _syncGlobalSelectAllUI() {
-        if (!isEditing) return;
-        const checkbox = container.querySelector('.qs-select-all-checkbox');
-        const panel = container.querySelector('.qs-global-style-panel');
-        if (!checkbox || !panel) return;
-        const totalCaps = Array.isArray(window.currentCaptions) ? window.currentCaptions.length : 0;
-        const selectedCount = _getSelectedRowSet().size;
-        const allSelected = totalCaps > 0 && selectedCount === totalCaps;
-        checkbox.checked = allSelected;
-        panel.style.display = allSelected ? 'block' : 'none';
-        if (allSelected) container.setAttribute('data-select-all', '1');
-        else container.removeAttribute('data-select-all');
+        // Legacy no-op: global selection UI was moved to subtitle style drawer.
+        container.removeAttribute('data-select-all');
     }
     function _setSelectedRows(cis, opts = {}) {
         const { setAnchor = false } = opts || {};
@@ -7236,48 +7341,6 @@ function renderWordCaptionEditor() {
                     } else {
                         window._qsStylePanelOpenCi = null;
                     }
-                    return;
-                }
-                const selectAllCheckbox = e.target && e.target.closest ? e.target.closest('.qs-select-all-checkbox') : null;
-                if (selectAllCheckbox && container.contains(selectAllCheckbox)) {
-                    const totalCaps = Array.isArray(window.currentCaptions) ? window.currentCaptions.length : 0;
-                    if (selectAllCheckbox.checked && totalCaps > 0) {
-                        const allCis = [];
-                        for (let i = 0; i < totalCaps; i++) allCis.push(i);
-                        _setSelectedRows(allCis, { setAnchor: false });
-                        setTimingHandle(null);
-                    } else {
-                        const fallbackCi = Number.isFinite(window._qsUserSelectedRowCi) ? window._qsUserSelectedRowCi : 0;
-                        setActiveRow(fallbackCi, { user: true });
-                        setTimingHandle({ type: 'caption', ci: fallbackCi });
-                    }
-                    return;
-                }
-                const globalSeg = e.target && e.target.closest ? e.target.closest('.qs-global-pos-seg .qs-inline-seg-btn') : null;
-                if (globalSeg && container.contains(globalSeg)) {
-                    if (!window.currentCaptions || !window.currentCaptions.length) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const pos = globalSeg.getAttribute('data-pos');
-                    if (!pos) return;
-                    window.currentCaptions.forEach((cap) => {
-                        if (!cap) return;
-                        cap.style = cap.style && typeof cap.style === 'object' ? { ...cap.style } : {};
-                        cap.style.position = pos;
-                    });
-                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                    if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-                    const t = _mediaNow();
-                    if (typeof highlightActiveCaptionRowByTime === 'function') highlightActiveCaptionRowByTime(t);
-                    if (typeof window.updateVideoWordOverlay === 'function') window.updateVideoWordOverlay(t);
-                    container.querySelectorAll('.qs-global-pos-seg .qs-inline-seg-btn').forEach(btn => {
-                        btn.classList.toggle('is-selected', btn.getAttribute('data-pos') === pos);
-                    });
-                    // Keep inline panel toggles in sync if one is open.
-                    container.querySelectorAll('.qs-inline-style-panel[data-ci]').forEach((panelEl) => {
-                        const ci = parseInt(panelEl.getAttribute('data-ci'), 10);
-                        if (Number.isFinite(ci)) syncInlineStylePanel(ci);
-                    });
                     return;
                 }
                 const seg = e.target && e.target.closest ? e.target.closest('.qs-inline-seg-btn') : null;
@@ -8513,14 +8576,61 @@ document.addEventListener('DOMContentLoaded', () => {
     if (downloadBtn) downloadBtn.addEventListener('click', () => downloadSRT());
     if (burnBtn) burnBtn.addEventListener('click', () => createBurnedInVideo());
     
-    // Subtitle style selector event listeners
+    // Subtitle style drawer event listeners
     document.addEventListener('click', function(e) {
-        if (e.target.closest('.subtitle-style-card')) {
-            const card = e.target.closest('.subtitle-style-card');
-            const style = card.dataset.style;
+        const toggleBtn = e.target.closest('#subtitle-style-toggle');
+        if (toggleBtn) {
+            e.preventDefault();
+            window.toggleSubtitleStyleDrawer();
+            return;
+        }
+
+        const globalPosBtn = e.target.closest('.subtitle-global-pos-btn');
+        if (globalPosBtn) {
+            e.preventDefault();
+            const pos = globalPosBtn.getAttribute('data-global-pos');
+            if (pos && typeof window.applyGlobalCaptionPosition === 'function') {
+                window.applyGlobalCaptionPosition(pos);
+            }
+            return;
+        }
+
+        const colorBtn = e.target.closest('.subtitle-color-btn');
+        if (colorBtn) {
+            e.preventDefault();
+            const colorKey = colorBtn.getAttribute('data-subtitle-color');
+            if (colorKey && typeof window.applySubtitleColor === 'function') {
+                window.applySubtitleColor(colorKey);
+            }
+            return;
+        }
+
+        const styleCard = e.target.closest('.subtitle-style-card');
+        if (styleCard) {
+            const style = styleCard.dataset.style;
             if (style) {
                 window.applySubtitleStyle(style);
+                window.toggleSubtitleStyleDrawer(false);
             }
+            return;
+        }
+
+        const selector = document.getElementById('subtitle-style-selector');
+        if (selector && selector.classList.contains('is-open') && !e.target.closest('#subtitle-style-selector')) {
+            window.toggleSubtitleStyleDrawer(false);
+        }
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape') return;
+        const selector = document.getElementById('subtitle-style-selector');
+        if (selector && selector.classList.contains('is-open')) {
+            window.toggleSubtitleStyleDrawer(false);
+        }
+    });
+    window.addEventListener('resize', function() {
+        const selector = document.getElementById('subtitle-style-selector');
+        if (selector && selector.classList.contains('is-open')) {
+            window.toggleSubtitleStyleDrawer(true);
         }
     });
 });
