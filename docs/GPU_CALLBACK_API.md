@@ -86,7 +86,7 @@ Or with `result` and optional `timing` (for PROCESS TIMING summary):
 The Site returns **200 only after** it has:
 
 1. Validated `jobId` and `segments`.
-2. Saved the raw result to S3 (when `input_s3_key` is known).
+2. Saved the result to S3 (when `input_s3_key` is known).
 3. Stored the result in cache and emitted to the frontend.
 
 **Success (200):**
@@ -96,13 +96,13 @@ The Site returns **200 only after** it has:
   "ok": true,
   "received": true,
   "job_id": "abc-123",
-  "stage": "raw_saved",
-  "raw_result_s3_key": "users/xxx/output/yyy_raw.json"
+  "stage": "saved",
+  "result_s3_key": "users/xxx/output/yyy.json"
 }
 ```
 
 - **`ok: true`** — The app has accepted and stored the result. Worker should treat the job as **successfully delivered** only when it gets **200** and **`ok === true`**.
-- **`raw_result_s3_key`** — Present when the result was written to S3; may be `null` if no input key was available.
+- **`result_s3_key`** — Present when the result was written to S3; may be `null` if no input key was available.
 
 **Client error (400):**
 

@@ -646,7 +646,7 @@ def _flatten_words_from_segments(segments):
 
 
 def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
-    """Low-level helper to write transcript JSON for a given processing stage.
+    """Low-level helper to write transcript JSON.
 
     transcript can include:
       - segments: legacy list[{start,end,text,...}]
@@ -656,12 +656,9 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
     if transcript is None or not isinstance(transcript, dict):
         raise ValueError("transcript must be an object")
     base = _derive_output_key_base(user_id, input_s3_key)
-    stage = (stage or 'gpt').strip().lower()
-    if stage == 'raw':
-        result_s3_key = base + '_raw.json'
-    else:
-        # Keep existing naming for GPT so older data remains compatible.
-        result_s3_key = base + '.json'
+    # Keep a single canonical transcript object key.
+    # `stage` is accepted for backward compatibility, but ignored.
+    result_s3_key = base + '.json'
 
     body = json.dumps(transcript, ensure_ascii=False).encode('utf-8')
     s3_client = boto3.client(
@@ -685,8 +682,9 @@ def _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt'):
     if not bucket or not input_s3_key:
         return None
     base = _derive_output_key_base(user_id, input_s3_key)
-    stage = (stage or 'gpt').strip().lower()
-    key = (base + '_raw.json') if stage == 'raw' else (base + '.json')
+    # Keep a single canonical transcript object key.
+    # `stage` is accepted for backward compatibility, but ignored.
+    key = base + '.json'
     try:
         s3_client = boto3.client(
             's3',
@@ -725,6 +723,8 @@ def save_job_result():
         has_formatted_key = 'formatted' in data
         formatted = data.get('formatted')
         stage = (data.get('stage') or 'gpt').strip().lower()
+        if stage == 'raw':
+            stage = 'gpt'
         if not user_id or not input_s3_key:
             return jsonify({"error": "userId and input_s3_key (or s3Key) required"}), 400
 
@@ -2235,7 +2235,7 @@ def gpu_callback():
         input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
         user_id = _extract_user_id_from_s3_key(input_s3_key)
 
-    raw_result_s3_key = None
+    result_s3_key = None
     s3_sec = 0.0
     if input_s3_key:
         try:
@@ -2244,13 +2244,13 @@ def gpu_callback():
             if w is not None and c is not None:
                 transcript_payload["words"] = w
                 transcript_payload["captions"] = c
-            raw_result_s3_key = _put_transcript_json_to_s3(user_id or 'anonymous', input_s3_key, transcript_payload, stage='raw')
+            result_s3_key = _put_transcript_json_to_s3(user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt')
             result_dict = dict(result) if isinstance(result, dict) else {}
-            result_dict['raw_result_s3_key'] = raw_result_s3_key
+            result_dict['result_s3_key'] = result_s3_key
             data = dict(data)
             data['result'] = result_dict
         except Exception as e:
-            logging.exception("Failed to save raw job result to S3 for %s", job_id)
+            logging.exception("Failed to save job result to S3 for %s", job_id)
             return jsonify({"ok": False, "error": "Failed to save result", "detail": str(e)}), 500
 
     data = dict(data)
@@ -2344,8 +2344,8 @@ def gpu_callback():
         "ok": True,
         "received": True,
         "job_id": job_id,
-        "stage": "raw_saved",
-        "raw_result_s3_key": raw_result_s3_key,
+        "stage": "saved",
+        "result_s3_key": result_s3_key,
     }), 200
 
 

@@ -1564,7 +1564,7 @@ async function initOpenInApp(jobId) {
                             window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 27);
                             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                             segments = window.currentSegments;
-                        } // No raw-transcript fallback here: avoids noisy 404s for jobs that never saved *_raw.json.
+                        } // No fallback fetch here: avoids noisy 404s for jobs without an intermediate debug artifact.
                     }
                 }
             }
@@ -4154,7 +4154,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const wordModel = _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
         if (wordModel) {
             window.currentWords = wordModel.words;
-            window.currentCaptions = wordModel.captions;
+            // Keep caption line width consistent with file-open/import flow.
+            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, wordModel.captions, 27);
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
         } else {
             window.currentWords = null;
@@ -4246,6 +4247,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
                     }
+                    // Reflow after translation so subtitle cuts stay stable across upload flows.
+                    window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, window.currentCaptions, 27);
                     // Re-derive segments from words/captions after applying text.
                     window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                 }
