@@ -83,9 +83,12 @@
     </main>
 
     <script>
-        const socket = io({
-            transports: ['websocket'],
-            upgrade: false,
+        const socketOrigin = `${window.location.protocol}//${window.location.host}`;
+        const socket = io(socketOrigin, {
+            // Prefer websocket, but keep polling fallback for stricter mobile networks/proxies.
+            transports: ['websocket', 'polling'],
+            upgrade: true,
+            secure: window.location.protocol === 'https:',
             reconnection: true,
             reconnectionAttempts: 10,
             reconnectionDelay: 2000,

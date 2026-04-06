@@ -5981,7 +5981,6 @@ function renderTranscriptFromCues(cues) {
                 <div style="font-weight:600; margin-top:4px;">🎙️ אודיו</div>
                 <div style="font-size:0.9em; color:#9ca3af;">M4A, MP3, WAV, AAC, OGG, FLAC</div>
                 <div style="font-weight:600; margin-top:4px;">📁 קובץ</div>
-                <br>
                 <div>בחר וידאו או אודיו כדי להתחיל</div>
             </div>
         `;

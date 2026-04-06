@@ -31,6 +31,7 @@ main.main-content:has(.blog-page) {
     margin: 0 0 10px;
     font-size: 1.8rem;
     line-height: 1.35;
+    text-align: center;
     color: #4f46e5; /* Fallback if gradient text clipping is unsupported */
     background: linear-gradient(90deg, #3b82f6 0%, #7c3aed 55%, #ec4899 100%);
     -webkit-background-clip: text;
@@ -1448,11 +1449,15 @@ html[dir="rtl"] #main-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    box-sizing: border-box;
+    padding-bottom: 3px;
     font-size: 16px;
     line-height: 1;
     font-weight: 900;
     -webkit-text-stroke: 0.45px currentColor;
     box-shadow: 0 1px 2px rgba(17, 24, 39, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    position: relative;
+    top: 3px;
 }
 
 html[dir="ltr"] #main-btn::before {
