@@ -8,7 +8,7 @@ try:
 except ImportError:
     pass
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, redirect
 from flask_socketio import SocketIO, join_room
 import json
 import requests  # Added for RunPod API calls
@@ -85,6 +85,34 @@ def _public_base_url(req):
     if root.startswith('http://') and (xfp == 'https' or str(req.host or '').endswith('getquickscribe.com')):
         root = 'https://' + root[len('http://'):]
     return root
+
+
+def _is_local_host(host):
+    h = str(host or '').split(':')[0].strip().lower()
+    return h in ('localhost', '127.0.0.1', '::1') or h.endswith('.local')
+
+
+@app.before_request
+def enforce_https_on_proxy():
+    """Force HTTPS behind reverse proxies (e.g. Koyeb) via X-Forwarded-Proto."""
+    # Allow explicit opt-out for local/dev debugging.
+    if str(os.environ.get('DISABLE_HTTPS_REDIRECT', '')).strip().lower() in ('1', 'true', 'yes', 'on'):
+        return None
+    if _is_local_host(request.host):
+        return None
+    if request.path.startswith('/health'):
+        return None
+
+    xfp = (request.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+    # If proxy explicitly says HTTPS, or app already sees HTTPS, do nothing.
+    if xfp == 'https' or request.is_secure:
+        return None
+
+    # Only redirect when proxy indicates HTTP (or header missing but url is http).
+    if xfp == 'http' or request.url.startswith('http://'):
+        https_url = request.url.replace('http://', 'https://', 1)
+        return redirect(https_url, code=301)
+    return None
 
 
 def _xml_esc(text):
