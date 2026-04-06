@@ -1944,6 +1944,32 @@ html[dir="rtl"] .upload-status {
         border-left: 4px solid #1e3a8a !important;
     }
 }
+
+/* Android Chrome: keep upload CTA pinned to viewport bottom */
+@media screen and (max-width: 768px) {
+    @supports not (-webkit-touch-callout: none) {
+        .main-app-container > .upload-zone {
+            position: fixed !important;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            width: 100%;
+            margin: 0 !important;
+            border-top: 1px solid #e5e7eb;
+            z-index: 220;
+            background: #fff;
+            padding: 10px 12px calc(12px + env(safe-area-inset-bottom)) !important;
+        }
+
+        .main-app-container {
+            padding-bottom: 96px !important;
+        }
+
+        body.has-transcript-actions .main-app-container {
+            padding-bottom: 10px !important;
+        }
+    }
+}
 :root {
     --bg-page: #f8fafc;
     --bg-surface: #ffffff;
