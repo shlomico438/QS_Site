@@ -2978,18 +2978,41 @@ def _wrap_text_rtl_safe(text, max_chars_per_line):
     return parts
 
 
-def _build_ass(segments, style='tiktok', portrait=False):
-    """Build ASS content. style: tiktok (bold white centered), clean, cinematic. portrait=True uses 14 chars/line."""
+def _ass_primary_outline_from_ui_color(subtitle_color=None):
+    """Map UI subtitle color key to ASS PrimaryColour and OutlineColour (&HAABBGGRR). Matches static player palette."""
+    key = (subtitle_color or 'yellow').strip().lower()
+    hex_map = {
+        'black': '111111',
+        'red': 'ef4444',
+        'yellow': 'facc15',
+        'white': 'ffffff',
+    }
+    if key not in hex_map:
+        key = 'yellow'
+    hx = hex_map[key]
+    primary = f"&H00{hx[4:6]}{hx[2:4]}{hx[0:2]}".upper()
+    r = int(hx[0:2], 16)
+    g = int(hx[2:4], 16)
+    b = int(hx[4:6], 16)
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+    outline = "&H00FFFFFF" if luminance < 0.45 else "&H00000000"
+    return primary, outline
+
+
+def _build_ass(segments, style='tiktok', portrait=False, subtitle_color=None):
+    """Build ASS content. style: tiktok, clean, cinematic. portrait=True uses 14 chars/line (tiktok).
+    subtitle_color: black|red|yellow|white — must match player / localStorage subtitleColor."""
+    primary_ass, outline_ass = _ass_primary_outline_from_ui_color(subtitle_color)
     # PlayRes chosen for scale; ffmpeg will scale
     play_res_x, play_res_y = 384, 288
     if style == 'tiktok':
-        # Bold, large, white, black outline, center. ASS colour &HAABBGGRR
-        style_line = "Style: Default,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,10,10,40,1"
+        # Bold, large, center. PrimaryColour / OutlineColour from user choice (was hardcoded white).
+        style_line = f"Style: Default,Arial,28,{primary_ass},&H000000FF,{outline_ass},&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,10,10,40,1"
     elif style == 'cinematic':
-        style_line = "Style: Default,Times New Roman,22,&H00F5F5F5,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
+        style_line = f"Style: Default,Times New Roman,22,{primary_ass},&H000000FF,{outline_ass},&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
     else:
         # clean
-        style_line = "Style: Default,Arial,18,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
+        style_line = f"Style: Default,Arial,18,{primary_ass},&H000000FF,{outline_ass},&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1"
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -3008,10 +3031,10 @@ def _build_ass(segments, style='tiktok', portrait=False):
     def _esc_ass_text(s):
         return str(s or '').replace('\n', ' ').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
 
-    # Per-word inline tags (ASS colors are AABBGGRR).
-    NORMAL_TAG = r"{\1c&H00FFFFFF&\3c&H00000000&\bord2\shad0}"
-    ACTIVE_TAG = r"{\1c&H00000000&\3c&H00FFFFFF&\bord3\shad0\blur0.4}"
-    PINNED_TAG = r"{\1c&H00000000&\3c&H00FFFFFF&\bord3\shad0\blur0.4}"
+    # Per-word inline tags (\1c primary fill, \3c outline). Highlight = swap fill/outline for contrast.
+    NORMAL_TAG = "{{\\1c" + primary_ass + "&\\3c" + outline_ass + "&\\bord2\\shad0}}"
+    ACTIVE_TAG = "{{\\1c" + outline_ass + "&\\3c" + primary_ass + "&\\bord3\\shad0\\blur0.4}}"
+    PINNED_TAG = ACTIVE_TAG
 
     for seg in segments:
         start = seg.get('start', 0)
@@ -3284,7 +3307,7 @@ def _build_output_key(user_id, input_s3_key, task_id):
     return f"users/{user_id}/output/{safe_name}_with_subtitles.mp4", safe_name
 
 
-def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None):
+def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
     """Dispatch burn task to RunPod using presigned S3 URLs."""
     endpoint_id = (RUNPOD_MOVIE_ENDPOINT_ID or "").strip()
     api_key = (RUNPOD_API_KEY or "").strip()
@@ -3315,7 +3338,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
     subtitle_ext = 'ass' if prefer_ass else 'srt'
     subtitle_s3_key = f"users/{user_id}/tmp/subtitles/{task_id}.{subtitle_ext}"
     if prefer_ass:
-        subtitle_text = _build_ass(segments, subtitle_style or 'tiktok', portrait=is_portrait)
+        subtitle_text = _build_ass(segments, subtitle_style or 'tiktok', portrait=is_portrait, subtitle_color=subtitle_color)
         subtitle_content_type = "text/x-ssa; charset=utf-8"
     else:
         max_chars = 14 if (subtitle_style == 'tiktok' and is_portrait) else (27 if subtitle_style == 'tiktok' else 9999)
@@ -3354,6 +3377,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
             "output_upload_url": output_upload_url,
             "output_s3_key": output_s3_key,
             "subtitle_style": (subtitle_style or 'tiktok'),
+            "subtitle_color": (subtitle_color or 'yellow'),
             "is_portrait": is_portrait,
             "job_id": job_id,
             "user_id": user_id,
@@ -3407,7 +3431,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
         'safe_name': safe_name
     }
 
-def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None):
+def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
     """Background task: download from S3, check duration limit, burn subtitles, upload to S3, optional email."""
     bucket = os.environ.get('S3_BUCKET')
     s3_client = boto3.client(
@@ -3433,7 +3457,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
                 return
             use_ass = subtitle_style in ('tiktok', 'clean', 'cinematic')
             if use_ass:
-                ass_content = _build_ass(segments, subtitle_style or 'tiktok', portrait=is_portrait)
+                ass_content = _build_ass(segments, subtitle_style or 'tiktok', portrait=is_portrait, subtitle_color=subtitle_color)
                 subs_path = os.path.join(tmpdir, 'subtitles.ass')
                 with open(subs_path, 'w', encoding='utf-8') as f:
                     f.write(ass_content)
@@ -3510,6 +3534,7 @@ def burn_subtitles_server():
         segments = data.get('segments', [])
         user_id = data.get('userId') or data.get('user_id')
         subtitle_style = (data.get('subtitle_style') or 'tiktok').strip() or 'tiktok'
+        subtitle_color = (data.get('subtitle_color') or 'yellow').strip() or 'yellow'
         is_portrait = bool(data.get('is_portrait'))
         force_local_burn = bool(data.get('force_local_burn'))
         notify_email = (data.get('notify_email') or '').strip() or None
@@ -3538,7 +3563,8 @@ def burn_subtitles_server():
                     subtitle_style=subtitle_style,
                     is_portrait=is_portrait,
                     notify_email=notify_email,
-                    job_id=job_id
+                    job_id=job_id,
+                    subtitle_color=subtitle_color
                 )
                 return jsonify({"task_id": task_id, "status": "processing", "mode": "runpod"}), 202
             except Exception as e:
@@ -3552,7 +3578,7 @@ def burn_subtitles_server():
         t = threading.Thread(
             target=_run_burn_task,
             args=(task_id, input_s3_key, segments, user_id),
-            kwargs={'subtitle_style': subtitle_style, 'is_portrait': is_portrait, 'notify_email': notify_email, 'job_id': job_id}
+            kwargs={'subtitle_style': subtitle_style, 'is_portrait': is_portrait, 'notify_email': notify_email, 'job_id': job_id, 'subtitle_color': subtitle_color}
         )
         t.daemon = True
         t.start()
@@ -3694,34 +3720,28 @@ def burn_subtitles():
                 "detail": str(e)
             }), 500
 
+        subtitle_style = (request.form.get('subtitle_style') or 'tiktok').strip() or 'tiktok'
+        if subtitle_style not in ('tiktok', 'clean', 'cinematic'):
+            subtitle_style = 'tiktok'
+        subtitle_color = (request.form.get('subtitle_color') or 'yellow').strip() or 'yellow'
+        is_portrait_burn = str(request.form.get('is_portrait') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, 'input' + ext)
             video_file.save(video_path)
 
-            # Build VTT content (VTT uses HH:MM:SS.mmm)
-            def to_vtt_ts(s):
-                h = int(s // 3600)
-                m = int((s % 3600) // 60)
-                sec = s % 60
-                return f"{h:02d}:{m:02d}:{sec:06.3f}"
-
-            vtt_path = os.path.join(tmpdir, 'subs.vtt')
-            with open(vtt_path, 'w', encoding='utf-8') as f:
-                f.write("WEBVTT\n\n")
-                for seg in segments:
-                    start = seg.get('start', 0)
-                    end = seg.get('end', start + 1)
-                    text = (seg.get('text') or '').replace('\n', ' ')
-                    f.write(f"{to_vtt_ts(start)} --> {to_vtt_ts(end)}\n{text}\n\n")
+            # ASS burn respects subtitle color/style (VTT via ffmpeg defaulted to white).
+            ass_content = _build_ass(segments, subtitle_style, portrait=is_portrait_burn, subtitle_color=subtitle_color)
+            subs_path = os.path.join(tmpdir, 'subtitles.ass')
+            with open(subs_path, 'w', encoding='utf-8') as f:
+                f.write(ass_content)
 
             out_path = os.path.join(tmpdir, 'output' + out_ext)
-            # subtitles filter: use file path; on Windows avoid backslash in filter
-            vtt_norm = os.path.normpath(vtt_path)
-            if os.name == 'nt':
-                vtt_norm = vtt_norm.replace('\\', '/').replace(':', '\\:')
+            subs_escaped = subs_path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
+            vf = f"ass='{subs_escaped}'"
             cmd = [
                 ffmpeg_path, '-y', '-i', video_path,
-                '-vf', f"subtitles={vtt_norm}",
+                '-vf', vf,
                 '-c:a', 'copy',
                 out_path
             ]

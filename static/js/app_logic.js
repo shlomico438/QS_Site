@@ -1869,6 +1869,19 @@ async function ensureJobRecordOnExport() {
     }
 
 
+function _qsSubtitleColorForExport() {
+    const raw = (typeof window.currentSubtitleColor === 'string' && window.currentSubtitleColor)
+        ? window.currentSubtitleColor
+        : (typeof localStorage !== 'undefined' ? localStorage.getItem('subtitleColor') : null) || 'yellow';
+    return (raw === 'black' || raw === 'red' || raw === 'yellow' || raw === 'white') ? raw : 'yellow';
+}
+
+function _qsSubtitleStyleForExport() {
+    const raw = (typeof window.currentSubtitleStyle === 'string' && window.currentSubtitleStyle)
+        ? window.currentSubtitleStyle
+        : (typeof localStorage !== 'undefined' ? localStorage.getItem('subtitleStyle') : null) || 'tiktok';
+    return (raw === 'tiktok' || raw === 'clean' || raw === 'cinematic') ? raw : 'tiktok';
+}
 
 /** Burn subtitles into video via server (supports mp4, mov, webm, m4v, mkv, avi). */
 window.downloadMovieWithBurnedSubtitles = async function(baseName) {
@@ -1888,8 +1901,21 @@ window.downloadMovieWithBurnedSubtitles = async function(baseName) {
     const blob = await fetch(videoUrl).then(r => r.blob());
     const form = new FormData();
     form.append('video', blob, filename);
-    form.append('segments', JSON.stringify(segments.map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }))));
+    const segPayload = segments.map((s, si) => {
+        const row = { start: s.start, end: s.end || s.start + 1, text: s.text || '' };
+        if (typeof window.getResolvedCaptionStyle === 'function') {
+            const r = window.getResolvedCaptionStyle(si);
+            row.style = { position: r.position, highlightMode: r.highlightMode || 'none' };
+        }
+        return row;
+    });
+    form.append('segments', JSON.stringify(segPayload));
     form.append('filename', filename);
+    form.append('subtitle_color', _qsSubtitleColorForExport());
+    form.append('subtitle_style', _qsSubtitleStyleForExport());
+    const wPx = video && video.videoWidth > 0 ? video.videoWidth : 0;
+    const hPx = video && video.videoHeight > 0 ? video.videoHeight : 0;
+    if (hPx > 0 && wPx > 0 && hPx > wPx) form.append('is_portrait', '1');
 
     const res = await fetch('/api/burn_subtitles', { method: 'POST', body: form });
     if (!res.ok) {
@@ -2310,21 +2336,32 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                             highlighted: !!w.highlighted
                         });
                     }
+                    const resolved = (typeof window.getResolvedCaptionStyle === 'function')
+                        ? window.getResolvedCaptionStyle(ci)
+                        : { position: 'bottom', highlightMode: 'none' };
+                    const capStyle = (c.style && typeof c.style === 'object') ? { ...c.style } : {};
                     out.push({
                         start: Number(ws.start),
                         end: Number(we.end) || (Number(ws.start) + 1),
                         text: toMovieSubtitleText(textParts.join(' ')),
-                        style: (c.style && typeof c.style === 'object') ? { ...c.style } : {},
+                        // Match preview VTT: include global subtitle position (top/middle/bottom) when caption has no override.
+                        style: { ...capStyle, position: resolved.position, highlightMode: resolved.highlightMode || 'none' },
                         words: segWords
                     });
                 }
                 if (out.length) return out;
             }
-            return (window.currentSegments || []).map(s => ({
-                start: s.start,
-                end: s.end || s.start + 1,
-                text: toMovieSubtitleText(s.text || '')
-            }));
+            return (window.currentSegments || []).map((s, si) => {
+                const resolved = (typeof window.getResolvedCaptionStyle === 'function')
+                    ? window.getResolvedCaptionStyle(si)
+                    : { position: 'bottom', highlightMode: 'none' };
+                return {
+                    start: s.start,
+                    end: s.end || s.start + 1,
+                    text: toMovieSubtitleText(s.text || ''),
+                    style: { position: resolved.position, highlightMode: resolved.highlightMode || 'none' }
+                };
+            });
         };
         const _movieTs = () => new Date().toISOString();
         const _movieElapsed = () => ((Date.now() - movieStageT0) / 1000).toFixed(2) + 's';
@@ -2433,8 +2470,17 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 const filename = (baseName || 'video') + '.' + ext.toLowerCase();
                 const form = new FormData();
                 form.append('video', videoBlob, filename);
-                form.append('segments', JSON.stringify(normSegs.map(s => ({ start: s.start, end: s.end || s.start + 1, text: s.text || '' }))));
+                form.append('segments', JSON.stringify(normSegs.map((s, si) => {
+                    const row = { start: s.start, end: s.end || s.start + 1, text: s.text || '' };
+                    const fromSeg = (s.style && typeof s.style === 'object') ? { ...s.style } : {};
+                    const r = (typeof window.getResolvedCaptionStyle === 'function') ? window.getResolvedCaptionStyle(si) : { position: 'bottom', highlightMode: 'none' };
+                    row.style = { ...fromSeg, position: fromSeg.position != null ? fromSeg.position : r.position, highlightMode: fromSeg.highlightMode || r.highlightMode || 'none' };
+                    return row;
+                })));
                 form.append('filename', filename);
+                form.append('subtitle_color', _qsSubtitleColorForExport());
+                form.append('subtitle_style', _qsSubtitleStyleForExport());
+                if (isPortrait) form.append('is_portrait', '1');
                 try {
                     const tBurnReq = Date.now();
                     logMovieStage('POST /api/burn_subtitles start', { segments: normSegs.length, filename });
@@ -2539,6 +2585,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     width_px: widthPx || undefined,
                     userId: movieUser.id,
                     subtitle_style: subtitleStyle,
+                    subtitle_color: _qsSubtitleColorForExport(),
                     export_format_mode: 'subtitle',
                     is_portrait: isPortrait,
                     notify_email: movieUser.email || undefined,
@@ -2920,6 +2967,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mainAudio = document.getElementById('main-audio');
     const dBtn = document.getElementById('btn-download');
     const dMenu = document.getElementById('download-menu');
+    /** Assigned after export-panel helpers load; clears defaults each time user opens "בחר מה ליצור". */
+    let resetExportPanelSelectionsOnOpen = () => {};
 
     let removeMobileMenuBackdrop = () => {};
     if (dBtn && dMenu) {
@@ -3014,6 +3063,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (downloadMenuParent && dMenu.parentElement !== downloadMenuParent) {
                 downloadMenuParent.appendChild(dMenu);
             }
+            setExportMenuAuxiliaryControlsDisabled(false);
         }
         dBtn.onclick = function(e) {
             e.preventDefault();
@@ -3028,9 +3078,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (!hasVideo) movieInput.checked = false;
                     if (label) label.classList.toggle('is-disabled', !hasVideo);
                 }
+                try { resetExportPanelSelectionsOnOpen(); } catch (_) {}
+                setExportMenuAuxiliaryControlsDisabled(true);
                 dMenu.style.display = 'flex';
                 dMenu.classList.add('show');
-                try { syncSubtitleFormatSwitches(); } catch (_) {}
                 positionDownloadMenuOpen();
             } else {
                 dMenu.style.display = 'none';
@@ -3071,6 +3122,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 parent.appendChild(menu);
             }
         }
+        setExportMenuAuxiliaryControlsDisabled(false);
     };
     const getSelectedDocxKinds = () => {
         const checked = Array.from(document.querySelectorAll('#docx-submenu .export-doc-choice:checked'))
@@ -3129,6 +3181,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             btn.classList.toggle('is-selected', !!(input && input.checked));
         });
         syncGenerateCardState();
+    };
+    resetExportPanelSelectionsOnOpen = function() {
+        const sub = document.getElementById('docx-submenu');
+        if (!sub) return;
+        sub.querySelectorAll('.export-doc-choice').forEach((el) => { el.checked = false; });
+        const movieIn = sub.querySelector('.export-extra-choice[data-export-kind="movie"]');
+        if (movieIn && !movieIn.disabled) movieIn.checked = false;
+        const subEn = sub.querySelector('.export-subtitles-enable');
+        if (subEn) subEn.checked = false;
+        setSubtitlesEnabled(false);
+        syncSubtitleFormatSwitches();
     };
     document.querySelectorAll('#docx-submenu .export-format-choice[data-docx-kind]').forEach((btn) => {
         btn.addEventListener('click', function(e) {
@@ -3764,10 +3827,25 @@ function setTranscriptActionButtonsVisible(visible) {
     if (!visible) {
         if (editActions) editActions.style.display = 'none';
         if (downloadMenu) downloadMenu.style.display = 'none';
+        setExportMenuAuxiliaryControlsDisabled(false);
     }
     try {
         document.body.classList.toggle('has-transcript-actions', !!visible);
     } catch (_) {}
+}
+
+/** While the export ("בחר מה ליצור") menu is open, disable other transcript toolbar controls. */
+function setExportMenuAuxiliaryControlsDisabled(disabled) {
+    const fmtSub = document.getElementById('format-mode-subtitle');
+    const fmtDoc = document.getElementById('format-mode-doc');
+    const editBtn = document.getElementById('btn-edit');
+    const subStyleToggle = document.getElementById('subtitle-style-toggle');
+    [fmtSub, fmtDoc, editBtn, subStyleToggle].forEach((el) => {
+        if (!el) return;
+        el.disabled = !!disabled;
+    });
+    const subPanel = document.getElementById('subtitle-style-drawer');
+    if (subPanel && disabled) subPanel.classList.remove('is-open');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -7032,6 +7110,133 @@ function renderWordCaptionEditor() {
                 } catch (_) {}
                 return;
             }
+
+            const getCaptionIndexForWi = () => (
+                Array.isArray(window.currentCaptions)
+                    ? window.currentCaptions.findIndex((c) => wi >= c.wordStartIndex && wi <= c.wordEndIndex)
+                    : -1
+            );
+            const moveToNeighborTokenEdit = (delta, placeAtStart = false) => {
+                commit();
+                setTimeout(() => {
+                    const nextWi = wi + delta;
+                    const nextEl = container.querySelector(`span.word-token[data-wi="${nextWi}"]`);
+                    if (nextEl) {
+                        setActiveToken(nextEl);
+                        beginTokenEdit(nextEl);
+                        // Preserve "single line" typing feel: land caret on the touching edge.
+                        setTimeout(() => {
+                            try {
+                                const inp = nextEl.querySelector('input.qs-token-input');
+                                if (!inp) return;
+                                const pos = placeAtStart ? 0 : inp.value.length;
+                                inp.setSelectionRange(pos, pos);
+                            } catch (_) {}
+                        }, 0);
+                    }
+                }, 0);
+            };
+
+            // Character-caret UX: allow keyboard move between words at token boundaries.
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                const isLeft = e.key === 'ArrowLeft';
+                const dir = ((input.dir || getComputedStyle(input).direction || '').toLowerCase() === 'rtl') ? 'rtl' : 'ltr';
+                const ss = Number.isFinite(input.selectionStart) ? input.selectionStart : 0;
+                const se = Number.isFinite(input.selectionEnd) ? input.selectionEnd : 0;
+                const atStart = ss === 0 && se === 0;
+                const atEnd = ss === input.value.length && se === input.value.length;
+                const shouldCrossWord =
+                    dir === 'rtl'
+                        ? (isLeft ? atEnd : atStart)
+                        : (isLeft ? atStart : atEnd);
+                if (shouldCrossWord) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (dir === 'rtl') {
+                        if (isLeft) moveToNeighborTokenEdit(+1, true);
+                        else moveToNeighborTokenEdit(-1, false);
+                    } else {
+                        if (isLeft) moveToNeighborTokenEdit(-1, false);
+                        else moveToNeighborTokenEdit(+1, true);
+                    }
+                    return;
+                }
+            }
+
+            // Backspace at start of line merges current caption into previous one.
+            if (e.key === 'Backspace') {
+                const ss = Number.isFinite(input.selectionStart) ? input.selectionStart : 0;
+                const se = Number.isFinite(input.selectionEnd) ? input.selectionEnd : 0;
+                if (ss === 0 && se === 0) {
+                    const capIndex = getCaptionIndexForWi();
+                    const cap = (capIndex >= 0 && window.currentCaptions) ? window.currentCaptions[capIndex] : null;
+                    if (cap && capIndex > 0 && wi === cap.wordStartIndex) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (window.currentWords && window.currentWords[wi]) {
+                            window.currentWords[wi].text = String(input.value || '').trim();
+                        }
+                        const prev = window.currentCaptions[capIndex - 1];
+                        const merged = {
+                            id: prev.id,
+                            wordStartIndex: prev.wordStartIndex,
+                            wordEndIndex: cap.wordEndIndex,
+                            style: prev.style ? { ...prev.style } : (cap.style ? { ...cap.style } : undefined)
+                        };
+                        window.currentCaptions.splice(capIndex - 1, 2, merged);
+                        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                        renderWordCaptionEditor();
+                        if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                        const focusEl = container.querySelector(`span.word-token[data-wi="${wi}"]`);
+                        if (focusEl) {
+                            setActiveToken(focusEl);
+                            beginTokenEdit(focusEl);
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // Delete at end of line merges the next caption upward into this one.
+            if (e.key === 'Delete') {
+                const ss = Number.isFinite(input.selectionStart) ? input.selectionStart : 0;
+                const se = Number.isFinite(input.selectionEnd) ? input.selectionEnd : 0;
+                const atEnd = ss === input.value.length && se === input.value.length;
+                if (atEnd) {
+                    const capIndex = getCaptionIndexForWi();
+                    const cap = (capIndex >= 0 && window.currentCaptions) ? window.currentCaptions[capIndex] : null;
+                    if (cap && capIndex < window.currentCaptions.length - 1 && wi === cap.wordEndIndex) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (window.currentWords && window.currentWords[wi]) {
+                            window.currentWords[wi].text = String(input.value || '').trim();
+                        }
+                        const next = window.currentCaptions[capIndex + 1];
+                        const merged = {
+                            id: cap.id,
+                            wordStartIndex: cap.wordStartIndex,
+                            wordEndIndex: next.wordEndIndex,
+                            style: cap.style ? { ...cap.style } : (next.style ? { ...next.style } : undefined)
+                        };
+                        window.currentCaptions.splice(capIndex, 2, merged);
+                        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                        renderWordCaptionEditor();
+                        if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                        const focusEl = container.querySelector(`span.word-token[data-wi="${wi}"]`);
+                        if (focusEl) {
+                            setActiveToken(focusEl);
+                            beginTokenEdit(focusEl);
+                            setTimeout(() => {
+                                try {
+                                    const inp = focusEl.querySelector('input.qs-token-input');
+                                    if (inp) inp.setSelectionRange(inp.value.length, inp.value.length);
+                                } catch (_) {}
+                            }, 0);
+                        }
+                        return;
+                    }
+                }
+            }
         };
         input.oninput = () => {
             input.style.width = Math.max(16, (Math.max(1, input.value.length) * 10)) + 'px';
@@ -7051,20 +7256,23 @@ function renderWordCaptionEditor() {
                     else setActiveRow(ci, { user: true });
                 }
             } catch (_) {}
-            // Single click: caption mode (shift whole line timing).
-            if (isEditing && timingAdjustEnabled && Number.isFinite(ci)) {
-                if (_isMultiSelectActive()) {
-                    setTimingHandle(null);
-                } else {
-                    setActiveRow(ci, { user: true });
-                    setTimingHandle({ type: 'caption', ci });
+            if (isEditing) {
+                // Keep line timing handle behavior on click.
+                if (timingAdjustEnabled && Number.isFinite(ci)) {
+                    if (_isMultiSelectActive()) {
+                        setTimingHandle(null);
+                    } else {
+                        setActiveRow(ci, { user: true });
+                        setTimingHandle({ type: 'caption', ci });
+                    }
+                }
+                // Character-level editing UX: single click enters token edit directly.
+                // This avoids the "caret only between words" feeling.
+                if (!e.shiftKey && !el.classList.contains('editing')) {
+                    e.preventDefault();
+                    beginTokenEdit(el);
                 }
                 return;
-            }
-            // Single-click on an empty slot should immediately enter edit mode.
-            if (isEditing && el.getAttribute('data-empty') === '1') {
-                e.preventDefault();
-                beginTokenEdit(el);
             }
         });
         el.addEventListener('dblclick', (e) => {
@@ -7618,6 +7826,18 @@ function renderWordCaptionEditor() {
         const caretWi = tokenIndexFromCaret('backward') ?? tokenIndexFromCaret('forward') ?? wi;
         const caretCapIndex = window.currentCaptions.findIndex(c => caretWi >= c.wordStartIndex && caretWi <= c.wordEndIndex);
         const capForCaret = caretCapIndex >= 0 ? window.currentCaptions[caretCapIndex] : cap;
+
+        // If user tries to move horizontally while not in token-input edit,
+        // switch into character-level token edit first.
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+            const active = container.querySelector('span.word-token.active');
+            if (active && !active.classList.contains('editing')) {
+                e.preventDefault();
+                e.stopPropagation();
+                beginTokenEdit(active);
+                return;
+            }
+        }
 
         // If user types while a token is active, switch into token-edit mode so they can
         // edit characters inside the word (but still keep splits/merges at word boundaries).
