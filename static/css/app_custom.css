@@ -1651,6 +1651,7 @@ html[dir="rtl"] .upload-status {
     }
     #transcript-window {
         min-height: 200px;
+        touch-action: pan-y;
     }
     
     /* 4. Stack video wrapper vertically on mobile */

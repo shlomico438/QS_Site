@@ -2197,6 +2197,18 @@ function isMobileClient() {
     return false;
 }
 
+function isAndroidClient() {
+    const ua = (navigator.userAgent || navigator.vendor || '').toLowerCase();
+    if (ua.includes('android')) return true;
+    try {
+        const p = navigator.userAgentData && Array.isArray(navigator.userAgentData.platform)
+            ? navigator.userAgentData.platform.join(' ').toLowerCase()
+            : String(navigator.userAgentData?.platform || '').toLowerCase();
+        if (p.includes('android')) return true;
+    } catch (_) {}
+    return false;
+}
+
 window._qsMobileBatchShareMode = false;
 window._qsMobileBatchFiles = [];
 
@@ -5295,7 +5307,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // Delete the old cached track and attach the new one
         Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
         const track = document.createElement('track');
-        track.kind = 'subtitles';
+        // Android Chrome native controls expose a confusing "Subtitles" menu item.
+        // Use metadata track there and render subtitles via in-app overlay logic instead.
+        track.kind = isAndroidClient() ? 'metadata' : 'subtitles';
         track.label = 'Subtitles';
         track.srclang = 'he';
         track.src = vttUrl;
@@ -7629,10 +7643,23 @@ function renderWordCaptionEditor() {
             rowEl.addEventListener('pointerdown', (e) => {
                 if (!isEditing) return;
                 if (e.button !== 0) return;
+                const isTouchPointer = e.pointerType === 'touch' || e.pointerType === 'pen';
                 const t = e.target;
                 const onStyleBtn = !!(t && t.closest && t.closest('.qs-style-btn'));
                 if (t && t.closest && (t.closest('.qs-inline-style-panel') || t.closest('span.word-token') || t.closest('input.qs-token-input'))) return;
                 if (!onStyleBtn && t && t.closest && t.closest('.qs-caption-toolbar')) return;
+                // On touch devices, allow native pan/scroll in the transcript window.
+                // We still set active row, but avoid drag-selection and preventDefault.
+                if (isTouchPointer) {
+                    if (e.shiftKey) {
+                        setActiveRow(ci, { user: true, range: true });
+                        setTimingHandle(null);
+                    } else {
+                        setActiveRow(ci, { user: true });
+                        setTimingHandle({ type: 'caption', ci });
+                    }
+                    return;
+                }
                 window._qsRowDragSelecting = true;
                 window._qsRowDragStartCi = ci;
                 window._qsRowDragMoved = false;
@@ -8223,10 +8250,13 @@ window.updateVideoWordOverlay = function(currentTime) {
                 try { video.textTracks[i].mode = targetMode; } catch (_) {}
             }
         };
-        // Highlight preview removed: always keep native subtitle rendering only.
-        ov.style.display = 'none';
-        setNativeTrackMode('showing');
-        return;
+        const forceOverlayMode = isAndroidClient();
+        // Non-Android: keep native subtitle rendering only.
+        if (!forceOverlayMode) {
+            ov.style.display = 'none';
+            setNativeTrackMode('showing');
+            return;
+        }
 
         // Align overlay bounds to actual visible video rectangle.
         try {
