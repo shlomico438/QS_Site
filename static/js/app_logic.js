@@ -7090,7 +7090,8 @@ function renderWordCaptionEditor() {
                 tokenEl.classList.remove('editing');
                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                 if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-                setActiveToken(tokenEl);
+                if (onMobile) setActiveTokenNoCaretMove(tokenEl);
+                else setActiveToken(tokenEl);
                 return;
             }
 
@@ -7170,7 +7171,10 @@ function renderWordCaptionEditor() {
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
             const focusWi = wi + Math.max(0, usable.length - 1);
             const focusEl = container.querySelector(`span.word-token[data-wi="${focusWi}"]`);
-            if (focusEl) setActiveToken(focusEl);
+            if (focusEl) {
+                if (onMobile) setActiveTokenNoCaretMove(focusEl);
+                else setActiveToken(focusEl);
+            }
         };
         input.onblur = commit;
         input.onkeydown = (e) => {
@@ -7183,7 +7187,8 @@ function renderWordCaptionEditor() {
                         try { if (tokenEl.contains(input)) tokenEl.removeChild(input); } catch (_) {}
                         tokenEl.innerHTML = (currentVal.trim().length ? currentVal.replace(/</g, '&lt;').replace(/>/g, '&gt;') : '&nbsp;');
                         tokenEl.classList.remove('editing');
-                        setActiveToken(tokenEl);
+                        if (onMobile) setActiveTokenNoCaretMove(tokenEl);
+                        else setActiveToken(tokenEl);
                     }
                 } catch (_) {}
                 return;
@@ -7214,6 +7219,36 @@ function renderWordCaptionEditor() {
                     }
                 }, 0);
             };
+            const moveVerticalTokenEdit = (deltaRows) => {
+                const capIndex = getCaptionIndexForWi();
+                if (capIndex < 0 || !Array.isArray(window.currentCaptions)) return;
+                const targetCi = capIndex + deltaRows;
+                if (targetCi < 0 || targetCi >= window.currentCaptions.length) return;
+                const targetCap = window.currentCaptions[targetCi];
+                if (!targetCap) return;
+                const srcRect = tokenEl.getBoundingClientRect();
+                const targetX = srcRect.left + (srcRect.width / 2);
+                let bestWi = targetCap.wordStartIndex;
+                let bestDx = Number.POSITIVE_INFINITY;
+                for (let twi = targetCap.wordStartIndex; twi <= targetCap.wordEndIndex; twi++) {
+                    const el = container.querySelector(`span.word-token[data-wi="${twi}"]`);
+                    if (!el) continue;
+                    const r = el.getBoundingClientRect();
+                    const cx = r.left + (r.width / 2);
+                    const dx = Math.abs(cx - targetX);
+                    if (dx < bestDx) {
+                        bestDx = dx;
+                        bestWi = twi;
+                    }
+                }
+                commit();
+                setTimeout(() => {
+                    const nextEl = container.querySelector(`span.word-token[data-wi="${bestWi}"]`);
+                    if (!nextEl) return;
+                    setActiveToken(nextEl);
+                    beginTokenEdit(nextEl);
+                }, 0);
+            };
 
             // Character-caret UX: allow keyboard move between words at token boundaries.
             if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -7239,6 +7274,12 @@ function renderWordCaptionEditor() {
                     }
                     return;
                 }
+            }
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault();
+                e.stopPropagation();
+                moveVerticalTokenEdit(e.key === 'ArrowUp' ? -1 : +1);
+                return;
             }
 
             // Backspace at start of line merges current caption into previous one.
