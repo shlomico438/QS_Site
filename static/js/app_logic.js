@@ -6741,9 +6741,9 @@ function renderWordCaptionEditor() {
         st.id = 'qs-word-editor-base-style';
         st.textContent = `
           #transcript-window .word-token.editing {
-            outline: 2px solid rgba(59,130,246,0.85);
-            background: rgba(59,130,246,0.08);
-            border-radius: 4px;
+            outline: none;
+            background: transparent;
+            border-radius: 0;
           }
           #transcript-window .caption-row {
             transition: background-color 150ms ease;
