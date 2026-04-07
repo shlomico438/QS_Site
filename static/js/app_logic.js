@@ -2179,7 +2179,22 @@ async function _saveDocxWithRtl(blob, filename) {
 
 function isMobileClient() {
     const ua = (navigator.userAgent || navigator.vendor || '').toLowerCase();
-    return /iphone|ipad|ipod|android|mobile/.test(ua);
+    if (/iphone|ipad|ipod|android|mobile/.test(ua)) return true;
+    try {
+        if (navigator.userAgentData && navigator.userAgentData.mobile === true) return true;
+    } catch (_) {}
+    // Fallback for Android Chrome profiles that sometimes report desktop UA.
+    // Treat touch + coarse pointer + phone/tablet-sized short edge as mobile.
+    try {
+        const hasTouch = (navigator.maxTouchPoints || 0) > 1 || ('ontouchstart' in window);
+        const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+        const sw = Math.min(
+            Number((window.screen && window.screen.width) || 0),
+            Number((window.screen && window.screen.height) || 0)
+        );
+        if (hasTouch && coarse && sw > 0 && sw <= 1024) return true;
+    } catch (_) {}
+    return false;
 }
 
 window._qsMobileBatchShareMode = false;
@@ -3898,7 +3913,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function syncMobileVideoSessionState() {
         try {
-            const isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+            const isMobile = (
+                (window.matchMedia && window.matchMedia('(max-width: 768px)').matches)
+                || isMobileClient()
+            );
             const videoWrapper = document.getElementById('video-wrapper');
             const hasLoadedVideo = !!(videoWrapper && videoWrapper.classList.contains('visible'));
             document.body.classList.toggle('mobile-video-session', !!(isMobile && hasLoadedVideo));
