@@ -1970,6 +1970,34 @@ html[dir="rtl"] .upload-status {
         }
     }
 }
+
+/* Android portrait tuning:
+   On some Galaxy Chrome viewports, portrait video can consume too much vertical space.
+   Clamp player height with dvh so transcript + CTA remain visible without page scrolling. */
+@media screen and (max-width: 768px) and (orientation: portrait) {
+    @supports not (-webkit-touch-callout: none) {
+        main.main-content {
+            height: 100dvh !important;
+            max-height: 100dvh !important;
+        }
+        .app-mode {
+            height: calc(100dvh - 80px) !important;
+            max-height: calc(100dvh - 80px) !important;
+        }
+        #video-player-container {
+            max-height: min(34dvh, 300px) !important;
+        }
+        #main-video {
+            max-height: min(34dvh, 300px) !important;
+            width: auto !important;
+            height: auto !important;
+            max-width: 100% !important;
+        }
+        body.mobile-video-session .transcription-wrapper {
+            min-height: 180px !important;
+        }
+    }
+}
 :root {
     --bg-page: #f8fafc;
     --bg-surface: #ffffff;

@@ -3481,6 +3481,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Always attach video handlers (do not require audio to exist)
         const mainVideoEl = document.getElementById('main-video');
+        const hardenVideoControlsForMobile = (videoEl) => {
+            if (!videoEl) return;
+            try {
+                videoEl.setAttribute('controlsList', 'nodownload noplaybackrate noremoteplayback');
+                videoEl.setAttribute('disablePictureInPicture', '');
+                videoEl.setAttribute('disableRemotePlayback', '');
+            } catch (_) {}
+            try {
+                videoEl.oncontextmenu = () => false;
+            } catch (_) {}
+            if (!videoEl._qs_rate_locked) {
+                videoEl.addEventListener('ratechange', () => {
+                    try {
+                        if (Math.abs((videoEl.playbackRate || 1) - 1) > 0.001) {
+                            videoEl.playbackRate = 1;
+                        }
+                    } catch (_) {}
+                });
+                videoEl._qs_rate_locked = true;
+            }
+        };
+        if (mainVideoEl) hardenVideoControlsForMobile(mainVideoEl);
         if (mainVideoEl && !mainVideoEl._qs_listeners_attached) {
             mainVideoEl.addEventListener('timeupdate', () => {
                 const currentTime = mainVideoEl.currentTime;
