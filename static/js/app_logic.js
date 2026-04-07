@@ -7014,6 +7014,7 @@ function renderWordCaptionEditor() {
         const wi = parseInt(tokenEl.getAttribute('data-wi'), 10);
         if (!Number.isFinite(wi) || !window.currentWords || !window.currentWords[wi]) return;
         if (tokenEl.classList.contains('editing')) return;
+        const onMobile = typeof isMobileClient === 'function' ? isMobileClient() : false;
         // Use an <input> for editing to avoid nested contenteditable RTL quirks (1-char bug).
         const currentVal = String(window.currentWords[wi].text || '');
         tokenEl.classList.add('editing');
@@ -7027,20 +7028,43 @@ function renderWordCaptionEditor() {
         const seed = (options && options.seed) ? String(options.seed) : '';
         input.value = seed ? seed : currentVal;
         input.style.font = 'inherit';
-        input.style.border = '1px solid rgba(59,130,246,0.7)';
-        input.style.borderRadius = '4px';
-        input.style.padding = '0 6px';
+        input.style.border = onMobile ? '0' : '1px solid rgba(59,130,246,0.7)';
+        input.style.borderRadius = onMobile ? '0' : '4px';
+        input.style.padding = onMobile ? '0' : '0 6px';
         input.style.margin = '0';
-        input.style.background = 'rgba(255,255,255,0.95)';
+        input.style.background = onMobile ? 'transparent' : 'rgba(255,255,255,0.95)';
+        input.style.outline = 'none';
+        input.style.boxShadow = 'none';
         input.style.direction = tokenEl.closest('.caption-row')?.style?.direction || '';
         input.style.boxSizing = 'content-box';
         input.style.letterSpacing = 'normal';
         input.style.textIndent = '0';
         input.style.width = Math.max(28, (Math.max(1, input.value.length) * 11)) + 'px';
         input.style.minWidth = '28px';
+        if (onMobile) {
+            input.style.width = Math.max(16, (Math.max(1, input.value.length) * 10)) + 'px';
+            input.style.minWidth = '16px';
+            input.style.touchAction = 'pan-y';
+        }
 
         tokenEl.innerHTML = '';
         tokenEl.appendChild(input);
+        if (onMobile && !input._qsTouchScrollReleaseBound) {
+            input._qsTouchScrollReleaseBound = true;
+            let startY = null;
+            input.addEventListener('touchstart', (ev) => {
+                const t = ev.touches && ev.touches[0];
+                startY = t ? t.clientY : null;
+            }, { passive: true });
+            input.addEventListener('touchmove', (ev) => {
+                const t = ev.touches && ev.touches[0];
+                if (startY == null || !t) return;
+                if (Math.abs(t.clientY - startY) > 8) {
+                    try { input.blur(); } catch (_) {}
+                    startY = null;
+                }
+            }, { passive: true });
+        }
         setTimeout(() => {
             try {
                 input.focus();
