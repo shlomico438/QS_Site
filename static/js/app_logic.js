@@ -4780,9 +4780,16 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.saveEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
+        const useWordModelEditor = (
+            Array.isArray(window.currentWords) &&
+            Array.isArray(window.currentCaptions) &&
+            window.currentWords.length > 0 &&
+            window.currentCaptions.length > 0 &&
+            !window._qsForceLegacyEditMode
+        );
 
         // Word-level caption editor: persist model directly (no DOM paragraph extraction; no timing estimation).
-        if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
+        if (useWordModelEditor) {
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
             syncFormattedDocWithCurrentSegments();
 
@@ -4825,6 +4832,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             win.classList.remove('transcript-editing');
             if (editActions) editActions.style.display = 'none';
             try { renderWordCaptionEditor(); } catch (_) {}
+            window._qsForceLegacyEditMode = false;
             console.log("✅ Word-level edits saved and subtitles re-synced.");
             return;
         }
@@ -4952,6 +4960,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         win.classList.remove('transcript-editing');
 
         if (editActions) editActions.style.display = 'none';
+        window._qsForceLegacyEditMode = false;
         console.log("✅ Edits saved and subtitles re-synced.");
     };
 
@@ -4979,6 +4988,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         win.style.backgroundColor = "transparent";
         win.classList.remove('transcript-editing');
         if (editActions) editActions.style.display = 'none';
+        window._qsForceLegacyEditMode = false;
         // Ensure word editor becomes read-only after cancel
         if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
             try { renderWordCaptionEditor(); } catch (_) {}
@@ -5341,11 +5351,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
         const isEditable = win.contentEditable === 'true';
+        const forceLegacyMobileEdit = (typeof isMobileClient === 'function') && isMobileClient();
 
         if (!isEditable) {
             // --- START EDITING ---
             // Word-caption editor uses token UI (no contenteditable paragraphs).
-            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
+            if (!forceLegacyMobileEdit && Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
+                window._qsForceLegacyEditMode = false;
                 win.contentEditable = 'false';
                 // Backup the underlying model so Cancel truly discards edits
                 try {
@@ -5373,6 +5385,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 return;
             }
 
+            window._qsForceLegacyEditMode = !!forceLegacyMobileEdit;
+            if (forceLegacyMobileEdit && typeof window.render === 'function') {
+                try { window.render(); } catch (_) {}
+            }
             win.contentEditable = 'true';
             win.style.border = "2px solid #1e3a8a";
             win.style.backgroundColor = "#fff";
