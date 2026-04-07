@@ -7010,6 +7010,21 @@ function renderWordCaptionEditor() {
         // Keep caret in the caption text flow (so arrow keys work).
         placeCaretAfterToken(el);
     }
+    function caretIndexFromTapX(tokenEl, clientX, textLen) {
+        try {
+            const len = Math.max(0, Number(textLen || 0));
+            if (!tokenEl || !Number.isFinite(clientX) || len <= 0) return len;
+            const r = tokenEl.getBoundingClientRect();
+            if (!r || !(r.width > 0)) return len;
+            const isRtlDir = ((tokenEl.closest('.caption-row')?.style?.direction || '').toLowerCase() === 'rtl');
+            let ratio = (clientX - r.left) / r.width;
+            ratio = Math.max(0, Math.min(1, ratio));
+            if (isRtlDir) ratio = 1 - ratio;
+            return Math.max(0, Math.min(len, Math.round(ratio * len)));
+        } catch (_) {
+            return Math.max(0, Number(textLen || 0));
+        }
+    }
     function beginTokenEdit(tokenEl, options = {}) {
         const wi = parseInt(tokenEl.getAttribute('data-wi'), 10);
         if (!Number.isFinite(wi) || !window.currentWords || !window.currentWords[wi]) return;
@@ -7068,11 +7083,17 @@ function renderWordCaptionEditor() {
         setTimeout(() => {
             try {
                 input.focus();
-                input.setSelectionRange(input.value.length, input.value.length);
+                const optCaret = Number.isFinite(options && options.caretIndex) ? Number(options.caretIndex) : null;
+                const pos = (optCaret != null)
+                    ? Math.max(0, Math.min(input.value.length, optCaret))
+                    : input.value.length;
+                input.setSelectionRange(pos, pos);
             } catch (_) {}
         }, 0);
 
         const commit = () => {
+            const skipRefocus = !!window._qsSkipCommitRefocus;
+            window._qsSkipCommitRefocus = false;
             const raw = String(input.value || '').trim();
             const parts = raw.split(/\s+/).filter(Boolean);
             const allWords = Array.isArray(window.currentWords) ? window.currentWords : [];
@@ -7090,8 +7111,10 @@ function renderWordCaptionEditor() {
                 tokenEl.classList.remove('editing');
                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                 if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-                if (onMobile) setActiveTokenNoCaretMove(tokenEl);
-                else setActiveToken(tokenEl);
+                if (!skipRefocus) {
+                    if (onMobile) setActiveTokenNoCaretMove(tokenEl);
+                    else setActiveToken(tokenEl);
+                }
                 return;
             }
 
@@ -7169,11 +7192,13 @@ function renderWordCaptionEditor() {
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
             renderWordCaptionEditor();
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-            const focusWi = wi + Math.max(0, usable.length - 1);
-            const focusEl = container.querySelector(`span.word-token[data-wi="${focusWi}"]`);
-            if (focusEl) {
-                if (onMobile) setActiveTokenNoCaretMove(focusEl);
-                else setActiveToken(focusEl);
+            if (!skipRefocus) {
+                const focusWi = wi + Math.max(0, usable.length - 1);
+                const focusEl = container.querySelector(`span.word-token[data-wi="${focusWi}"]`);
+                if (focusEl) {
+                    if (onMobile) setActiveTokenNoCaretMove(focusEl);
+                    else setActiveToken(focusEl);
+                }
             }
         };
         input.onblur = commit;
@@ -7365,7 +7390,8 @@ function renderWordCaptionEditor() {
     container.querySelectorAll('span.word-token').forEach((el) => {
         el.addEventListener('click', (e) => {
             e.stopPropagation();
-            setActiveToken(el);
+            if (typeof isMobileClient === 'function' && isMobileClient()) setActiveTokenNoCaretMove(el);
+            else setActiveToken(el);
             let ci = null;
             try {
                 const row = el.closest('.caption-row');
@@ -7389,7 +7415,24 @@ function renderWordCaptionEditor() {
                 // This avoids the "caret only between words" feeling.
                 if (!e.shiftKey && !el.classList.contains('editing')) {
                     e.preventDefault();
-                    beginTokenEdit(el);
+                    const tapCaret = caretIndexFromTapX(
+                        el,
+                        Number.isFinite(e.clientX) ? e.clientX : NaN,
+                        String(window.currentWords?.[parseInt(el.getAttribute('data-wi'), 10)]?.text || '').length
+                    );
+                    const activeEditingInput = container.querySelector('span.word-token.editing input.qs-token-input');
+                    const activeEditingHost = activeEditingInput ? activeEditingInput.closest('span.word-token.editing') : null;
+                    if (activeEditingInput && activeEditingHost && activeEditingHost !== el) {
+                        window._qsSkipCommitRefocus = true;
+                        try { activeEditingInput.blur(); } catch (_) {}
+                        setTimeout(() => {
+                            try {
+                                beginTokenEdit(el, { caretIndex: tapCaret });
+                            } catch (_) {}
+                        }, 0);
+                        return;
+                    }
+                    beginTokenEdit(el, { caretIndex: tapCaret });
                 }
                 return;
             }
