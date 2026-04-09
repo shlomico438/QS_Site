@@ -2627,11 +2627,53 @@ def gpu_started():
 @app.route('/api/upload_status', methods=['GET'])
 def upload_status():
     """Worker polls this until upload is complete. Set when trigger_processing is called (after frontend upload)."""
+    def _is_upload_complete_in_db(job_id_value: str) -> bool:
+        try:
+            supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+            service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            if not supabase_url or not service_key or not job_id_value:
+                return False
+            from urllib.parse import quote
+            jid = quote(str(job_id_value), safe='')
+            url = (
+                f"{supabase_url}/rest/v1/jobs"
+                f"?runpod_job_id=eq.{jid}"
+                f"&select=status,metadata,updated_at"
+                f"&order=updated_at.desc"
+                f"&limit=1"
+            )
+            headers = {
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Accept": "application/json",
+            }
+            r = requests.get(url, headers=headers, timeout=6)
+            if r.status_code != 200:
+                return False
+            rows = r.json() if r.content else []
+            if not rows:
+                return False
+            row = rows[0] if isinstance(rows[0], dict) else {}
+            status_val = str(row.get("status") or "").strip().lower()
+            if status_val in ("uploaded", "processing", "processed", "completed", "exported"):
+                return True
+            md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            md_upload = str(md.get("upload_status") or "").strip().lower()
+            return md_upload in ("complete", "completed", "uploaded", "done")
+        except Exception:
+            return False
+
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
     file_timings = _get_trigger_timings(job_id)
     is_complete = (job_id in upload_complete) or bool(file_timings.get("upload_complete"))
+    # Multi-instance safety: worker polling may hit a different app instance.
+    # If local/shared trigger-state is missing, fallback to jobs table by runpod_job_id.
+    if not is_complete and _is_upload_complete_in_db(job_id):
+        upload_complete[job_id] = True
+        _mark_upload_complete(job_id)
+        is_complete = True
     status = "complete" if is_complete else "pending"
     return jsonify({"job_id": job_id, "status": status}), 200
 

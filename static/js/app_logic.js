@@ -31,6 +31,13 @@ window.isTriggering = false;
 window.aiDiarizationRan = false;
 window.fakeProgressInterval = null;
 window.currentSegments = [];
+/** Video jobs play `main-video`; audio jobs play `main-audio`. Subtitles and `currentTime` must follow the active element. */
+window._getPrimaryMediaElement = function() {
+    const v = document.getElementById('main-video');
+    const a = document.getElementById('main-audio');
+    if (window.uploadWasVideo === true) return v || a;
+    return a || v;
+};
 window.currentFormattedDoc = null;
 // Per-caption layout + highlight (merged with global defaults). Timeline/keywords UI removed.
 window.globalCaptionLayoutStyle = window.globalCaptionLayoutStyle || null;
@@ -3861,13 +3868,14 @@ function hideProgressBar() {
 function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
+    const timingBtn = document.getElementById('btn-timing');
     const togglesGroup = document.querySelector('.switches-top-bar .toggles-group') || document.querySelector('.controls-bar .toggles-group');
     const switchesTopBar = document.querySelector('.switches-top-bar');
     const controlsBar = document.querySelector('.controls-bar');
     const editActions = document.getElementById('edit-actions');
     const downloadMenu = document.getElementById('download-menu');
 
-    [downloadBtn, editBtn].forEach((el) => {
+    [downloadBtn, editBtn, timingBtn].forEach((el) => {
         if (el) el.style.display = visible ? '' : 'none';
     });
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
@@ -3888,8 +3896,9 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
     const fmtSub = document.getElementById('format-mode-subtitle');
     const fmtDoc = document.getElementById('format-mode-doc');
     const editBtn = document.getElementById('btn-edit');
+    const timingBtn = document.getElementById('btn-timing');
     const subStyleToggle = document.getElementById('subtitle-style-toggle');
-    [fmtSub, fmtDoc, editBtn, subStyleToggle].forEach((el) => {
+    [fmtSub, fmtDoc, editBtn, timingBtn, subStyleToggle].forEach((el) => {
         if (!el) return;
         el.disabled = !!disabled;
     });
@@ -4037,6 +4046,7 @@ document.addEventListener('DOMContentLoaded', () => {
         transcriptWindow.addEventListener('click', (e) => {
             if (window.isTriggering) return;
             if (transcriptWindow.classList.contains('transcript-editing')) return;
+            if (transcriptWindow.classList.contains('transcript-sync-mode')) return;
             if (document.body.classList.contains('has-transcript-actions')) return;
             if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return;
             const t = e && e.target;
@@ -4682,8 +4692,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             const showLabel = isSpeakerVisible && window.aiDiarizationRan;
 
+            const startNum = Number(g.start);
+            const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
             return `
-            <div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom: 2px;">
+            <div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom: 2px; cursor: pointer;"${rowClick}>
                 <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
 
                     <span class="timestamp" style="display: ${isTimeVisible ? 'block' : 'none'};">
@@ -4693,7 +4705,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     <span style="display: ${showLabel ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(g.speaker)};">
                         ${g.speaker.replace('SPEAKER_', 'דובר ')}
                     </span>
-                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2;" onclick="window.jumpTo(${g.start})">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
+                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0 !important; margin-top: -2px; line-height: 1.2;">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
             </div>`;
         }).join('');
 
@@ -4761,25 +4773,31 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     // --- BUTTON HANDLERS ---
     window.jumpTo = function(seconds) {
         const win = document.getElementById('transcript-window');
+        // Legacy paragraph edit: whole window is contenteditable; inline jumpTo on <p> would fight the caret — keep blocked.
         if (win && win.contentEditable === 'true') return;
-        const video = document.querySelector('video');
-        const audio = document.querySelector('audio');
-        const player = video || audio;
-        if (player) {
-            player.currentTime = seconds;
-            // While editing word-captions, do not auto-play on jump.
-            if (win && win.classList && win.classList.contains('transcript-editing')) {
-                try { player.pause(); } catch (_) {}
-                return;
-            }
-            player.play();
+        const t = typeof seconds === 'number' ? seconds : Number(seconds);
+        if (!Number.isFinite(t)) return;
+        const player = (typeof window._getPrimaryMediaElement === 'function')
+            ? window._getPrimaryMediaElement()
+            : (document.querySelector('video') || document.querySelector('audio'));
+        if (!player) return;
+        player.currentTime = t;
+        // Word-caption edit or sync mode: seek but do not auto-play.
+        if (win && win.classList && (
+            win.classList.contains('transcript-editing') ||
+            win.classList.contains('transcript-sync-mode')
+        )) {
+            try { player.pause(); } catch (_) {}
+            return;
         }
+        player.play();
     };
 
 
     window.saveEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
+        const timingOnly = !!window._qsTimingMode;
         const useWordModelEditor = (
             Array.isArray(window.currentWords) &&
             Array.isArray(window.currentCaptions) &&
@@ -4787,6 +4805,93 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             window.currentCaptions.length > 0 &&
             !window._qsForceLegacyEditMode
         );
+
+        // Line-timing mode (word model): same persistence as word editor; exit timing mode.
+        if (timingOnly && useWordModelEditor) {
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            syncFormattedDocWithCurrentSegments();
+            if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+            if (typeof updateJobStatus === 'function' && window.currentSegments && window.currentSegments.length) {
+                (async () => {
+                    try {
+                        const { data: { user } } = await supabase.auth.getUser();
+                        const dbId = localStorage.getItem('lastJobDbId');
+                        const s3Key = localStorage.getItem('lastS3Key');
+                        if (user && dbId && s3Key) {
+                            const res = await fetch('/api/save_job_result', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    userId: user.id,
+                                    input_s3_key: s3Key,
+                                    segments: window.currentSegments,
+                                    words: window.currentWords,
+                                    captions: window.currentCaptions,
+                                    formatted: window.currentFormattedDoc || undefined
+                                })
+                            });
+                            const data = res.ok ? await res.json() : {};
+                            if (data.result_s3_key) {
+                                updateJobStatus(dbId, 'processed', { result_s3_key: data.result_s3_key });
+                            }
+                        }
+                    } catch (_) { /* ignore */ }
+                })();
+            }
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            if (win) {
+                win.classList.remove('transcript-sync-mode');
+                win.style.border = "1px solid #e2e8f0";
+                win.style.backgroundColor = "transparent";
+            }
+            if (editActions) editActions.style.display = 'none';
+            try { renderWordCaptionEditor(); } catch (_) {}
+            _qsSetSyncModeButtonActive(false);
+            return;
+        }
+
+        // Line-timing mode (legacy segments only): persist segments.
+        if (timingOnly && !useWordModelEditor && Array.isArray(window.currentSegments) && window.currentSegments.length) {
+            syncFormattedDocWithCurrentSegments();
+            if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+            if (typeof updateJobStatus === 'function') {
+                (async () => {
+                    try {
+                        const { data: { user } } = await supabase.auth.getUser();
+                        const dbId = localStorage.getItem('lastJobDbId');
+                        const s3Key = localStorage.getItem('lastS3Key');
+                        if (user && dbId && s3Key) {
+                            const res = await fetch('/api/save_job_result', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    userId: user.id,
+                                    input_s3_key: s3Key,
+                                    segments: window.currentSegments,
+                                    formatted: window.currentFormattedDoc || undefined
+                                })
+                            });
+                            const data = res.ok ? await res.json() : {};
+                            if (data.result_s3_key) {
+                                updateJobStatus(dbId, 'processed', { result_s3_key: data.result_s3_key });
+                            }
+                        }
+                    } catch (_) { /* ignore */ }
+                })();
+            }
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            if (win) {
+                win.classList.remove('transcript-sync-mode');
+                win.style.border = "1px solid #e2e8f0";
+                win.style.backgroundColor = "transparent";
+            }
+            if (editActions) editActions.style.display = 'none';
+            try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
+            _qsSetSyncModeButtonActive(false);
+            return;
+        }
 
         // Word-level caption editor: persist model directly (no DOM paragraph extraction; no timing estimation).
         if (useWordModelEditor) {
@@ -4967,6 +5072,32 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.cancelEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
+
+        if (window._qsTimingMode && window._qsTimingModeBackup) {
+            const b = window._qsTimingModeBackup;
+            if (Array.isArray(b.words) && Array.isArray(b.captions)) {
+                window.currentWords = b.words;
+                window.currentCaptions = b.captions;
+                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            } else if (Array.isArray(b.segments)) {
+                window.currentSegments = b.segments;
+            }
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            if (win) {
+                win.classList.remove('transcript-sync-mode');
+                win.style.border = "1px solid #e2e8f0";
+                win.style.backgroundColor = "transparent";
+            }
+            if (editActions) editActions.style.display = 'none';
+            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
+                try { renderWordCaptionEditor(); } catch (_) {}
+            } else {
+                try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
+            }
+            _qsSetSyncModeButtonActive(false);
+            return;
+        }
 
         // Word-level editor: restore model backup and re-render
         if (window.wordEditBackup && Array.isArray(window.wordEditBackup.words) && Array.isArray(window.wordEditBackup.captions)) {
@@ -5185,10 +5316,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         } catch (_) {}
     }
     function _getCurrentMediaTime() {
-        const v = document.getElementById('main-video');
-        const a = document.getElementById('main-audio');
-        if (v && Number.isFinite(v.currentTime)) return v.currentTime;
-        if (a && Number.isFinite(a.currentTime)) return a.currentTime;
+        const el = (typeof window._getPrimaryMediaElement === 'function') ? window._getPrimaryMediaElement() : null;
+        if (el && Number.isFinite(el.currentTime)) return el.currentTime;
         return 0;
     }
     window.getResolvedCaptionStyle = function(ci) {
@@ -5260,7 +5389,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         } catch (_) {}
         if (typeof renderWordCaptionEditor === 'function') {
             const win = document.getElementById('transcript-window');
-            if (win && win.classList.contains('transcript-editing')) {
+            if (win && (win.classList.contains('transcript-editing') || win.classList.contains('transcript-sync-mode'))) {
                 try { renderWordCaptionEditor(); } catch (_) {}
             }
         }
@@ -5269,17 +5398,24 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.ensureCaptionStyleTimelineUI = function() { /* removed — use inline per-caption editor in transcript */ };
 
     window.refreshVideoSubtitles = function() {
-        const video = document.getElementById('main-video');
-        if (!video || !window.currentSegments.length) return;
+        if (!window.currentSegments.length) return;
+        const v = document.getElementById('main-video');
+        const a = document.getElementById('main-audio');
+        const primary = (typeof window._getPrimaryMediaElement === 'function')
+            ? window._getPrimaryMediaElement()
+            : (v || a);
+        if (!primary) return;
 
         // Rebuild the entire VTT file from scratch
         const vttLines = ['WEBVTT\n'];
         const pad = (n, m=2) => String(n).padStart(m, '0');
         const fmt = (s) => {
-            const ms = Math.floor((s - Math.floor(s)) * 1000);
-            const hh = Math.floor(s / 3600);
-            const mm = Math.floor((s % 3600) / 60);
-            const ss = Math.floor(s % 60);
+            const t = Number(s);
+            if (!Number.isFinite(t)) return '00:00:00.000';
+            const ms = Math.floor((t - Math.floor(t)) * 1000);
+            const hh = Math.floor(t / 3600);
+            const mm = Math.floor((t % 3600) / 60);
+            const ss = Math.floor(t % 60);
             return `${pad(hh)}:${pad(mm)}:${pad(ss)}.${pad(ms, 3)}`;
         };
 
@@ -5291,7 +5427,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         };
         // Keep line wrapping behavior tied to old tiktok style choice only.
         const isTiktok = window.currentSubtitleStyle === 'tiktok';
-        const isPortrait = video.videoHeight > 0 && video.videoWidth > 0 && video.videoHeight > video.videoWidth;
+        const isPortrait = v && v.videoHeight > 0 && v.videoWidth > 0 && v.videoHeight > v.videoWidth;
         const maxCharsPerLine = isPortrait ? 14 : 27; // Enforce consistent wrapping in landscape.
         for (let i = 0; i < window.currentSegments.length; i++) {
             const c = window.currentSegments[i];
@@ -5299,7 +5435,16 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 ? window.getResolvedCaptionStyle(i)
                 : { position: 'bottom', highlightMode: 'none' };
             const cueSettings = styleToCueSettings(st);
-            vttLines.push(`${fmt(c.start)} --> ${fmt(c.end)}${cueSettings}`);
+            const start = Number(c && c.start);
+            let end = c && c.end != null ? Number(c.end) : NaN;
+            if (!Number.isFinite(start)) continue;
+            if (!Number.isFinite(end) || end <= start) {
+                const next = window.currentSegments[i + 1];
+                const nextS = next && Number(next.start);
+                end = Number.isFinite(nextS) ? nextS : (start + 1);
+            }
+            if (end <= start) end = start + 0.05;
+            vttLines.push(`${fmt(start)} --> ${fmt(end)}${cueSettings}`);
             let text = (c.text || '').replace(/<[^>]+>/g, '').trim();
             if (text.length > maxCharsPerLine) {
                 const mid = Math.min(maxCharsPerLine, Math.floor(text.length / 2));
@@ -5312,10 +5457,19 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         }
 
         const vttBlob = new Blob([vttLines.join('\n')], { type: 'text/vtt' });
-        const vttUrl = URL.createObjectURL(vttBlob);
+        try {
+            if (window._qsVttObjectUrl) URL.revokeObjectURL(String(window._qsVttObjectUrl).split('#')[0]);
+        } catch (_) {}
+        const baseUrl = URL.createObjectURL(vttBlob);
+        window._qsVttObjectUrl = baseUrl;
+        const vttUrl = `${baseUrl}#t=${Date.now()}`;
 
-        // Delete the old cached track and attach the new one
-        Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
+        // Drop old tracks on both elements so cues cannot stay bound to a hidden/non-playing video.
+        [v, a].forEach((el) => {
+            if (!el) return;
+            try { Array.from(el.querySelectorAll('track')).forEach(t => t.remove()); } catch (_) {}
+        });
+
         const track = document.createElement('track');
         // Android Chrome native controls expose a confusing "Subtitles" menu item.
         // Use metadata track there and render subtitles via in-app overlay logic instead.
@@ -5324,32 +5478,32 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         track.srclang = 'he';
         track.src = vttUrl;
         track.default = true;
-        
-        video.appendChild(track);
 
-        // Important: avoid double-rendering native VTT + our custom overlay.
-        // When the track finishes loading, immediately re-run overlay rendering logic,
-        // which will decide whether native tracks should be `disabled` or `showing`.
-        track.addEventListener('load', () => {
+        primary.appendChild(track);
+
+        const syncAfterLoad = () => {
             try {
                 const now = (typeof _getCurrentMediaTime === 'function')
                     ? _getCurrentMediaTime()
-                    : (Number.isFinite(video.currentTime) ? video.currentTime : 0);
-
+                    : (Number.isFinite(primary.currentTime) ? primary.currentTime : 0);
                 if (typeof window.updateVideoWordOverlay === 'function') {
                     window.updateVideoWordOverlay(now);
                 } else {
-                    Array.from(video.textTracks).forEach(tt => tt.mode = 'showing');
+                    Array.from(primary.textTracks).forEach(tt => { try { tt.mode = 'showing'; } catch (_) {} });
                 }
             } catch (e) {
                 console.warn('Track load overlay sync error:', e);
             }
-        });
+        };
+        track.addEventListener('load', syncAfterLoad);
+        setTimeout(syncAfterLoad, 0);
+        setTimeout(syncAfterLoad, 120);
     };
 
     window.toggleEditMode = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
+        if (win && win.classList.contains('transcript-sync-mode')) return;
         const isEditable = win.contentEditable === 'true';
         const forceLegacyMobileEdit = (typeof isMobileClient === 'function') && isMobileClient();
 
@@ -5420,6 +5574,32 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             window.saveEdits();
         }
     };
+
+    window.toggleTimingMode = function() {
+        const win = document.getElementById('transcript-window');
+        const editActions = document.getElementById('edit-actions');
+        if (!win) return;
+        if (win.classList.contains('transcript-editing')) return;
+        const hasWord = Array.isArray(window.currentWords) && window.currentWords.length &&
+            Array.isArray(window.currentCaptions) && window.currentCaptions.length;
+        const hasSeg = Array.isArray(window.currentSegments) && window.currentSegments.length;
+        if (!hasWord && !hasSeg) return;
+        if (window._qsTimingMode) {
+            window.saveEdits();
+            return;
+        }
+        window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
+        window._qsTimingMode = true;
+        window._qsTimingSelectedCi = 0;
+        win.classList.add('transcript-sync-mode');
+        win.style.border = '2px solid #0d9488';
+        win.style.backgroundColor = '#fff';
+        if (editActions) editActions.style.display = 'flex';
+        _qsSetSyncModeButtonActive(true);
+        try { renderWordCaptionEditor(); } catch (_) {}
+    };
+
+    window.toggleSyncMode = window.toggleTimingMode;
 
     // When user presses Enter in the middle of a line in edit mode: split segment and insert new row with computed time
     (function attachEnterSplitInTranscript() {
@@ -5547,15 +5727,17 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const translatedParts = group.sentences.map(s => s.translated_text).filter(Boolean);
         const translatedLine = translatedParts.length ? translatedParts.join(" ").replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
 
+        const startNum = Number(group.start);
+        const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
         return `
-        <div class="paragraph-row" style="display:block; width: 100%; margin-bottom: 2px; direction: rtl; text-align: right;">
+        <div class="paragraph-row" style="display:block; width: 100%; margin-bottom: 2px; direction: rtl; text-align: right; cursor: pointer;"${rowClick}>
             <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
                 <div style="display: ${isTimeVisible ? 'block' : 'none'};">${formatTime(group.start)}</div>
                 <div style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(rawSpeaker)};">
                     ${speakerDisplay}
                 </div>
             </div>
-            <p style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2; font-size: 1.1em;" onclick="window.jumpTo(${group.start})">
+            <p style="margin: 0 !important; margin-top: -2px; line-height: 1.2; font-size: 1.1em;">
                 ${fullText}
             </p>
             ${translatedLine ? `<p class="translated-line" style="margin: 4px 0 0 0; font-size: 0.9em; color: #6b7280; direction: ltr; text-align: left;">${translatedLine}</p>` : ''}
@@ -6117,6 +6299,12 @@ function renderTranscriptFromCues(cues) {
     window.currentSegments = cues;
     const container = document.getElementById('transcript-window');
     if (!container) return;
+    container.onclick = null;
+    container.onbeforeinput = null;
+    if (container._qsSelectionChangeHandler) {
+        document.removeEventListener('selectionchange', container._qsSelectionChangeHandler);
+        container._qsSelectionChangeHandler = null;
+    }
     const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
     const isRtl = locale.startsWith('he') || locale.startsWith('ar');
     const textDirection = isRtl ? 'rtl' : 'ltr';
@@ -6138,10 +6326,12 @@ function renderTranscriptFromCues(cues) {
     const html = cues.map((c, idx) => {
         const mainText = String(c.translated_text || c.text || '').trim();
         const safe = mainText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const startSec = _asTranscriptTime(c.start);
+        const jumpAttr = Number.isFinite(startSec) ? ` onclick="window.jumpTo(${startSec})"` : '';
         return `
-        <div class="paragraph-row" id="seg-${Math.floor(c.start)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
+        <div class="paragraph-row" id="seg-${Math.floor(Number(startSec) || c.start || 0)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign}; cursor: pointer;">
             <div style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.05;">[${formatTime(c.start)}]</div>
-            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;">${safe}</p>
+            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;"${jumpAttr}>${safe}</p>
         </div>`;
     }).join('');
 
@@ -6275,6 +6465,35 @@ function getCaptionText(caption, words) {
         .join(' ');
 }
 
+const _QS_DISPLAY_TIME_BRACKET = /^\[\d{1,2}:\d{2}\.\d{2}\]$/;
+const _QS_DISPLAY_TIME_BARE = /^\d{1,2}:\d{2}\.\d{2}$/;
+const _QS_DISPLAY_TIME_TRAILING = /\[\d{1,2}:\d{2}\.\d{2}\]\s*$/;
+const _QS_DISPLAY_TIME_LEADING = /^\s*\[\d{1,2}:\d{2}\.\d{2}\]\s*/;
+
+function _qsWordTextIsDisplayTimestampOnly(t) {
+    const s = String(t || '').trim();
+    return _QS_DISPLAY_TIME_BRACKET.test(s) || _QS_DISPLAY_TIME_BARE.test(s);
+}
+
+/** When merging two captions, strip UI timestamps absorbed into word text (e.g. `[00:35.02]`). */
+function _qsSanitizeWordModelCaptionMergeBoundaries(words, leftCaptionLastWi, rightCaptionFirstWi, rightCaptionLastWi) {
+    if (!Array.isArray(words) || !Number.isFinite(leftCaptionLastWi) || !Number.isFinite(rightCaptionFirstWi) || !Number.isFinite(rightCaptionLastWi)) return;
+    const lw = words[leftCaptionLastWi];
+    if (lw && lw.text != null) {
+        lw.text = String(lw.text).replace(_QS_DISPLAY_TIME_TRAILING, '').trimEnd();
+    }
+    for (let wi = rightCaptionFirstWi; wi <= rightCaptionLastWi; wi++) {
+        const w = words[wi];
+        if (!w) continue;
+        const t = String(w.text || '').trim();
+        if (_qsWordTextIsDisplayTimestampOnly(t)) w.text = '';
+        else {
+            w.text = String(w.text || '').replace(_QS_DISPLAY_TIME_LEADING, '').trim();
+            break;
+        }
+    }
+}
+
 function _captionsToCues(words, captions) {
     const cues = [];
     if (!Array.isArray(words) || !Array.isArray(captions)) return cues;
@@ -6290,6 +6509,738 @@ function _captionsToCues(words, captions) {
         });
     }
     return cues;
+}
+
+/** Line-timing mode: adjust whole caption/segment times (no per-word timing UI). */
+window._qsTimingMode = false;
+window._qsTimingModeBackup = null;
+window._qsTimingSelectedCi = 0;
+
+const QS_LINE_TIMING_STEP = 0.05;
+const QS_LINE_MIN_DUR = 0.05;
+const QS_SYNC_PX_PER_SEC = 90;
+
+/** Pointer X increases to the right; map movement so drag-left advances time (positive Δs). */
+function _qsSyncDxToDeltaSec(dx) {
+    return -(Number(dx) / QS_SYNC_PX_PER_SEC);
+}
+
+/** Caption time range: RTL wraps outer dir=rtl so start stays on the right; inner dir=ltr keeps mm:ss digits readable. */
+function _qsCaptionTimeRangeHtml(startSec, endSec) {
+    const locale = String(window.currentLocale || (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) || 'he').toLowerCase();
+    const localeRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const win = typeof document !== 'undefined' ? document.getElementById('transcript-window') : null;
+    const rtl = (win && win.classList.contains('qs-rtl')) || localeRtl;
+    const a = formatTime(startSec);
+    const b = formatTime(endSec);
+    if (rtl) {
+        return `<span dir="rtl" class="qs-time-range"><span dir="ltr">${a}</span> \u2192 <span dir="ltr">${b}</span></span>`;
+    }
+    return `<span dir="ltr" class="qs-time-range">${a} \u2192 ${b}</span>`;
+}
+
+function _qsCloneTimingStateForBackup() {
+    try {
+        return {
+            words: Array.isArray(window.currentWords) ? JSON.parse(JSON.stringify(window.currentWords)) : null,
+            captions: Array.isArray(window.currentCaptions) ? JSON.parse(JSON.stringify(window.currentCaptions)) : null,
+            segments: JSON.parse(JSON.stringify(window.currentSegments || [])),
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function _qsTimingCuesForOverlap() {
+    const w = window.currentWords;
+    const c = window.currentCaptions;
+    if (Array.isArray(w) && Array.isArray(c) && c.length) {
+        return _captionsToCues(w, c);
+    }
+    return Array.isArray(window.currentSegments) ? window.currentSegments : [];
+}
+
+function _qsCaptionOverlapIndexSet() {
+    const set = new Set();
+    const cues = _qsTimingCuesForOverlap();
+    if (!cues || cues.length < 2) return set;
+    for (let i = 1; i < cues.length; i++) {
+        const prev = cues[i - 1];
+        const cur = cues[i];
+        const pe = Number.isFinite(prev.end) ? prev.end : (Number(prev.start) + 1);
+        const cs = Number.isFinite(cur.start) ? cur.start : 0;
+        if (cs < pe - 1e-4) {
+            set.add(i - 1);
+            set.add(i);
+        }
+    }
+    return set;
+}
+
+function _qsSeekToCaptionStart(ci) {
+    const w = window.currentWords;
+    const caps = window.currentCaptions;
+    let t = NaN;
+    if (Array.isArray(w) && Array.isArray(caps) && caps[ci]) {
+        const cap = caps[ci];
+        const ws = w[cap.wordStartIndex];
+        if (ws) t = _asTranscriptTime(ws.start);
+    } else if (window.currentSegments && window.currentSegments[ci]) {
+        t = _asTranscriptTime(window.currentSegments[ci].start);
+    }
+    if (Number.isFinite(t) && typeof window.jumpTo === 'function') window.jumpTo(t);
+}
+
+function _qsSetSyncModeButtonActive(on) {
+    const b = document.getElementById('btn-timing');
+    if (b) b.classList.toggle('is-active', !!on);
+}
+
+function _qsSyncEnsureTooltip() {
+    let el = document.getElementById('qs-sync-drag-tooltip');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'qs-sync-drag-tooltip';
+        el.className = 'qs-sync-drag-tooltip';
+        el.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(el);
+    }
+    return el;
+}
+
+function _qsSyncRestoreWordsFromSnaps(lo, hi, snaps) {
+    const w = window.currentWords;
+    if (!w || !snaps) return;
+    for (let i = 0; i < snaps.length; i++) {
+        const ww = w[lo + i];
+        const s = snaps[i];
+        if (ww && s && Number.isFinite(s.start) && Number.isFinite(s.end)) {
+            ww.start = s.start;
+            ww.end = s.end;
+        }
+    }
+}
+
+function _qsSyncWordRangeSnaps(lo, hi) {
+    const w = window.currentWords;
+    if (!w) return null;
+    const out = [];
+    for (let wi = lo; wi <= hi; wi++) {
+        const ww = w[wi];
+        if (!ww) return null;
+        const s = Number(ww.start);
+        if (!Number.isFinite(s)) return null;
+        let en = Number(ww.end);
+        if (!Number.isFinite(en)) en = s + QS_LINE_MIN_DUR;
+        out.push({ start: s, end: en });
+    }
+    return out;
+}
+
+function _qsSyncApplyWordMoveFromBaseline(ci, baselineSnaps, deltaSec) {
+    const cap = window.currentCaptions && window.currentCaptions[ci];
+    const words = window.currentWords;
+    if (!cap || !words || !baselineSnaps) return false;
+    const lo = cap.wordStartIndex;
+    const hi = cap.wordEndIndex;
+    _qsSyncRestoreWordsFromSnaps(lo, hi, baselineSnaps);
+    for (let wi = lo; wi <= hi; wi++) {
+        const ww = words[wi];
+        if (!ww) continue;
+        ww.start = Math.round((ww.start + deltaSec) * 1000) / 1000;
+        ww.end = Math.round((ww.end + deltaSec) * 1000) / 1000;
+    }
+    let minS = Infinity;
+    for (let wi = lo; wi <= hi; wi++) {
+        const ww = words[wi];
+        if (ww && Number.isFinite(ww.start)) minS = Math.min(minS, ww.start);
+    }
+    if (minS < 0) {
+        const fix = -minS;
+        for (let wi = lo; wi <= hi; wi++) {
+            const ww = words[wi];
+            if (!ww) continue;
+            ww.start = Math.round((ww.start + fix) * 1000) / 1000;
+            ww.end = Math.round((ww.end + fix) * 1000) / 1000;
+        }
+    }
+    return true;
+}
+
+function _qsSyncApplyWordStretchStartFromBaseline(ci, baselineSnaps, deltaSec) {
+    const cap = window.currentCaptions && window.currentCaptions[ci];
+    const words = window.currentWords;
+    if (!cap || !words || !baselineSnaps || baselineSnaps.length === 0) return false;
+    const lo = cap.wordStartIndex;
+    const hi = cap.wordEndIndex;
+    const b0 = baselineSnaps[0];
+    const b1 = baselineSnaps[baselineSnaps.length - 1];
+    const oldS = b0.start;
+    const oldE = b1.end;
+    _qsSyncRestoreWordsFromSnaps(lo, hi, baselineSnaps);
+    let newS = oldS + deltaSec;
+    newS = Math.min(newS, oldE - QS_LINE_MIN_DUR);
+    newS = Math.max(0, newS);
+    return _qsRescaleWordsInRange(lo, hi, oldS, oldE, newS, oldE);
+}
+
+function _qsSyncApplyWordStretchEndFromBaseline(ci, baselineSnaps, deltaSec) {
+    const cap = window.currentCaptions && window.currentCaptions[ci];
+    const words = window.currentWords;
+    if (!cap || !words || !baselineSnaps || baselineSnaps.length === 0) return false;
+    const lo = cap.wordStartIndex;
+    const hi = cap.wordEndIndex;
+    const b0 = baselineSnaps[0];
+    const b1 = baselineSnaps[baselineSnaps.length - 1];
+    const oldS = b0.start;
+    const oldE = b1.end;
+    _qsSyncRestoreWordsFromSnaps(lo, hi, baselineSnaps);
+    let newE = oldE + deltaSec;
+    newE = Math.max(newE, oldS + QS_LINE_MIN_DUR);
+    return _qsRescaleWordsInRange(lo, hi, oldS, oldE, oldS, newE);
+}
+
+function _qsSyncApplyLegacyMoveFromBaseline(idx, baseline, deltaSec) {
+    const segs = window.currentSegments;
+    if (!Array.isArray(segs) || !segs[idx] || !baseline) return false;
+    const seg = segs[idx];
+    let ns = Math.round((baseline.start + deltaSec) * 1000) / 1000;
+    let ne = Math.round((baseline.end + deltaSec) * 1000) / 1000;
+    if (ns < 0) {
+        const fix = -ns;
+        ns += fix;
+        ne += fix;
+    }
+    seg.start = ns;
+    seg.end = ne;
+    return true;
+}
+
+function _qsSyncApplyLegacyStretchStartFromBaseline(idx, baseline, deltaSec) {
+    const segs = window.currentSegments;
+    if (!Array.isArray(segs) || !segs[idx] || !baseline) return false;
+    const seg = segs[idx];
+    let ns = Math.round((baseline.start + deltaSec) * 1000) / 1000;
+    ns = Math.max(0, Math.min(ns, baseline.end - QS_LINE_MIN_DUR));
+    seg.start = ns;
+    seg.end = baseline.end;
+    return true;
+}
+
+function _qsSyncApplyLegacyStretchEndFromBaseline(idx, baseline, deltaSec) {
+    const segs = window.currentSegments;
+    if (!Array.isArray(segs) || !segs[idx] || !baseline) return false;
+    const seg = segs[idx];
+    let ne = Math.round((baseline.end + deltaSec) * 1000) / 1000;
+    ne = Math.max(ne, baseline.start + QS_LINE_MIN_DUR);
+    seg.start = baseline.start;
+    seg.end = ne;
+    return true;
+}
+
+function _qsSyncUpdateOverlapClasses(container) {
+    if (!container) return;
+    const set = _qsCaptionOverlapIndexSet();
+    container.querySelectorAll('.caption-row[data-ci]').forEach((el) => {
+        const ci = parseInt(el.getAttribute('data-ci'), 10);
+        if (Number.isFinite(ci)) el.classList.toggle('qs-timing-overlap', set.has(ci));
+    });
+    container.querySelectorAll('.qs-timing-legacy-row[data-timing-idx]').forEach((el) => {
+        const idx = parseInt(el.getAttribute('data-timing-idx'), 10);
+        if (Number.isFinite(idx)) el.classList.toggle('qs-timing-overlap', set.has(idx));
+    });
+}
+
+function _qsSyncRefreshWordRowTimesDom(container, ci) {
+    const cap = window.currentCaptions && window.currentCaptions[ci];
+    const words = window.currentWords;
+    if (!cap || !words) return;
+    const row = container.querySelector(`.caption-row[data-ci="${ci}"]`);
+    if (!row) return;
+    const ws = words[cap.wordStartIndex];
+    const we = words[cap.wordEndIndex];
+    const start = ws ? ws.start : 0;
+    const endT = we && typeof we.end === 'number' ? we.end : start;
+    row.setAttribute('data-start', String(start));
+    row.setAttribute('data-end', String(endT));
+    const ts = row.querySelector('.caption-ts');
+    if (ts) ts.innerHTML = _qsCaptionTimeRangeHtml(start, endT);
+    for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
+        const tok = row.querySelector(`span.word-token[data-wi="${wi}"]`);
+        const ww = words[wi];
+        if (tok && ww) {
+            const ws0 = ww.start;
+            const we0 = ww.end;
+            tok.setAttribute('data-start', typeof ws0 === 'number' ? String(ws0) : '');
+            tok.setAttribute('data-end', typeof we0 === 'number' ? String(we0) : '');
+            const title = (typeof ws0 === 'number' && typeof we0 === 'number') ? `${ws0.toFixed(2)}\u200e \u2192 ${we0.toFixed(2)}` : '';
+            tok.setAttribute('title', title);
+        }
+    }
+}
+
+function _qsSyncRefreshLegacyRowDom(container, idx) {
+    const cues = window.currentSegments;
+    const row = container.querySelector(`.qs-timing-legacy-row[data-timing-idx="${idx}"]`);
+    if (!row || !cues || !cues[idx]) return;
+    const c = cues[idx];
+    const cs = Number(c.start);
+    const rawEnd = c.end != null ? Number(c.end) : NaN;
+    const nextS = cues[idx + 1] != null ? Number(cues[idx + 1].start) : NaN;
+    let endSec = rawEnd;
+    if (!Number.isFinite(endSec) || endSec <= cs) {
+        endSec = Number.isFinite(nextS) ? nextS : cs + 1;
+    }
+    const ts = row.querySelector('.qs-sync-legacy-ts');
+    if (ts) ts.innerHTML = _qsCaptionTimeRangeHtml(cs, endSec);
+}
+
+function initQsSyncDirectManipulation(container) {
+    if (typeof container._qsSyncDragCleanup === 'function') {
+        try { container._qsSyncDragCleanup(); } catch (_) {}
+    }
+    container._qsSyncDragCleanup = null;
+    if (!window._qsTimingMode || !container) return;
+
+    const useWords = (
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentCaptions.length > 0
+    );
+
+    let rafPending = false;
+    const scheduleVisualRefresh = (ci) => {
+        if (rafPending) return;
+        rafPending = true;
+        requestAnimationFrame(() => {
+            rafPending = false;
+            if (!window._qsTimingMode || !container.isConnected) return;
+            if (useWords) {
+                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                _qsSyncRefreshWordRowTimesDom(container, ci);
+            } else {
+                _qsSyncRefreshLegacyRowDom(container, ci);
+            }
+            _qsSyncUpdateOverlapClasses(container);
+            if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+        });
+    };
+
+    const onPointerDown = (e) => {
+        const handleEl = e.target && e.target.closest && e.target.closest('[data-qs-sync-handle]');
+        if (handleEl && container.contains(handleEl)) {
+            let ci = parseInt(handleEl.getAttribute('data-ci'), 10);
+            if (!Number.isFinite(ci)) ci = parseInt(handleEl.getAttribute('data-timing-idx'), 10);
+            if (!Number.isFinite(ci) || ci < 0) return;
+            if (useWords && ci >= window.currentCaptions.length) return;
+            if (!useWords && (!window.currentSegments || ci >= window.currentSegments.length)) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const handle = handleEl.getAttribute('data-qs-sync-handle');
+            const type = handle === 'start' ? 'start' : 'end';
+            let baselineSnaps = null;
+            let baselineSeg = null;
+            if (useWords) {
+                const cap = window.currentCaptions[ci];
+                baselineSnaps = _qsSyncWordRangeSnaps(cap.wordStartIndex, cap.wordEndIndex);
+                if (!baselineSnaps) return;
+            } else {
+                const seg = window.currentSegments[ci];
+                const end = seg.end != null ? seg.end : seg.start + 1;
+                baselineSeg = { start: seg.start, end: end };
+            }
+
+            const state = {
+                ci,
+                type,
+                startX: e.clientX,
+                startY: e.clientY,
+                useWords,
+                baselineSnaps,
+                baselineSeg,
+                dragCommitted: true,
+                pointerId: e.pointerId,
+                captureEl: handleEl,
+            };
+            const tooltip = _qsSyncEnsureTooltip();
+
+            function detach() {
+                window.removeEventListener('pointermove', onMove, true);
+                window.removeEventListener('pointerup', onUp, true);
+                window.removeEventListener('pointercancel', onUp, true);
+            }
+
+            function applyDelta(deltaSec) {
+                if (useWords) {
+                    if (type === 'start') {
+                        _qsSyncApplyWordStretchStartFromBaseline(ci, state.baselineSnaps, deltaSec);
+                    } else {
+                        _qsSyncApplyWordStretchEndFromBaseline(ci, state.baselineSnaps, deltaSec);
+                    }
+                } else if (type === 'start') {
+                    _qsSyncApplyLegacyStretchStartFromBaseline(ci, state.baselineSeg, deltaSec);
+                } else {
+                    _qsSyncApplyLegacyStretchEndFromBaseline(ci, state.baselineSeg, deltaSec);
+                }
+                scheduleVisualRefresh(ci);
+            }
+
+            function onMove(ev) {
+                if (ev.pointerId !== state.pointerId) return;
+                const dx = ev.clientX - state.startX;
+                const deltaSec = _qsSyncDxToDeltaSec(dx);
+                applyDelta(deltaSec);
+                const sign = deltaSec >= 0 ? '+' : '';
+                tooltip.textContent = `${sign}${deltaSec.toFixed(2)}s`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = `${ev.clientX}px`;
+                tooltip.style.top = `${ev.clientY - 36}px`;
+            }
+
+            function onUp(ev) {
+                if (ev.pointerId !== state.pointerId) return;
+                const ciFinal = state.ci;
+                detach();
+                tooltip.style.display = 'none';
+                if (useWords) {
+                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                    try { renderWordCaptionEditor(); } catch (_) {}
+                } else {
+                    try { renderLegacyTimingModeTranscript(container); } catch (_) {}
+                }
+                if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                _qsSeekToCaptionStart(ciFinal);
+            }
+
+            window.addEventListener('pointermove', onMove, true);
+            window.addEventListener('pointerup', onUp, true);
+            window.addEventListener('pointercancel', onUp, true);
+            try { handleEl.setPointerCapture(e.pointerId); } catch (_) {}
+            return;
+        }
+
+        const row = e.target && e.target.closest && e.target.closest(
+            '.caption-row.qs-timing-line-selected, .paragraph-row.qs-timing-legacy-row.qs-timing-line-selected'
+        );
+        if (!row || !container.contains(row)) return;
+
+        let ci = parseInt(row.getAttribute('data-ci'), 10);
+        if (!Number.isFinite(ci)) ci = parseInt(row.getAttribute('data-timing-idx'), 10);
+        if (!Number.isFinite(ci) || ci < 0 || ci !== window._qsTimingSelectedCi) return;
+        if (useWords && ci >= window.currentCaptions.length) return;
+        if (!useWords && (!window.currentSegments || ci >= window.currentSegments.length)) return;
+
+        let baselineSnaps = null;
+        let baselineSeg = null;
+        if (useWords) {
+            const cap = window.currentCaptions[ci];
+            baselineSnaps = _qsSyncWordRangeSnaps(cap.wordStartIndex, cap.wordEndIndex);
+            if (!baselineSnaps) return;
+        } else {
+            const seg = window.currentSegments[ci];
+            const end = seg.end != null ? seg.end : seg.start + 1;
+            baselineSeg = { start: seg.start, end: end };
+        }
+
+        const state = {
+            ci,
+            type: 'move',
+            startX: e.clientX,
+            startY: e.clientY,
+            useWords,
+            baselineSnaps,
+            baselineSeg,
+            dragCommitted: false,
+            pointerId: e.pointerId,
+            captureEl: row,
+        };
+        const tooltip = _qsSyncEnsureTooltip();
+
+        function detach() {
+            window.removeEventListener('pointermove', onMove, true);
+            window.removeEventListener('pointerup', onUp, true);
+            window.removeEventListener('pointercancel', onUp, true);
+        }
+
+        function applyDelta(deltaSec) {
+            if (useWords) {
+                _qsSyncApplyWordMoveFromBaseline(ci, state.baselineSnaps, deltaSec);
+            } else {
+                _qsSyncApplyLegacyMoveFromBaseline(ci, state.baselineSeg, deltaSec);
+            }
+            scheduleVisualRefresh(ci);
+        }
+
+        function onMove(ev) {
+            if (ev.pointerId !== state.pointerId) return;
+            const dx = ev.clientX - state.startX;
+            const dy = ev.clientY - state.startY;
+            if (!state.dragCommitted) {
+                if (Math.hypot(dx, dy) < 10) return;
+                if (Math.abs(dy) > Math.abs(dx) * 1.25 && Math.abs(dy) > 12) {
+                    detach();
+                    tooltip.style.display = 'none';
+                    return;
+                }
+                state.dragCommitted = true;
+                try { ev.preventDefault(); } catch (_) {}
+                try { row.setPointerCapture(ev.pointerId); } catch (_) {}
+            }
+            const deltaSec = _qsSyncDxToDeltaSec(dx);
+            applyDelta(deltaSec);
+            const sign = deltaSec >= 0 ? '+' : '';
+            tooltip.textContent = `${sign}${deltaSec.toFixed(2)}s`;
+            tooltip.style.display = 'block';
+            tooltip.style.left = `${ev.clientX}px`;
+            tooltip.style.top = `${ev.clientY - 36}px`;
+        }
+
+        function onUp(ev) {
+            if (ev.pointerId !== state.pointerId) return;
+            const ciFinal = state.ci;
+            const committed = state.dragCommitted;
+            detach();
+            tooltip.style.display = 'none';
+            if (!committed) return;
+            if (useWords) {
+                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                try { renderWordCaptionEditor(); } catch (_) {}
+            } else {
+                try { renderLegacyTimingModeTranscript(container); } catch (_) {}
+            }
+            if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+            _qsSeekToCaptionStart(ciFinal);
+        }
+
+        window.addEventListener('pointermove', onMove, true);
+        window.addEventListener('pointerup', onUp, true);
+        window.addEventListener('pointercancel', onUp, true);
+    };
+
+    container.addEventListener('pointerdown', onPointerDown, true);
+    container._qsSyncDragCleanup = () => {
+        container.removeEventListener('pointerdown', onPointerDown, true);
+    };
+}
+
+function _qsRescaleWordsInRange(lo, hi, oldS, oldE, newS, newE) {
+    const words = window.currentWords;
+    if (!words) return false;
+    const span = oldE - oldS;
+    if (span < 1e-6) {
+        const nlen = Math.max(1, hi - lo + 1);
+        const slot = Math.max(QS_LINE_MIN_DUR, (newE - newS) / nlen);
+        for (let wi = lo; wi <= hi; wi++) {
+            const ww = words[wi];
+            if (!ww) continue;
+            const off = (wi - lo) * slot;
+            ww.start = Math.round((newS + off) * 1000) / 1000;
+            ww.end = Math.round((newS + off + slot) * 1000) / 1000;
+        }
+        return true;
+    }
+    const nspan = newE - newS;
+    for (let wi = lo; wi <= hi; wi++) {
+        const ww = words[wi];
+        if (!ww) return false;
+        const rs = (ww.start - oldS) / span;
+        const re = (ww.end - oldS) / span;
+        ww.start = Math.round((newS + rs * nspan) * 1000) / 1000;
+        ww.end = Math.round((newS + re * nspan) * 1000) / 1000;
+        if (ww.end < ww.start + QS_LINE_MIN_DUR) {
+            ww.end = Math.round((ww.start + QS_LINE_MIN_DUR) * 1000) / 1000;
+        }
+    }
+    return true;
+}
+
+function _qsApplyWordCaptionLineShift(ci, deltaSec) {
+    const words = window.currentWords;
+    const caps = window.currentCaptions;
+    const cap = caps && caps[ci];
+    if (!cap || !words) return false;
+    const d = Math.round(Number(deltaSec) / QS_LINE_TIMING_STEP) * QS_LINE_TIMING_STEP;
+    if (!Number.isFinite(d) || Math.abs(d) < 1e-9) return false;
+    const lo = cap.wordStartIndex;
+    const hi = cap.wordEndIndex;
+    for (let wi = lo; wi <= hi; wi++) {
+        const ww = words[wi];
+        if (!ww) continue;
+        ww.start = Math.round((ww.start + d) * 1000) / 1000;
+        ww.end = Math.round((ww.end + d) * 1000) / 1000;
+    }
+    let minS = Infinity;
+    for (let wi = lo; wi <= hi; wi++) {
+        const ww = words[wi];
+        if (ww && Number.isFinite(ww.start)) minS = Math.min(minS, ww.start);
+    }
+    if (minS < 0) {
+        const fix = -minS;
+        for (let wi = lo; wi <= hi; wi++) {
+            const ww = words[wi];
+            if (!ww) continue;
+            ww.start = Math.round((ww.start + fix) * 1000) / 1000;
+            ww.end = Math.round((ww.end + fix) * 1000) / 1000;
+        }
+    }
+    return true;
+}
+
+function _qsApplyWordCaptionStretchStart(ci, deltaSec) {
+    const words = window.currentWords;
+    const caps = window.currentCaptions;
+    const cap = caps && caps[ci];
+    if (!cap || !words) return false;
+    const lo = cap.wordStartIndex;
+    const hi = cap.wordEndIndex;
+    const first = words[lo];
+    const last = words[hi];
+    if (!first || !last) return false;
+    const oldS = first.start;
+    const oldE = last.end;
+    const d = Math.round(Number(deltaSec) / QS_LINE_TIMING_STEP) * QS_LINE_TIMING_STEP;
+    if (!Number.isFinite(d) || Math.abs(d) < 1e-9) return false;
+    let newS = oldS + d;
+    newS = Math.min(newS, oldE - QS_LINE_MIN_DUR);
+    newS = Math.max(0, newS);
+    if (Math.abs(newS - oldS) < 1e-6) return false;
+    return _qsRescaleWordsInRange(lo, hi, oldS, oldE, newS, oldE);
+}
+
+function _qsApplyWordCaptionStretchEnd(ci, deltaSec) {
+    const words = window.currentWords;
+    const caps = window.currentCaptions;
+    const cap = caps && caps[ci];
+    if (!cap || !words) return false;
+    const lo = cap.wordStartIndex;
+    const hi = cap.wordEndIndex;
+    const first = words[lo];
+    const last = words[hi];
+    if (!first || !last) return false;
+    const oldS = first.start;
+    const oldE = last.end;
+    const d = Math.round(Number(deltaSec) / QS_LINE_TIMING_STEP) * QS_LINE_TIMING_STEP;
+    if (!Number.isFinite(d) || Math.abs(d) < 1e-9) return false;
+    let newE = oldE + d;
+    newE = Math.max(newE, oldS + QS_LINE_MIN_DUR);
+    if (Math.abs(newE - oldE) < 1e-6) return false;
+    return _qsRescaleWordsInRange(lo, hi, oldS, oldE, oldS, newE);
+}
+
+function _qsApplyLegacyLineShift(idx, deltaSec) {
+    const segs = window.currentSegments;
+    if (!Array.isArray(segs) || !segs[idx]) return false;
+    const d = Math.round(Number(deltaSec) / QS_LINE_TIMING_STEP) * QS_LINE_TIMING_STEP;
+    if (!Number.isFinite(d) || Math.abs(d) < 1e-9) return false;
+    const seg = segs[idx];
+    let ns = Math.round((seg.start + d) * 1000) / 1000;
+    let ne = Math.round(((seg.end != null ? seg.end : seg.start + 1) + d) * 1000) / 1000;
+    if (ns < 0) {
+        const fix = -ns;
+        ns += fix;
+        ne += fix;
+    }
+    seg.start = ns;
+    seg.end = ne;
+    return true;
+}
+
+function _qsApplyLegacyStretchStart(idx, deltaSec) {
+    const segs = window.currentSegments;
+    if (!Array.isArray(segs) || !segs[idx]) return false;
+    const seg = segs[idx];
+    const d = Math.round(Number(deltaSec) / QS_LINE_TIMING_STEP) * QS_LINE_TIMING_STEP;
+    if (!Number.isFinite(d) || Math.abs(d) < 1e-9) return false;
+    const end = seg.end != null ? seg.end : seg.start + 1;
+    let ns = Math.round((seg.start + d) * 1000) / 1000;
+    ns = Math.max(0, Math.min(ns, end - QS_LINE_MIN_DUR));
+    if (Math.abs(ns - seg.start) < 1e-6) return false;
+    seg.start = ns;
+    if (seg.end != null && seg.end - seg.start < QS_LINE_MIN_DUR) seg.end = seg.start + QS_LINE_MIN_DUR;
+    return true;
+}
+
+function _qsApplyLegacyStretchEnd(idx, deltaSec) {
+    const segs = window.currentSegments;
+    if (!Array.isArray(segs) || !segs[idx]) return false;
+    const seg = segs[idx];
+    const d = Math.round(Number(deltaSec) / QS_LINE_TIMING_STEP) * QS_LINE_TIMING_STEP;
+    if (!Number.isFinite(d) || Math.abs(d) < 1e-9) return false;
+    const end = seg.end != null ? seg.end : seg.start + 1;
+    let ne = Math.round((end + d) * 1000) / 1000;
+    ne = Math.max(ne, seg.start + QS_LINE_MIN_DUR);
+    if (Math.abs(ne - end) < 1e-6) return false;
+    seg.end = ne;
+    return true;
+}
+
+function renderLegacyTimingModeTranscript(container) {
+    if (!container || !window._qsTimingMode) return;
+    const cues = window.currentSegments || [];
+    if (!cues.length) return;
+    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const textDirection = isRtl ? 'rtl' : 'ltr';
+    const textAlign = isRtl ? 'right' : 'left';
+    container.classList.toggle('qs-rtl', !!isRtl);
+    const overlap = _qsCaptionOverlapIndexSet();
+    const sel = window._qsTimingSelectedCi;
+    const html = cues.map((c, idx) => {
+        const mainText = String(c.translated_text || c.text || '').trim();
+        const safe = mainText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const ov = overlap.has(idx) ? ' qs-timing-overlap' : '';
+        const sl = idx === sel ? ' qs-timing-line-selected' : '';
+        const cs = Number(c.start);
+        const rawEnd = c.end != null ? Number(c.end) : NaN;
+        const nextS = cues[idx + 1] != null ? Number(cues[idx + 1].start) : NaN;
+        let endSec = rawEnd;
+        if (!Number.isFinite(endSec) || endSec <= cs) {
+            endSec = Number.isFinite(nextS) ? nextS : cs + 1;
+        }
+        const timeLine = _qsCaptionTimeRangeHtml(cs, endSec);
+        if (idx === sel) {
+            return `
+        <div class="paragraph-row qs-timing-legacy-row qs-sync-legacy-selected${ov}${sl}" data-timing-idx="${idx}" id="seg-${Math.floor(c.start)}" style="display:flex; flex-direction:row; align-items:center; gap:8px; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
+            <button type="button" class="qs-sync-handle qs-sync-handle--start" data-timing-idx="${idx}" data-qs-sync-handle="start" aria-label="גרור לשינוי זמן התחלה"></button>
+            <div style="flex:1; min-width:0; display:flex; flex-direction:column; align-items:stretch;">
+                <div class="qs-sync-legacy-ts" style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.15;">${timeLine}</div>
+                <div class="qs-sync-text-stack">
+                    <div class="qs-sync-legacy-text-row" style="display:flex; flex-direction:row; align-items:center; gap:6px; max-width:100%; margin-top:-2px;">
+                        <p data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:0 1 auto; min-width:0;">${safe}</p>
+                        <button type="button" class="qs-sync-handle qs-sync-handle--end" data-timing-idx="${idx}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
+                    </div>
+                    <div class="qs-sync-move-hint" aria-hidden="true"><span class="qs-sync-move-hint-icon">↔</span><span class="qs-sync-move-hint-text">Drag to move</span></div>
+                </div>
+            </div>
+        </div>`;
+        }
+        return `
+        <div class="paragraph-row qs-timing-legacy-row${ov}${sl}" data-timing-idx="${idx}" id="seg-${Math.floor(c.start)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
+            <div class="qs-sync-legacy-ts" style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.15;">${timeLine}</div>
+            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;">${safe}</p>
+        </div>`;
+    }).join('');
+    container.innerHTML = html;
+    container.style.direction = textDirection;
+    container.style.textAlign = textAlign;
+    container.contentEditable = 'false';
+    container.classList.add('transcript-sync-mode');
+    container.onclick = (e) => {
+        let t = e.target;
+        if (t && t.nodeType === Node.TEXT_NODE && t.parentElement) t = t.parentElement;
+        if (!t || !t.closest) return;
+        if (t.closest('button, a, input, textarea, select, [role="button"], [data-qs-sync-handle]')) return;
+        const row = t.closest('.qs-timing-legacy-row');
+        if (!row) return;
+        const idx = parseInt(row.getAttribute('data-timing-idx'), 10);
+        if (!Number.isFinite(idx)) return;
+        window._qsTimingSelectedCi = idx;
+        _qsSeekToCaptionStart(idx);
+        renderLegacyTimingModeTranscript(container);
+    };
+    try { initQsSyncDirectManipulation(container); } catch (_) {}
 }
 
 function _setCaretToWordIndex(container, wordIndex, atStart = true) {
@@ -6380,6 +7331,10 @@ function renderWordCaptionEditor() {
         }
     }
     if (!Array.isArray(words) || !Array.isArray(captions) || captions.length === 0) {
+        if (window._qsTimingMode && Array.isArray(window.currentSegments) && window.currentSegments.length) {
+            renderLegacyTimingModeTranscript(container);
+            return;
+        }
         renderTranscriptFromCues(window.currentSegments || []);
         return;
     }
@@ -6389,298 +7344,8 @@ function renderWordCaptionEditor() {
     const textDirection = isRtl ? 'rtl' : 'ltr';
     const textAlign = isRtl ? 'right' : 'left';
     const isEditing = container.classList.contains('transcript-editing');
-    const timingAdjustEnabled = !isMobileClient();
+    const timingMode = !!window._qsTimingMode;
     container.classList.toggle('qs-rtl', !!isRtl);
-
-    function clampWordTiming(index, nextStart, prevEnd, newStart, newEnd) {
-        const w = window.currentWords && window.currentWords[index];
-        if (!w) return null;
-        const MIN_DUR = 0.05;
-        let start = Number.isFinite(newStart) ? newStart : w.start;
-        let end = Number.isFinite(newEnd) ? newEnd : w.end;
-        if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-        // basic order
-        if (end < start + MIN_DUR) end = start + MIN_DUR;
-        // clamp against neighbors (non-overlap)
-        if (Number.isFinite(prevEnd) && start < prevEnd) start = prevEnd;
-        if (Number.isFinite(nextStart) && end > nextStart) end = nextStart;
-        // re-check duration after clamps
-        if (end < start + MIN_DUR) {
-            // if squeezed, push end if possible, else pull start
-            if (Number.isFinite(nextStart)) {
-                end = Math.min(nextStart, start + MIN_DUR);
-            } else {
-                end = start + MIN_DUR;
-            }
-            if (Number.isFinite(prevEnd) && start > end - MIN_DUR) start = Math.max(prevEnd, end - MIN_DUR);
-        }
-        // avoid negative
-        start = Math.max(0, start);
-        end = Math.max(start + MIN_DUR, end);
-        return { start, end };
-    }
-
-    function getNeighborBounds(index) {
-        const prev = (window.currentWords && window.currentWords[index - 1]) || null;
-        const next = (window.currentWords && window.currentWords[index + 1]) || null;
-        return {
-            prevEnd: prev && Number.isFinite(prev.end) ? prev.end : null,
-            nextStart: next && Number.isFinite(next.start) ? next.start : null,
-        };
-    }
-
-    // Timing UI selection:
-    // - Caption mode: { type: 'caption', ci }
-    // - Boundary mode: { type: 'boundary', boundaryIndex } where boundaryIndex is BEFORE words[boundaryIndex]
-    if (!window._qsTimingHandle) window._qsTimingHandle = null;
-    const QS_STEP = 0.05; // 50ms
-    const QS_MIN_DUR = 0.05;
-
-    function _clearTimingSelectionUI() {
-        container.querySelectorAll('.qs-handle-start,.qs-handle-end,.qs-sel-caption').forEach(el => {
-            el.classList.remove('qs-handle-start', 'qs-handle-end', 'qs-sel-caption');
-        });
-        container.querySelectorAll('.qs-boundary-pipe').forEach(el => {
-            try { el.remove(); } catch (_) {}
-        });
-        container.querySelectorAll('.qs-timing-inline').forEach(el => {
-            el.textContent = '';
-            el.style.display = 'none';
-        });
-    }
-
-    function _getCaptionByIndex(ci) {
-        return (window.currentCaptions && Number.isFinite(ci)) ? window.currentCaptions[ci] : null;
-    }
-    function _getWordByIndex(wi) {
-        return (window.currentWords && Number.isFinite(wi)) ? window.currentWords[wi] : null;
-    }
-
-    function _captionIndexForTimingHandle(sel) {
-        if (!sel) return null;
-        if (sel.type === 'caption') return sel.ci;
-        if (sel.type === 'boundary' && window.currentCaptions) {
-            const k = sel.boundaryIndex;
-            for (let i = 0; i < window.currentCaptions.length; i++) {
-                const c = window.currentCaptions[i];
-                if (k > c.wordStartIndex && k <= c.wordEndIndex + 1) return i;
-            }
-        }
-        return null;
-    }
-
-    function _updateTimingOverlay() {
-        const sel = window._qsTimingHandle;
-        container.querySelectorAll('.qs-timing-inline').forEach(el => {
-            el.textContent = '';
-            el.style.display = 'none';
-        });
-        if (!sel) return;
-
-        let text = '';
-        if (sel.type === 'caption') {
-            const cap = _getCaptionByIndex(sel.ci);
-            const ws = cap ? _getWordByIndex(cap.wordStartIndex) : null;
-            const we = cap ? _getWordByIndex(cap.wordEndIndex) : null;
-            if (ws && we) text = `${formatTime(ws.start)} – ${formatTime(we.end)}`;
-        } else if (sel.type === 'boundary') {
-            const k = sel.boundaryIndex;
-            const prev = _getWordByIndex(k - 1);
-            const next = _getWordByIndex(k);
-            if (prev && next) text = `@ ${formatTime(prev.end)}`;
-        }
-
-        const ci = _captionIndexForTimingHandle(sel);
-        if (Number.isFinite(ci)) {
-            const row = container.querySelector(`.caption-row[data-ci="${ci}"]`);
-            const disp = row && row.querySelector('.qs-timing-inline');
-            if (disp && text) {
-                disp.textContent = text;
-                disp.style.display = 'inline';
-            }
-        }
-    }
-
-    function _updateNudgeButtonsState() {
-        const sel = window._qsTimingHandle;
-        if (!sel || !window.currentWords || !window.currentCaptions) {
-            container.querySelectorAll('button.qs-nudge-btn[data-nudge]').forEach(b => {
-                b.disabled = false;
-                b.style.opacity = '1';
-            });
-            return;
-        }
-
-        const can = (delta) => {
-            if (_isMultiSelectActive()) return false;
-            const words = window.currentWords;
-            if (sel.type === 'caption') {
-                const cap = _getCaptionByIndex(sel.ci);
-                if (!cap) return false;
-                const startWi = cap.wordStartIndex;
-                const endWi = cap.wordEndIndex;
-                const first = words[startWi];
-                const last = words[endWi];
-                if (!first || !last) return false;
-                const prev = startWi > 0 ? words[startWi - 1] : null;
-                const next = (endWi + 1) < words.length ? words[endWi + 1] : null;
-                let minDelta = prev ? (prev.end - first.start) : -Infinity;
-                let maxDelta = next ? (next.start - last.end) : Infinity;
-                minDelta = Math.max(minDelta, -first.start);
-                const clampedDelta = Math.max(minDelta, Math.min(maxDelta, delta));
-                return Math.abs(clampedDelta) > 1e-9;
-            }
-            if (sel.type === 'boundary') {
-                const k = sel.boundaryIndex;
-                const prev = words[k - 1];
-                const next = words[k];
-                if (!prev || !next) return false;
-                const boundary = prev.end;
-                const proposed = boundary + delta;
-                const minB = prev.start + QS_MIN_DUR;
-                const maxB = next.end - QS_MIN_DUR;
-                if (proposed < minB - 1e-9) return false;
-                if (proposed > maxB + 1e-9) return false;
-                return true;
-            }
-            return false;
-        };
-
-        container.querySelectorAll('.qs-caption-toolbar').forEach(toolbar => {
-            const btnLeft = toolbar.querySelector('button.qs-nudge-btn[data-nudge="later"]');
-            const btnRight = toolbar.querySelector('button.qs-nudge-btn[data-nudge="earlier"]');
-            if (!btnLeft || !btnRight) return;
-            const leftDir = btnLeft.getAttribute('data-nudge') === 'earlier' ? -QS_STEP : +QS_STEP;
-            const rightDir = btnRight.getAttribute('data-nudge') === 'earlier' ? -QS_STEP : +QS_STEP;
-            btnLeft.disabled = !can(leftDir);
-            btnRight.disabled = !can(rightDir);
-            btnLeft.style.opacity = btnLeft.disabled ? '0.45' : '1';
-            btnRight.style.opacity = btnRight.disabled ? '0.45' : '1';
-        });
-    }
-
-    function setTimingHandle(sel) {
-        if (!timingAdjustEnabled && sel) {
-            sel = null;
-        }
-        window._qsTimingHandle = sel;
-        _clearTimingSelectionUI();
-        if (!sel) {
-            _updateTimingOverlay();
-            _updateNudgeButtonsState();
-            return;
-        }
-
-        if (sel.type === 'caption') {
-            const row = container.querySelector(`.caption-row[data-ci="${sel.ci}"]`);
-            if (row) row.classList.add('qs-sel-caption');
-        } else if (sel.type === 'boundary') {
-            const k = sel.boundaryIndex;
-            // Insert a visible '|' between the two words (inline, not painted words).
-            try {
-                if (!Number.isFinite(k) || k <= 0 || !window.currentWords || k >= window.currentWords.length) {
-                    // no boundary at edges
-                } else {
-                    const nextTok = container.querySelector(`span.word-token[data-wi="${k}"]`);
-                    const prevTok = container.querySelector(`span.word-token[data-wi="${k - 1}"]`);
-                    const host = (nextTok || prevTok) ? (nextTok || prevTok).closest('.caption-text') : null;
-                    if (host) {
-                        const pipe = document.createElement('span');
-                        pipe.className = 'qs-boundary-pipe';
-                        pipe.textContent = '|';
-                        // Put pipe before next word (boundary BEFORE words[k])
-                        if (nextTok) host.insertBefore(pipe, nextTok);
-                        else host.appendChild(pipe);
-                    }
-                }
-            } catch (_) {}
-        }
-
-        _updateTimingOverlay();
-        _updateNudgeButtonsState();
-    }
-
-    function nudgeHandle(delta) {
-        const sel = window._qsTimingHandle;
-        if (!sel || !window.currentWords) return false;
-        const step = Math.round(Number(delta) / QS_STEP) * QS_STEP;
-        if (!Number.isFinite(step) || Math.abs(step) < 1e-9) return false;
-
-        let changed = false;
-
-        if (sel.type === 'caption') {
-            const cap = _getCaptionByIndex(sel.ci);
-            if (!cap) return false;
-            const startWi = cap.wordStartIndex;
-            const endWi = cap.wordEndIndex;
-            const first = window.currentWords[startWi];
-            const last = window.currentWords[endWi];
-            if (!first || !last) return false;
-            const prev = startWi > 0 ? window.currentWords[startWi - 1] : null;
-            const next = (endWi + 1) < window.currentWords.length ? window.currentWords[endWi + 1] : null;
-            let minDelta = prev ? (prev.end - first.start) : -Infinity;
-            let maxDelta = next ? (next.start - last.end) : Infinity;
-            minDelta = Math.max(minDelta, -first.start);
-            const clampedDelta = Math.max(minDelta, Math.min(maxDelta, step));
-            if (Math.abs(clampedDelta) < 1e-9) return false;
-            for (let wi = startWi; wi <= endWi; wi++) {
-                const w = window.currentWords[wi];
-                if (!w) continue;
-                w.start = Math.round((w.start + clampedDelta) * 1000) / 1000;
-                w.end = Math.round((w.end + clampedDelta) * 1000) / 1000;
-            }
-            changed = true;
-        } else if (sel.type === 'boundary') {
-            const k = sel.boundaryIndex;
-            if (k <= 0 || k >= window.currentWords.length) return false;
-            const prev = window.currentWords[k - 1];
-            const next = window.currentWords[k];
-            if (!prev || !next) return false;
-            const boundary = prev.end;
-            const proposed = boundary + step;
-            const minB = prev.start + QS_MIN_DUR;
-            const maxB = next.end - QS_MIN_DUR;
-            const clampedB = Math.max(minB, Math.min(maxB, proposed));
-            if (Math.abs(clampedB - boundary) < 1e-9) return false;
-            prev.end = Math.round(clampedB * 1000) / 1000;
-            next.start = Math.round(clampedB * 1000) / 1000;
-            changed = true;
-        } else {
-            return false;
-        }
-
-        if (!changed) return false;
-
-        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-        if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-
-        _updateTimingOverlay();
-        _updateNudgeButtonsState();
-
-        // Pulse the affected item.
-        try {
-            if (sel.type === 'caption') {
-                const row = container.querySelector(`.caption-row[data-ci="${sel.ci}"]`);
-                if (row) {
-                    row.classList.remove('qs-handle-flash');
-                    row.classList.add('qs-handle-flash');
-                    setTimeout(() => { try { row.classList.remove('qs-handle-flash'); } catch (_) {} }, 320);
-                }
-            } else {
-                const prevTok = container.querySelector(`span.word-token[data-wi="${sel.boundaryIndex - 1}"]`);
-                const nextTok = container.querySelector(`span.word-token[data-wi="${sel.boundaryIndex}"]`);
-                [prevTok, nextTok].forEach(t => {
-                    if (!t) return;
-                    t.classList.remove('qs-handle-flash');
-                    t.classList.add('qs-handle-flash');
-                    setTimeout(() => { try { t.classList.remove('qs-handle-flash'); } catch (_) {} }, 320);
-                });
-            }
-        } catch (_) {}
-
-        // Show "Moving..." bubble while dragging (pointer hold handler already sets it).
-        return true;
-    }
 
     function syncInlineStylePanel(ci) {
         if (!Number.isFinite(ci)) return;
@@ -6692,6 +7357,12 @@ function renderWordCaptionEditor() {
         });
     }
 
+    const overlapSet = _qsCaptionOverlapIndexSet();
+    let timingSel = window._qsTimingSelectedCi;
+    if (!Number.isFinite(timingSel) || timingSel < 0 || timingSel >= captions.length) {
+        timingSel = 0;
+        window._qsTimingSelectedCi = 0;
+    }
     const rows = captions.map((cap, ci) => {
         const ws = words[cap.wordStartIndex];
         const we = words[cap.wordEndIndex];
@@ -6707,9 +7378,10 @@ function renderWordCaptionEditor() {
                 const display = isEmpty ? '&nbsp;' : safe;
                 const wStart = (w && typeof w.start === 'number') ? w.start : '';
                 const wEnd = (w && typeof w.end === 'number') ? w.end : '';
-                const title = (typeof wStart === 'number' && typeof wEnd === 'number') ? `${wStart.toFixed(2)} → ${wEnd.toFixed(2)}` : '';
+                const title = (typeof wStart === 'number' && typeof wEnd === 'number') ? `${wStart.toFixed(2)}\u200e \u2192 ${wEnd.toFixed(2)}` : '';
                 const hl = w && w.highlighted ? '1' : '0';
-                return `<span class="word-token" contenteditable="false" tabindex="0" data-wi="${wi}" data-highlighted="${hl}" data-empty="${isEmpty ? '1' : '0'}" data-start="${wStart}" data-end="${wEnd}" title="${title}" style="display:inline-block; min-width:0.8ch;">${display}</span>`;
+                const tokTab = timingMode ? '-1' : '0';
+                return `<span class="word-token" contenteditable="false" tabindex="${tokTab}" data-wi="${wi}" data-highlighted="${hl}" data-empty="${isEmpty ? '1' : '0'}" data-start="${wStart}" data-end="${wEnd}" title="${title}" style="display:inline-block; min-width:0.8ch;">${display}</span>`;
             })
             .join(' ');
         const posLabelMap = { bottom: 'תחתון', middle: 'אמצע', top: 'עליון' };
@@ -6717,35 +7389,57 @@ function renderWordCaptionEditor() {
             `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${posLabelMap[p] || p}</button>`
         ).join('');
         const styleTooltip = 'עיצוב שורה. גררו כדי לבחור כמה שורות.';
-        const toolbarHtml = (isEditing && timingAdjustEnabled) ? `
+        const toolbarHtml = (isEditing && !timingMode) ? `
             <div class="qs-caption-toolbar" style="display:flex;align-items:center;gap:6px;flex-shrink:0;opacity:0;transition:opacity .12s ease;">
-              <span class="qs-timing-inline" style="display:none;font-size:10px;color:#6b7280;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;"></span>
-              <button type="button" class="qs-nudge-btn" data-nudge="later" title="Later">←</button>
-              <button type="button" class="qs-nudge-btn" data-nudge="earlier" title="Earlier">→</button>
               <button type="button" class="qs-style-btn" data-ci="${ci}" title="${styleTooltip}" aria-label="${styleTooltip}">🎨</button>
             </div>` : '';
-        const panelHtml = isEditing ? `
+        const panelHtml = (isEditing && !timingMode) ? `
             <div class="qs-inline-style-panel" data-ci="${ci}" style="display:none;width:100%;padding:10px 12px;border-radius:10px;background:#f9fafb;border:1px solid #e5e7eb;margin-top:6px;box-sizing:border-box;">
               <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
                 <span style="font-size:11px;color:#6b7280;width:64px;">מיקום</span>
                 <div class="qs-inline-seg qs-pos-seg" data-ci="${ci}" style="display:flex;gap:4px;flex-wrap:wrap;">${posSeg}</div>
               </div>
             </div>` : '';
-        return `
-          <div class="caption-row" data-ci="${ci}" data-start="${start}" style="margin-bottom:2px; direction:${textDirection}; text-align:${textAlign}; display:flex; flex-direction:column; align-items:stretch;">
-            <div class="caption-row-main" style="display:flex; flex-direction:column; gap:0; align-items:stretch;">
-              <div class="caption-ts" style="font-size:0.74em; color:#9ca3af; white-space:nowrap; line-height:1.05; margin-bottom:0;">${formatTime(start)}</div>
+        const rowExtraClass = (timingMode && overlapSet.has(ci)) ? ' qs-timing-overlap' : '';
+        const rowSelClass = (timingMode && ci === timingSel) ? ' qs-timing-line-selected' : '';
+        const tsLine = timingMode
+            ? _qsCaptionTimeRangeHtml(start, endT)
+            : formatTime(start);
+        const bodyBlock = (timingMode && ci === timingSel)
+            ? `
+              <div class="caption-row-body qs-sync-caption-body" style="display:flex; gap:6px; align-items:center; margin-top:0; max-width:100%;">
+                <div class="caption-text" contenteditable="false" spellcheck="false" style="margin:0 !important; padding:0; line-height:1.2; flex:0 1 auto; min-width:0;">${tokenHtml}</div>
+                <button type="button" class="qs-sync-handle qs-sync-handle--end" data-ci="${ci}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
+              </div>`
+            : `
               <div class="caption-row-body" style="display:flex; gap:10px; align-items:flex-start; margin-top:0;">
-                <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1;">${tokenHtml}</div>
+                <div class="caption-text" ${(isEditing && !timingMode) ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1;">${tokenHtml}</div>
                 ${toolbarHtml}
-              </div>
+              </div>`;
+        const tsBlock = `<div class="caption-ts" style="font-size:0.74em; color:#9ca3af; line-height:1.15; margin-bottom:0;">${tsLine}</div>`;
+        const moveHint = (timingMode && ci === timingSel)
+            ? `<div class="qs-sync-move-hint" aria-hidden="true"><span class="qs-sync-move-hint-icon">↔</span><span class="qs-sync-move-hint-text">Drag to move</span></div>`
+            : '';
+        const syncFlex = (timingMode && ci === timingSel)
+            ? `<div class="qs-sync-row-flex" style="display:flex; flex-direction:row; align-items:center; gap:8px; width:100%;">
+            <button type="button" class="qs-sync-handle qs-sync-handle--start" data-ci="${ci}" data-qs-sync-handle="start" aria-label="גרור לשינוי זמן התחלה"></button>
+            <div class="qs-sync-row-core" style="flex:1; min-width:0; display:flex; flex-direction:column; gap:0; align-items:stretch;">
+              ${tsBlock}<div class="qs-sync-text-stack">${bodyBlock}${moveHint}</div>
             </div>
+          </div>`
+            : `<div class="caption-row-main" style="display:flex; flex-direction:column; gap:0; align-items:stretch;">
+              ${tsBlock}${bodyBlock}
+            </div>`;
+        return `
+          <div class="caption-row${rowExtraClass}${rowSelClass}" data-ci="${ci}" data-start="${start}" data-end="${endT}" style="margin-bottom:2px; direction:${textDirection}; text-align:${textAlign}; display:flex; flex-direction:column; align-items:stretch;">
+            ${syncFlex}
             ${panelHtml}
           </div>
         `;
     }).join('');
 
     container.innerHTML = rows;
+
     container.style.direction = textDirection;
     container.style.textAlign = textAlign;
     container.contentEditable = 'false';
@@ -6788,6 +7482,9 @@ function renderWordCaptionEditor() {
           #transcript-window .caption-text .word-token {
             line-height: 1.2 !important;
             vertical-align: top !important;
+          }
+          #transcript-window.transcript-editing .caption-ts {
+            cursor: pointer;
           }
           #transcript-window.transcript-editing .caption-row:hover {
             background: rgba(0,0,0,0.03);
@@ -6984,13 +7681,23 @@ function renderWordCaptionEditor() {
     }
 
     // Jump-to-time on row click (avoid interfering with word editing).
+    // Use live class / timing flags here — not closure values — so save/cancel updates apply even if this handler was not re-assigned.
     container.onclick = (e) => {
-        const row = e.target && e.target.closest ? e.target.closest('.caption-row') : null;
+        let t = e.target;
+        if (t && t.nodeType === Node.TEXT_NODE && t.parentElement) t = t.parentElement;
+        if (!t || !t.closest) return;
+        const row = t.closest('.caption-row');
         if (!row) return;
-        // Do not auto-jump/play while editing.
-        if (isEditing) return;
-        // If user clicked a token, let them edit; otherwise jump.
-        if (e.target && e.target.closest && e.target.closest('span.word-token')) return;
+        if (t.closest('button, a, input, textarea, select, [role="button"], .qs-inline-style-panel, .qs-sync-handle')) return;
+        if (window._qsTimingMode) {
+            const ci = parseInt(row.getAttribute('data-ci'), 10);
+            if (!Number.isFinite(ci)) return;
+            window._qsTimingSelectedCi = ci;
+            _qsSeekToCaptionStart(ci);
+            renderWordCaptionEditor();
+            return;
+        }
+        // Word-token clicks bubble here (no stopPropagation) so time strip and text line both seek consistently.
         const start = parseFloat(row.getAttribute('data-start'));
         if (Number.isFinite(start) && typeof window.jumpTo === 'function') window.jumpTo(start);
     };
@@ -7337,6 +8044,7 @@ function renderWordCaptionEditor() {
                             window.currentWords[wi].text = String(input.value || '').trim();
                         }
                         const prev = window.currentCaptions[capIndex - 1];
+                        _qsSanitizeWordModelCaptionMergeBoundaries(window.currentWords, prev.wordEndIndex, cap.wordStartIndex, cap.wordEndIndex);
                         const merged = {
                             id: prev.id,
                             wordStartIndex: prev.wordStartIndex,
@@ -7372,6 +8080,7 @@ function renderWordCaptionEditor() {
                             window.currentWords[wi].text = String(input.value || '').trim();
                         }
                         const next = window.currentCaptions[capIndex + 1];
+                        _qsSanitizeWordModelCaptionMergeBoundaries(window.currentWords, cap.wordEndIndex, next.wordStartIndex, next.wordEndIndex);
                         const merged = {
                             id: cap.id,
                             wordStartIndex: cap.wordStartIndex,
@@ -7405,7 +8114,18 @@ function renderWordCaptionEditor() {
 
     container.querySelectorAll('span.word-token').forEach((el) => {
         el.addEventListener('click', (e) => {
-            e.stopPropagation();
+            if (timingMode) {
+                e.stopPropagation();
+                const row = el.closest('.caption-row');
+                const ci = row ? parseInt(row.getAttribute('data-ci'), 10) : null;
+                if (Number.isFinite(ci)) {
+                    window._qsTimingSelectedCi = ci;
+                    _qsSeekToCaptionStart(ci);
+                    renderWordCaptionEditor();
+                }
+                return;
+            }
+            // Bubble to #transcript-window so container.onclick can jumpTo (same as clicking the time line).
             if (typeof isMobileClient === 'function' && isMobileClient()) setActiveTokenNoCaretMove(el);
             else setActiveToken(el);
             let ci = null;
@@ -7418,15 +8138,6 @@ function renderWordCaptionEditor() {
                 }
             } catch (_) {}
             if (isEditing) {
-                // Keep line timing handle behavior on click.
-                if (timingAdjustEnabled && Number.isFinite(ci)) {
-                    if (_isMultiSelectActive()) {
-                        setTimingHandle(null);
-                    } else {
-                        setActiveRow(ci, { user: true });
-                        setTimingHandle({ type: 'caption', ci });
-                    }
-                }
                 // Character-level editing UX: single click enters token edit directly.
                 // This avoids the "caret only between words" feeling.
                 if (!e.shiftKey && !el.classList.contains('editing')) {
@@ -7461,25 +8172,11 @@ function renderWordCaptionEditor() {
                 beginTokenEdit(el);
                 return;
             }
-            let ci = null;
             try {
                 const row = el.closest('.caption-row');
-                ci = row ? parseInt(row.getAttribute('data-ci'), 10) : null;
+                const ci = row ? parseInt(row.getAttribute('data-ci'), 10) : null;
                 if (Number.isFinite(ci) && typeof setActiveRow === 'function') setActiveRow(ci, { user: true });
             } catch (_) {}
-            if (timingAdjustEnabled && e.shiftKey) {
-                // Shift+double-click: boundary timing (visual side → logical boundary).
-                try {
-                    const r = el.getBoundingClientRect();
-                    const clickX = e.clientX - r.left;
-                    const isVisualStart = isRtl ? (clickX > (r.width / 2)) : (clickX < (r.width / 2));
-                    const wi = parseInt(el.getAttribute('data-wi'), 10);
-                    const boundaryIndex = isVisualStart ? wi : (wi + 1);
-                    setTimingHandle({ type: 'boundary', boundaryIndex });
-                } catch (_) {}
-                return;
-            }
-            // Highlight feature removed.
             return;
         });
         el.addEventListener('keydown', (e) => {
@@ -7600,8 +8297,6 @@ function renderWordCaptionEditor() {
 
     function clearActiveRowUI() {
         container.querySelectorAll('.caption-row.qs-hover-line').forEach(el => el.classList.remove('qs-hover-line'));
-        const live = container.querySelector('#qs-nudge-feedback-live');
-        if (live) live.style.display = 'none';
     }
 
     function setActiveRow(ci, opts = {}) {
@@ -7614,21 +8309,6 @@ function renderWordCaptionEditor() {
         if (user) {
             if (range) _selectRangeTo(ci);
             else _setSelectedRows([ci], { setAnchor: true });
-            if (_isMultiSelectActive()) {
-                window._qsTimingHandle = null;
-            }
-        }
-        _updateTimingOverlay();
-        _updateNudgeButtonsState();
-        if (!isEditing) return;
-        const rowRef = container.querySelector(`.caption-row[data-ci="${Number.isFinite(ci) ? ci : window._qsUserSelectedRowCi}"]`)
-            || container.querySelector('.caption-row.qs-line-selected');
-        const live = container.querySelector('#qs-nudge-feedback-live');
-        if (live && rowRef) {
-            const rowRect = rowRef.getBoundingClientRect();
-            const contRect = container.getBoundingClientRect();
-            live.style.top = `${(rowRect.bottom - contRect.top) + 6}px`;
-            live.style.left = '12px';
         }
     }
 
@@ -7638,9 +8318,6 @@ function renderWordCaptionEditor() {
         try { container.querySelector('#qs-nudge-in-editor')?.remove(); } catch (_) {}
         window._qsRowDragMoved = false;
 
-        if (!window._qsTimingHandle && window.currentCaptions && window.currentCaptions.length) {
-            setTimingHandle({ type: 'caption', ci: 0 });
-        }
         if (Number.isFinite(window._qsUserSelectedRowCi) && window.currentCaptions &&
             (window._qsUserSelectedRowCi < 0 || window._qsUserSelectedRowCi >= window.currentCaptions.length)) {
             window._qsUserSelectedRowCi = null;
@@ -7648,50 +8325,6 @@ function renderWordCaptionEditor() {
         if (Number.isFinite(window._qsStylePanelOpenCi) && window.currentCaptions &&
             (window._qsStylePanelOpenCi < 0 || window._qsStylePanelOpenCi >= window.currentCaptions.length)) {
             window._qsStylePanelOpenCi = null;
-        }
-
-        let liveFb = container.querySelector('#qs-nudge-feedback-live');
-        if (!liveFb) {
-            liveFb = document.createElement('div');
-            liveFb.id = 'qs-nudge-feedback-live';
-            liveFb.textContent = '—';
-            container.appendChild(liveFb);
-        }
-
-        if (!container._qsInlineNudgePtrBound) {
-            container._qsInlineNudgePtrBound = true;
-            let nudgeRepeat = null;
-            const stopNudgeRepeat = () => {
-                if (nudgeRepeat) clearInterval(nudgeRepeat);
-                nudgeRepeat = null;
-            };
-            container.addEventListener('pointerdown', (e) => {
-                const b = e.target && e.target.closest ? e.target.closest('button.qs-nudge-btn[data-nudge]') : null;
-                if (!b || !container.contains(b)) return;
-                if (_isMultiSelectActive()) return;
-                e.preventDefault();
-                e.stopPropagation();
-                const n = b.getAttribute('data-nudge');
-                const apply = () => {
-                    if (n === 'earlier') return nudgeHandle(-QS_STEP);
-                    if (n === 'later') return nudgeHandle(+QS_STEP);
-                    return false;
-                };
-                apply();
-                stopNudgeRepeat();
-                nudgeRepeat = setInterval(() => {
-                    const ok = apply();
-                    if (!ok) stopNudgeRepeat();
-                }, 50);
-                try { b.setPointerCapture(e.pointerId); } catch (_) {}
-            }, true);
-            container.addEventListener('pointerup', stopNudgeRepeat);
-            container.addEventListener('pointercancel', stopNudgeRepeat);
-            try {
-                if (window._qsNudgeGlobalPointerUpHandler) window.removeEventListener('pointerup', window._qsNudgeGlobalPointerUpHandler);
-                window._qsNudgeGlobalPointerUpHandler = stopNudgeRepeat;
-                window.addEventListener('pointerup', stopNudgeRepeat);
-            } catch (_) {}
         }
 
         if (!container._qsInlineStyleClickBound) {
@@ -7715,7 +8348,6 @@ function renderWordCaptionEditor() {
                     const isAllSelected = totalCaps > 0 && selSet.size === totalCaps;
                     if (isAllSelected) {
                         setActiveRow(cci, { user: true });
-                        setTimingHandle({ type: 'caption', ci: cci });
                     }
 
                     const panel = container.querySelector(`.qs-inline-style-panel[data-ci="${cci}"]`);
@@ -7768,32 +8400,27 @@ function renderWordCaptionEditor() {
                 if (!isEditing) return;
                 if (e.button !== 0) return;
                 const isTouchPointer = e.pointerType === 'touch' || e.pointerType === 'pen';
-                const t = e.target;
+                let t = e.target;
+                if (t && t.nodeType === Node.TEXT_NODE && t.parentElement) t = t.parentElement;
                 const onStyleBtn = !!(t && t.closest && t.closest('.qs-style-btn'));
                 if (t && t.closest && (t.closest('.qs-inline-style-panel') || t.closest('span.word-token') || t.closest('input.qs-token-input'))) return;
                 if (!onStyleBtn && t && t.closest && t.closest('.qs-caption-toolbar')) return;
+                // Timestamp / row chrome: do not preventDefault — that suppresses click and breaks jumpTo on the container.
+                if (t && t.closest && t.closest('.caption-ts')) return;
+                // Row-drag multi-select only when pressing inside the text column (gaps between tokens), not from time strip or outer chrome.
+                if (!t || !t.closest || !t.closest('.caption-text')) return;
                 // On touch devices, allow native pan/scroll in the transcript window.
                 // We still set active row, but avoid drag-selection and preventDefault.
                 if (isTouchPointer) {
-                    if (e.shiftKey) {
-                        setActiveRow(ci, { user: true, range: true });
-                        setTimingHandle(null);
-                    } else {
-                        setActiveRow(ci, { user: true });
-                        setTimingHandle({ type: 'caption', ci });
-                    }
+                    if (e.shiftKey) setActiveRow(ci, { user: true, range: true });
+                    else setActiveRow(ci, { user: true });
                     return;
                 }
                 window._qsRowDragSelecting = true;
                 window._qsRowDragStartCi = ci;
                 window._qsRowDragMoved = false;
-                if (e.shiftKey) {
-                    setActiveRow(ci, { user: true, range: true });
-                    setTimingHandle(null);
-                } else {
-                    setActiveRow(ci, { user: true });
-                    setTimingHandle({ type: 'caption', ci });
-                }
+                if (e.shiftKey) setActiveRow(ci, { user: true, range: true });
+                else setActiveRow(ci, { user: true });
                 e.preventDefault();
             });
             rowEl.addEventListener('mouseenter', () => {
@@ -7806,7 +8433,6 @@ function renderWordCaptionEditor() {
                     for (let i = lo; i <= hi; i++) range.push(i);
                     if (ci !== startCi) window._qsRowDragMoved = true;
                     _setSelectedRows(range, { setAnchor: false });
-                    setTimingHandle(range.length > 1 ? null : { type: 'caption', ci });
                 }
             });
             rowEl.addEventListener('mouseleave', (e) => {
@@ -7814,8 +8440,6 @@ function renderWordCaptionEditor() {
                 const rt = e && e.relatedTarget ? e.relatedTarget : null;
                 if (tb && rt && tb.contains(rt)) return;
                 rowEl.classList.remove('qs-hover-line');
-                _updateTimingOverlay();
-                _updateNudgeButtonsState();
             });
         });
 
@@ -7828,19 +8452,13 @@ function renderWordCaptionEditor() {
             if (t.nodeType === 3 && t.parentElement) t = t.parentElement;
             if (!t.closest) return;
             if (t.closest('span.word-token')) return;
-            if (t.closest('.caption-ts')) return;
             if (t.closest('.qs-caption-toolbar') || t.closest('.qs-inline-style-panel')) return;
             const rowEl = t.closest('.caption-row');
             if (!rowEl) return;
             const ci = parseInt(rowEl.getAttribute('data-ci'), 10);
             if (!Number.isFinite(ci)) return;
-            if (e.shiftKey) {
-                setActiveRow(ci, { user: true, range: true });
-                setTimingHandle(null);
-            } else {
-                setActiveRow(ci, { user: true });
-                setTimingHandle(_isMultiSelectActive() ? null : { type: 'caption', ci });
-            }
+            if (e.shiftKey) setActiveRow(ci, { user: true, range: true });
+            else setActiveRow(ci, { user: true });
         };
         container.addEventListener('click', container._qsLineHandleClickHandler, { capture: false });
         if (window._qsRowDragStopHandler) {
@@ -7866,8 +8484,6 @@ function renderWordCaptionEditor() {
             }
         }
         _syncGlobalSelectAllUI();
-        _updateTimingOverlay();
-        _updateNudgeButtonsState();
     }
 
     // Prevent "free text" edits in caption-text. Text changes must happen via token edit only.
@@ -8113,6 +8729,7 @@ function renderWordCaptionEditor() {
                 e.preventDefault();
                 e.stopPropagation();
                 const prev = window.currentCaptions[capIndex - 1];
+                _qsSanitizeWordModelCaptionMergeBoundaries(window.currentWords, prev.wordEndIndex, cap.wordStartIndex, cap.wordEndIndex);
                 const merged = { id: prev.id, wordStartIndex: prev.wordStartIndex, wordEndIndex: cap.wordEndIndex, style: prev.style ? { ...prev.style } : (cap.style ? { ...cap.style } : undefined) };
                 window.currentCaptions.splice(capIndex - 1, 2, merged);
                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
@@ -8158,6 +8775,7 @@ function renderWordCaptionEditor() {
                 e.preventDefault();
                 e.stopPropagation();
                 const next = window.currentCaptions[capIndex + 1];
+                _qsSanitizeWordModelCaptionMergeBoundaries(window.currentWords, cap.wordEndIndex, next.wordStartIndex, next.wordEndIndex);
                 const merged = { id: cap.id, wordStartIndex: cap.wordStartIndex, wordEndIndex: next.wordEndIndex, style: cap.style ? { ...cap.style } : (next.style ? { ...next.style } : undefined) };
                 window.currentCaptions.splice(capIndex, 2, merged);
                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
@@ -8166,6 +8784,11 @@ function renderWordCaptionEditor() {
                 const newLastToken = container.querySelector(`.caption-row[data-ci="${capIndex}"] span.word-token[data-wi="${merged.wordEndIndex}"]`);
                 if (newLastToken) newLastToken.click();
                 if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                return;
+            }
+            if (atEnd && capIndex === window.currentCaptions.length - 1) {
+                e.preventDefault();
+                e.stopPropagation();
                 return;
             }
         }
@@ -8193,6 +8816,13 @@ function renderWordCaptionEditor() {
         }
 
     };
+
+    if (timingMode) {
+        try { initQsSyncDirectManipulation(container); } catch (_) {}
+    } else if (container._qsSyncDragCleanup) {
+        try { container._qsSyncDragCleanup(); } catch (_) {}
+        container._qsSyncDragCleanup = null;
+    }
 }
 
 function highlightActiveCaptionRowByTime(currentTime) {
