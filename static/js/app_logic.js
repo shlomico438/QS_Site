@@ -3868,14 +3868,13 @@ function hideProgressBar() {
 function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
-    const timingBtn = document.getElementById('btn-timing');
     const togglesGroup = document.querySelector('.switches-top-bar .toggles-group') || document.querySelector('.controls-bar .toggles-group');
     const switchesTopBar = document.querySelector('.switches-top-bar');
     const controlsBar = document.querySelector('.controls-bar');
     const editActions = document.getElementById('edit-actions');
     const downloadMenu = document.getElementById('download-menu');
 
-    [downloadBtn, editBtn, timingBtn].forEach((el) => {
+    [downloadBtn, editBtn].forEach((el) => {
         if (el) el.style.display = visible ? '' : 'none';
     });
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
@@ -3896,9 +3895,8 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
     const fmtSub = document.getElementById('format-mode-subtitle');
     const fmtDoc = document.getElementById('format-mode-doc');
     const editBtn = document.getElementById('btn-edit');
-    const timingBtn = document.getElementById('btn-timing');
     const subStyleToggle = document.getElementById('subtitle-style-toggle');
-    [fmtSub, fmtDoc, editBtn, timingBtn, subStyleToggle].forEach((el) => {
+    [fmtSub, fmtDoc, editBtn, subStyleToggle].forEach((el) => {
         if (!el) return;
         el.disabled = !!disabled;
     });
@@ -4806,51 +4804,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             !window._qsForceLegacyEditMode
         );
 
-        // Line-timing mode (word model): same persistence as word editor; exit timing mode.
-        if (timingOnly && useWordModelEditor) {
-            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-            syncFormattedDocWithCurrentSegments();
-            if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
-            if (typeof updateJobStatus === 'function' && window.currentSegments && window.currentSegments.length) {
-                (async () => {
-                    try {
-                        const { data: { user } } = await supabase.auth.getUser();
-                        const dbId = localStorage.getItem('lastJobDbId');
-                        const s3Key = localStorage.getItem('lastS3Key');
-                        if (user && dbId && s3Key) {
-                            const res = await fetch('/api/save_job_result', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    userId: user.id,
-                                    input_s3_key: s3Key,
-                                    segments: window.currentSegments,
-                                    words: window.currentWords,
-                                    captions: window.currentCaptions,
-                                    formatted: window.currentFormattedDoc || undefined
-                                })
-                            });
-                            const data = res.ok ? await res.json() : {};
-                            if (data.result_s3_key) {
-                                updateJobStatus(dbId, 'processed', { result_s3_key: data.result_s3_key });
-                            }
-                        }
-                    } catch (_) { /* ignore */ }
-                })();
-            }
-            window._qsTimingMode = false;
-            window._qsTimingModeBackup = null;
-            if (win) {
-                win.classList.remove('transcript-sync-mode');
-                win.style.border = "1px solid #e2e8f0";
-                win.style.backgroundColor = "transparent";
-            }
-            if (editActions) editActions.style.display = 'none';
-            try { renderWordCaptionEditor(); } catch (_) {}
-            _qsSetSyncModeButtonActive(false);
-            return;
-        }
-
         // Line-timing mode (legacy segments only): persist segments.
         if (timingOnly && !useWordModelEditor && Array.isArray(window.currentSegments) && window.currentSegments.length) {
             syncFormattedDocWithCurrentSegments();
@@ -4930,11 +4883,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 })();
             }
 
-            // Close edit mode (and re-render read-only word editor)
+            // Close unified edit + timing (and re-render read-only word editor)
             win.contentEditable = 'false';
             win.style.border = "1px solid #e2e8f0";
             win.style.backgroundColor = "transparent";
-            win.classList.remove('transcript-editing');
+            win.classList.remove('transcript-editing', 'transcript-sync-mode');
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            _qsSetSyncModeButtonActive(false);
             if (editActions) editActions.style.display = 'none';
             try { renderWordCaptionEditor(); } catch (_) {}
             window._qsForceLegacyEditMode = false;
@@ -5062,7 +5018,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         win.contentEditable = 'false';
         win.style.border = "1px solid #e2e8f0";
         win.style.backgroundColor = "transparent";
-        win.classList.remove('transcript-editing');
+        win.classList.remove('transcript-editing', 'transcript-sync-mode');
+        window._qsTimingMode = false;
+        window._qsTimingModeBackup = null;
+        _qsSetSyncModeButtonActive(false);
 
         if (editActions) editActions.style.display = 'none';
         window._qsForceLegacyEditMode = false;
@@ -5072,6 +5031,26 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.cancelEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
+
+        // Unified word editor (edit + timing): one backup restores text and timings
+        if (window.wordEditBackup && Array.isArray(window.wordEditBackup.words) && Array.isArray(window.wordEditBackup.captions)) {
+            window.currentWords = window.wordEditBackup.words;
+            window.currentCaptions = window.wordEditBackup.captions;
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            window.wordEditBackup = null;
+            window._qsTimingModeBackup = null;
+            window._qsTimingMode = false;
+            if (win) {
+                win.classList.remove('transcript-editing', 'transcript-sync-mode');
+                win.style.border = "1px solid #e2e8f0";
+                win.style.backgroundColor = "transparent";
+            }
+            if (editActions) editActions.style.display = 'none';
+            _qsSetSyncModeButtonActive(false);
+            try { renderWordCaptionEditor(); } catch (_) {}
+            window._qsForceLegacyEditMode = false;
+            return;
+        }
 
         if (window._qsTimingMode && window._qsTimingModeBackup) {
             const b = window._qsTimingModeBackup;
@@ -5099,25 +5078,19 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             return;
         }
 
-        // Word-level editor: restore model backup and re-render
-        if (window.wordEditBackup && Array.isArray(window.wordEditBackup.words) && Array.isArray(window.wordEditBackup.captions)) {
-            window.currentWords = window.wordEditBackup.words;
-            window.currentCaptions = window.wordEditBackup.captions;
-            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-            try { renderWordCaptionEditor(); } catch (_) {}
-            window.wordEditBackup = null;
-        } else {
-        // Restore the original text from before they clicked the pencil
+        // Restore the original text from before they clicked the pencil (legacy paragraph edit)
         if (window.transcriptBackup) {
             win.innerHTML = window.transcriptBackup;
-        }
         }
 
         // Lock UI
         win.contentEditable = 'false';
         win.style.border = "1px solid #e2e8f0";
         win.style.backgroundColor = "transparent";
-        win.classList.remove('transcript-editing');
+        win.classList.remove('transcript-editing', 'transcript-sync-mode');
+        window._qsTimingMode = false;
+        window._qsTimingModeBackup = null;
+        _qsSetSyncModeButtonActive(false);
         if (editActions) editActions.style.display = 'none';
         window._qsForceLegacyEditMode = false;
         // Ensure word editor becomes read-only after cancel
@@ -5503,14 +5476,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.toggleEditMode = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
-        if (win && win.classList.contains('transcript-sync-mode')) return;
         const isEditable = win.contentEditable === 'true';
-        const forceLegacyMobileEdit = (typeof isMobileClient === 'function') && isMobileClient();
 
         if (!isEditable) {
             // --- START EDITING ---
-            // Word-caption editor uses token UI (no contenteditable paragraphs).
-            if (!forceLegacyMobileEdit && Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
+            // Word-caption editor (desktop + mobile): tokens + line timing on one screen.
+            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
                 window._qsForceLegacyEditMode = false;
                 win.contentEditable = 'false';
                 // Backup the underlying model so Cancel truly discards edits
@@ -5523,8 +5494,17 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 } catch (_) {
                     window.wordEditBackup = null;
                 }
+                // Unified screen: text edit + line timing (handles) together
+                try {
+                    window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
+                } catch (_) {
+                    window._qsTimingModeBackup = null;
+                }
+                window._qsTimingMode = true;
+                if (!Number.isFinite(window._qsTimingSelectedCi)) window._qsTimingSelectedCi = 0;
                 // IMPORTANT: mark edit mode BEFORE rendering so caption-text becomes contenteditable.
-                win.classList.add('transcript-editing');
+                win.classList.add('transcript-editing', 'transcript-sync-mode');
+                _qsSetSyncModeButtonActive(true);
                 renderWordCaptionEditor();
                 if (editActions) editActions.style.display = 'flex';
                 win.style.border = "2px solid #1e3a8a";
@@ -5539,8 +5519,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 return;
             }
 
-            window._qsForceLegacyEditMode = !!forceLegacyMobileEdit;
-            if (forceLegacyMobileEdit && typeof window.render === 'function') {
+            // Cue-only / paragraph transcript (no word model)
+            window._qsForceLegacyEditMode = false;
+            if (typeof window.render === 'function') {
                 try { window.render(); } catch (_) {}
             }
             win.contentEditable = 'true';
@@ -5579,11 +5560,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
         if (!win) return;
-        if (win.classList.contains('transcript-editing')) return;
         const hasWord = Array.isArray(window.currentWords) && window.currentWords.length &&
             Array.isArray(window.currentCaptions) && window.currentCaptions.length;
         const hasSeg = Array.isArray(window.currentSegments) && window.currentSegments.length;
         if (!hasWord && !hasSeg) return;
+        // Exiting unified (or timing-only) mode: save
         if (window._qsTimingMode) {
             window.saveEdits();
             return;
@@ -5591,6 +5572,27 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
         window._qsTimingMode = true;
         window._qsTimingSelectedCi = 0;
+        // Word model: same unified screen as pencil (edit + timing)
+        if (hasWord && !window._qsForceLegacyEditMode) {
+            win.contentEditable = 'false';
+            try {
+                window.wordEditBackup = {
+                    words: JSON.parse(JSON.stringify(window.currentWords)),
+                    captions: JSON.parse(JSON.stringify(window.currentCaptions)),
+                    segments: JSON.parse(JSON.stringify(window.currentSegments || [])),
+                };
+            } catch (_) {
+                window.wordEditBackup = null;
+            }
+            win.classList.add('transcript-editing', 'transcript-sync-mode');
+            win.style.border = '2px solid #1e3a8a';
+            win.style.backgroundColor = '#fff';
+            if (editActions) editActions.style.display = 'flex';
+            _qsSetSyncModeButtonActive(true);
+            try { renderWordCaptionEditor(); } catch (_) {}
+            return;
+        }
+        // Legacy segments only: timing UI without token editor
         win.classList.add('transcript-sync-mode');
         win.style.border = '2px solid #0d9488';
         win.style.backgroundColor = '#fff';
@@ -6926,6 +6928,13 @@ function initQsSyncDirectManipulation(container) {
         );
         if (!row || !container.contains(row)) return;
 
+        // Unified edit + timing: never start line-drag from words or token input — those need native focus / token edit clicks.
+        if (container.classList.contains('transcript-editing')) {
+            let t = e.target;
+            if (t && t.nodeType === Node.TEXT_NODE && t.parentElement) t = t.parentElement;
+            if (t && t.closest && (t.closest('.caption-text') || t.closest('input.qs-token-input'))) return;
+        }
+
         let ci = parseInt(row.getAttribute('data-ci'), 10);
         if (!Number.isFinite(ci)) ci = parseInt(row.getAttribute('data-timing-idx'), 10);
         if (!Number.isFinite(ci) || ci < 0 || ci !== window._qsTimingSelectedCi) return;
@@ -7255,6 +7264,85 @@ function _setCaretToWordIndex(container, wordIndex, atStart = true) {
     try { el.focus(); } catch (_) {}
 }
 
+/**
+ * Insert new timed words immediately after insertAfterWi (same caption line).
+ * Does not overwrite following tokens — shifts word indices for this and later captions.
+ */
+function _qsInsertWordTextsAfterIndex(insertAfterWi, texts) {
+    if (!Array.isArray(texts) || texts.length === 0) return 0;
+    const w = window.currentWords;
+    const caps = window.currentCaptions;
+    if (!Array.isArray(w) || !w[insertAfterWi] || !Array.isArray(caps)) return 0;
+
+    const capIndex = caps.findIndex((c) => insertAfterWi >= c.wordStartIndex && insertAfterWi <= c.wordEndIndex);
+    const cap = capIndex >= 0 ? caps[capIndex] : null;
+    const n = texts.length;
+    const left = w[insertAfterWi];
+    const rightWi = insertAfterWi + 1;
+    const right = w[rightWi] || null;
+
+    const MIN = 0.05;
+    let tL = _asTranscriptTime(left.end);
+    if (!Number.isFinite(tL)) tL = _asTranscriptTime(left.start);
+    if (!Number.isFinite(tL)) tL = 0;
+    let tR = right ? _asTranscriptTime(right.start) : NaN;
+    if (!Number.isFinite(tR)) tR = tL + MIN * (n + 2);
+
+    let available = tR - tL;
+    if (available < MIN * n) {
+        tR = tL + MIN * (n + 1);
+        if (right) {
+            const push = tR + MIN - _asTranscriptTime(right.start);
+            if (push > 0) {
+                for (let j = rightWi; j < w.length; j++) {
+                    const ww = w[j];
+                    if (!ww) continue;
+                    ww.start = Math.round((_asTranscriptTime(ww.start) + push) * 1000) / 1000;
+                    ww.end = Math.round((_asTranscriptTime(ww.end) + push) * 1000) / 1000;
+                }
+            }
+            tR = _asTranscriptTime(w[rightWi].start);
+        }
+        available = Math.max(MIN * n, tR - tL);
+    }
+
+    const dur = Math.max(MIN, available / (n + 1));
+    const newWords = [];
+    let s = tL;
+    for (let i = 0; i < n; i++) {
+        const e = Math.round((s + dur) * 1000) / 1000;
+        newWords.push({
+            id: `w${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+            text: String(texts[i] || '').trim(),
+            start: Math.round(s * 1000) / 1000,
+            end: e,
+            highlighted: false
+        });
+        s = e;
+    }
+
+    w.splice(insertAfterWi + 1, 0, ...newWords);
+
+    if (cap) {
+        cap.wordEndIndex += n;
+        for (let ci = capIndex + 1; ci < caps.length; ci++) {
+            caps[ci].wordStartIndex += n;
+            caps[ci].wordEndIndex += n;
+        }
+    } else {
+        for (let ci = 0; ci < caps.length; ci++) {
+            const c = caps[ci];
+            if (c.wordStartIndex > insertAfterWi) {
+                c.wordStartIndex += n;
+                c.wordEndIndex += n;
+            } else if (c.wordEndIndex > insertAfterWi) {
+                c.wordEndIndex += n;
+            }
+        }
+    }
+    return n;
+}
+
 function reflowCaptionsByMaxChars(words, captions, maxChars = 27) {
     // Re-split captions using ONLY word boundaries (no timing estimation).
     if (!Array.isArray(words) || !Array.isArray(captions) || captions.length === 0) return captions;
@@ -7389,11 +7477,11 @@ function renderWordCaptionEditor() {
             `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${posLabelMap[p] || p}</button>`
         ).join('');
         const styleTooltip = 'עיצוב שורה. גררו כדי לבחור כמה שורות.';
-        const toolbarHtml = (isEditing && !timingMode) ? `
+        const toolbarHtml = isEditing ? `
             <div class="qs-caption-toolbar" style="display:flex;align-items:center;gap:6px;flex-shrink:0;opacity:0;transition:opacity .12s ease;">
               <button type="button" class="qs-style-btn" data-ci="${ci}" title="${styleTooltip}" aria-label="${styleTooltip}">🎨</button>
             </div>` : '';
-        const panelHtml = (isEditing && !timingMode) ? `
+        const panelHtml = isEditing ? `
             <div class="qs-inline-style-panel" data-ci="${ci}" style="display:none;width:100%;padding:10px 12px;border-radius:10px;background:#f9fafb;border:1px solid #e5e7eb;margin-top:6px;box-sizing:border-box;">
               <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
                 <span style="font-size:11px;color:#6b7280;width:64px;">מיקום</span>
@@ -7407,13 +7495,14 @@ function renderWordCaptionEditor() {
             : formatTime(start);
         const bodyBlock = (timingMode && ci === timingSel)
             ? `
-              <div class="caption-row-body qs-sync-caption-body" style="display:flex; gap:6px; align-items:center; margin-top:0; max-width:100%;">
-                <div class="caption-text" contenteditable="false" spellcheck="false" style="margin:0 !important; padding:0; line-height:1.2; flex:0 1 auto; min-width:0;">${tokenHtml}</div>
+              <div class="caption-row-body qs-sync-caption-body" style="display:flex; gap:6px; align-items:center; margin-top:0; max-width:100%; flex-wrap:wrap;">
+                <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:0 1 auto; min-width:0;">${tokenHtml}</div>
                 <button type="button" class="qs-sync-handle qs-sync-handle--end" data-ci="${ci}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
+                ${toolbarHtml}
               </div>`
             : `
               <div class="caption-row-body" style="display:flex; gap:10px; align-items:flex-start; margin-top:0;">
-                <div class="caption-text" ${(isEditing && !timingMode) ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1;">${tokenHtml}</div>
+                <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1;">${tokenHtml}</div>
                 ${toolbarHtml}
               </div>`;
         const tsBlock = `<div class="caption-ts" style="font-size:0.74em; color:#9ca3af; line-height:1.15; margin-bottom:0;">${tsLine}</div>`;
@@ -7815,17 +7904,13 @@ function renderWordCaptionEditor() {
         }, 0);
 
         const commit = () => {
+            // Re-render (merge, arrow navigation, etc.) can detach this token before blur runs; avoid mutating stale DOM.
+            if (!tokenEl || !tokenEl.isConnected) return;
+            try { input.onblur = null; } catch (_) {}
             const skipRefocus = !!window._qsSkipCommitRefocus;
             window._qsSkipCommitRefocus = false;
             const raw = String(input.value || '').trim();
             const parts = raw.split(/\s+/).filter(Boolean);
-            const allWords = Array.isArray(window.currentWords) ? window.currentWords : [];
-            const capIndex = Array.isArray(window.currentCaptions)
-                ? window.currentCaptions.findIndex((c) => wi >= c.wordStartIndex && wi <= c.wordEndIndex)
-                : -1;
-            const cap = (capIndex >= 0 && window.currentCaptions) ? window.currentCaptions[capIndex] : null;
-            const capEndWi = cap ? cap.wordEndIndex : wi;
-            const maxSlots = Math.max(1, capEndWi - wi + 1);
 
             if (!parts.length) {
                 window.currentWords[wi].text = '';
@@ -7841,74 +7926,14 @@ function renderWordCaptionEditor() {
                 return;
             }
 
-            // Allow typing multiple words with spaces; map them to consecutive timed words.
-            // This preserves existing timings and never inserts extra timing slots.
-            const usable = parts.slice(0, maxSlots);
-            for (let i = 0; i < usable.length; i++) {
-                const tgtWi = wi + i;
-                if (!window.currentWords[tgtWi]) break;
-                window.currentWords[tgtWi].text = usable[i];
-            }
-
-            // Overflow handling: create new timed words in the gap before next caption,
-            // then use append-to-last only for any remaining overflow.
-            if (parts.length > usable.length && usable.length > 0 && cap && Array.isArray(window.currentCaptions)) {
-                const overflowParts = parts.slice(usable.length);
-                const lastInCap = allWords[cap.wordEndIndex];
-                const nextCap = window.currentCaptions[capIndex + 1] || null;
-                const nextFirst = nextCap ? allWords[nextCap.wordStartIndex] : null;
-                const gapStart = lastInCap && Number.isFinite(Number(lastInCap.end)) ? Number(lastInCap.end) : null;
-                const gapEnd = nextFirst && Number.isFinite(Number(nextFirst.start)) ? Number(nextFirst.start) : null;
-                const MIN_DUR = 0.05;
-                let canCreate = 0;
-                if (Number.isFinite(gapStart) && Number.isFinite(gapEnd) && gapEnd > gapStart + MIN_DUR) {
-                    canCreate = Math.floor((gapEnd - gapStart) / MIN_DUR);
-                } else if (Number.isFinite(gapStart) && !Number.isFinite(gapEnd)) {
-                    // Last caption: allow creating timed words by extending timeline.
-                    canCreate = overflowParts.length;
-                }
-                const createCount = Math.max(0, Math.min(overflowParts.length, canCreate));
-                if (createCount > 0) {
-                    const insertAt = cap.wordEndIndex + 1;
-                    let start = Number(gapStart);
-                    let step = 0.24;
-                    if (Number.isFinite(gapEnd) && gapEnd > start) {
-                        step = Math.max(MIN_DUR, (gapEnd - start) / createCount);
-                    }
-                    const newWords = [];
-                    for (let i = 0; i < createCount; i++) {
-                        let s = start + (i * step);
-                        let e = s + step;
-                        if (Number.isFinite(gapEnd)) {
-                            const remaining = gapEnd - s;
-                            const maxE = gapEnd - Math.max(0, (createCount - i - 1) * MIN_DUR);
-                            e = Math.min(maxE, s + Math.max(MIN_DUR, remaining));
-                            if (e < s + MIN_DUR) e = s + MIN_DUR;
-                        }
-                        newWords.push({
-                            id: `w${Date.now()}_${i}`,
-                            text: overflowParts[i],
-                            start: s,
-                            end: e,
-                            highlighted: false
-                        });
-                    }
-                    allWords.splice(insertAt, 0, ...newWords);
-                    cap.wordEndIndex += newWords.length;
-                    for (let ci = capIndex + 1; ci < window.currentCaptions.length; ci++) {
-                        const c = window.currentCaptions[ci];
-                        c.wordStartIndex += newWords.length;
-                        c.wordEndIndex += newWords.length;
-                    }
-                }
-
-                const stillOverflow = overflowParts.slice(createCount);
-                if (stillOverflow.length) {
-                    const lastWi = cap.wordEndIndex;
-                    if (window.currentWords[lastWi]) {
-                        window.currentWords[lastWi].text = `${window.currentWords[lastWi].text} ${stillOverflow.join(' ')}`.trim();
-                    }
-                }
+            // First token = this word; each further space-separated piece = NEW word inserted after this one
+            // (does not overwrite the next timed slots — fixes "adding a word deletes the next word").
+            const first = parts[0];
+            const inserted = parts.slice(1);
+            window.currentWords[wi].text = first;
+            let added = 0;
+            if (inserted.length > 0) {
+                added = _qsInsertWordTextsAfterIndex(wi, inserted);
             }
 
             tokenEl.classList.remove('editing');
@@ -7916,7 +7941,7 @@ function renderWordCaptionEditor() {
             renderWordCaptionEditor();
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
             if (!skipRefocus) {
-                const focusWi = wi + Math.max(0, usable.length - 1);
+                const focusWi = wi + added;
                 const focusEl = container.querySelector(`span.word-token[data-wi="${focusWi}"]`);
                 if (focusEl) {
                     if (onMobile) setActiveTokenNoCaretMove(focusEl);
@@ -7930,14 +7955,14 @@ function renderWordCaptionEditor() {
             if (e.key === 'Escape') {
                 e.preventDefault();
                 e.stopPropagation();
+                try { input.onblur = null; } catch (_) {}
+                if (!tokenEl || !tokenEl.isConnected) return;
                 try {
-                    if (tokenEl && tokenEl.isConnected) {
-                        try { if (tokenEl.contains(input)) tokenEl.removeChild(input); } catch (_) {}
-                        tokenEl.innerHTML = (currentVal.trim().length ? currentVal.replace(/</g, '&lt;').replace(/>/g, '&gt;') : '&nbsp;');
-                        tokenEl.classList.remove('editing');
-                        if (onMobile) setActiveTokenNoCaretMove(tokenEl);
-                        else setActiveToken(tokenEl);
-                    }
+                    // Replacing innerHTML removes the input; do not removeChild first (blur/re-render races leave detached trees).
+                    tokenEl.innerHTML = (currentVal.trim().length ? currentVal.replace(/</g, '&lt;').replace(/>/g, '&gt;') : '&nbsp;');
+                    tokenEl.classList.remove('editing');
+                    if (onMobile) setActiveTokenNoCaretMove(tokenEl);
+                    else setActiveToken(tokenEl);
                 } catch (_) {}
                 return;
             }
@@ -8114,7 +8139,8 @@ function renderWordCaptionEditor() {
 
     container.querySelectorAll('span.word-token').forEach((el) => {
         el.addEventListener('click', (e) => {
-            if (timingMode) {
+            // Timing without text edit: click selects line + seek only
+            if (timingMode && !isEditing) {
                 e.stopPropagation();
                 const row = el.closest('.caption-row');
                 const ci = row ? parseInt(row.getAttribute('data-ci'), 10) : null;
@@ -8124,6 +8150,38 @@ function renderWordCaptionEditor() {
                     renderWordCaptionEditor();
                 }
                 return;
+            }
+            // Unified edit + timing: keep token edit; update selected timing row when switching lines
+            if (timingMode && isEditing) {
+                e.stopPropagation();
+                const row = el.closest('.caption-row');
+                const ci = row ? parseInt(row.getAttribute('data-ci'), 10) : null;
+                const wi = parseInt(el.getAttribute('data-wi'), 10);
+                if (Number.isFinite(ci) && typeof setActiveRow === 'function') {
+                    if (e.shiftKey) setActiveRow(ci, { user: true, range: true });
+                    else setActiveRow(ci, { user: true });
+                }
+                if (e.shiftKey) return;
+                if (Number.isFinite(ci) && ci !== window._qsTimingSelectedCi) {
+                    window._qsTimingSelectedCi = ci;
+                    _qsSeekToCaptionStart(ci);
+                    renderWordCaptionEditor();
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            const again = container.querySelector(`span.word-token[data-wi="${wi}"]`);
+                            if (again && !again.classList.contains('editing')) {
+                                const tapCaret = caretIndexFromTapX(
+                                    again,
+                                    Number.isFinite(e.clientX) ? e.clientX : NaN,
+                                    String(window.currentWords?.[wi]?.text || '').length
+                                );
+                                setActiveToken(again);
+                                beginTokenEdit(again, { caretIndex: tapCaret });
+                            }
+                        });
+                    });
+                    return;
+                }
             }
             // Bubble to #transcript-window so container.onclick can jumpTo (same as clicking the time line).
             if (typeof isMobileClient === 'function' && isMobileClient()) setActiveTokenNoCaretMove(el);

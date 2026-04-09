@@ -2595,11 +2595,6 @@ html[dir="rtl"] .upload-status {
 }
 
 /* --- Line timing mode (whole-caption / segment timing) --- */
-#btn-timing .btn-timing-icon {
-  font-size: 1.15rem;
-  line-height: 1;
-  display: inline-block;
-}
 #transcript-window.transcript-sync-mode {
   position: relative;
 }
@@ -2610,11 +2605,6 @@ html[dir="rtl"] .upload-status {
 #transcript-window.transcript-sync-mode .caption-row.qs-timing-line-selected:active,
 #transcript-window.transcript-sync-mode .paragraph-row.qs-timing-legacy-row.qs-timing-line-selected:active {
   cursor: grabbing;
-}
-#btn-timing.is-active {
-  background: rgba(59, 130, 246, 0.18);
-  outline: 2px solid rgba(37, 99, 235, 0.45);
-  border-radius: 10px;
 }
 .qs-sync-row-flex {
   align-items: center;
