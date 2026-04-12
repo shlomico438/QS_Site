@@ -1348,6 +1348,20 @@ def _get_last_callback_for_gpt() -> tuple:
     return (None, None, None)
 
 
+def _jobs_table_user_id_filter(user_id):
+    """jobs.user_id is a Postgres uuid; PostgREST rejects eq.anonymous. Only return real UUID strings."""
+    if not user_id:
+        return None
+    s = str(user_id).strip()
+    if not s or s.lower() == 'anonymous':
+        return None
+    try:
+        uuid.UUID(s)
+        return s
+    except (ValueError, AttributeError):
+        return None
+
+
 def _get_job_timings_from_db(runpod_job_id: str, user_id: str = None) -> dict:
     """Fetch current timing columns from jobs table (for cross-instance reads)."""
     supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
@@ -1357,8 +1371,9 @@ def _get_job_timings_from_db(runpod_job_id: str, user_id: str = None) -> dict:
     from urllib.parse import quote
     rj = quote(str(runpod_job_id), safe='')
     url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}&select=trigger_sec,trigger_completed_at,gpu_started_at,runpod_wakeup_sec,gpt_sec,gpt_format_sec"
-    if user_id:
-        url += f"&user_id=eq.{quote(str(user_id), safe='')}"
+    uid_s = _jobs_table_user_id_filter(user_id)
+    if uid_s:
+        url += f"&user_id=eq.{quote(uid_s, safe='')}"
     try:
         r = requests.get(url, headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"}, timeout=5)
         if r.status_code == 200 and r.text:
@@ -1392,7 +1407,8 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
     # quotes in the URL) often matches zero rows; try unquoted encoding first (same as _get_job_row_by_runpod_job_id).
     rj = quote(rid, safe="")
     rj_quoted = quote(f'"{rid}"', safe="")
-    uid = quote(str(user_id), safe="") if user_id else None
+    uid_s = _jobs_table_user_id_filter(user_id)
+    uid = quote(uid_s, safe="") if uid_s else None
     headers = {
         "apikey": service_key,
         "Authorization": f"Bearer {service_key}",
