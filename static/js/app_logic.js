@@ -3162,7 +3162,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mainAudio = document.getElementById('main-audio');
     const dBtn = document.getElementById('btn-download');
     const dMenu = document.getElementById('download-menu');
-    /** Assigned after export-panel helpers load; clears defaults each time user opens "בחר מה ליצור". */
+    /** Assigned after export-panel helpers load; clears defaults each time user opens export panel. */
     let resetExportPanelSelectionsOnOpen = () => {};
 
     let removeMobileMenuBackdrop = () => {};
@@ -3959,7 +3959,7 @@ function _processingIntroThreeSentencesHe(loggedIn) {
     const s3 = loggedIn
         ? 'אפשר לסגור את העמוד — נשלח לך מייל ברגע שהוידאו יהיה מוכן עם הכתוביות.'
         : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
-    return `${s1} ${s2} ${s3}`;
+    return `${s1}\n\n${s2}\n\n${s3}`;
 }
 
 function _processingIntroThreeSentencesEn(loggedIn) {
@@ -3968,7 +3968,7 @@ function _processingIntroThreeSentencesEn(loggedIn) {
     const s3 = loggedIn
         ? "You can leave this page — we'll email you when your video and subtitles are ready."
         : 'Sign in to the site so we can notify you by email when it is ready.';
-    return `${s1} ${s2} ${s3}`;
+    return `${s1}\n\n${s2}\n\n${s3}`;
 }
 
 function startProcessingStateUI() {
@@ -4125,7 +4125,7 @@ function setTranscriptActionButtonsVisible(visible) {
     } catch (_) {}
 }
 
-/** While the export ("בחר מה ליצור") menu is open, disable other transcript toolbar controls. */
+/** While the export menu is open, disable other transcript toolbar controls. */
 function setExportMenuAuxiliaryControlsDisabled(disabled) {
     const fmtSub = document.getElementById('format-mode-subtitle');
     const fmtDoc = document.getElementById('format-mode-doc');
