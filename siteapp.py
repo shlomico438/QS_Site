@@ -1381,10 +1381,17 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         logging.debug("_update_job_timings: no values to update for %s", runpod_job_id)
         return
     from urllib.parse import quote
-    # PostgREST: string values in eq filter need double quotes for reliability
-    rj_quoted = quote(f'"{runpod_job_id}"', safe='')
-    rj = quote(str(runpod_job_id), safe='')
-    uid = quote(str(user_id), safe='') if user_id else None
+
+    rid = str(runpod_job_id or "").strip()
+    if not rid:
+        return
+    if len(rid) >= 2 and rid[0] == rid[-1] and rid[0] in "\"'":
+        rid = rid[1:-1].strip()
+    # PostgREST: URL-encode the raw value (eq.<encoded>) matches text columns. eq.%22...%22 (JSON-style
+    # quotes in the URL) often matches zero rows; try unquoted encoding first (same as _get_job_row_by_runpod_job_id).
+    rj = quote(rid, safe="")
+    rj_quoted = quote(f'"{rid}"', safe="")
+    uid = quote(str(user_id), safe="") if user_id else None
     headers = {
         "apikey": service_key,
         "Authorization": f"Bearer {service_key}",
@@ -1392,26 +1399,25 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         "Prefer": "return=representation",
     }
     try:
-        # Prefer runpod_job_id column; use eq."value" for string match
-        url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_quoted}"
+        url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
         if uid:
             url += f"&user_id=eq.{uid}"
         r = requests.patch(url, json=payload, headers=headers, timeout=10)
         if r.status_code in (200, 204):
             updated = r.json() if r.text else []
             if isinstance(updated, list) and len(updated) > 0:
-                logging.info("_update_job_timings: updated job %s with %s (%d rows)", runpod_job_id, list(payload.keys()), len(updated))
+                logging.info("_update_job_timings: updated job %s with %s (%d rows)", rid, list(payload.keys()), len(updated))
                 return
-            logging.warning("_update_job_timings: PATCH 200 but 0 rows matched for %s (filter: runpod_job_id=eq.%s)", runpod_job_id, rj_quoted[:50])
-        # Fallback 1: try unquoted value
-        url_alt = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
+            logging.warning("_update_job_timings: PATCH 200 but 0 rows matched for %s (filter: runpod_job_id=eq.%s)", rid, rj[:56])
+        # Fallback 1: quoted filter (legacy / odd PostgREST configs)
+        url_alt = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_quoted}"
         if uid:
             url_alt += f"&user_id=eq.{uid}"
         r2 = requests.patch(url_alt, json=payload, headers=headers, timeout=10)
         if r2.status_code in (200, 204):
             updated2 = r2.json() if r2.text else []
             if isinstance(updated2, list) and len(updated2) > 0:
-                logging.info("_update_job_timings: updated job %s (fallback unquoted) with %s", runpod_job_id, list(payload.keys()))
+                logging.info("_update_job_timings: updated job %s (fallback quoted filter) with %s", rid, list(payload.keys()))
                 return
         # Fallback 2: runpod_job_id only (no user_id) in case UUID filter fails
         if uid:
@@ -1420,7 +1426,7 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
             if r3.status_code in (200, 204):
                 updated3 = r3.json() if r3.text else []
                 if isinstance(updated3, list) and len(updated3) > 0:
-                    logging.info("_update_job_timings: updated job %s (no user_id) with %s", runpod_job_id, list(payload.keys()))
+                    logging.info("_update_job_timings: updated job %s (no user_id) with %s", rid, list(payload.keys()))
                     return
         # Fallback 3: GET job by runpod_job_id, then PATCH by id (most reliable)
         for rj_try in (rj, rj_quoted):
@@ -1435,12 +1441,12 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
                     if r4.status_code in (200, 204):
                         updated4 = r4.json() if r4.text else []
                         if isinstance(updated4, list) and len(updated4) > 0:
-                            logging.info("_update_job_timings: updated job %s (by id) with %s", runpod_job_id, list(payload.keys()))
+                            logging.info("_update_job_timings: updated job %s (by id) with %s", rid, list(payload.keys()))
                             return
                     break
-        logging.warning("_update_job_timings: all attempts failed for %s. Last: %s %s", runpod_job_id, r.status_code, r.text[:200] if r.text else "")
+        logging.warning("_update_job_timings: all attempts failed for %s. Last: %s %s", rid, r.status_code, r.text[:200] if r.text else "")
     except Exception as e:
-        logging.warning("Could not update job timings for %s: %s", runpod_job_id, e)
+        logging.warning("Could not update job timings for %s: %s", rid, e)
 
 
 def get_runpod_endpoint_status(pod_id):
@@ -1975,7 +1981,7 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he')
     if not transcript_text:
         raise RuntimeError("empty transcript")
 
-    max_single = int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '9000'))
+    max_single = int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '6500'))
     chunk_chars = int(os.environ.get('FORMAT_TRANSCRIPT_CHUNK_CHARS', '5000'))
     summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000'))
     format_read_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
@@ -2210,7 +2216,7 @@ def api_transcript_format_chunks_plan():
         ).strip()
     if not raw_text:
         return jsonify({"error": "No transcript text provided"}), 400
-    max_c = int(os.environ.get('FORMAT_TRANSCRIPT_HTTP_CHUNK_CHARS', '3000') or 3000)
+    max_c = int(os.environ.get('FORMAT_TRANSCRIPT_HTTP_CHUNK_CHARS', '2200') or 2200)
     max_c = max(2000, min(max_c, 12000))
     chunks = _split_text_for_format_chunks(raw_text, max_c)
     return jsonify({"chunks": chunks, "count": len(chunks)}), 200

@@ -67,11 +67,8 @@ window.startJobStatusPolling = function(jobId) {
         if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
         window._checkStatusPollInterval = null;
         window.isTriggering = false;
-        if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI();
-        if (window.fakeProgressInterval) {
-            clearInterval(window.fakeProgressInterval);
-            window.fakeProgressInterval = null;
-        }
+        if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI('poll_server_severe_errors');
+        qsStopFakeProgress('poll_server_severe_errors');
         const mb = document.getElementById('main-btn');
         if (mb) mb.disabled = false;
         const msg = isHe
@@ -2100,7 +2097,8 @@ function buildTranscriptTextForGptFormat() {
 }
 
 /** Long transcripts: one HTTP call runs past reverse-proxy limits → 504. Use plan + per-chunk + summary requests. */
-const QS_FORMAT_MULTI_REQUEST_CHARS = 5500;
+// Below this length, one POST is usually under proxy limits; above it, use plan + per-chunk + summary (sequential chunks).
+const QS_FORMAT_MULTI_REQUEST_CHARS = 4000;
 
 /**
  * @returns {Promise<{ ok: boolean, res: Response, fmt: Record<string, unknown> }>}
@@ -2129,30 +2127,22 @@ async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
         return { ok: false, res: planRes, fmt: plan };
     }
     const cleanParts = [];
-    const chunkConcurrency = 3;
-    for (let i = 0; i < plan.chunks.length; i += chunkConcurrency) {
-        const batch = plan.chunks.slice(i, i + chunkConcurrency);
-        const results = await Promise.all(
-            batch.map(async (chunk) => {
-                const res = await fetch('/api/format_transcript_summary', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        ...base(),
-                        mode: 'clean_chunk',
-                        text: chunk
-                    })
-                });
-                const part = await res.json().catch(() => ({}));
-                return { res, part };
+    // Sequential chunks: parallel OpenAI calls share one worker and can each exceed proxy read timeouts (504).
+    for (let i = 0; i < plan.chunks.length; i++) {
+        const res = await fetch('/api/format_transcript_summary', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ...base(),
+                mode: 'clean_chunk',
+                text: plan.chunks[i]
             })
-        );
-        for (const { res, part } of results) {
-            if (!res.ok || (part && part.error)) {
-                return { ok: false, res, fmt: part };
-            }
-            cleanParts.push(String(part.clean_transcript || '').trim());
+        });
+        const part = await res.json().catch(() => ({}));
+        if (!res.ok || (part && part.error)) {
+            return { ok: false, res, fmt: part };
         }
+        cleanParts.push(String(part.clean_transcript || '').trim());
     }
     const merged = cleanParts.filter(Boolean).join('\n\n');
     const sumRes = await fetch('/api/format_transcript_summary', {
@@ -3856,9 +3846,41 @@ const PROCESSING_PHASES_HE = [
     "מבצע פינישים אחרונים..."
 ];
 
-function stopProcessingStateUI() {
+/** Console breadcrumb when processing overlay / fake % animation stops (debug UI freezes). */
+function qsLogProcessingAnimStop(kind, detail) {
+    try {
+        const info =
+            typeof detail === 'object' && detail !== null && !Array.isArray(detail)
+                ? detail
+                : { note: detail };
+        console.info('[qs-processing-ui] animation stopped:', kind, Object.assign({
+            ts: new Date().toISOString(),
+            isTriggering: !!window.isTriggering
+        }, info));
+    } catch (_) {}
+}
+
+function qsStopFakeProgress(reason) {
+    if (!window.fakeProgressInterval) {
+        return;
+    }
+    clearInterval(window.fakeProgressInterval);
+    window.fakeProgressInterval = null;
+    qsLogProcessingAnimStop('fake_progress_bar', { reason: reason != null ? String(reason) : 'unspecified' });
+}
+
+function stopProcessingStateUI(reason) {
+    const hadPhaseTimer = !!window.processingStateTimer;
+    const phaseIndexWhenStopped = Number(window.processingPhaseIndex || 0);
     const panel = document.getElementById('processing-state-panel');
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
+    let panelWasVisible = false;
+    try {
+        if (panel) {
+            const st = window.getComputedStyle(panel);
+            panelWasVisible = st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0';
+        }
+    } catch (_) {}
     if (window.processingStateTimer) {
         clearInterval(window.processingStateTimer);
         window.processingStateTimer = null;
@@ -3866,6 +3888,12 @@ function stopProcessingStateUI() {
     window.processingPhaseIndex = 0;
     if (panel) panel.style.display = 'none';
     if (controlsRow) controlsRow.style.display = '';
+    qsLogProcessingAnimStop('phase_lines_panel', {
+        reason: reason != null ? String(reason) : 'unspecified',
+        hadPhaseTimer,
+        phaseIndexWhenStopped,
+        panelWasVisible
+    });
 }
 
 function startProcessingStateUI() {
@@ -3896,12 +3924,11 @@ function startProcessingStateUI() {
 /** Reset the main screen to initial state (as on first load) — e.g. when user clicks Upload to start a new file. */
 function resetScreenToInitial() {
     window.isTriggering = false;
-    if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
-    window.fakeProgressInterval = null;
+    qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
     window.currentFormattedDoc = null;
     setSeoHomeContentVisibility(true);
-    stopProcessingStateUI();
+    stopProcessingStateUI('reset_screen_to_initial');
 
     const placeholder = document.getElementById('placeholder');
     const transcriptWindow = document.getElementById('transcript-window');
@@ -4141,7 +4168,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!triggerRes.ok) throw new Error(triggerData.message || triggerData.error || `HTTP ${triggerRes.status}`);
                     if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(transcribeJobId);
                 } catch (e) {
-                    stopProcessingStateUI();
+                    stopProcessingStateUI('transcribe_loaded_file_error');
                     mainBtn.disabled = false;
                     mainBtn.innerText = prev;
                     setDiarizationBusyState(false);
@@ -4301,10 +4328,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setDiarizationBusyState(false);
         setSeoHomeContentVisibility(false);
         localStorage.removeItem('activeJobId');
-        if (window.fakeProgressInterval) {
-            clearInterval(window.fakeProgressInterval);
-            window.fakeProgressInterval = null;
-        }
+        qsStopFakeProgress('handle_job_update_start');
 
         const statusTxt = document.getElementById('upload-status');
         const preparingScreen = document.getElementById('preparing-screen');
@@ -4391,7 +4415,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (typeof showStatus === 'function') showStatus(safeErr, true);
             setDiarizationBusyState(false);
-            stopProcessingStateUI();
+            stopProcessingStateUI('handle_job_update_job_failed');
             return;
         }
 
@@ -4675,7 +4699,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (ps) ps.style.display = 'none';
             }, 3000);
         }
-        stopProcessingStateUI();
+        stopProcessingStateUI('handle_job_update_success_pipeline_done');
     };
 
 function groupSegmentsBySpeaker(segments, enableGlue = true) {
@@ -5870,9 +5894,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         let current = 0;
         const processingLabel = ((typeof window.t === 'function' ? window.t('processing') : 'Processing...') || '').replace(/\.\.\.?$/, '');
         if (mainBtn) mainBtn.innerText = processingLabel + ' 0%';
-        if (window.fakeProgressInterval) clearInterval(window.fakeProgressInterval);
+        qsStopFakeProgress('startFakeProgress_replace_previous');
         window.fakeProgressInterval = setInterval(() => {
             if (!window.isTriggering) {
+                qsLogProcessingAnimStop('fake_progress_bar', {
+                    reason: 'interval_tick_isTriggering_false',
+                    note: 'fake % ticker self-stopped (isTriggering cleared elsewhere)'
+                });
                 clearInterval(window.fakeProgressInterval);
                 window.fakeProgressInterval = null;
                 return;
@@ -6155,7 +6183,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 window.isTriggering = false;
                                 setDiarizationBusyState(false);
                                 localStorage.removeItem('activeJobId');
-                                stopProcessingStateUI();
+                                stopProcessingStateUI('upload_trigger_processing_http_not_ok');
                                 hideProgressBar();
                                 if (mainBtn) mainBtn.disabled = false;
                                 return;
@@ -6223,12 +6251,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
                                     setDiarizationBusyState(false);
-                                    stopProcessingStateUI();
+                                    stopProcessingStateUI('trigger_handshake_server_unavailable');
                                     hideProgressBar();
-                                    if (window.fakeProgressInterval) {
-                                        clearInterval(window.fakeProgressInterval);
-                                        window.fakeProgressInterval = null;
-                                    }
+                                    qsStopFakeProgress('trigger_handshake_server_unavailable');
                                     const msg = isHebrewUi
                                         ? 'השרת אינו זמין זמנית. רענן את הדף או נסה שוב בעוד רגע.'
                                         : 'The server is temporarily unavailable. Refresh the page or try again in a moment.';
@@ -6242,7 +6267,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     const dbId2 = localStorage.getItem('lastJobDbId');
                                     window.isTriggering = false;
                                     setDiarizationBusyState(false);
-                                    stopProcessingStateUI();
+                                    stopProcessingStateUI('trigger_handshake_status_failed');
                                     hideProgressBar();
                                     const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
                                     showTriggerErrorDialog(msg, {
@@ -6281,7 +6306,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             window.isTriggering = false;
                             setDiarizationBusyState(false);
                             localStorage.removeItem('activeJobId');
-                            stopProcessingStateUI();
+                            stopProcessingStateUI('upload_after_s3_trigger_processing_exception');
                             hideProgressBar();
                             if (mainBtn) mainBtn.disabled = false;
                             throw err;
@@ -6294,7 +6319,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         window.isTriggering = false;
                         setDiarizationBusyState(false);
                         localStorage.removeItem('activeJobId');
-                        stopProcessingStateUI();
+                        stopProcessingStateUI('s3_put_xhr_non_200');
                         hideProgressBar();
                         if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                     }
@@ -6312,7 +6337,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     window.isTriggering = false;
                     setDiarizationBusyState(false);
                     localStorage.removeItem('activeJobId');
-                    stopProcessingStateUI();
+                    stopProcessingStateUI('s3_put_xhr_onerror');
                     hideProgressBar();
                 };
 
@@ -6330,7 +6355,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window.isTriggering = false;
                 setDiarizationBusyState(false);
                 localStorage.removeItem('activeJobId');
-                stopProcessingStateUI();
+                stopProcessingStateUI('file_input_change_upload_catch');
                 hideProgressBar();
                 if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                 if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('error_starting_upload') : "Error starting upload."), true);
