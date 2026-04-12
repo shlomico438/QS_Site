@@ -279,7 +279,8 @@ audio {
 
 #subtitle-style-selector {
     position: relative;
-    z-index: 25;
+    /* Keep above peer toolbar controls; mobile + iOS video need higher stacking (see max-width rules). */
+    z-index: 120;
     display: none;
 }
 
@@ -419,7 +420,7 @@ audio {
 }
 
 #subtitle-style-selector.is-open .subtitle-style-drawer-panel {
-    transform: translateY(0);
+    transform: translateY(0) translateZ(0);
     opacity: 1;
     pointer-events: auto;
 }
@@ -939,13 +940,39 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 /* Mobile: export dropdown uses a body-level portal (see app_logic.js) so it is never covered */
 @media screen and (max-width: 768px) {
+    /* iOS Safari composits native video above later siblings unless we pin a lower layer + raise transcript UI. */
+    #video-wrapper.visible {
+        position: relative;
+        z-index: 0;
+    }
+    #video-player-container {
+        position: relative;
+        z-index: 0;
+    }
+    #main-video {
+        position: relative;
+        z-index: 0;
+    }
     .transcription-wrapper {
-        z-index: 1;
+        z-index: 50;
         isolation: isolate;
     }
     .transcription-wrapper .controls-bar {
         position: relative;
         z-index: 200;
+    }
+    /* Aa drawer: same idea as switches — stay above #main-video (fixed + translateZ forces own compositor). */
+    #subtitle-style-selector {
+        z-index: 500;
+    }
+    #subtitle-style-selector.is-open {
+        z-index: 10050;
+    }
+    #subtitle-style-selector.is-open .subtitle-style-drawer-panel {
+        z-index: 10051;
+        /* translateZ(1px) keeps panel above Safari’s video layer when combined with high z-index */
+        transform: translateY(0) translateZ(1px);
+        -webkit-transform: translateY(0) translateZ(1px);
     }
     #download-menu.dropdown-menu {
         top: auto;

@@ -3821,13 +3821,10 @@ function startProcessingStateUI() {
 
     window.processingStateTimer = setInterval(() => {
         const currentIndex = Number(window.processingPhaseIndex || 0);
-        if (currentIndex >= PROCESSING_PHASES_HE.length - 1) {
-            clearInterval(window.processingStateTimer);
-            window.processingStateTimer = null;
-            return;
-        }
-        window.processingPhaseIndex = currentIndex + 1;
-        phaseEl.textContent = PROCESSING_PHASES_HE[window.processingPhaseIndex];
+        // Keep cycling for long GPT / RunPod runs (previously stopped after the last string ~45s).
+        const next = (currentIndex + 1) % PROCESSING_PHASES_HE.length;
+        window.processingPhaseIndex = next;
+        phaseEl.textContent = PROCESSING_PHASES_HE[next];
     }, 15000);
 }
 
@@ -6107,32 +6104,46 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 let waitPct = 0;
                                 let ts = { status: '' };
                                 let httpBadStreak = 0;
-                                for (let pollIx = 0; pollIx < maxTriggerWaitPolls && ts.status !== 'triggered' && ts.status !== 'failed'; pollIx++) {
-                                    await new Promise(r => setTimeout(r, pollInterval));
-                                    // Keep progressing slowly and cap at 95% while we wait.
-                                    if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
-                                    if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
-                                    try {
-                                        const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
-                                        if (!stRes.ok) {
+                                // If socket delivers completion before /api/trigger_status shows "triggered", handleJobUpdate
+                                // sets _lastProcessedJobId — don't block here or restart fake progress on top of GPT.
+                                const jobAlreadyHandledBySocket = () => (jobId && window._lastProcessedJobId === jobId);
+                                if (jobAlreadyHandledBySocket()) {
+                                    console.log('[trigger] socket already handled job before handshake wait; skipping poll loop');
+                                } else {
+                                    for (let pollIx = 0; pollIx < maxTriggerWaitPolls; pollIx++) {
+                                        if (ts.status === 'triggered' || ts.status === 'failed') break;
+                                        if (jobAlreadyHandledBySocket()) {
+                                            console.log('[trigger] socket handled job during handshake wait; stopping poll loop');
+                                            break;
+                                        }
+                                        await new Promise(r => setTimeout(r, pollInterval));
+                                        if (jobAlreadyHandledBySocket()) break;
+                                        // Keep progressing slowly and cap at 95% while we wait.
+                                        if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
+                                        if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
+                                        try {
+                                            const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
+                                            if (!stRes.ok) {
+                                                httpBadStreak++;
+                                                const giveUp =
+                                                    httpBadStreak >= 12
+                                                    || (qsIsSevereServerPollError(stRes.status) && httpBadStreak >= 5);
+                                                if (giveUp) {
+                                                    ts = { status: 'failed', _serverUnavailable: true };
+                                                    break;
+                                                }
+                                                continue;
+                                            }
+                                            httpBadStreak = 0;
+                                            ts = await stRes.json();
+                                        } catch (_) {
                                             httpBadStreak++;
-                                            const giveUp =
-                                                httpBadStreak >= 12
-                                                || (qsIsSevereServerPollError(stRes.status) && httpBadStreak >= 5);
-                                            if (giveUp) {
+                                            if (httpBadStreak >= 12) {
                                                 ts = { status: 'failed', _serverUnavailable: true };
                                                 break;
                                             }
-                                            continue;
                                         }
-                                        httpBadStreak = 0;
-                                        ts = await stRes.json();
-                                    } catch (_) {
-                                        httpBadStreak++;
-                                        if (httpBadStreak >= 12) {
-                                            ts = { status: 'failed', _serverUnavailable: true };
-                                            break;
-                                        }
+                                        if (ts.status === 'triggered' || ts.status === 'failed') break;
                                     }
                                 }
                                 if (ts.status === 'failed' && ts._serverUnavailable) {
@@ -6170,18 +6181,23 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     });
                                     return;
                                 }
-                                if (ts.status !== 'triggered') {
+                                if (jobAlreadyHandledBySocket()) {
+                                    console.log('[trigger] results already handled via socket; skipping trigger_status messaging');
+                                } else if (ts.status !== 'triggered') {
                                     console.warn('[trigger] Handshake wait ended without triggered; continuing with job status polling');
                                 } else {
                                     console.log("trigger ack (triggered)");
                                     console.log("✅ RunPod trigger confirmed.");
                                 }
-                                if (typeof startFakeProgress === 'function') startFakeProgress();
+                                const supersededBySocket = jobAlreadyHandledBySocket();
+                                if (!supersededBySocket && typeof startFakeProgress === 'function') {
+                                    startFakeProgress();
+                                }
                             } else if (triggerRes.status === 202) {
                                 console.log("trigger nack", "unexpected status", triggerData.status);
                             }
                             // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
-                            if (jobId && typeof window.handleJobUpdate === 'function') {
+                            if (jobId && typeof window.handleJobUpdate === 'function' && !(jobId && window._lastProcessedJobId === jobId)) {
                                 window.startJobStatusPolling(jobId);
                             }
                         } catch (err) {
