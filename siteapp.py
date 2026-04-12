@@ -1130,7 +1130,7 @@ import time  # Ensure time is imported at the top of your file
 # - "run_accepted": RunPod /run returned 200/201/202 (container should start soon)
 # - "triggered": app_transcribe.py has started and called /api/gpu_started
 # - "failed": RunPod /run failed or warmup/trigger crashed
-pending_trigger = {}  # job_id -> "queued" | "run_accepted" | "triggered" | "failed"
+pending_trigger = {}  # job_id -> "queued" | "run_accepted" | "triggered" | "failed" (local cache; Supabase jobs row is source of truth)
 pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detection)
 STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
@@ -1139,84 +1139,123 @@ job_timings = {}  # job_id -> {"trigger_sec": float, "trigger_completed_at": flo
 gpu_started_at = {}  # job_id -> when worker called /api/gpu_started (container running)
 upload_complete = {}  # job_id -> True when trigger_processing called (upload done); worker polls until this
 
+# Trigger pipeline + timing fields shared across Gunicorn workers (stored in jobs.metadata.qs_trigger JSONB).
+_QS_TRIGGER_META_KEY = "qs_trigger"
 
-def _trigger_state_dir():
-    """Directory for shared trigger state (survives across Gunicorn workers)."""
-    d = (os.environ.get('TRIGGER_STATE_DIR') or '').strip() or os.path.join(tempfile.gettempdir(), 'qs_trigger')
+
+def _last_callback_gpt_path():
+    """Small local file for GPT timing inference only (not multi-worker critical)."""
+    return os.path.join(tempfile.gettempdir(), "qs_last_callback_gpt.json")
+
+
+def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata"):
+    """Fetch one jobs row by runpod_job_id. Best-effort; returns None if missing or misconfigured."""
+    from urllib.parse import quote
+
+    supabase_url = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_key or not runpod_job_id:
+        return None
+    rj = quote(str(runpod_job_id), safe="")
+    rj_quoted = quote(f'"{runpod_job_id}"', safe="")
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Accept": "application/json",
+    }
+    for rj_try in (rj, rj_quoted):
+        url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_try}&select={select}&limit=1"
+        try:
+            r = requests.get(url, headers=headers, timeout=6)
+            if r.status_code == 200 and r.text:
+                rows = r.json()
+                if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                    return rows[0]
+        except Exception as e:
+            logging.warning("_get_job_row_by_runpod_job_id: GET failed for %s: %s", runpod_job_id, e)
+    return None
+
+
+def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=None):
+    """Read jobs row, merge merge_qs_trigger into metadata.qs_trigger, PATCH by id. Service role; best-effort."""
     try:
-        os.makedirs(d, mode=0o700, exist_ok=True)
-    except OSError:
-        pass
-    return d
-
-
-def _trigger_state_path(job_id):
-    """Safe file path for one job's trigger state."""
-    safe = re.sub(r'[^\w\-]', '_', str(job_id))[:200]
-    return os.path.join(_trigger_state_dir(), f"{safe}.json")
+        row = _get_job_row_by_runpod_job_id(runpod_job_id, select="id,metadata,status")
+        if not row or not row.get("id"):
+            logging.warning("_merge_job_qs_trigger: no job row for runpod_job_id=%s", runpod_job_id)
+            return
+        md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        md = dict(md)
+        qt = dict(md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {})
+        if merge_qs_trigger:
+            qt.update(merge_qs_trigger)
+        qt["at"] = time.time()
+        if update_job_status is not None:
+            qt["trigger_status"] = update_job_status
+        md[_QS_TRIGGER_META_KEY] = qt
+        supabase_url = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
+        service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        headers = {**_supabase_service_headers(service_key), "Prefer": "return=representation"}
+        payload = {"metadata": md, "updated_at": datetime.utcnow().isoformat() + "Z"}
+        if update_job_status is not None:
+            payload["status"] = update_job_status
+        patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{row['id']}"
+        r = requests.patch(patch_url, json=payload, headers=headers, timeout=10)
+        if r.status_code not in (200, 204):
+            logging.warning(
+                "_merge_job_qs_trigger: PATCH failed for %s: %s %s",
+                runpod_job_id,
+                r.status_code,
+                (r.text[:300] if r.text else ""),
+            )
+    except Exception as e:
+        logging.warning("_merge_job_qs_trigger: %s", e)
 
 
 def _get_trigger_state(job_id):
-    """Return (status, at_ts) from shared store, or (None, None) if missing."""
+    """Return (trigger_status, at_ts) from Supabase (metadata.qs_trigger), or (None, None) if missing."""
     try:
-        path = _trigger_state_path(job_id)
-        if os.path.isfile(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return (data.get('status'), data.get('at'))
-    except Exception:
-        pass
+        row = _get_job_row_by_runpod_job_id(job_id, select="status,metadata")
+        if not row:
+            return (None, None)
+        md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+        st = qt.get("trigger_status") or row.get("status")
+        at_ts = qt.get("at")
+        return (st, at_ts)
+    except Exception as e:
+        logging.warning("_get_trigger_state: %s", e)
     return (None, None)
 
 
 def _set_trigger_state(job_id, status, **extra):
-    """Write trigger state so all workers see it. Merges with existing to preserve timings."""
-    try:
-        path = _trigger_state_path(job_id)
-        data = {}
-        if os.path.isfile(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        data.update({"status": status, "at": time.time(), **extra})
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
-    except Exception as e:
-        logging.warning("Could not write trigger state for %s: %s", job_id, e)
+    """Persist trigger state to jobs.status and jobs.metadata.qs_trigger (cross-worker). pending_* remains in-memory cache."""
+    _merge_job_qs_trigger(job_id, dict(extra), update_job_status=status)
 
 
 def _get_trigger_timings(job_id):
-    """Read timing fields from shared file (for multi-worker)."""
+    """Read timing fields from jobs.metadata.qs_trigger (for multi-worker)."""
     try:
-        path = _trigger_state_path(job_id)
-        if os.path.isfile(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return {
-                "queued_at": data.get("queued_at") or data.get("at"),
-                "trigger_sec": data.get("trigger_sec"),
-                "trigger_completed_at": data.get("trigger_completed_at"),
-                "gpu_started_at": data.get("gpu_started_at"),
-                "upload_complete": bool(data.get("upload_complete")),
-                "upload_complete_at": data.get("upload_complete_at"),
-            }
-    except Exception:
-        pass
+        row = _get_job_row_by_runpod_job_id(job_id, select="metadata")
+        if not row:
+            return {}
+        md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        data = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+        return {
+            "queued_at": data.get("queued_at") or data.get("at"),
+            "trigger_sec": data.get("trigger_sec"),
+            "trigger_completed_at": data.get("trigger_completed_at"),
+            "gpu_started_at": data.get("gpu_started_at"),
+            "upload_complete": bool(data.get("upload_complete")),
+            "upload_complete_at": data.get("upload_complete_at"),
+        }
+    except Exception as e:
+        logging.warning("_get_trigger_timings: %s", e)
     return {}
 
 
 def _update_trigger_timings(job_id, **updates):
-    """Merge timing fields into trigger state file (preserves existing)."""
-    try:
-        path = _trigger_state_path(job_id)
-        data = {}
-        if os.path.isfile(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        data.update(updates)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
-    except Exception as e:
-        logging.warning("Could not update trigger timings for %s: %s", job_id, e)
+    """Merge timing fields into metadata.qs_trigger without changing jobs.status."""
+    _merge_job_qs_trigger(job_id, updates, update_job_status=None)
 
 
 def _mark_upload_complete(job_id):
@@ -1232,8 +1271,8 @@ def _mark_upload_complete(job_id):
 def _set_last_callback_for_gpt(job_id: str, at: float, user_id: str = None) -> None:
     """Store last gpu_callback job so api_translate_segments can infer GPT timing."""
     try:
-        path = os.path.join(_trigger_state_dir(), "last_callback.json")
-        with open(path, 'w', encoding='utf-8') as f:
+        path = _last_callback_gpt_path()
+        with open(path, "w", encoding="utf-8") as f:
             json.dump({"job_id": job_id, "at": at, "user_id": user_id}, f)
     except Exception as e:
         logging.warning("Could not set last_callback_for_gpt: %s", e)
@@ -1242,9 +1281,9 @@ def _set_last_callback_for_gpt(job_id: str, at: float, user_id: str = None) -> N
 def _get_last_callback_for_gpt() -> tuple:
     """Return (job_id, callback_at, user_id) for inferring GPT timing, or (None, None, None)."""
     try:
-        path = os.path.join(_trigger_state_dir(), "last_callback.json")
+        path = _last_callback_gpt_path()
         if os.path.isfile(path):
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return (data.get("job_id"), data.get("at"), data.get("user_id"))
     except Exception:
@@ -1443,9 +1482,9 @@ def check_job_status(job_id):
         return jsonify(job_results_cache[job_id])
 
     # If trigger already failed, surface it immediately.
-    file_status, _ = _get_trigger_state(job_id)
+    persisted_status, _ = _get_trigger_state(job_id)
     mem_status = pending_trigger.get(job_id)
-    status = file_status or mem_status
+    status = persisted_status or mem_status
     if status == "failed":
         return jsonify({"jobId": job_id, "status": "failed", "error": "Processing trigger failed"}), 200
 
@@ -1479,7 +1518,7 @@ def check_job_status(job_id):
 def debug_job(job_id):
     """Inspect server-side job state for troubleshooting stuck jobs."""
     try:
-        file_status, file_at = _get_trigger_state(job_id)
+        persisted_status, persisted_at = _get_trigger_state(job_id)
         timings = _get_trigger_timings(job_id) or {}
         now = time.time()
         queued_at = timings.get("queued_at") or pending_trigger_at.get(job_id)
@@ -1489,9 +1528,9 @@ def debug_job(job_id):
         out = {
             "job_id": job_id,
             "has_cached_result": bool(job_id in job_results_cache),
-            "trigger_status_file": file_status,
+            "trigger_status_file": persisted_status,
             "trigger_status_memory": pending_trigger.get(job_id),
-            "trigger_status_at": file_at,
+            "trigger_status_at": persisted_at,
             "upload_complete": upload_marked,
             "queued_at": queued_at,
             "gpu_started_at": gpu_started,
@@ -2300,7 +2339,7 @@ def gpu_callback():
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
 
-    # Build timing summary: read from shared file, in-memory, or DB (DB survives multi-instance / ephemeral storage)
+    # Build timing summary: read from metadata.qs_trigger, in-memory, or timing columns (DB survives multi-instance)
     now = time.time()
     file_timings = _get_trigger_timings(job_id)
     mem_timings = job_timings.pop(job_id, {})
@@ -2667,6 +2706,9 @@ def upload_status():
             if status_val in ("uploaded", "processing", "processed", "completed", "exported"):
                 return True
             md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+            if qt.get("upload_complete"):
+                return True
             md_upload = str(md.get("upload_status") or "").strip().lower()
             return md_upload in ("complete", "completed", "uploaded", "done")
         except Exception:
@@ -2678,7 +2720,7 @@ def upload_status():
     file_timings = _get_trigger_timings(job_id)
     is_complete = (job_id in upload_complete) or bool(file_timings.get("upload_complete"))
     # Multi-instance safety: worker polling may hit a different app instance.
-    # If local/shared trigger-state is missing, fallback to jobs table by runpod_job_id.
+    # If in-memory / qs_trigger flag is missing, infer from jobs.status / metadata.
     if not is_complete and _is_upload_complete_in_db(job_id):
         upload_complete[job_id] = True
         _mark_upload_complete(job_id)
@@ -2691,15 +2733,15 @@ def upload_status():
 def trigger_status():
     """Frontend polls this until status is 'triggered', then starts progress bar.
     If status stays 'queued' longer than STALE_QUEUED_SEC, returns 'stale_queued' so frontend can retry.
-    Reads from shared store so any Gunicorn worker sees updates from gpu_callback/gpu_started."""
+    Reads persisted state from Supabase (and in-memory cache) so any Gunicorn worker sees updates."""
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
-    file_status, file_at = _get_trigger_state(job_id)
-    status = file_status if file_status else pending_trigger.get(job_id, "unknown")
+    persisted_status, persisted_at = _get_trigger_state(job_id)
+    status = persisted_status if persisted_status else pending_trigger.get(job_id, "unknown")
     queued_since_sec = None
     if status == "queued":
-        at = file_at if file_at else pending_trigger_at.get(job_id, 0)
+        at = persisted_at if persisted_at else pending_trigger_at.get(job_id, 0)
         queued_since_sec = int(time.time() - at) if at else 0
         if queued_since_sec > STALE_QUEUED_SEC:
             status = "stale_queued"
