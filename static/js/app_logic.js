@@ -1,4 +1,9 @@
-import { supabase } from './supabaseClient.js'
+// Supabase client (inlined so the browser does not need a second same-origin fetch for ./supabaseClient.js).
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2?bundle'
+
+const supabaseUrl = 'https://vojesnnvehecenjymrko.supabase.co'
+const supabaseAnonKey = 'sb_publishable_BhoKDe-_iL04tOVYCbbX0w_3TjKWaGG'
+const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // Console gate:
 // - Default ON for localhost (dev), OFF for non-local hosts (production-like).
