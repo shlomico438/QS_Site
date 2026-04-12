@@ -8,7 +8,7 @@ try:
 except ImportError:
     pass
 
-from flask import Flask, render_template, request, jsonify, redirect
+from flask import Flask, render_template, request, jsonify, redirect, send_from_directory
 from flask_socketio import SocketIO, join_room
 import json
 import requests  # Added for RunPod API calls
@@ -1087,6 +1087,17 @@ def handle_exception(e):
 @app.route('/')
 def index(): return render_template('index.html')
 
+
+@app.route('/favicon.ico')
+def favicon_ico():
+    """Browsers request /favicon.ico by default; base.html uses images/favicon.png."""
+    static_dir = os.path.join(app.root_path, 'static', 'images')
+    path = os.path.join(static_dir, 'favicon.png')
+    if not os.path.isfile(path):
+        return ('', 204)
+    return send_from_directory(static_dir, 'favicon.png', mimetype='image/png')
+
+
 @app.route('/about')
 def about(): return render_template('about.html')
 
@@ -1246,16 +1257,27 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
 
 
 def _get_trigger_state(job_id):
-    """Return (trigger_status, at_ts) from Supabase (metadata.qs_trigger), or (None, None) if missing."""
+    """Return (trigger_status, at_ts) from Supabase (metadata.qs_trigger), or (None, None) if missing.
+
+    Never return jobs.status enum values (e.g. processing) as trigger_status: the browser only treats
+    triggered/failed as terminal for the RunPod handshake; leaking DB status caused endless polling."""
+    _past_gpu_trigger = frozenset(("processing", "processed", "completed", "exported"))
     try:
         row = _get_job_poll_row(job_id)
         if not row:
             return (None, None)
         md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
-        st = qt.get("trigger_status") or row.get("status")
         at_ts = qt.get("at")
-        return (st, at_ts)
+        row_status = str(row.get("status") or "").strip().lower()
+        if row_status in _past_gpu_trigger:
+            return ("triggered", at_ts if at_ts is not None else time.time())
+        if row_status == "failed":
+            return ("failed", at_ts)
+        st = qt.get("trigger_status")
+        if st:
+            return (st, at_ts)
+        return (None, at_ts)
     except Exception as e:
         logging.warning("_get_trigger_state: %s", e)
     return (None, None)
