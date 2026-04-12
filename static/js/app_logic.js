@@ -4447,8 +4447,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // One-time doc formatting pass (clean transcript + summary), reused by exports.
-        // IMPORTANT: run in background so transcript rendering is never blocked by this request.
-        (() => {
+        // IMPORTANT: fire-and-forget, never await. Defer with setTimeout(0) so the main thread can paint after
+        // heavy translate merges before this long request (504s still log but UI is not stuck on the prior frame).
+        setTimeout(() => {
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return;
             fetch('/api/format_transcript_summary', {
@@ -4497,7 +4498,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 .catch((e) => {
                     console.warn('[GPT] format_transcript_summary failed (background), export will fallback:', e);
                 });
-        })();
+        }, 0);
 
         // Ensure global segments are set (already handled above); keep legacy flow happy.
         const gptPostProcessed = (
@@ -4559,6 +4560,18 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update toggles and render
         syncSpeakerControls();
 
+        // Large word/caption + renderWordCaptionEditor blocks the main thread for seconds; without a yield the
+        // UI looks frozen between translate finishing and format/save network chatter.
+        const tUi = typeof window.t === 'function' ? window.t : (k) => k;
+        const plUi = (tUi('processing') || 'Processing...').replace(/\.\.\.?$/, '');
+        if (mainBtn) {
+            mainBtn.innerText = plUi + ' — ' + (tUi('building_transcript_preview') || 'building preview') + '…';
+        }
+        await new Promise((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
         const transcriptWindow = document.getElementById('transcript-window');
         if (transcriptWindow) {
             if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
@@ -4568,8 +4581,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Show subtitle style selector when subtitles are available (video only; audio uses transcript only)
             window.showSubtitleStyleSelector();
-            // NEW: Live Preview for Subtitles
-            transcriptWindow.addEventListener('input', (e) => {
+            // NEW: Live Preview for Subtitles (bind once — handleJobUpdate can run multiple times per session)
+            if (transcriptWindow.dataset.qsCueInputBound !== '1') {
+                transcriptWindow.dataset.qsCueInputBound = '1';
+                transcriptWindow.addEventListener('input', (e) => {
                 // Only run if we are actively in edit mode
                 if (transcriptWindow.contentEditable !== 'true') return;
                 
@@ -4588,6 +4603,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             });
+            }
         }
 
         // Finally, restore button + status text after GPT stage completes.

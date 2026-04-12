@@ -1207,7 +1207,11 @@ def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata"):
 
 
 def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=None):
-    """Read jobs row, merge merge_qs_trigger into metadata.qs_trigger, PATCH by id. Service role; best-effort."""
+    """Read jobs row, merge merge_qs_trigger into metadata.qs_trigger, PATCH by id. Service role; best-effort.
+
+    Pipeline states (queued, run_accepted, triggered, failed) go only into metadata.qs_trigger.trigger_status —
+    do not write them to jobs.status: Postgres uses an enum (e.g. processing/completed) that rejects those strings.
+    """
     try:
         row = _get_job_row_by_runpod_job_id(runpod_job_id, select="id,metadata,status")
         if not row or not row.get("id"):
@@ -1226,8 +1230,6 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
         service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
         headers = {**_supabase_service_headers(service_key), "Prefer": "return=representation"}
         payload = {"metadata": md, "updated_at": datetime.utcnow().isoformat() + "Z"}
-        if update_job_status is not None:
-            payload["status"] = update_job_status
         patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{row['id']}"
         r = requests.patch(patch_url, json=payload, headers=headers, timeout=10)
         if r.status_code in (200, 204):
@@ -1260,7 +1262,7 @@ def _get_trigger_state(job_id):
 
 
 def _set_trigger_state(job_id, status, **extra):
-    """Persist trigger state to jobs.status and jobs.metadata.qs_trigger (cross-worker). pending_* remains in-memory cache."""
+    """Persist trigger pipeline to metadata.qs_trigger (cross-worker). pending_* remains in-memory cache."""
     _merge_job_qs_trigger(job_id, dict(extra), update_job_status=status)
 
 
