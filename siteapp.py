@@ -1142,6 +1142,36 @@ upload_complete = {}  # job_id -> True when trigger_processing called (upload do
 # Trigger pipeline + timing fields shared across Gunicorn workers (stored in jobs.metadata.qs_trigger JSONB).
 _QS_TRIGGER_META_KEY = "qs_trigger"
 
+# Avoid a Supabase round-trip on every poll (trigger_status + check_status each hit DB). TTL seconds; set 0 to disable.
+_job_poll_row_cache = {}  # runpod_job_id -> (time.time(), row dict)
+
+
+def _job_poll_row_cache_ttl_sec():
+    return max(0.0, float(os.environ.get("JOB_POLL_ROW_CACHE_SEC", "8")))
+
+
+def _invalidate_job_poll_row_cache(runpod_job_id):
+    if runpod_job_id is not None:
+        _job_poll_row_cache.pop(str(runpod_job_id), None)
+
+
+def _get_job_poll_row(runpod_job_id):
+    """Cached `select=status,metadata` row for hot polling paths (_get_trigger_state / _get_trigger_timings)."""
+    if not runpod_job_id:
+        return None
+    jid = str(runpod_job_id)
+    ttl = _job_poll_row_cache_ttl_sec()
+    if ttl <= 0:
+        return _get_job_row_by_runpod_job_id(jid, select="status,metadata")
+    now = time.time()
+    hit = _job_poll_row_cache.get(jid)
+    if hit and (now - hit[0]) < ttl:
+        return hit[1]
+    row = _get_job_row_by_runpod_job_id(jid, select="status,metadata")
+    if row:
+        _job_poll_row_cache[jid] = (now, row)
+    return row
+
 
 def _last_callback_gpt_path():
     """Small local file for GPT timing inference only (not multi-worker critical)."""
@@ -1200,7 +1230,9 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
             payload["status"] = update_job_status
         patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{row['id']}"
         r = requests.patch(patch_url, json=payload, headers=headers, timeout=10)
-        if r.status_code not in (200, 204):
+        if r.status_code in (200, 204):
+            _invalidate_job_poll_row_cache(runpod_job_id)
+        else:
             logging.warning(
                 "_merge_job_qs_trigger: PATCH failed for %s: %s %s",
                 runpod_job_id,
@@ -1214,7 +1246,7 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
 def _get_trigger_state(job_id):
     """Return (trigger_status, at_ts) from Supabase (metadata.qs_trigger), or (None, None) if missing."""
     try:
-        row = _get_job_row_by_runpod_job_id(job_id, select="status,metadata")
+        row = _get_job_poll_row(job_id)
         if not row:
             return (None, None)
         md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -1235,7 +1267,7 @@ def _set_trigger_state(job_id, status, **extra):
 def _get_trigger_timings(job_id):
     """Read timing fields from jobs.metadata.qs_trigger (for multi-worker)."""
     try:
-        row = _get_job_row_by_runpod_job_id(job_id, select="metadata")
+        row = _get_job_poll_row(job_id)
         if not row:
             return {}
         md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}

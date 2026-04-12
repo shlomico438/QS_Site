@@ -47,11 +47,38 @@ window.originalFileName = "transcript";
 window.hasMultipleSpeakers = false;
 let isSignUpMode = true;
 
+/** HTTP statuses where hammering the server is pointless; stop polling after a short streak. */
+function qsIsSevereServerPollError(status) {
+    return status === 502 || status === 503 || status === 504 || status === 429;
+}
+
 /** Start polling check_status and trigger_status for a job (used after trigger and on retry). */
 window.startJobStatusPolling = function(jobId) {
     if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
-    const pollMs = 4000;
+    // Slower cadence + server-side row cache keeps Supabase load and CPU down (was ~4s + frequent trigger_status).
+    const pollMs = 9000;
+    const triggerStatusEveryNPolls = 3;
     let polls = 0;
+    let consecutiveSeverePollFailures = 0;
+    const maxSevereBeforeStop = 8;
+
+    const stopPollingServerDown = (isHe) => {
+        if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+        window._checkStatusPollInterval = null;
+        window.isTriggering = false;
+        if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI();
+        if (window.fakeProgressInterval) {
+            clearInterval(window.fakeProgressInterval);
+            window.fakeProgressInterval = null;
+        }
+        const mb = document.getElementById('main-btn');
+        if (mb) mb.disabled = false;
+        const msg = isHe
+            ? 'השרת אינו זמין זמנית. רענן את הדף או נסה שוב בעוד רגע.'
+            : 'The server is temporarily unavailable. Refresh the page or try again in a moment.';
+        if (typeof showStatus === 'function') showStatus(msg, true);
+    };
+
     window._checkStatusPollInterval = setInterval(async () => {
         polls++;
         if (!localStorage.getItem('activeJobId')) {
@@ -59,17 +86,24 @@ window.startJobStatusPolling = function(jobId) {
             window._checkStatusPollInterval = null;
             return;
         }
+        const isHe = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he');
         try {
-            if (polls % 5 === 0) {
+            if (polls % triggerStatusEveryNPolls === 0) {
                 const tsRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
+                if (!tsRes.ok && qsIsSevereServerPollError(tsRes.status)) {
+                    consecutiveSeverePollFailures++;
+                    if (consecutiveSeverePollFailures >= maxSevereBeforeStop) {
+                        stopPollingServerDown(isHe);
+                        return;
+                    }
+                }
                 if (tsRes.ok) {
                     const ts = await tsRes.json();
                     if (ts.status === 'failed') {
                         if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
                         window._checkStatusPollInterval = null;
                         window.isTriggering = false;
-                        const msg = typeof document.documentElement.lang !== 'undefined' && String(document.documentElement.lang).toLowerCase().startsWith('he')
-                            ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
+                        const msg = isHe ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
                         showTriggerErrorDialog(msg, {
                             onClose: () => {
                                 localStorage.removeItem('activeJobId');
@@ -87,21 +121,38 @@ window.startJobStatusPolling = function(jobId) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ jobId })
                         });
-                                                    if (retryRes.ok) {
-                                                        console.log('[trigger] Retrying trigger for job', jobId);
-                                                    }
+                        if (retryRes.ok) {
+                            console.log('[trigger] Retrying trigger for job', jobId);
+                        }
                     }
                 }
             }
             const res = await fetch(`/api/check_status/${encodeURIComponent(jobId)}`);
-            if (!res.ok) return;
+            if (!res.ok) {
+                if (qsIsSevereServerPollError(res.status)) {
+                    consecutiveSeverePollFailures++;
+                    if (consecutiveSeverePollFailures >= maxSevereBeforeStop) {
+                        stopPollingServerDown(isHe);
+                        return;
+                    }
+                } else {
+                    consecutiveSeverePollFailures = 0;
+                }
+                return;
+            }
+            consecutiveSeverePollFailures = 0;
             const data = await res.json();
             if (data.status === 'completed' || data.status === 'failed' || (data.segments && data.segments.length > 0)) {
                 if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
                 window._checkStatusPollInterval = null;
                 window.handleJobUpdate(data);
             }
-        } catch (_) {}
+        } catch (_) {
+            consecutiveSeverePollFailures++;
+            if (consecutiveSeverePollFailures >= maxSevereBeforeStop) {
+                stopPollingServerDown(isHe);
+            }
+        }
     }, pollMs);
 };
 
@@ -6051,21 +6102,55 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     statusTxt.innerText = '';
                                     statusTxt.style.display = 'none';
                                 }
-                                const pollInterval = 2000;
+                                const pollInterval = 4000;
+                                const maxTriggerWaitPolls = 240; // ~16 min at 4s; avoids infinite loop on 503 / empty body
                                 let waitPct = 0;
                                 let ts = { status: '' };
-                                while (ts.status !== 'triggered' && ts.status !== 'failed') {
+                                let httpBadStreak = 0;
+                                for (let pollIx = 0; pollIx < maxTriggerWaitPolls && ts.status !== 'triggered' && ts.status !== 'failed'; pollIx++) {
                                     await new Promise(r => setTimeout(r, pollInterval));
                                     // Keep progressing slowly and cap at 95% while we wait.
                                     if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
                                     if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
                                     try {
                                         const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
-                                        ts = stRes.ok ? await stRes.json() : {};
+                                        if (!stRes.ok) {
+                                            httpBadStreak++;
+                                            const giveUp =
+                                                httpBadStreak >= 12
+                                                || (qsIsSevereServerPollError(stRes.status) && httpBadStreak >= 5);
+                                            if (giveUp) {
+                                                ts = { status: 'failed', _serverUnavailable: true };
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                        httpBadStreak = 0;
+                                        ts = await stRes.json();
                                     } catch (_) {
-                                        // Keep waiting on transient network issues instead of failing the job UI.
-                                        ts = ts || { status: '' };
+                                        httpBadStreak++;
+                                        if (httpBadStreak >= 12) {
+                                            ts = { status: 'failed', _serverUnavailable: true };
+                                            break;
+                                        }
                                     }
+                                }
+                                if (ts.status === 'failed' && ts._serverUnavailable) {
+                                    const dbId2 = localStorage.getItem('lastJobDbId');
+                                    window.isTriggering = false;
+                                    setDiarizationBusyState(false);
+                                    stopProcessingStateUI();
+                                    hideProgressBar();
+                                    if (window.fakeProgressInterval) {
+                                        clearInterval(window.fakeProgressInterval);
+                                        window.fakeProgressInterval = null;
+                                    }
+                                    const msg = isHebrewUi
+                                        ? 'השרת אינו זמין זמנית. רענן את הדף או נסה שוב בעוד רגע.'
+                                        : 'The server is temporarily unavailable. Refresh the page or try again in a moment.';
+                                    if (typeof showStatus === 'function') showStatus(msg, true);
+                                    if (mainBtn) mainBtn.disabled = false;
+                                    return;
                                 }
                                 if (ts.status === 'failed') {
                                     console.log("trigger nack", ts.status);
@@ -6085,8 +6170,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     });
                                     return;
                                 }
-                                console.log("trigger ack (triggered)");
-                                console.log("✅ RunPod trigger confirmed.");
+                                if (ts.status !== 'triggered') {
+                                    console.warn('[trigger] Handshake wait ended without triggered; continuing with job status polling');
+                                } else {
+                                    console.log("trigger ack (triggered)");
+                                    console.log("✅ RunPod trigger confirmed.");
+                                }
                                 if (typeof startFakeProgress === 'function') startFakeProgress();
                             } else if (triggerRes.status === 202) {
                                 console.log("trigger nack", "unexpected status", triggerData.status);
