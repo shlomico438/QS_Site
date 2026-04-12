@@ -1874,20 +1874,38 @@ html[dir="rtl"] .upload-status {
         padding: 10px !important;
     }
 
-    /* 4. THE TRANSCRIPT WINDOW (The only thing that scrolls) */
+    /* 4. Only #transcript-window scrolls — do NOT put overflow-y on .transcription-wrapper or the toolbar
+       and bottom controls scroll away with the cues (mobile bug). */
     .transcription-wrapper {
-        flex: 1 !important;        /* Grow to fill ALL empty space */
-        overflow-y: auto !important; /* Scroll INSIDE this box */
+        flex: 1 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important;
         overflow-x: hidden !important;
-        min-height: 0 !important;  /* Critical Fix for Flexbox scrolling */
+        min-height: 0 !important;
         margin-bottom: 10px !important;
-        border: 1px solid #eee;    /* Optional: helps see the boundary */
+        border: 1px solid #eee;
     }
 
-    /* Ensure the transcript content doesn't force width issues */
+    .transcription-wrapper .switches-top-bar,
+    .transcription-wrapper .controls-bar {
+        flex: 0 0 auto !important;
+    }
+
+    .transcript-area-wrap {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+
     #transcript-window {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
         height: auto !important;
-        max-height: none !important; /* Let the wrapper handle the height */
+        max-height: none !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch;
         overflow-x: hidden !important;
     }
 
