@@ -1,5 +1,5 @@
-// Supabase client (inlined so the browser does not need a second same-origin fetch for ./supabaseClient.js).
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2?bundle'
+// Supabase client (inlined — avoids extra same-origin fetch). Use jsDelivr +esm (reliable named export); esm.sh ?bundle broke createClient in some browsers.
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/+esm'
 
 const supabaseUrl = 'https://vojesnnvehecenjymrko.supabase.co'
 const supabaseAnonKey = 'sb_publishable_BhoKDe-_iL04tOVYCbbX0w_3TjKWaGG'
