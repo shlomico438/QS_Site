@@ -43,7 +43,7 @@ window.currentFormattedDoc = null;
 window.globalCaptionLayoutStyle = window.globalCaptionLayoutStyle || null;
 window.currentWords = null;
 window.currentCaptions = null;
-window.originalFileName = "transcript";
+window.originalFileName = '';
 window.hasMultipleSpeakers = false;
 let isSignUpMode = true;
 
@@ -2445,9 +2445,54 @@ async function downloadBlobAsFileOnly(blob, filename) {
     }
 }
 
+/** Base filename without extension for DOCX/TXT/SRT exports when upload name was not captured. */
+function getExportBaseNameNoExt() {
+    const stripJobPrefix = (s) =>
+        String(s || '')
+            .trim()
+            .replace(/^job_\d+_/, '')
+            .trim();
+    const sanitize = (s) =>
+        stripJobPrefix(String(s || '').trim())
+            .replace(/[\\/:*?"<>|]+/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+    const rawOrig = String(window.originalFileName || '').trim();
+    if (rawOrig && rawOrig.toLowerCase() !== 'transcript') {
+        const orig = sanitize(rawOrig);
+        if (orig) return orig;
+    }
+
+    const key = (localStorage.getItem('lastS3Key') || localStorage.getItem('pendingS3Key') || '').trim();
+    if (key) {
+        let leaf = '';
+        try {
+            leaf = decodeURIComponent(key.split('/').pop() || '');
+        } catch (_) {
+            leaf = key.split('/').pop() || '';
+        }
+        const fromKey = sanitize(String(leaf).replace(/\.[^.]+$/, ''));
+        if (fromKey) return fromKey;
+    }
+
+    const jid = (localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+    const m = jid.match(/^job_\d+_(.+)$/);
+    if (m && m[1]) {
+        try {
+            const t = sanitize(decodeURIComponent(m[1]).replace(/\.[^.]+$/, ''));
+            if (t) return t;
+        } catch (_) {
+            const t2 = sanitize(String(m[1]).replace(/\.[^.]+$/, ''));
+            if (t2) return t2;
+        }
+    }
+
+    return 'transcript';
+}
+
 window.downloadFile = async function(type, bypassUser = null, options = {}) {
-    const rawBaseName = ((window.originalFileName || '').trim()) || "transcript";
-    const baseName = rawBaseName.replace(/^job_\d+_/, '').trim() || "transcript";
+    const baseName = getExportBaseNameNoExt() || 'transcript';
 
     if (type === 'movie') {
         const movieStageT0 = Date.now();
@@ -3908,10 +3953,29 @@ function stopProcessingStateUI(reason) {
     });
 }
 
+function _processingIntroThreeSentencesHe(loggedIn) {
+    const s1 = 'אנחנו מעירים את מנועי ה-AI! 🚀';
+    const s2 = 'התהליך עשוי לקחת כמה דקות.';
+    const s3 = loggedIn
+        ? 'אפשר לסגור את העמוד — נשלח לך מייל ברגע שהוידאו יהיה מוכן עם הכתוביות.'
+        : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
+    return `${s1} ${s2} ${s3}`;
+}
+
+function _processingIntroThreeSentencesEn(loggedIn) {
+    const s1 = "We're waking up the AI engines! 🚀";
+    const s2 = 'This may take a few minutes.';
+    const s3 = loggedIn
+        ? "You can leave this page — we'll email you when your video and subtitles are ready."
+        : 'Sign in to the site so we can notify you by email when it is ready.';
+    return `${s1} ${s2} ${s3}`;
+}
+
 function startProcessingStateUI() {
     const panel = document.getElementById('processing-state-panel');
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
     const phaseEl = document.getElementById('processing-state-phase');
+    const introEl = document.getElementById('processing-state-intro');
     if (!panel || !phaseEl) return;
 
     if (window.processingStateTimer) {
@@ -3923,6 +3987,25 @@ function startProcessingStateUI() {
     phaseEl.textContent = PROCESSING_PHASES_HE[0];
     panel.style.display = 'flex';
     if (controlsRow) controlsRow.style.display = 'none';
+
+    if (introEl) {
+        const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+        introEl.textContent = isHe ? _processingIntroThreeSentencesHe(false) : _processingIntroThreeSentencesEn(false);
+        (async () => {
+            let loggedIn = false;
+            try {
+                if (typeof supabase !== 'undefined' && supabase.auth && typeof supabase.auth.getSession === 'function') {
+                    const { data } = await supabase.auth.getSession();
+                    loggedIn = !!(data && data.session && data.session.user);
+                }
+            } catch (_) {}
+            if (introEl) {
+                introEl.textContent = isHe
+                    ? _processingIntroThreeSentencesHe(loggedIn)
+                    : _processingIntroThreeSentencesEn(loggedIn);
+            }
+        })();
+    }
 
     window.processingStateTimer = setInterval(() => {
         const currentIndex = Number(window.processingPhaseIndex || 0);
@@ -4722,6 +4805,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (ps) ps.style.display = 'none';
             }, 3000);
         }
+        try {
+            const cur = String(window.originalFileName || '').trim().toLowerCase();
+            const bn = getExportBaseNameNoExt();
+            if (bn && bn !== 'transcript' && (!cur || cur === 'transcript')) {
+                window.originalFileName = bn;
+            }
+        } catch (_) {}
         window.isTriggering = false;
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         stopProcessingStateUI('handle_job_update_success_pipeline_done');
