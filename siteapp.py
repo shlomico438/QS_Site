@@ -1112,6 +1112,15 @@ def personal():
 def legal():
     return render_template('legal.html')
 
+
+@app.route('/loaderio-c1e5fa75e4a82891e47b968c879d134b/')
+@app.route('/loaderio-c1e5fa75e4a82891e47b968c879d134b.txt')
+@app.route('/loaderio-c1e5fa75e4a82891e47b968c879d134b.html')
+def loaderio_verification():
+    token = 'loaderio-c1e5fa75e4a82891e47b968c879d134b'
+    return token, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+
 # --- UPLOAD & TRIGGER API ---
 import time  # Ensure time is imported at the top of your file
 
