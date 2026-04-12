@@ -60,7 +60,8 @@ window.startJobStatusPolling = function(jobId) {
     const triggerStatusEveryNPolls = 3;
     let polls = 0;
     let consecutiveSeverePollFailures = 0;
-    const maxSevereBeforeStop = 8;
+    // Only check_status (and network errors) count — trigger_status can 503 during proxy blips while check_status still works.
+    const maxSevereBeforeStop = 24;
 
     const stopPollingServerDown = (isHe) => {
         if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
@@ -90,13 +91,6 @@ window.startJobStatusPolling = function(jobId) {
         try {
             if (polls % triggerStatusEveryNPolls === 0) {
                 const tsRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
-                if (!tsRes.ok && qsIsSevereServerPollError(tsRes.status)) {
-                    consecutiveSeverePollFailures++;
-                    if (consecutiveSeverePollFailures >= maxSevereBeforeStop) {
-                        stopPollingServerDown(isHe);
-                        return;
-                    }
-                }
                 if (tsRes.ok) {
                     const ts = await tsRes.json();
                     if (ts.status === 'failed') {
@@ -2105,6 +2099,85 @@ function buildTranscriptTextForGptFormat() {
         .join(' ');
 }
 
+/** Long transcripts: one HTTP call runs past reverse-proxy limits → 504. Use plan + per-chunk + summary requests. */
+const QS_FORMAT_MULTI_REQUEST_CHARS = 5500;
+
+/**
+ * @returns {Promise<{ ok: boolean, res: Response, fmt: Record<string, unknown> }>}
+ */
+async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
+    const base = () => ({
+        target_lang: targetLang,
+        jobId: jobId || undefined
+    });
+    if (!fullText || fullText.length <= QS_FORMAT_MULTI_REQUEST_CHARS) {
+        const res = await fetch('/api/format_transcript_summary', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...base(), text: fullText })
+        });
+        const fmt = await res.json().catch(() => ({}));
+        return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt };
+    }
+    const planRes = await fetch('/api/transcript_format_chunks_plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: fullText })
+    });
+    const plan = await planRes.json().catch(() => ({}));
+    if (!planRes.ok || !Array.isArray(plan.chunks) || !plan.chunks.length) {
+        return { ok: false, res: planRes, fmt: plan };
+    }
+    const cleanParts = [];
+    const chunkConcurrency = 3;
+    for (let i = 0; i < plan.chunks.length; i += chunkConcurrency) {
+        const batch = plan.chunks.slice(i, i + chunkConcurrency);
+        const results = await Promise.all(
+            batch.map(async (chunk) => {
+                const res = await fetch('/api/format_transcript_summary', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ...base(),
+                        mode: 'clean_chunk',
+                        text: chunk
+                    })
+                });
+                const part = await res.json().catch(() => ({}));
+                return { res, part };
+            })
+        );
+        for (const { res, part } of results) {
+            if (!res.ok || (part && part.error)) {
+                return { ok: false, res, fmt: part };
+            }
+            cleanParts.push(String(part.clean_transcript || '').trim());
+        }
+    }
+    const merged = cleanParts.filter(Boolean).join('\n\n');
+    const sumRes = await fetch('/api/format_transcript_summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            ...base(),
+            mode: 'summary_only',
+            text: merged
+        })
+    });
+    const sumFmt = await sumRes.json().catch(() => ({}));
+    if (!sumRes.ok || (sumFmt && sumFmt.error)) {
+        return { ok: false, res: sumRes, fmt: sumFmt };
+    }
+    const fmt = {
+        clean_transcript: String(sumFmt.clean_transcript || merged || '').trim(),
+        overview: String(sumFmt.overview || '').trim(),
+        key_points: Array.isArray(sumFmt.key_points)
+            ? sumFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+            : []
+    };
+    return { ok: true, res: sumRes, fmt };
+}
+
 /** Keep document-format source in sync after manual subtitle edits. */
 function syncFormattedDocWithCurrentSegments() {
     const clean = String(buildTranscriptTextForGptFormat() || '').trim();
@@ -2129,17 +2202,9 @@ async function ensureFormattedViaApiForExport() {
         showStatus('מעצב תמלול לייצוא…', false, { duration: 720000 });
     }
     try {
-        const res = await fetch('/api/format_transcript_summary', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: fullText,
-                target_lang: targetLang,
-                jobId: localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined
-            })
-        });
-        const fmt = await res.json().catch(() => ({}));
-        if (!res.ok || !fmt || typeof fmt !== 'object' || fmt.error) {
+        const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
+        const { ok, res, fmt } = await runFormatTranscriptSummaryRequests(fullText, targetLang, jobId);
+        if (!ok || !fmt || typeof fmt !== 'object') {
             const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
             console.warn('[export] format_transcript_summary failed', res.status, errMsg);
             if (typeof showStatus === 'function') {
@@ -4452,18 +4517,10 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => {
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return;
-            fetch('/api/format_transcript_summary', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: fullText,
-                    target_lang: userLang || 'he',
-                    jobId: localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined
-                })
-            })
-                .then((fmtRes) => (fmtRes.ok ? fmtRes.json() : null))
-                .then((fmt) => {
-                    if (!fmt || typeof fmt !== 'object') return;
+            const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
+            runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId)
+                .then(({ ok, fmt }) => {
+                    if (!ok || !fmt || typeof fmt !== 'object') return;
                     window.currentFormattedDoc = {
                         clean_transcript: String(fmt.clean_transcript || '').trim(),
                         overview: String(fmt.overview || '').trim(),

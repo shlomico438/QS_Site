@@ -2193,14 +2193,100 @@ def api_wrap_transcript_text():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/transcript_format_chunks_plan', methods=['POST'])
+def api_transcript_format_chunks_plan():
+    """Split transcript text for multi-request formatting (avoids proxy 504 on long jobs).
+
+    Client calls /api/format_transcript_summary mode=clean_chunk once per chunk, then mode=summary_only.
+    """
+    data = request.json or {}
+    raw_text = str(data.get('text') or '').strip()
+    segments = data.get('segments') or []
+    if not raw_text and isinstance(segments, list):
+        raw_text = "\n".join(
+            str((s or {}).get('text') or '').strip()
+            for s in segments
+            if str((s or {}).get('text') or '').strip()
+        ).strip()
+    if not raw_text:
+        return jsonify({"error": "No transcript text provided"}), 400
+    max_c = int(os.environ.get('FORMAT_TRANSCRIPT_HTTP_CHUNK_CHARS', '3000') or 3000)
+    max_c = max(2000, min(max_c, 12000))
+    chunks = _split_text_for_format_chunks(raw_text, max_c)
+    return jsonify({"chunks": chunks, "count": len(chunks)}), 200
+
+
 @app.route('/api/format_transcript_summary', methods=['POST'])
 def api_format_transcript_summary():
-    """Return clean transcript + summary fields for DOCX export."""
+    """Return clean transcript + summary fields for DOCX export.
+
+    For long transcripts, use multi-request flow to stay under gateway timeouts:
+      POST /api/transcript_format_chunks_plan  -> { chunks }
+      POST this route with {\"mode\":\"clean_chunk\",\"text\": chunk} per chunk
+      POST this route with {\"mode\":\"summary_only\",\"text\": merged_clean}
+    """
     t0 = time.time()
     data = request.json or {}
+    mode = str(data.get('mode') or '').strip().lower()
     target_lang = data.get('targetLang') or data.get('target_lang') or 'he'
     req_job_id = (data.get('jobId') or data.get('job_id') or '').strip() or None
     req_user_id = (data.get('userId') or data.get('user_id') or '').strip() or None
+    read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
+
+    def _apply_format_timing(elapsed):
+        timing_job_id = req_job_id
+        timing_user_id = req_user_id
+        if not timing_job_id:
+            last_job, callback_at, last_user_id = _get_last_callback_for_gpt()
+            if last_job and callback_at is not None and (time.time() - callback_at) < 600:
+                timing_job_id = last_job
+                timing_user_id = timing_user_id or last_user_id
+        if timing_job_id:
+            _update_job_timings(timing_job_id, user_id=timing_user_id, gpt_format_sec=elapsed)
+
+    if mode == 'clean_chunk':
+        part = str(data.get('text') or '').strip()
+        if not part:
+            return jsonify({"error": "No transcript text provided"}), 400
+        # Keep per-request OpenAI read budget modest so each HTTP round-trip stays under typical proxy limits.
+        chunk_timeout = int(os.environ.get('GPT_FORMAT_CHUNK_TIMEOUT_SEC', '75') or 75)
+        try:
+            clean = _format_transcript_clean_chunk_openai(part, target_lang, chunk_timeout, read_retries)
+            elapsed = time.time() - t0
+            # Do not _update_job_timings per chunk (would overwrite); client multi-request ends with summary_only.
+            return jsonify({"clean_transcript": clean, "gpt_format_sec": round(float(elapsed), 3)}), 200
+        except Exception as e:
+            logging.warning("format_transcript_summary clean_chunk failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    if mode == 'summary_only':
+        raw = str(data.get('text') or '').strip()
+        if not raw:
+            return jsonify({"error": "No transcript text provided"}), 400
+        full_clean = _wrap_text_to_max_chars(raw)
+        summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000') or 18000)
+        summ_input = full_clean
+        if len(summ_input) > summary_in_max:
+            summ_input = (
+                full_clean[: summary_in_max // 2]
+                + "\n\n[… פסקה מקוצרת — המשך התמלול …]\n\n"
+                + full_clean[-(summary_in_max // 2) :]
+            )
+        summary_timeout = int(os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC', '120') or 120)
+        try:
+            summary = _format_summary_only_openai(summ_input, target_lang, summary_timeout, read_retries)
+            elapsed = time.time() - t0
+            _apply_format_timing(elapsed)
+            return jsonify({
+                "clean_transcript": full_clean,
+                "overview": summary.get("overview") or "",
+                "key_points": summary.get("key_points") or [],
+                "gpt_format_sec": round(float(elapsed), 3),
+            }), 200
+        except Exception as e:
+            logging.warning("format_transcript_summary summary_only failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
     raw_text = str(data.get('text') or '').strip()
     segments = data.get('segments') or []
     if not raw_text and isinstance(segments, list):
@@ -2217,15 +2303,7 @@ def api_format_transcript_summary():
         if ct:
             out['clean_transcript'] = _wrap_text_to_max_chars(ct)
         elapsed = time.time() - t0
-        timing_job_id = req_job_id
-        timing_user_id = req_user_id
-        if not timing_job_id:
-            last_job, callback_at, last_user_id = _get_last_callback_for_gpt()
-            if last_job and callback_at is not None and (time.time() - callback_at) < 600:
-                timing_job_id = last_job
-                timing_user_id = timing_user_id or last_user_id
-        if timing_job_id:
-            _update_job_timings(timing_job_id, user_id=timing_user_id, gpt_format_sec=elapsed)
+        _apply_format_timing(elapsed)
         out['gpt_format_sec'] = round(float(elapsed), 3)
         return jsonify(out), 200
     except Exception as e:
