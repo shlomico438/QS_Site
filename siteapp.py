@@ -490,7 +490,8 @@ def _force_docx_rtl_bytes(docx_bytes):
 socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
-    transports=['websocket'],
+    # Allow polling + websocket so live updates work behind proxies/CDNs that block WSS.
+    transports=['websocket', 'polling'],
     ping_timeout=600,
     ping_interval=20,
     manage_session=False

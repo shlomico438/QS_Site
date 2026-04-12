@@ -95,10 +95,11 @@
             reconnectionDelayMax: 10000
         });
         let socketWarned = false;
-        socket.on('connect_error', () => {
+        socket.on('connect_error', (err) => {
             if (!socketWarned) {
                 socketWarned = true;
-                console.warn('QuickScribe: WebSocket unavailable. Start the app with Socket.IO (e.g. python siteapp.py) for live job updates.');
+                const detail = (err && (err.message || err.description)) ? String(err.message || err.description) : '';
+                console.warn('QuickScribe: Socket.IO could not connect (live job updates disabled).' + (detail ? ' ' + detail : '') + ' Deploy with Socket.IO reachable on the same origin, or allow WebSocket/long-polling through your proxy.');
             }
         });
     </script>
