@@ -822,7 +822,22 @@ input:checked + .slider:before { transform: translateX(16px); }
     position: relative;
     margin-bottom: 10px;
 }
-/* 5. The Window ITSELF handles the scroll */
+/* 5. Transcript + centered processing overlay share one flex column */
+.transcript-area-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.transcript-area-wrap > #transcript-window {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* 5b. The Window ITSELF handles the scroll */
 #transcript-window {
     flex: 1;
     overflow-y: auto !important; /* Scrollbar lives here */
@@ -1360,19 +1375,26 @@ input:checked + .slider:before { transform: translateX(16px); }
     border-top: 1px solid #eee;
 }
 
-.processing-state-panel {
-    display: flex;
+/* Centered over the transcript pane (not the upload / keyboard area) */
+.transcript-area-wrap .processing-state-panel {
+    display: none;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 12px;
-    margin: 8px auto 0;
-    max-width: 760px;
-    padding: 18px 16px;
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+    margin: 0;
+    max-width: none;
+    padding: 22px 18px;
+    box-sizing: border-box;
     border-radius: 12px;
-    background: #ffffff;
+    background: rgba(255, 255, 255, 0.94);
     border: 1px solid #e5e7eb;
-    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    box-shadow: 0 8px 28px rgba(15, 23, 42, 0.1);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
 }
 
 .processing-state-primary {

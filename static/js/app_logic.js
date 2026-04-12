@@ -403,9 +403,19 @@ if (typeof socket !== 'undefined') {
 
     socket.on('job_status_update', (data) => {
         console.log("📩 AI Results Received via Socket:", data);
-        if (typeof window.handleJobUpdate === 'function') {
-            window.handleJobUpdate(data);
-        }
+        const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        console.info('[qs-processing-ui] socket job_status_update received; scheduling handleJobUpdate', {
+            ts: new Date().toISOString(),
+            jobId: data && (data.jobId || (data.result && data.result.jobId))
+        });
+        // Yield so the browser can paint (phase overlay / button) before heavy translate + render work.
+        setTimeout(() => {
+            const dt = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0;
+            console.info('[qs-processing-ui] handleJobUpdate starting', { delay_ms: Math.round(dt) });
+            if (typeof window.handleJobUpdate === 'function') {
+                window.handleJobUpdate(data);
+            }
+        }, 0);
     });
 }
 
@@ -3843,8 +3853,10 @@ const PROCESSING_PHASES_HE = [
     "מפעיל שרתים מרוחקים...",
     "מנתח את האודיו ומזהה מילים...",
     "מייצר כתוביות ומסנכרן לוידאו...",
-    "מבצע פינישים אחרונים..."
+    "מבצע פינישים אחרונים...",
+    "משפר תמלול וכותרות (GPT)..."
 ];
+const QS_GPT_PHASE_INDEX = 4;
 
 /** Console breadcrumb when processing overlay / fake % animation stops (debug UI freezes). */
 function qsLogProcessingAnimStop(kind, detail) {
@@ -4324,7 +4336,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 1. CLEAR OVERLAYS & STOP PROGRESS
-        window.isTriggering = false;
+        // Keep window.isTriggering true until the end of this handler so the fake-% interval does not
+        // self-stop mid-flight before GPT translate (user saw "animation died" while chunks ran).
         setDiarizationBusyState(false);
         setSeoHomeContentVisibility(false);
         localStorage.removeItem('activeJobId');
@@ -4415,6 +4428,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (typeof showStatus === 'function') showStatus(safeErr, true);
             setDiarizationBusyState(false);
+            window.isTriggering = false;
             stopProcessingStateUI('handle_job_update_job_failed');
             return;
         }
@@ -4457,10 +4471,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 mainBtn.innerText = processingLabel + ' ' + GPT_PHASE_BASE_PCT + '%';
             }
             userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
+            const phaseElGpt = document.getElementById('processing-state-phase');
+            if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
+                window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
+                phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
+            }
             const chunks = [];
             for (let i = 0; i < window.currentSegments.length; i += TRANSLATE_CHUNK_SIZE) {
                 chunks.push(window.currentSegments.slice(i, i + TRANSLATE_CHUNK_SIZE));
             }
+            console.info('[qs-processing-ui] gpt_translate_start', {
+                segment_count: window.currentSegments.length,
+                chunk_requests: chunks.length
+            });
             if (chunks.length > 1) console.log('[GPT] Chunked translate:', segments.length, 'segments ->', chunks.length, 'requests (all in flight)');
             var completedCount = 0;
             function onChunkDone() {
@@ -4699,6 +4722,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (ps) ps.style.display = 'none';
             }, 3000);
         }
+        window.isTriggering = false;
+        console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         stopProcessingStateUI('handle_job_update_success_pipeline_done');
     };
 
