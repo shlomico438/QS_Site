@@ -3,7 +3,8 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 const supabaseUrl = 'https://vojesnnvehecenjymrko.supabase.co'
 const supabaseAnonKey = 'sb_publishable_BhoKDe-_iL04tOVYCbbX0w_3TjKWaGG'
-const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// Semicolon required: next line starts with `(` — without it, ASI parses `createClient(...)(() => { ... })`.
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Console gate:
 // - Default ON for localhost (dev), OFF for non-local hosts (production-like).
