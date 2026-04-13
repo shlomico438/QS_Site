@@ -5336,6 +5336,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (activeInput && typeof activeInput.blur === 'function') {
                 window._qsSkipCommitRefocus = true;
                 activeInput.blur();
+                // Mobile click-on-save can race ahead of blur commit; retry once on next tick.
+                if (!window._qsSaveEditsPendingRetry) {
+                    window._qsSaveEditsPendingRetry = true;
+                    setTimeout(() => {
+                        window._qsSaveEditsPendingRetry = false;
+                        try { window.saveEdits(); } catch (_) {}
+                    }, 0);
+                    return;
+                }
             }
         } catch (_) {}
         const useWordModelEditor = (
