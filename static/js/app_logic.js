@@ -2112,6 +2112,14 @@ function buildTranscriptTextForGptFormat() {
         .join(' ');
 }
 
+/** One paragraph per cue for DOCX/TXT and for syncing `formatted.clean_transcript` after edits (preserves breaks; space-join loses layout). */
+function buildTranscriptPlainBodyForExport() {
+    return (window.currentSegments || [])
+        .map((s) => String((s && s.text) || '').trim())
+        .filter(Boolean)
+        .join('\n\n');
+}
+
 /** Long transcripts: one HTTP call runs past reverse-proxy limits → 504. Use plan + per-chunk + summary requests. */
 // Below this length, one POST is usually under proxy limits; above it, use plan + per-chunk + summary (sequential chunks).
 const QS_FORMAT_MULTI_REQUEST_CHARS = 4000;
@@ -2186,7 +2194,7 @@ async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
 
 /** Keep document-format source in sync after manual subtitle edits. */
 function syncFormattedDocWithCurrentSegments() {
-    const clean = String(buildTranscriptTextForGptFormat() || '').trim();
+    const clean = String(buildTranscriptPlainBodyForExport() || '').trim();
     if (!clean) return;
     const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
         ? window.currentFormattedDoc
@@ -2959,7 +2967,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
                 ? window.currentFormattedDoc
                 : null;
-            const clean = String((fmt && fmt.clean_transcript) || '').trim() || segmentFlowFallback;
+            // Prefer live cues so DOCX/TXT match the transcript after edits; stale `clean_transcript` ignored GPT pre-edit text.
+            const fromSegments = String(buildTranscriptPlainBodyForExport() || '').trim();
+            const clean = (fromSegments || String((fmt && fmt.clean_transcript) || '').trim() || segmentFlowFallback).trim();
             const overview = String((fmt && fmt.overview) || '').trim();
             const keyPoints = Array.isArray(fmt && fmt.key_points)
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
@@ -3892,7 +3902,8 @@ function wrapTextByMaxChars(text, maxChars) {
 }
 
 function getDocFormatParagraphs() {
-    const clean = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+    const fromSeg = String(buildTranscriptPlainBodyForExport() || '').trim();
+    const clean = fromSeg || String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
     if (!clean) return [];
     return clean
         .split(/\r?\n+/)
@@ -4178,11 +4189,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 || isMobileClient()
             );
             const videoWrapper = document.getElementById('video-wrapper');
+            const audioContainer = document.getElementById('audio-player-container');
             const hasLoadedVideo = !!(videoWrapper && videoWrapper.classList.contains('visible'));
-            document.body.classList.toggle('mobile-video-session', !!(isMobile && hasLoadedVideo));
+            let hasLoadedAudio = false;
+            if (audioContainer) {
+                const st = window.getComputedStyle(audioContainer);
+                hasLoadedAudio = st.display !== 'none' && st.visibility !== 'hidden';
+            }
+            // Mobile layout hides upload CTA for video; same for audio-only (mp3) once the player is shown.
+            document.body.classList.toggle('mobile-video-session', !!(isMobile && (hasLoadedVideo || hasLoadedAudio)));
         } catch (_) {}
         syncLandingLogoSize();
     }
+    window.syncMobileVideoSessionState = syncMobileVideoSessionState;
 
     function syncLandingLogoSize() {
         const bodyEl = document.body;
@@ -4199,7 +4218,13 @@ document.addEventListener('DOMContentLoaded', () => {
             videoWrapper.classList.contains('visible') &&
             videoWrapper.style.display !== 'none'
         );
-        bodyEl.classList.toggle('landing-logo-large', !videoShown);
+        const audioEl = document.getElementById('audio-player-container');
+        let audioShown = false;
+        if (audioEl) {
+            const st = window.getComputedStyle(audioEl);
+            audioShown = st.display !== 'none' && st.visibility !== 'hidden';
+        }
+        bodyEl.classList.toggle('landing-logo-large', !(videoShown || audioShown));
     }
 
     if (mobileSessionBtn) {

@@ -1755,12 +1755,19 @@ html[dir="rtl"] .upload-status {
         text-align: center;
     }
 
-    /* Save vertical space on mobile only when a video session is loaded */
+    /* Save vertical space on mobile when video or audio player is shown (mp3 was missing mobile-video-session before). */
     body.mobile-video-session .upload-controls-row {
         display: none !important;
     }
     /* Replace the hidden upload-zone area with the transcription toolbar */
     body.mobile-video-session .upload-zone {
+        display: none !important;
+    }
+    /* Same as desktop has-transcript-actions: hide upload CTA once transcript toolbar is active (audio jobs). */
+    body.has-transcript-actions .upload-controls-row {
+        display: none !important;
+    }
+    body.has-transcript-actions .upload-zone {
         display: none !important;
     }
     body.mobile-video-session .transcription-wrapper {
