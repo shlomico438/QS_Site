@@ -2121,7 +2121,19 @@ function buildTranscriptTextForGptFormat() {
 
 /** Paragraph-style transcript body for DOCX/TXT and doc mode (ignore subtitle cue line breaks). */
 function buildTranscriptPlainBodyForExport() {
-    const segs = Array.isArray(window.currentSegments) ? window.currentSegments : [];
+    let segs = Array.isArray(window.currentSegments) ? window.currentSegments : [];
+    if (
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 &&
+        window.currentCaptions.length > 0 &&
+        typeof _captionsToCues === 'function'
+    ) {
+        try {
+            const fromModel = _captionsToCues(window.currentWords, window.currentCaptions);
+            if (Array.isArray(fromModel) && fromModel.length > 0) segs = fromModel;
+        } catch (_) {}
+    }
     if (!segs.length) return '';
     const full = segs
         .map((s) => String((s && s.text) || '').trim())
@@ -2152,6 +2164,18 @@ function buildTranscriptPlainBodyForExport() {
     }
     if (cur.trim()) paragraphs.push(cur.trim());
     return paragraphs.join('\n\n');
+}
+
+async function commitActiveWordTokenEditIfAny() {
+    try {
+        const win = document.getElementById('transcript-window');
+        const activeInput = win ? win.querySelector('span.word-token.editing input.qs-token-input') : null;
+        if (activeInput && typeof activeInput.blur === 'function') {
+            window._qsSkipCommitRefocus = true;
+            activeInput.blur();
+            await new Promise((r) => setTimeout(r, 0));
+        }
+    } catch (_) {}
 }
 
 /** Long transcripts: one HTTP call runs past reverse-proxy limits → 504. Use plan + per-chunk + summary requests. */
@@ -2564,6 +2588,7 @@ function getExportBaseNameNoExt() {
 
 window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const baseName = getExportBaseNameNoExt() || 'transcript';
+    await commitActiveWordTokenEditIfAny();
 
     if (type === 'movie') {
         const movieStageT0 = Date.now();
