@@ -5331,21 +5331,36 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // Edits should immediately drive doc view/export text, even if old GPT formatted text still exists.
         window._qsDocPreferSegmentsAfterEdit = true;
         // If a token input is currently open, commit it before extracting/saving data.
+        // Mobile can lag blur -> commit, so we retry with a short delay and then force-apply.
         try {
             const activeInput = win ? win.querySelector('span.word-token.editing input.qs-token-input') : null;
-            if (activeInput && typeof activeInput.blur === 'function') {
-                window._qsSkipCommitRefocus = true;
-                activeInput.blur();
-                // Mobile click-on-save can race ahead of blur commit; retry once on next tick.
-                if (!window._qsSaveEditsPendingRetry) {
-                    window._qsSaveEditsPendingRetry = true;
+            if (activeInput) {
+                const retries = Number(window._qsSaveEditsPendingRetryCount || 0);
+                if (typeof activeInput.blur === 'function' && retries < 2) {
+                    window._qsSkipCommitRefocus = true;
+                    try { activeInput.blur(); } catch (_) {}
+                    window._qsSaveEditsPendingRetryCount = retries + 1;
                     setTimeout(() => {
-                        window._qsSaveEditsPendingRetry = false;
                         try { window.saveEdits(); } catch (_) {}
-                    }, 0);
+                    }, 140);
                     return;
                 }
+                // Fallback: force-apply current token text if blur commit did not complete.
+                const host = activeInput.closest('span.word-token[data-wi]');
+                const wi = host ? parseInt(host.getAttribute('data-wi'), 10) : NaN;
+                if (
+                    Number.isFinite(wi) &&
+                    Array.isArray(window.currentWords) &&
+                    window.currentWords[wi]
+                ) {
+                    const forced = String(activeInput.value || '').trim();
+                    window.currentWords[wi].text = forced;
+                    if (Array.isArray(window.currentCaptions) && window.currentCaptions.length && typeof _captionsToCues === 'function') {
+                        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                    }
+                }
             }
+            window._qsSaveEditsPendingRetryCount = 0;
         } catch (_) {}
         const useWordModelEditor = (
             Array.isArray(window.currentWords) &&
