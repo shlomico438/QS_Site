@@ -791,11 +791,8 @@ def save_job_result():
                     "key_points": [str(p).strip() for p in (exf.get("key_points") or []) if str(p).strip()],
                 }
 
-        # Canonical clean_transcript in S3: same merge+wrap as DOCX (fixes GPT \\n\\n micro-lines in JSON).
-        if isinstance(transcript.get("formatted"), dict):
-            _ct = str(transcript["formatted"].get("clean_transcript") or "").strip()
-            if _ct:
-                transcript["formatted"]["clean_transcript"] = _wrap_text_to_max_chars(_ct)
+        # Preserve formatted.clean_transcript exactly as provided (e.g. GPT paragraph structure).
+        # DOCX export applies its own wrapping when generating the .docx bytes.
 
         if "segments" not in transcript and "words" not in transcript:
             return jsonify({"error": "segments or words required"}), 400

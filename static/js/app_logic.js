@@ -45,6 +45,8 @@ window._getPrimaryMediaElement = function() {
     return a || v;
 };
 window.currentFormattedDoc = null;
+// When true, doc view/export should prefer current edited segments over stale GPT clean_transcript.
+window._qsDocPreferSegmentsAfterEdit = false;
 // Per-caption layout + highlight (merged with global defaults). Timeline/keywords UI removed.
 window.globalCaptionLayoutStyle = window.globalCaptionLayoutStyle || null;
 window.currentWords = null;
@@ -1598,7 +1600,10 @@ async function initOpenInApp(jobId) {
                 const tr = await fetch(urlJson.url).then(r => r.json());
                 if (tr) {
                     const trFmt = pickFormattedFromObject(tr);
-                    if (trFmt) window.currentFormattedDoc = trFmt;
+                    if (trFmt) {
+                        window.currentFormattedDoc = trFmt;
+                        window._qsDocPreferSegmentsAfterEdit = false;
+                    }
                     const cleanLen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
                     console.log('[word-edit] open-in-app: formatted in transcript JSON', {
                         found: !!trFmt,
@@ -1644,6 +1649,7 @@ async function initOpenInApp(jobId) {
         const resFmt = resultData && resultData.result ? pickFormattedFromObject(resultData.result) : null;
         if (resFmt) {
             window.currentFormattedDoc = resFmt;
+            window._qsDocPreferSegmentsAfterEdit = false;
             hasTranscriptForOpen = true;
         }
     }
@@ -2084,6 +2090,7 @@ async function hydrateFormattedFromSavedTranscript() {
         const clen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
         if (trFmt && clen > 0) {
             window.currentFormattedDoc = trFmt;
+            window._qsDocPreferSegmentsAfterEdit = false;
             console.log('[export] hydrated formatted from S3 (clean_transcript length=%s)', clen);
             return true;
         }
@@ -2112,12 +2119,39 @@ function buildTranscriptTextForGptFormat() {
         .join(' ');
 }
 
-/** One paragraph per cue for DOCX/TXT and for syncing `formatted.clean_transcript` after edits (preserves breaks; space-join loses layout). */
+/** Paragraph-style transcript body for DOCX/TXT and doc mode (ignore subtitle cue line breaks). */
 function buildTranscriptPlainBodyForExport() {
-    return (window.currentSegments || [])
+    const segs = Array.isArray(window.currentSegments) ? window.currentSegments : [];
+    if (!segs.length) return '';
+    const full = segs
         .map((s) => String((s && s.text) || '').trim())
         .filter(Boolean)
-        .join('\n\n');
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!full) return '';
+    // Heuristic paragraphizer: split by sentence endings, then pack into larger paragraph chunks.
+    const sentenceSplit = full
+        .split(/(?<=[\.\!\?\u05C3])\s+/)
+        .map((x) => String(x || '').trim())
+        .filter(Boolean);
+    if (!sentenceSplit.length) return full;
+    const paragraphs = [];
+    let cur = '';
+    let sentCount = 0;
+    for (const s of sentenceSplit) {
+        const next = cur ? (cur + ' ' + s) : s;
+        if (cur && (next.length > 900 || sentCount >= 9)) {
+            paragraphs.push(cur.trim());
+            cur = s;
+            sentCount = 1;
+        } else {
+            cur = next;
+            sentCount += 1;
+        }
+    }
+    if (cur.trim()) paragraphs.push(cur.trim());
+    return paragraphs.join('\n\n');
 }
 
 /** Long transcripts: one HTTP call runs past reverse-proxy limits → 504. Use plan + per-chunk + summary requests. */
@@ -2233,6 +2267,7 @@ async function ensureFormattedViaApiForExport() {
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                 : []
         };
+        window._qsDocPreferSegmentsAfterEdit = false;
         console.log(
             '[export] GPT formatting computed for export (clean_transcript length=%s)',
             String(window.currentFormattedDoc.clean_transcript || '').length
@@ -2268,6 +2303,17 @@ async function ensureFormattedViaApiForExport() {
 }
 
 async function tryRecoverSegmentsForExport() {
+    if (
+        (!Array.isArray(window.currentSegments) || window.currentSegments.length === 0) &&
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 &&
+        window.currentCaptions.length > 0
+    ) {
+        try {
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+        } catch (_) {}
+    }
     if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return true;
     const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId');
     if (!jobId) return false;
@@ -2285,6 +2331,17 @@ async function tryRecoverSegmentsForExport() {
         }
     } catch (e) {
         console.warn('[export recover] Failed to recover segments from check_status:', e);
+    }
+    if (
+        (!Array.isArray(window.currentSegments) || window.currentSegments.length === 0) &&
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 &&
+        window.currentCaptions.length > 0
+    ) {
+        try {
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+        } catch (_) {}
     }
     return Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
 }
@@ -2913,6 +2970,17 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         window.toggleModal(true); // Open the sign-in modal
         return; // <--- CRITICAL: This stops the function here so the file doesn't download
     }
+    if (
+        (!Array.isArray(window.currentSegments) || window.currentSegments.length === 0) &&
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 &&
+        window.currentCaptions.length > 0
+    ) {
+        try {
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+        } catch (_) {}
+    }
     if (!window.currentSegments.length) {
         await tryRecoverSegmentsForExport();
     }
@@ -2967,9 +3035,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
                 ? window.currentFormattedDoc
                 : null;
-            // Prefer live cues so DOCX/TXT match the transcript after edits; stale `clean_transcript` ignored GPT pre-edit text.
+            // Source of truth for transcript export is edited segments/captions.
             const fromSegments = String(buildTranscriptPlainBodyForExport() || '').trim();
-            const clean = (fromSegments || String((fmt && fmt.clean_transcript) || '').trim() || segmentFlowFallback).trim();
+            const fromFmt = String((fmt && fmt.clean_transcript) || '').trim();
+            const clean = (fromSegments || fromFmt || segmentFlowFallback).trim();
             const overview = String((fmt && fmt.overview) || '').trim();
             const keyPoints = Array.isArray(fmt && fmt.key_points)
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
@@ -3008,6 +3077,16 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             );
             const payload = _buildExportPayload();
             const textForServer = String(payload.clean || segmentFlowFallback || '').trim();
+            const baseFmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : {};
+            const formattedForServer = {
+                clean_transcript: kind === 'transcript'
+                    ? textForServer
+                    : String(baseFmt.clean_transcript || ''),
+                overview: String(baseFmt.overview || ''),
+                key_points: Array.isArray(baseFmt.key_points) ? baseFmt.key_points : []
+            };
             const t0 = performance.now();
             const res = await fetch('/api/export_docx', {
                 method: 'POST',
@@ -3016,7 +3095,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     kind,
                     text: textForServer,
                     segments: window.currentSegments || [],
-                    formatted: window.currentFormattedDoc || undefined,
+                    formatted: formattedForServer,
                     allow_gpt_fallback: false,
                     filename: docBase
                 })
@@ -3903,7 +3982,8 @@ function wrapTextByMaxChars(text, maxChars) {
 
 function getDocFormatParagraphs() {
     const fromSeg = String(buildTranscriptPlainBodyForExport() || '').trim();
-    const clean = fromSeg || String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+    const fromFmt = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+    const clean = fromSeg || fromFmt;
     if (!clean) return [];
     return clean
         .split(/\r?\n+/)
@@ -3971,21 +4051,19 @@ function stopProcessingStateUI(reason) {
 }
 
 function _processingIntroThreeSentencesHe(loggedIn) {
-    const s1 = 'אנחנו מעירים את מנועי ה-AI! 🚀';
     const s2 = 'התהליך עשוי לקחת כמה דקות.';
     const s3 = loggedIn
         ? 'אפשר לסגור את העמוד — נשלח לך מייל ברגע שהוידאו יהיה מוכן עם הכתוביות.'
         : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
-    return `${s1}\n\n${s2}\n\n${s3}`;
+    return `${s2}\n\n${s3}`;
 }
 
 function _processingIntroThreeSentencesEn(loggedIn) {
-    const s1 = "We're waking up the AI engines! 🚀";
     const s2 = 'This may take a few minutes.';
     const s3 = loggedIn
         ? "You can leave this page — we'll email you when your video and subtitles are ready."
         : 'Sign in to the site so we can notify you by email when it is ready.';
-    return `${s1}\n\n${s2}\n\n${s3}`;
+    return `${s2}\n\n${s3}`;
 }
 
 function startProcessingStateUI() {
@@ -4039,6 +4117,7 @@ function resetScreenToInitial() {
     qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
     window.currentFormattedDoc = null;
+    window._qsDocPreferSegmentsAfterEdit = false;
     setSeoHomeContentVisibility(true);
     stopProcessingStateUI('reset_screen_to_initial');
 
@@ -4326,6 +4405,15 @@ document.addEventListener('DOMContentLoaded', () => {
         transcriptWindowEl.classList.toggle('hide-time', !isTimeToggleVisible());
     }
     const rerenderTranscriptView = () => {
+        const hasWordModel =
+            Array.isArray(window.currentWords) &&
+            Array.isArray(window.currentCaptions) &&
+            window.currentWords.length > 0 &&
+            window.currentCaptions.length > 0;
+        if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
+            renderWordCaptionEditor();
+            return;
+        }
         if (typeof window.render === 'function') {
             window.render();
             return;
@@ -4465,6 +4553,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const output = rawResult.result || rawResult.output || rawResult;
         window.currentFormattedDoc = extractFormattedFromJobPayload(rawResult) || null;
+        window._qsDocPreferSegmentsAfterEdit = false;
         const jobStatus = String(rawResult.status || (output && output.status) || '').toLowerCase();
         const jobError = String(rawResult.error || (output && output.error) || '').trim();
         const isFailedJob = jobStatus === 'failed' || !!jobError;
@@ -4532,6 +4621,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isFailedJob) {
             window.currentSegments = [];
             window.currentFormattedDoc = null;
+            window._qsDocPreferSegmentsAfterEdit = false;
             setTranscriptActionButtonsVisible(false);
             if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
             const transcriptWindow = document.getElementById('transcript-window');
@@ -4689,6 +4779,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                             : []
                     };
+                    window._qsDocPreferSegmentsAfterEdit = false;
                     // Persist formatted payload so future exports can use cached formatting.
                     (async () => {
                         try {
@@ -4994,7 +5085,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     <span style="display: ${showLabel ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(g.speaker)};">
                         ${g.speaker.replace('SPEAKER_', 'דובר ')}
                     </span>
-                </div><p ${!window.isDocumentMode ? `data-idx="${rowIndex}"` : ''} style="margin: 0 !important; margin-top: -2px; line-height: 1.2;">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
+                </div><p data-idx="${rowIndex}" style="margin: 0 !important; margin-top: -2px; line-height: 1.2;">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
             </div>`;
         }).join('');
 
@@ -5082,11 +5173,146 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         player.play();
     };
 
+    // Debug helpers for simulation mode: re-test paragraph/doc view without re-uploading a file.
+    window.qsDebugRebuildParagraphDoc = function() {
+        try {
+            const subBtn = document.getElementById('format-mode-subtitle');
+            const docBtn = document.getElementById('format-mode-doc');
+            if (docBtn && subBtn) {
+                docBtn.classList.add('is-active');
+                subBtn.classList.remove('is-active');
+            }
+            if (typeof renderWordCaptionEditor === 'function') {
+                renderWordCaptionEditor();
+            } else if (typeof window.render === 'function') {
+                window.render();
+            }
+            console.info('[qs-debug] rebuilt paragraph doc view');
+        } catch (e) {
+            console.warn('[qs-debug] qsDebugRebuildParagraphDoc failed', e);
+        }
+    };
+    window.qsDebugSubtitleView = function() {
+        try {
+            const subBtn = document.getElementById('format-mode-subtitle');
+            const docBtn = document.getElementById('format-mode-doc');
+            if (docBtn && subBtn) {
+                docBtn.classList.remove('is-active');
+                subBtn.classList.add('is-active');
+            }
+            if (typeof renderWordCaptionEditor === 'function') {
+                renderWordCaptionEditor();
+            } else if (typeof window.render === 'function') {
+                window.render();
+            }
+            console.info('[qs-debug] switched to subtitle view');
+        } catch (e) {
+            console.warn('[qs-debug] qsDebugSubtitleView failed', e);
+        }
+    };
+    window.qsDebugRegenerateFormattedFromApi = async function() {
+        try {
+            if (typeof ensureFormattedViaApiForExport !== 'function') return false;
+            const ok = await ensureFormattedViaApiForExport();
+            if (ok) {
+                const subBtn = document.getElementById('format-mode-subtitle');
+                const docBtn = document.getElementById('format-mode-doc');
+                if (docBtn && subBtn) {
+                    docBtn.classList.add('is-active');
+                    subBtn.classList.remove('is-active');
+                }
+                if (typeof renderWordCaptionEditor === 'function') {
+                    renderWordCaptionEditor();
+                } else if (typeof window.render === 'function') {
+                    window.render();
+                }
+                console.info('[qs-debug] regenerated formatted via API and refreshed doc view');
+            } else {
+                console.warn('[qs-debug] ensureFormattedViaApiForExport returned false');
+            }
+            return !!ok;
+        } catch (e) {
+            console.warn('[qs-debug] qsDebugRegenerateFormattedFromApi failed', e);
+            return false;
+        }
+    };
+    window.qsDebugCompareDocxSources = async function() {
+        try {
+            const fromSegments = String(buildTranscriptPlainBodyForExport() || '').trim();
+            const fromFormatted = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+            const effectiveForExport = (fromSegments || fromFormatted).trim();
+            const local = {
+                fromSegments_len: fromSegments.length,
+                fromFormatted_len: fromFormatted.length,
+                effectiveForExport_len: effectiveForExport.length,
+                fromSegments_head: fromSegments.slice(0, 220),
+                fromFormatted_head: fromFormatted.slice(0, 220),
+                effectiveForExport_head: effectiveForExport.slice(0, 220),
+            };
+
+            let s3 = { note: 'not_checked' };
+            try {
+                const dbId = localStorage.getItem('lastJobDbId');
+                const { data: { user } } = await supabase.auth.getUser();
+                if (dbId && user && user.id) {
+                    const { data: row } = await supabase
+                        .from('jobs')
+                        .select('result_s3_key')
+                        .eq('id', dbId)
+                        .eq('user_id', user.id)
+                        .maybeSingle();
+                    if (row && row.result_s3_key) {
+                        const p = await fetch('/api/get_presigned_url', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ s3Key: row.result_s3_key, userId: user.id })
+                        });
+                        const pj = await p.json().catch(() => ({}));
+                        if (pj && pj.url) {
+                            const tr = await fetch(pj.url).then((r) => r.json()).catch(() => ({}));
+                            const s3Fmt = String((((tr || {}).formatted || {}).clean_transcript) || '').trim();
+                            s3 = {
+                                result_s3_key: row.result_s3_key,
+                                formatted_len: s3Fmt.length,
+                                formatted_head: s3Fmt.slice(0, 220),
+                            };
+                        } else {
+                            s3 = { error: 'presign_failed', detail: pj };
+                        }
+                    } else {
+                        s3 = { note: 'no_result_s3_key' };
+                    }
+                } else {
+                    s3 = { note: 'no_lastJobDbId_or_no_user' };
+                }
+            } catch (e) {
+                s3 = { error: String((e && e.message) || e) };
+            }
+
+            const out = { local, s3 };
+            console.info('[qs-debug] docx source compare', out);
+            return out;
+        } catch (e) {
+            console.warn('[qs-debug] qsDebugCompareDocxSources failed', e);
+            return null;
+        }
+    };
+
 
     window.saveEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
         const timingOnly = !!window._qsTimingMode;
+        // Edits should immediately drive doc view/export text, even if old GPT formatted text still exists.
+        window._qsDocPreferSegmentsAfterEdit = true;
+        // If a token input is currently open, commit it before extracting/saving data.
+        try {
+            const activeInput = win ? win.querySelector('span.word-token.editing input.qs-token-input') : null;
+            if (activeInput && typeof activeInput.blur === 'function') {
+                window._qsSkipCommitRefocus = true;
+                activeInput.blur();
+            }
+        } catch (_) {}
         const useWordModelEditor = (
             Array.isArray(window.currentWords) &&
             Array.isArray(window.currentCaptions) &&
@@ -5097,7 +5323,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
         // Line-timing mode (legacy segments only): persist segments.
         if (timingOnly && !useWordModelEditor && Array.isArray(window.currentSegments) && window.currentSegments.length) {
-            syncFormattedDocWithCurrentSegments();
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
             if (typeof updateJobStatus === 'function') {
                 (async () => {
@@ -5112,8 +5337,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 body: JSON.stringify({
                                     userId: user.id,
                                     input_s3_key: s3Key,
-                                    segments: window.currentSegments,
-                                    formatted: window.currentFormattedDoc || undefined
+                                    segments: window.currentSegments
                                 })
                             });
                             const data = res.ok ? await res.json() : {};
@@ -5140,7 +5364,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // Word-level caption editor: persist model directly (no DOM paragraph extraction; no timing estimation).
         if (useWordModelEditor) {
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-            syncFormattedDocWithCurrentSegments();
 
             // Refresh subtitles (VTT) immediately
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
@@ -5161,8 +5384,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     input_s3_key: s3Key,
                                     segments: window.currentSegments,
                                     words: window.currentWords,
-                                    captions: window.currentCaptions,
-                                    formatted: window.currentFormattedDoc || undefined
+                                    captions: window.currentCaptions
                                 })
                             });
                             const data = res.ok ? await res.json() : {};
@@ -5206,8 +5428,70 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             };
         });
         const segs = window.currentSegments || [];
+        const isDocModeNow = !!isDocumentFormatEnabled();
 
-        if (parr.length < segs.length) {
+        // Document-mode save: rows are grouped paragraphs, not 1:1 subtitle cues.
+        // Use edited paragraph rows as the new transcript body directly (old exact-text merge was brittle).
+        if (isDocModeNow) {
+            const nonEmpty = parr.filter(p => p.text.length > 0);
+            const groups = [];
+            if (segs.length > 0) {
+                let startIdx = 0;
+                let prevSpeaker = (segs[0] && segs[0].speaker) || 'SPEAKER_00';
+                for (let i = 1; i < segs.length; i++) {
+                    const sp = (segs[i] && segs[i].speaker) || 'SPEAKER_00';
+                    if (sp !== prevSpeaker) {
+                        groups.push({
+                            startIdx,
+                            endIdx: i - 1,
+                            speaker: prevSpeaker,
+                            start: Number(segs[startIdx] && segs[startIdx].start) || 0,
+                            end: Number(segs[i - 1] && segs[i - 1].end)
+                        });
+                        startIdx = i;
+                        prevSpeaker = sp;
+                    }
+                }
+                groups.push({
+                    startIdx,
+                    endIdx: segs.length - 1,
+                    speaker: prevSpeaker,
+                    start: Number(segs[startIdx] && segs[startIdx].start) || 0,
+                    end: Number(segs[segs.length - 1] && segs[segs.length - 1].end)
+                });
+            }
+
+            const rebuilt = [];
+            for (let i = 0; i < nonEmpty.length; i++) {
+                const p = nonEmpty[i];
+                const g = groups[i] || groups[groups.length - 1] || null;
+                const prev = i > 0 ? rebuilt[i - 1] : null;
+                const fallbackStart = (prev && Number.isFinite(prev.end))
+                    ? prev.end
+                    : (g && Number.isFinite(g.start) ? g.start : 0);
+                const start = Number.isFinite(p.startSec) ? p.startSec : fallbackStart;
+                const guessedEnd = (g && Number.isFinite(g.end) && g.end > start) ? g.end : (start + 1);
+                rebuilt.push({
+                    start,
+                    end: guessedEnd,
+                    text: p.text,
+                    speaker: (g && g.speaker) || ((segs[i] && segs[i].speaker) || 'SPEAKER_00')
+                });
+            }
+
+            // Keep monotonic, contiguous timing for stable subtitle/export behavior.
+            for (let i = 0; i < rebuilt.length; i++) {
+                if (i < rebuilt.length - 1) {
+                    const nextStart = Number(rebuilt[i + 1].start);
+                    rebuilt[i].end = Number.isFinite(nextStart) && nextStart > rebuilt[i].start
+                        ? nextStart
+                        : (rebuilt[i].start + 1);
+                } else if (!(Number.isFinite(rebuilt[i].end) && rebuilt[i].end > rebuilt[i].start)) {
+                    rebuilt[i].end = rebuilt[i].start + 1;
+                }
+            }
+            window.currentSegments = rebuilt;
+        } else if (parr.length < segs.length) {
             // User merged rows (e.g. backspace): merge segments so one segment per non-empty paragraph
             const nonEmpty = parr.filter(p => p.text.length > 0);
             const newSegs = [];
@@ -5272,8 +5556,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (last.end == null || last.end <= last.start) last.end = last.start + 1;
             }
         }
-        syncFormattedDocWithCurrentSegments();
-
         // 2. ELIMINATE CACHE: Force the video to use the fresh edits
         window.refreshVideoSubtitles();
 
@@ -5291,8 +5573,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             body: JSON.stringify({
                                 userId: user.id,
                                 input_s3_key: s3Key,
-                                segments: window.currentSegments,
-                                formatted: window.currentFormattedDoc || undefined
+                                segments: window.currentSegments
                             })
                         });
                         const data = res.ok ? await res.json() : {};
@@ -5771,8 +6052,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
         if (!isEditable) {
             // --- START EDITING ---
-            // Word-caption editor (desktop + mobile): tokens + line timing on one screen.
-            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length) {
+            // Word-caption editor (desktop + mobile): enable in subtitle mode.
+            // In document mode we use legacy paragraph edit so user edits flowing paragraphs directly.
+            const hasWordModel = Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length;
+            const docMode = isDocumentFormatEnabled();
+            if (hasWordModel && !docMode) {
                 window._qsForceLegacyEditMode = false;
                 win.contentEditable = 'false';
                 // Backup the underlying model so Cancel truly discards edits
@@ -5785,17 +6069,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 } catch (_) {
                     window.wordEditBackup = null;
                 }
-                // Unified screen: text edit + line timing (handles) together
-                try {
-                    window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
-                } catch (_) {
-                    window._qsTimingModeBackup = null;
-                }
-                window._qsTimingMode = true;
-                if (!Number.isFinite(window._qsTimingSelectedCi)) window._qsTimingSelectedCi = 0;
-                // IMPORTANT: mark edit mode BEFORE rendering so caption-text becomes contenteditable.
-                win.classList.add('transcript-editing', 'transcript-sync-mode');
-                _qsSetSyncModeButtonActive(true);
+                // Pencil edit should edit text first; timing remains on the dedicated sync button.
+                window._qsTimingModeBackup = null;
+                window._qsTimingMode = false;
+                win.classList.add('transcript-editing');
+                win.classList.remove('transcript-sync-mode');
+                _qsSetSyncModeButtonActive(false);
                 renderWordCaptionEditor();
                 if (editActions) editActions.style.display = 'flex';
                 win.style.border = "2px solid #1e3a8a";
@@ -5810,8 +6089,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 return;
             }
 
-            // Cue-only / paragraph transcript (no word model)
-            window._qsForceLegacyEditMode = false;
+            // Cue-only / paragraph transcript (or doc-mode edit over word model).
+            if (hasWordModel) {
+                // Start from the latest word/caption text so paragraph edit and export stay in sync.
+                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                window._qsForceLegacyEditMode = true;
+            } else {
+                window._qsForceLegacyEditMode = false;
+            }
             if (typeof window.render === 'function') {
                 try { window.render(); } catch (_) {}
             }
@@ -6100,6 +6385,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const segments = Array.isArray(tr.segments) ? tr.segments : [];
                         const trFmt = pickFormattedFromObject(tr);
                         window.currentFormattedDoc = trFmt || null;
+                        window._qsDocPreferSegmentsAfterEdit = false;
 
                         if (words && captions && words.length > 0 && captions.length > 0) {
                             window.currentWords = words;
@@ -7782,7 +8068,24 @@ function renderWordCaptionEditor() {
     const textAlign = isRtl ? 'right' : 'left';
     const isEditing = container.classList.contains('transcript-editing');
     const timingMode = !!window._qsTimingMode;
+    const documentMode = isDocumentFormatEnabled();
     container.classList.toggle('qs-rtl', !!isRtl);
+
+    // In read-only document mode, render paragraph text (caption rows stay while editing/timing).
+    if (documentMode && !timingMode && !isEditing) {
+        const docParagraphs = getDocFormatParagraphs();
+        if (docParagraphs.length) {
+            const htmlDoc = docParagraphs.map((p) => {
+                const safe = String(p || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return `<div class="paragraph-row" style="display:block; margin-bottom: 0.5em; direction:${textDirection}; text-align:${textAlign};"><p style="margin: 0; line-height: 1.7; white-space: pre-wrap;">${safe}</p></div>`;
+            }).join('');
+            container.innerHTML = htmlDoc;
+            container.style.direction = textDirection;
+            container.style.textAlign = textAlign;
+            container.contentEditable = 'false';
+            return;
+        }
+    }
 
     function syncInlineStylePanel(ci) {
         if (!Number.isFinite(ci)) return;
