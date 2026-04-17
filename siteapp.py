@@ -2690,7 +2690,7 @@ def sign_s3():
     is_medical = bool(data.get('isMedical'))
     user_prefix = f"users/{user_id}"
     try:
-        _require_medical_kms_or_raise(is_medical)
+        validated_kms_arn = _require_medical_kms_or_raise(is_medical)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e), "isMedical": is_medical}), 400
 
@@ -2720,7 +2720,7 @@ def sign_s3():
         region = os.environ.get("AWS_REGION", "eu-north-1")
         storage_profile = _resolve_storage_profile(user_id, is_medical=is_medical)
         bucket = storage_profile["bucket"]
-        kms_arn = _kms_key_arn()
+        kms_arn = validated_kms_arn
 
         if not key_id or not secret:
             return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
