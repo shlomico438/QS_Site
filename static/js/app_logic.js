@@ -6759,7 +6759,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     throw new Error(result.message || result.error || "Failed to get S3 signature from server.");
                 }
 
-                const { url, s3Key, jobId } = result.data;
+                const { url, s3Key, jobId, signedHeaders } = result.data;
 
                 // 2. 💾 PARK THE KEYS IMMEDIATELY + create job record (status: pending)
                 localStorage.setItem('lastS3Key', s3Key);
@@ -6807,6 +6807,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const xhr = new XMLHttpRequest();
                 xhr.open('PUT', url, true);
                 xhr.setRequestHeader('Content-Type', currentFile.type);
+                if (signedHeaders && typeof signedHeaders === 'object') {
+                    Object.entries(signedHeaders).forEach(([headerName, headerValue]) => {
+                        const key = String(headerName || '').trim();
+                        const val = String(headerValue || '').trim();
+                        if (!key || !val) return;
+                        xhr.setRequestHeader(key, val);
+                    });
+                }
                 xhr.timeout = 0;
 
                 xhr.upload.onprogress = (e) => {

@@ -2770,7 +2770,13 @@ def sign_s3():
                 's3Key': s3_key,  # This must be saved by the frontend!
                 'jobId': job_id,
                 'bucket': bucket,
-                'isMedical': is_medical
+                'isMedical': is_medical,
+                'signedHeaders': (
+                    {
+                        'x-amz-server-side-encryption': 'aws:kms',
+                        'x-amz-server-side-encryption-aws-kms-key-id': kms_arn
+                    } if is_medical else {}
+                )
             },
             'isMedical': is_medical
         })
