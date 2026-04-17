@@ -115,14 +115,14 @@
         <div class="transcription-wrapper">
             <div class="switches-top-bar">
                 <div class="toggles-group">
-                    <div class="format-ab-switch" id="format-mode-switch" role="group" aria-label="פורמט תצוגה">
-                        <button type="button" class="format-ab-option is-active" id="format-mode-subtitle">כתוביות</button>
-                        <button type="button" class="format-ab-option" id="format-mode-doc">מסמך</button>
-                    </div>
                     <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
                 </div>
             </div>
             <div class="transcript-area-wrap">
+            <div id="medical-result-tabs" style="display:none; margin-bottom:8px; gap:8px;">
+                <button type="button" id="medical-tab-transcript" class="format-ab-option is-active">תמלול מלא</button>
+                <button type="button" id="medical-tab-summary" class="format-ab-option">סיכום רפואי</button>
+            </div>
             <div id="transcript-window" contenteditable="false">
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
@@ -180,31 +180,6 @@
                                     </div>
                                 </div>
 
-                                <div class="export-panel-section option-card" data-card-kind="movie">
-                                    <div class="option-card-header">
-                                        <div class="option-card-title">🎬 סרטון עם כתוביות</div>
-                                    </div>
-                                    <input class="export-extra-choice" type="checkbox" data-export-kind="movie" hidden>
-                                    <div class="export-panel-desc">וידאו חדש עם כתוביות צרובות</div>
-                                </div>
-
-                                <div class="export-panel-section option-card" data-card-kind="subtitles">
-                                    <div class="option-card-header">
-                                        <div class="option-card-title">💬 כתוביות</div>
-                                    </div>
-                                    <input class="export-subtitles-enable" type="checkbox" hidden>
-                                    <div class="export-panel-desc">קובץ כתוביות לסרטון</div>
-                                    <div class="option-format-row">
-                                        <div class="export-panel-label">פורמט:</div>
-                                        <input class="export-extra-choice" type="checkbox" data-export-kind="srt" hidden>
-                                        <input class="export-extra-choice" type="checkbox" data-export-kind="vtt" hidden>
-                                        <div class="export-format-group export-format-group--subtitle" role="group" aria-label="Subtitle format">
-                                            <button class="export-format-choice export-format-choice--toggle is-selected" type="button" data-extra-kind="srt">SRT</button>
-                                            <button class="export-format-choice export-format-choice--toggle" type="button" data-extra-kind="vtt">VTT</button>
-                                        </div>
-                                    </div>
-                                </div>
-
                                 <div class="export-panel-actions">
                                     <button class="export-docx-btn" type="button" data-type="generate-export">צור קבצים</button>
                                 </div>
@@ -212,44 +187,6 @@
                         </div>
                     </div>
                     <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><img src="{{ url_for('static', filename='images/edit.png') }}" alt="Edit" style="width:20px; height:20px; object-fit:contain;"></button>
-                    <div id="subtitle-style-selector" class="subtitle-style-drawer-host" style="display: none;">
-                        <button id="subtitle-style-toggle" class="subtitle-style-toggle-btn" type="button" aria-label="Subtitle styles" title="Subtitle styles">Aa</button>
-                        <div id="subtitle-style-drawer" class="subtitle-style-drawer-panel">
-                            <div class="subtitle-drawer-section-title">מיקום כתוביות</div>
-                            <div class="subtitle-global-pos-wrap" role="group" aria-label="Global subtitle position">
-                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="top" title="Top">
-                                    <span class="subtitle-frame-icon subtitle-frame-icon--top" aria-hidden="true"></span>
-                                </button>
-                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="middle" title="Middle">
-                                    <span class="subtitle-frame-icon subtitle-frame-icon--middle" aria-hidden="true"></span>
-                                </button>
-                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="bottom" title="Bottom">
-                                    <span class="subtitle-frame-icon subtitle-frame-icon--bottom" aria-hidden="true"></span>
-                                </button>
-                            </div>
-                            <div class="subtitle-drawer-section-title">צבע כתוביות</div>
-                            <div class="subtitle-color-wrap" role="group" aria-label="Subtitle color">
-                                <button class="subtitle-color-btn" type="button" data-subtitle-color="black" title="Black"></button>
-                                <button class="subtitle-color-btn" type="button" data-subtitle-color="red" title="Red"></button>
-                                <button class="subtitle-color-btn" type="button" data-subtitle-color="yellow" title="Yellow"></button>
-                                <button class="subtitle-color-btn" type="button" data-subtitle-color="white" title="White"></button>
-                            </div>
-                            <div id="subtitle-style-list" class="subtitle-style-drawer-list">
-                                <button class="subtitle-style-card" data-style="tiktok" type="button">
-                                    <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;" data-i18n="tiktok_bold">TikTok Bold</div>
-                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="tiktok_desc">Big • Bold</div>
-                                </button>
-                                <button class="subtitle-style-card" data-style="clean" type="button">
-                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="clean_pro">Clean Pro</div>
-                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="clean_desc">Minimal • Soft</div>
-                                </button>
-                                <button class="subtitle-style-card" data-style="cinematic" type="button">
-                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="cinematic">Cinematic</div>
-                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="cinematic_desc">Serif • Caps</div>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
                     <div class="action-buttons" id="edit-actions" style="display:none; gap: 10px;">
                         <button class="btn-icon" onclick="window.saveEdits()" style="color:green;" data-i18n-title="save" title="Save">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -272,6 +209,10 @@
             <div class="upload-controls-row">
                 <input type="file" id="fileInput" accept="video/*,audio/*,.json,application/json" hidden>
                 <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">התחל כאן</button>
+            </div>
+            <div id="medical-recording-wrap" style="display:none; text-align:center; margin-bottom:12px;">
+                <button class="btn btn-primary" id="medical-record-btn" type="button" style="font-size:1.1rem; padding:14px 26px;">התחל הקלטה</button>
+                <div id="medical-record-timer" style="margin-top:8px; color:#b91c1c; font-weight:700;">00:00</div>
             </div>
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
             <div class="progress-container" id="p-container" style="display:none;">

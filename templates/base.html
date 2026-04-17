@@ -50,6 +50,10 @@
             <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
             <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
             <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
+            <label class="nav-item" for="nav-medical-mode-toggle" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                <input type="checkbox" id="nav-medical-mode-toggle">
+                <span>מצב רפואי (HIPAA)</span>
+            </label>
             <a href="/personal" class="nav-item nav-personal-link" id="nav-personal-link" style="display: none;" data-i18n="nav_personal">איזור אישי</a>
             <a href="#" class="nav-item nav-new-session-item" id="nav-new-session-btn" data-i18n="new_session">סשן חדש</a>
             <a href="#" class="nav-item" id="nav-auth-btn" style="color: #5d5dff; font-weight: 800;" data-i18n="nav_sign_in">Sign In</a>
@@ -62,6 +66,12 @@
             <button type="button" id="user-menu-close" class="user-menu-close-btn" aria-label="Close">×</button>
         </div>
         <div id="user-menu-profile" class="user-menu-profile">
+            <div class="user-menu-profile-medical" style="margin-bottom:10px;">
+                <label for="user-menu-medical-mode" style="display:flex; align-items:center; gap:8px; font-weight:600;">
+                    <input type="checkbox" id="user-menu-medical-mode">
+                    <span>מצב רפואי (HIPAA)</span>
+                </label>
+            </div>
             <label class="user-menu-profile-label" for="user-menu-name" data-i18n="display_name">Display name</label>
             <input type="text" id="user-menu-name" class="user-menu-profile-input" placeholder="" autocomplete="name">
             <label class="user-menu-profile-label" for="user-menu-email" data-i18n="email">Email</label>

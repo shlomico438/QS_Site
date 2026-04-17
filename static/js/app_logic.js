@@ -54,6 +54,54 @@ window.currentCaptions = null;
 window.originalFileName = '';
 window.hasMultipleSpeakers = false;
 let isSignUpMode = true;
+const QS_MEDICAL_MODE_KEY = 'qs_medical_mode';
+
+function isMedicalModeEnabled() {
+    return window.isMedicalMode === true;
+}
+
+function clearSensitiveStorageForMedicalMode() {
+    const keysToWipe = [
+        'activeJobId', 'lastJobId', 'lastJobDbId', 'lastS3Key', 'pendingS3Key', 'pendingJobId',
+        'pendingExportType', 'pendingOpenGenerateMenu', 'currentAudioUrl', 'currentAudioMime'
+    ];
+    for (const key of keysToWipe) {
+        try { localStorage.removeItem(key); } catch (_) {}
+        try { sessionStorage.removeItem(key); } catch (_) {}
+    }
+}
+
+function setMedicalMode(enabled) {
+    const on = !!enabled;
+    window.isMedicalMode = on;
+    try { localStorage.setItem(QS_MEDICAL_MODE_KEY, on ? '1' : '0'); } catch (_) {}
+    if (on) clearSensitiveStorageForMedicalMode();
+    try {
+        const navToggle = document.getElementById('nav-medical-mode-toggle');
+        if (navToggle) navToggle.checked = on;
+        const profileToggle = document.getElementById('user-menu-medical-mode');
+        if (profileToggle) profileToggle.checked = on;
+    } catch (_) {}
+    try {
+        if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+    } catch (_) {}
+}
+
+(() => {
+    try {
+        const raw = localStorage.getItem(QS_MEDICAL_MODE_KEY);
+        window.isMedicalMode = String(raw || '').trim() === '1';
+    } catch (_) {
+        window.isMedicalMode = false;
+    }
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+        const k = String(key || '');
+        const isAllowed = k === QS_MEDICAL_MODE_KEY || k === 'locale' || k === 'qs_console';
+        if (window.isMedicalMode === true && !isAllowed) return;
+        return originalSetItem.call(this, key, value);
+    };
+})();
 
 /** HTTP statuses where hammering the server is pointless; stop polling after a short streak. */
 function qsIsSevereServerPollError(status) {
@@ -799,6 +847,7 @@ async function loadUserMenuProfile(user) {
     const saveBtn = document.getElementById('user-menu-save');
     const cancelBtn = document.getElementById('user-menu-cancel');
     const closeBtn = document.getElementById('user-menu-close');
+    const medicalModeInput = document.getElementById('user-menu-medical-mode');
     if (!nameInput || !emailInput) return;
 
     const { displayName, email } = getAuthUserDisplayInfo(user);
@@ -807,6 +856,19 @@ async function loadUserMenuProfile(user) {
     nameInput.value = currentName;
     emailInput.value = currentEmail;
     if (messageEl) { messageEl.style.display = 'none'; messageEl.textContent = ''; }
+    if (medicalModeInput) {
+        medicalModeInput.checked = isMedicalModeEnabled();
+        medicalModeInput.onchange = () => {
+            setMedicalMode(!!medicalModeInput.checked);
+            if (messageEl) {
+                messageEl.style.display = 'block';
+                messageEl.textContent = medicalModeInput.checked
+                    ? 'Medical mode enabled. Local data was cleared.'
+                    : 'Medical mode disabled.';
+                messageEl.style.color = '#059669';
+            }
+        };
+    }
 
     if (cancelBtn) {
         cancelBtn.onclick = () => {
@@ -1377,7 +1439,7 @@ async function initPersonalPage() {
                     const res = await fetch('/api/trigger_processing', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ s3Key: file.s3_key, jobId: transcribeJobId, task: 'transcribe', language: 'he' })
+                        body: JSON.stringify({ s3Key: file.s3_key, jobId: transcribeJobId, task: 'transcribe', language: 'he', isMedical: isMedicalModeEnabled() })
                     });
                     const out = await res.json().catch(() => ({}));
                     if (!res.ok) throw new Error(out.message || out.error || `HTTP ${res.status}`);
@@ -3254,6 +3316,13 @@ if (toggleAuthBtn) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     if (typeof window.applyTranslations === 'function') window.applyTranslations();
+    const navMedicalToggle = document.getElementById('nav-medical-mode-toggle');
+    if (navMedicalToggle) {
+        navMedicalToggle.checked = isMedicalModeEnabled();
+        navMedicalToggle.addEventListener('change', () => {
+            setMedicalMode(!!navMedicalToggle.checked);
+        });
+    }
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
 
@@ -3977,13 +4046,7 @@ function isTimeToggleVisible() {
 }
 
 function isDocumentFormatEnabled() {
-    const subBtn = document.getElementById('format-mode-subtitle');
-    const docBtn = document.getElementById('format-mode-doc');
-    if (subBtn && docBtn) {
-        return docBtn.classList.contains('is-active');
-    }
-    const el = document.getElementById('toggle-doc-format');
-    return !!(el && el.checked);
+    return true;
 }
 
 function wrapTextByMaxChars(text, maxChars) {
@@ -4263,6 +4326,12 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
 document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
     const fileInput = document.getElementById('fileInput');
+    const medicalRecordWrap = document.getElementById('medical-recording-wrap');
+    const medicalRecordBtn = document.getElementById('medical-record-btn');
+    const medicalRecordTimer = document.getElementById('medical-record-timer');
+    const medicalTabsWrap = document.getElementById('medical-result-tabs');
+    const medicalTabTranscript = document.getElementById('medical-tab-transcript');
+    const medicalTabSummary = document.getElementById('medical-tab-summary');
     const mobileSessionBtn = document.getElementById('mobile-new-session-btn');
     const navNewSessionBtn = document.getElementById('nav-new-session-btn');
     const statusTxt = document.getElementById('upload-status');
@@ -4272,6 +4341,128 @@ document.addEventListener('DOMContentLoaded', () => {
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
     setTranscriptActionButtonsVisible(false);
+    window.medicalActiveTab = window.medicalActiveTab || 'transcript';
+    window._medicalRecorder = null;
+    window._medicalRecorderChunks = [];
+    window._medicalRecorderTimer = null;
+    window._medicalRecordingStartedAt = 0;
+
+    function updateMedicalTabUi() {
+        if (!medicalTabsWrap) return;
+        const hasTranscript = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+        const showTabs = isMedicalModeEnabled() && hasTranscript;
+        medicalTabsWrap.style.display = showTabs ? 'flex' : 'none';
+        if (!showTabs) return;
+        const isSummary = String(window.medicalActiveTab || 'transcript') === 'summary';
+        if (medicalTabTranscript) medicalTabTranscript.classList.toggle('is-active', !isSummary);
+        if (medicalTabSummary) medicalTabSummary.classList.toggle('is-active', isSummary);
+    }
+    window.refreshMedicalTabs = updateMedicalTabUi;
+
+    window.applyMedicalModeUi = function() {
+        const on = isMedicalModeEnabled();
+        if (medicalRecordWrap) medicalRecordWrap.style.display = on ? '' : 'none';
+        if (mainBtn) mainBtn.style.display = on ? 'none' : '';
+        if (on) window.medicalActiveTab = 'transcript';
+        updateMedicalTabUi();
+    };
+
+    function stopMedicalRecordingTimer() {
+        if (window._medicalRecorderTimer) {
+            clearInterval(window._medicalRecorderTimer);
+            window._medicalRecorderTimer = null;
+        }
+    }
+
+    function renderMedicalRecordingTimer() {
+        if (!medicalRecordTimer) return;
+        const elapsedMs = Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+        const totalSec = Math.floor(elapsedMs / 1000);
+        const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
+        const ss = String(totalSec % 60).padStart(2, '0');
+        medicalRecordTimer.textContent = `${mm}:${ss}`;
+    }
+
+    async function pushFileIntoPickerAndUpload(file) {
+        if (!fileInput) throw new Error('Missing file input');
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function startMedicalRecording() {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const rec = new MediaRecorder(stream);
+        window._medicalRecorderChunks = [];
+        rec.ondataavailable = (e) => {
+            if (e && e.data && e.data.size > 0) window._medicalRecorderChunks.push(e.data);
+        };
+        rec.onstop = async () => {
+            try {
+                stopMedicalRecordingTimer();
+                if (medicalRecordBtn) {
+                    medicalRecordBtn.textContent = 'התחל הקלטה';
+                    medicalRecordBtn.style.background = '';
+                }
+                const mime = (rec.mimeType || 'audio/webm').toLowerCase();
+                const ext = mime.includes('ogg') ? 'ogg' : 'webm';
+                const blob = new Blob(window._medicalRecorderChunks, { type: mime });
+                const file = new File([blob], `medical_recording_${Date.now()}.${ext}`, { type: mime });
+                await pushFileIntoPickerAndUpload(file);
+            } catch (e) {
+                if (typeof showStatus === 'function') showStatus(`Recording upload failed: ${e.message || e}`, true);
+            } finally {
+                (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
+                window._medicalRecorder = null;
+                window._medicalRecorderChunks = [];
+            }
+        };
+        rec.start();
+        window._medicalRecorder = rec;
+        window._medicalRecordingStartedAt = Date.now();
+        renderMedicalRecordingTimer();
+        stopMedicalRecordingTimer();
+        window._medicalRecorderTimer = setInterval(renderMedicalRecordingTimer, 500);
+        if (medicalRecordBtn) {
+            medicalRecordBtn.textContent = 'עצור הקלטה';
+            medicalRecordBtn.style.background = '#dc2626';
+        }
+    }
+
+    async function toggleMedicalRecording() {
+        if (!isMedicalModeEnabled()) return;
+        const rec = window._medicalRecorder;
+        if (rec && rec.state === 'recording') {
+            rec.stop();
+            return;
+        }
+        try {
+            await startMedicalRecording();
+        } catch (e) {
+            if (typeof showStatus === 'function') showStatus(`Microphone access failed: ${e.message || e}`, true);
+        }
+    }
+
+    if (medicalRecordBtn) {
+        medicalRecordBtn.addEventListener('click', () => { toggleMedicalRecording(); });
+    }
+    if (medicalTabTranscript) {
+        medicalTabTranscript.addEventListener('click', () => {
+            window.medicalActiveTab = 'transcript';
+            updateMedicalTabUi();
+            if (typeof window.render === 'function') window.render();
+        });
+    }
+    if (medicalTabSummary) {
+        medicalTabSummary.addEventListener('click', () => {
+            window.medicalActiveTab = 'summary';
+            updateMedicalTabUi();
+            if (typeof window.render === 'function') window.render();
+            else renderTranscriptFromCues(window.currentSegments || []);
+        });
+    }
+    window.applyMedicalModeUi();
 
     function setDiarizationBusyState(isBusy) {
         if (!diarizationToggle) return;
@@ -4392,7 +4583,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const triggerRes = await fetch('/api/trigger_processing', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ s3Key, jobId: transcribeJobId, task: 'transcribe', language: 'he' })
+                        body: JSON.stringify({ s3Key, jobId: transcribeJobId, task: 'transcribe', language: 'he', isMedical: isMedicalModeEnabled() })
                     });
                     const triggerData = await triggerRes.json().catch(() => ({}));
                     if (!triggerRes.ok) throw new Error(triggerData.message || triggerData.error || `HTTP ${triggerRes.status}`);
@@ -6555,6 +6746,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         filename: currentFile.name,
                         filetype: currentFile.type,
                         diarization: diarizationValue,
+                        isMedical: isMedicalModeEnabled(),
                         userId: userId,
                         language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
                     })
@@ -6564,7 +6756,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 
                 if (!result.data) {
-                    throw new Error("Failed to get S3 signature from server.");
+                    throw new Error(result.message || result.error || "Failed to get S3 signature from server.");
                 }
 
                 const { url, s3Key, jobId } = result.data;
@@ -6651,6 +6843,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 s3Key: s3Key,
                                 jobId: jobId,
                                 diarization: diarizationValue,
+                                isMedical: isMedicalModeEnabled(),
                                 language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
                             };
                             const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, jobId);
@@ -6983,8 +7176,11 @@ function srtFromCues(cues) {
 
 function renderTranscriptFromCues(cues) {
     window.currentSegments = cues;
+    try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
     const container = document.getElementById('transcript-window');
     if (!container) return;
+    const isMedical = isMedicalModeEnabled();
+    const activeTab = String(window.medicalActiveTab || 'transcript');
     container.onclick = null;
     container.onbeforeinput = null;
     if (container._qsSelectionChangeHandler) {
@@ -6995,6 +7191,24 @@ function renderTranscriptFromCues(cues) {
     const isRtl = locale.startsWith('he') || locale.startsWith('ar');
     const textDirection = isRtl ? 'rtl' : 'ltr';
     const textAlign = isRtl ? 'right' : 'left';
+    if (isMedical && activeTab === 'summary') {
+        const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+        const overview = String(fmt.overview || '').trim();
+        const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+        const pointsHtml = points.length
+            ? `<ul style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${p.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`).join('')}</ul>`
+            : '<div style="color:#6b7280;">אין סיכום רפואי זמין עדיין.</div>';
+        container.innerHTML = `
+            <div style="direction:rtl; text-align:right; line-height:1.6;">
+                <div style="font-weight:700; margin-bottom:6px;">סקירה</div>
+                <div>${(overview || 'אין סיכום רפואי זמין עדיין.').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+                <div style="font-weight:700; margin:14px 0 6px;">נקודות מפתח</div>
+                ${pointsHtml}
+            </div>
+        `;
+        container.contentEditable = 'false';
+        return;
+    }
     if (!cues || cues.length === 0) {
         container.innerHTML = `
             <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">

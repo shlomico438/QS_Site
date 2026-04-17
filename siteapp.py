@@ -43,6 +43,7 @@ APP_ROOT = pathlib.Path(__file__).resolve().parent
 TRANSLATE_SCRIPT = APP_ROOT / 'scripts' / 'translate.js'
 
 S3_BUCKET = os.environ.get("S3_BUCKET")
+MEDICAL_S3_BUCKET = os.environ.get("MEDICAL_S3_BUCKET") or "quickscribe-hippa-backet"
 
 # GPT clean transcript + DOCX export: max characters per wrapped line (override with TRANSCRIPT_LINE_MAX_CHARS).
 TRANSCRIPT_LINE_MAX_CHARS = int(os.environ.get("TRANSCRIPT_LINE_MAX_CHARS", "200"))
@@ -85,6 +86,41 @@ def _public_base_url(req):
     if root.startswith('http://') and (xfp == 'https' or str(req.host or '').endswith('getquickscribe.com')):
         root = 'https://' + root[len('http://'):]
     return root
+
+
+def _is_medical_flag(value):
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _kms_key_arn():
+    return (os.environ.get('KMS_ARN_ENV') or os.environ.get('MEDICAL_KMS_KEY_ARN') or '').strip()
+
+
+def _require_medical_kms_or_raise(is_medical):
+    if SIMULATION_MODE:
+        return 'simulated-kms-key'
+    if not is_medical:
+        return ''
+    kms_arn = _kms_key_arn()
+    if not kms_arn:
+        raise ValueError("Medical mode requires KMS key env (KMS_ARN_ENV or MEDICAL_KMS_KEY_ARN)")
+    return kms_arn
+
+
+def _resolve_storage_profile(user_id, input_s3_key=None, is_medical=None):
+    inferred_medical = False
+    key = str(input_s3_key or '').strip()
+    if is_medical is None:
+        inferred_medical = ('/raw-audio/' in key) or ('/summaries/' in key) or key.startswith('medical/')
+    else:
+        inferred_medical = bool(is_medical)
+    safe_user = str(user_id or 'anonymous').strip() or 'anonymous'
+    return {
+        "is_medical": inferred_medical,
+        "bucket": MEDICAL_S3_BUCKET if inferred_medical else (os.environ.get('S3_BUCKET') or "quickscribe-v2-12345"),
+        "input_prefix": f"users/{safe_user}/raw-audio" if inferred_medical else f"users/{safe_user}/input",
+        "output_prefix": f"users/{safe_user}/summaries" if inferred_medical else f"users/{safe_user}/output",
+    }
 
 
 def _is_local_host(host):
@@ -598,23 +634,20 @@ def api_s3_exists():
         return jsonify({"error": str(e)}), 500
 
 
-def _derive_output_key_base(user_id, input_s3_key):
+def _derive_output_key_base(user_id, input_s3_key, is_medical=None):
     """Base path (without suffix) for storing transcript JSON derived from input_s3_key."""
+    profile = _resolve_storage_profile(user_id, input_s3_key=input_s3_key, is_medical=is_medical)
+    output_prefix = profile["output_prefix"]
     if not input_s3_key:
         base_name = 'output'
-        return f"users/{user_id or 'anonymous'}/output/{base_name}"
+        return f"{output_prefix}/{base_name}"
     if '/input/' in input_s3_key:
-        # users/{id}/input/name.mp4 -> users/{id}/output/name
         return input_s3_key.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
+    if '/raw-audio/' in input_s3_key:
+        return input_s3_key.replace('/raw-audio/', '/summaries/', 1).rsplit('.', 1)[0]
     # Fallback: derive from filename
     base_name = input_s3_key.rsplit('/', 1)[-1].rsplit('.', 1)[0] or 'output'
-    if input_s3_key.startswith('users/'):
-        # Preserve user prefix from path if present
-        parts = input_s3_key.split('/', 2)
-        if len(parts) >= 2:
-            user_part = parts[1]
-            return f"users/{user_part}/output/{base_name}"
-    return f"users/{user_id or 'anonymous'}/output/{base_name}"
+    return f"{output_prefix}/{base_name}"
 
 
 def _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='gpt'):
@@ -674,7 +707,7 @@ def _flatten_words_from_segments(segments):
     return words, captions
 
 
-def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
+def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', is_medical=None):
     """Low-level helper to write transcript JSON.
 
     transcript can include:
@@ -684,7 +717,8 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
     """
     if transcript is None or not isinstance(transcript, dict):
         raise ValueError("transcript must be an object")
-    base = _derive_output_key_base(user_id, input_s3_key)
+    profile = _resolve_storage_profile(user_id, input_s3_key=input_s3_key, is_medical=is_medical)
+    base = _derive_output_key_base(user_id, input_s3_key, is_medical=profile["is_medical"])
     # Keep a single canonical transcript object key.
     # `stage` is accepted for backward compatibility, but ignored.
     result_s3_key = base + '.json'
@@ -697,7 +731,7 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
         region_name=os.environ.get('AWS_REGION')
     )
     s3_client.put_object(
-        Bucket=os.environ.get('S3_BUCKET'),
+        Bucket=profile["bucket"],
         Key=result_s3_key,
         Body=body,
         ContentType='application/json'
@@ -705,12 +739,13 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt'):
     return result_s3_key
 
 
-def _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt'):
+def _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt', is_medical=None):
     """Read existing transcript JSON from S3 (same key we would write). Returns dict or None."""
-    bucket = os.environ.get('S3_BUCKET')
+    profile = _resolve_storage_profile(user_id, input_s3_key=input_s3_key, is_medical=is_medical)
+    bucket = profile["bucket"]
     if not bucket or not input_s3_key:
         return None
-    base = _derive_output_key_base(user_id, input_s3_key)
+    base = _derive_output_key_base(user_id, input_s3_key, is_medical=profile["is_medical"])
     # Keep a single canonical transcript object key.
     # `stage` is accepted for backward compatibility, but ignored.
     key = base + '.json'
@@ -754,8 +789,10 @@ def save_job_result():
         stage = (data.get('stage') or 'gpt').strip().lower()
         if stage == 'raw':
             stage = 'gpt'
+        is_medical = bool(data.get('isMedical'))
         if not user_id or not input_s3_key:
             return jsonify({"error": "userId and input_s3_key (or s3Key) required"}), 400
+        _require_medical_kms_or_raise(is_medical)
 
         transcript = {}
         if segments is not None:
@@ -782,7 +819,7 @@ def save_job_result():
             # JSON null: omit formatted from new object (explicit clear)
         else:
             # Client omitted `formatted` (e.g. saveEdits) — do not wipe GPT block already on S3.
-            existing = _get_transcript_json_from_s3(user_id, input_s3_key, stage=stage)
+            existing = _get_transcript_json_from_s3(user_id, input_s3_key, stage=stage, is_medical=is_medical)
             exf = existing.get("formatted") if isinstance(existing, dict) else None
             if isinstance(exf, dict):
                 transcript["formatted"] = {
@@ -804,8 +841,8 @@ def save_job_result():
                 transcript["words"] = w
                 transcript["captions"] = c
 
-        result_s3_key = _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage=stage)
-        return jsonify({"result_s3_key": result_s3_key})
+        result_s3_key = _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage=stage, is_medical=is_medical)
+        return jsonify({"result_s3_key": result_s3_key, "isMedical": is_medical})
     except Exception as e:
         logging.exception("save_job_result failed")
         return jsonify({"error": str(e)}), 500
@@ -2650,7 +2687,12 @@ def sign_s3():
 
     data = request.json or {}
     user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
+    is_medical = bool(data.get('isMedical'))
     user_prefix = f"users/{user_id}"
+    try:
+        _require_medical_kms_or_raise(is_medical)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e), "isMedical": is_medical}), 400
 
     if SIMULATION_MODE:
         job_id = f"job_sim_{int(time.time())}"
@@ -2676,7 +2718,9 @@ def sign_s3():
         key_id = os.environ.get("AWS_ACCESS_KEY_ID")
         secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
         region = os.environ.get("AWS_REGION", "eu-north-1")
-        bucket = os.environ.get("S3_BUCKET") or "quickscribe-v2-12345"
+        storage_profile = _resolve_storage_profile(user_id, is_medical=is_medical)
+        bucket = storage_profile["bucket"]
+        kms_arn = _kms_key_arn()
 
         if not key_id or not secret:
             return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
@@ -2690,15 +2734,19 @@ def sign_s3():
 
         base_name, extension = os.path.splitext(filename)
         job_id = f"job_{int(time.time())}_{base_name}"
-        s3_key = f"{user_prefix}/input/{job_id}{extension}"
+        s3_key = f"{storage_profile['input_prefix']}/{job_id}{extension}"
+        params = {
+            'Bucket': bucket,
+            'Key': s3_key,
+            'ContentType': file_type
+        }
+        if is_medical:
+            params['ServerSideEncryption'] = 'aws:kms'
+            params['SSEKMSKeyId'] = kms_arn
 
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
-            Params={
-                'Bucket': bucket,
-                'Key': s3_key,
-                'ContentType': file_type
-            },
+            Params=params,
             ExpiresIn=3600
         )
 
@@ -2720,8 +2768,11 @@ def sign_s3():
             'data': {
                 'url': presigned_url,
                 's3Key': s3_key,  # This must be saved by the frontend!
-                'jobId': job_id
-            }
+                'jobId': job_id,
+                'bucket': bucket,
+                'isMedical': is_medical
+            },
+            'isMedical': is_medical
         })
 
 def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2):
@@ -2910,10 +2961,12 @@ def trigger_processing():
         data = request.json if request.is_json else {}
         if not data:
             data = {}
+        s3_key = data.get('s3Key')
+        is_medical = bool(data.get('isMedical')) or ('/raw-audio/' in str(s3_key or ''))
+        _require_medical_kms_or_raise(is_medical)
         logging.info("trigger_processing request: job_id=%s has_s3_key=%s", data.get('jobId'), bool(data.get('s3Key')))
         print(f"📩 Received Trigger Request: {data}")
 
-        s3_key = data.get('s3Key')
         job_id = data.get('jobId')
         if SIMULATION_MODE:
             print("🔮 SIMULATION: Skipping RunPod Trigger")
