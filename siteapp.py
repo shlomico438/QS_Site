@@ -2760,6 +2760,8 @@ def sign_s3():
                 language=data.get('language', 'he'),
                 diarization=data.get('diarization', False),
                 speaker_count=2,
+                is_medical=is_medical,
+                bucket=bucket,
             )
         else:
             logging.info("RUNPOD_SKIP_WARMUP: skipping sign-s3 RunPod trigger for %s", job_id)
@@ -2781,7 +2783,7 @@ def sign_s3():
             'isMedical': is_medical
         })
 
-def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2):
+def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None):
     """Start RunPod trigger in background. Called from sign_s3 (before upload) so container warms during upload.
     No-op if RunPod not configured or SIMULATION_MODE."""
     if SIMULATION_MODE:
@@ -2797,6 +2799,8 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
     payload = {
         "input": {
             "s3Key": s3_key,
+            "bucket": bucket,
+            "isMedical": bool(is_medical),
             "jobId": job_id,
             "task": task,
             "language": language,
@@ -2807,6 +2811,8 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
     }
     pending_job_info[job_id] = {
         "input_s3_key": s3_key,
+        "bucket": bucket,
+        "is_medical": bool(is_medical),
         "user_id": _extract_user_id_from_s3_key(s3_key),
         "task": task,
         "language": language,
@@ -2969,6 +2975,8 @@ def trigger_processing():
             data = {}
         s3_key = data.get('s3Key')
         is_medical = bool(data.get('isMedical')) or ('/raw-audio/' in str(s3_key or ''))
+        storage_profile = _resolve_storage_profile((data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key)), input_s3_key=s3_key, is_medical=is_medical)
+        target_bucket = str(data.get('bucket') or storage_profile.get('bucket') or '').strip() or None
         _require_medical_kms_or_raise(is_medical)
         logging.info("trigger_processing request: job_id=%s has_s3_key=%s", data.get('jobId'), bool(data.get('s3Key')))
         print(f"📩 Received Trigger Request: {data}")
@@ -3031,6 +3039,8 @@ def trigger_processing():
         payload = {
             "input": {
                 "s3Key": s3_key,
+                "bucket": target_bucket,
+                "isMedical": bool(is_medical),
                 "jobId": job_id,
                 "task": task,
                 "language": language,
@@ -3043,6 +3053,8 @@ def trigger_processing():
         # So gpu_callback can save raw JSON even when RunPod does not echo input; store task/language for retry
         pending_job_info[job_id] = {
             "input_s3_key": s3_key,
+            "bucket": target_bucket,
+            "is_medical": bool(is_medical),
             "user_id": _extract_user_id_from_s3_key(s3_key),
             "task": task,
             "language": language,
@@ -3098,6 +3110,8 @@ def retry_trigger():
         payload = {
             "input": {
                 "s3Key": s3_key,
+                "bucket": info.get("bucket"),
+                "isMedical": bool(info.get("is_medical")),
                 "jobId": job_id,
                 "task": task,
                 "language": language,

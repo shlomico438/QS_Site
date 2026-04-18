@@ -6759,7 +6759,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     throw new Error(result.message || result.error || "Failed to get S3 signature from server.");
                 }
 
-                const { url, s3Key, jobId, signedHeaders } = result.data;
+                const { url, s3Key, jobId, signedHeaders, bucket } = result.data;
 
                 // 2. 💾 PARK THE KEYS IMMEDIATELY + create job record (status: pending)
                 localStorage.setItem('lastS3Key', s3Key);
@@ -6849,6 +6849,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             console.log("Upload complete → /api/trigger_processing");
                             const triggerPayload = {
                                 s3Key: s3Key,
+                                bucket: bucket,
                                 jobId: jobId,
                                 diarization: diarizationValue,
                                 isMedical: isMedicalModeEnabled(),
