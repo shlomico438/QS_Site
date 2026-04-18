@@ -667,6 +667,15 @@ audio {
     margin-inline: auto;
 }
 
+/* Medical: no כתוביות/מסמך format switch or Aa subtitle styling — transcript vs summary uses medical tabs */
+.main-app-container.medical-mode #format-mode-switch {
+    display: none !important;
+}
+
+.main-app-container.medical-mode #subtitle-style-selector {
+    display: none !important;
+}
+
 .generate-btn-wrap {
     flex: 0 1 auto;
 }

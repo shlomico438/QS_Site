@@ -4513,7 +4513,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalHeader) medicalHeader.style.display = on ? '' : 'none';
         if (medicalTitle) medicalTitle.textContent = 'סשן הקלטה רפואי מאובטח';
         if (medicalSubtitle) medicalSubtitle.textContent = 'תמלול קליני בתקן HIPAA פעיל';
-        if (on) window.medicalActiveTab = 'summary';
+        if (on) {
+            window.medicalActiveTab = 'summary';
+            try {
+                if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
+                if (typeof window.toggleSubtitleStyleDrawer === 'function') window.toggleSubtitleStyleDrawer(false);
+            } catch (_) {}
+        }
         updateMedicalTabUi();
     };
 
@@ -7773,16 +7779,25 @@ function renderTranscriptFromCues(cues) {
         return;
     }
     if (!_medicalHasTranscriptModel(cues)) {
-        container.innerHTML = `
-            <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">
-                <div style="font-weight:600;">🎥 וידאו</div>
-                <div style="font-size:0.9em; color:#9ca3af;">MP4, MOV, WEBM, M4V, MKV, AVI</div>
-                <div style="font-weight:600; margin-top:4px;">🎙️ אודיו</div>
-                <div style="font-size:0.9em; color:#9ca3af;">M4A, MP3, WAV, AAC, OGG, FLAC</div>
-                <div style="font-weight:600; margin-top:4px;">📁 קובץ</div>
-                <div>בחר וידאו או אודיו כדי להתחיל</div>
-            </div>
-        `;
+        if (isMedical) {
+            container.innerHTML = `
+                <div style="color:#64748b; text-align:center; margin-top:32px; line-height:1.75; font-size:0.95rem; direction:rtl;">
+                    <div style="font-weight:600; color:#0f766e;">סשן קליני מאובטח</div>
+                    <div style="margin-top:12px;">התחלו בהקלטה מהכפתור למטה. התמלול יוצג כאן לאחר סיום ההקלטה והעיבוד.</div>
+                </div>
+            `;
+        } else {
+            container.innerHTML = `
+                <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">
+                    <div style="font-weight:600;">🎥 וידאו</div>
+                    <div style="font-size:0.9em; color:#9ca3af;">MP4, MOV, WEBM, M4V, MKV, AVI</div>
+                    <div style="font-weight:600; margin-top:4px;">🎙️ אודיו</div>
+                    <div style="font-size:0.9em; color:#9ca3af;">M4A, MP3, WAV, AAC, OGG, FLAC</div>
+                    <div style="font-weight:600; margin-top:4px;">📁 קובץ</div>
+                    <div>בחר וידאו או אודיו כדי להתחיל</div>
+                </div>
+            `;
+        }
         return;
     }
     // Legacy rendering path for cue-only transcripts (no word timestamps).
