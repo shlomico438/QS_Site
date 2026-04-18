@@ -4134,7 +4134,12 @@ function isTimeToggleVisible() {
 }
 
 function isDocumentFormatEnabled() {
-    return true;
+    const docBtn = document.getElementById('format-mode-doc');
+    if (docBtn && docBtn.classList.contains('is-active')) return true;
+    const subBtn = document.getElementById('format-mode-subtitle');
+    if (subBtn && subBtn.classList.contains('is-active')) return false;
+    // Buttons not in DOM yet, or no active class: match default (subtitle-first in setFormatMode).
+    return false;
 }
 
 function wrapTextByMaxChars(text, maxChars) {
@@ -7713,6 +7718,19 @@ function srtFromCues(cues) {
     }).join('\n');
 }
 
+function _medicalHasFormattedSummaryContent() {
+    const fmt = window.currentFormattedDoc;
+    if (!fmt || typeof fmt !== 'object') return false;
+    if (String(fmt.overview || '').trim()) return true;
+    const kp = fmt.key_points;
+    return Array.isArray(kp) && kp.some((p) => String(p || '').trim());
+}
+
+function _medicalHasTranscriptModel(cues) {
+    if (Array.isArray(cues) && cues.length > 0) return true;
+    return Array.isArray(window.currentWords) && window.currentWords.length > 0;
+}
+
 function renderTranscriptFromCues(cues) {
     window.currentSegments = cues;
     try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
@@ -7731,7 +7749,12 @@ function renderTranscriptFromCues(cues) {
     const isRtl = locale.startsWith('he') || locale.startsWith('ar');
     const textDirection = isRtl ? 'rtl' : 'ltr';
     const textAlign = isRtl ? 'right' : 'left';
-    if (isMedical && activeTab === 'summary') {
+    // Do not paint the clinical summary shell on the landing screen (no job / no cues yet).
+    const showMedicalSummaryPane =
+        isMedical &&
+        activeTab === 'summary' &&
+        (_medicalHasTranscriptModel(cues) || _medicalHasFormattedSummaryContent());
+    if (showMedicalSummaryPane) {
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
         const overview = String(fmt.overview || '').trim();
         const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
@@ -7749,7 +7772,7 @@ function renderTranscriptFromCues(cues) {
         container.contentEditable = 'false';
         return;
     }
-    if (!cues || cues.length === 0) {
+    if (!_medicalHasTranscriptModel(cues)) {
         container.innerHTML = `
             <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">
                 <div style="font-weight:600;">🎥 וידאו</div>
@@ -7763,7 +7786,8 @@ function renderTranscriptFromCues(cues) {
         return;
     }
     // Legacy rendering path for cue-only transcripts (no word timestamps).
-    const html = cues.map((c, idx) => {
+    const cueList = Array.isArray(cues) ? cues : [];
+    const html = cueList.map((c, idx) => {
         const mainText = String(c.translated_text || c.text || '').trim();
         const safe = mainText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const startSec = _asTranscriptTime(c.start);
