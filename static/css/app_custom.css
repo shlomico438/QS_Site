@@ -796,6 +796,7 @@ input:checked + .slider:before { transform: translateX(16px); }
     stroke-width: 2;
 }
 
+/* Regular mode: match primary / export panel purple */
 #btn-download.generate-select-btn {
     display: inline-flex;
     align-items: center;
@@ -806,14 +807,24 @@ input:checked + .slider:before { transform: translateX(16px); }
     max-width: 180px;
     padding: 0 12px;
     border-radius: 8px;
-    border: 1px solid #0f766e;
-    background: #0d9488;
+    border: 1px solid #4338ca;
+    background: #4f46e5;
     color: #fff;
     font-weight: 600;
     font-size: 0.82rem;
     line-height: 1;
     white-space: nowrap;
     cursor: pointer;
+}
+
+.main-app-container.medical-mode #btn-download.generate-select-btn {
+    border-color: #0f766e;
+    background: #0d9488;
+}
+
+.main-app-container.medical-mode #btn-download.generate-select-btn:hover {
+    border-color: #0f766e;
+    background: #0f766e;
 }
 
 #btn-download.generate-select-btn .btn-download-icon {
@@ -826,8 +837,8 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 
 #btn-download.generate-select-btn:hover {
-    border-color: #0f766e;
-    background: #0f766e;
+    border-color: #3730a3;
+    background: #4338ca;
     color: #fff;
 }
 
@@ -1053,7 +1064,7 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 
 .medical-transcript-top-actions {
-  display: inline-flex;
+  display: none; /* Regular mode: edit / Aa / save live in .controls-bar — do not overlay the transcript */
   align-items: center;
   gap: 8px;
   position: absolute;
@@ -1061,6 +1072,10 @@ input:checked + .slider:before { transform: translateX(16px); }
   right: 10px;
   z-index: 4;
   margin: 0;
+}
+
+.main-app-container.medical-mode .medical-transcript-shell > .medical-transcript-top-actions {
+  display: inline-flex;
 }
 
 .medical-side-action-stack {
