@@ -92,6 +92,13 @@ def _is_medical_flag(value):
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def _request_json_is_medical(data):
+    """True when client JSON marks HIPAA/medical mode (isMedical or is_medical)."""
+    if not isinstance(data, dict):
+        return False
+    return bool(_is_medical_flag(data.get('isMedical')) or _is_medical_flag(data.get('is_medical')))
+
+
 def _kms_key_arn():
     return (os.environ.get('KMS_ARN_ENV') or os.environ.get('MEDICAL_KMS_KEY_ARN') or '').strip()
 
@@ -1945,24 +1952,56 @@ def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, 
     return _wrap_text_to_max_chars(clean)
 
 
-def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0):
+def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False):
     """Produce overview + key_points from (possibly truncated) transcript text."""
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
     output_lang_label = 'Hebrew' if want_hebrew else target_lang
-    system_prompt = (
-        "You are an expert analyst. "
-        "Return ONLY valid JSON: {\"overview\":string,\"key_points\":[string]} . "
-        "No markdown fences."
-    )
-    user_prompt = (
-        "Summarize this transcript.\n\n"
-        "* A short 3–4 sentence overview.\n"
-        "* 5–8 key points (strings in the array).\n"
-        "Focus on decisions, insights, and actionable ideas. Ignore filler.\n\n"
-        f"Output language must be {output_lang_label}.\n\n"
-        f"Transcript:\n\n{transcript_excerpt}"
-    )
+    if is_medical:
+        system_prompt = (
+            "You are a clinical documentation assistant. "
+            "Write only from the transcript: do not invent symptoms, diagnoses, medications, "
+            "allergies, vitals, labs, imaging, or exam findings that are not clearly stated or "
+            "fairly implied. Use tentative language and explicit uncertainty when information is missing. "
+            "Return ONLY valid JSON: {\"overview\":string,\"key_points\":[string]} . "
+            "No markdown fences."
+        )
+        user_prompt = (
+            "From this clinical encounter transcript, produce documentation-oriented text for "
+            "clinician workflow support. This is not a substitute for professional judgment or the "
+            "primary record.\n\n"
+            "overview — 3–5 sentences: chief concern / reason for encounter as stated; "
+            "relevant history or context voiced; stated assessments or working impressions if "
+            "explicitly mentioned; plan themes only if stated. If the transcript is ambiguous, say so.\n\n"
+            "key_points — 8–12 strings. Each line should start with a short section label in the "
+            "output language, then the content. Cover only what appears in the transcript. "
+            "Include where applicable (use \"not stated\" or equivalent when a topic was not discussed):\n"
+            "Chief concern; HPI / narrative; associated symptoms or ROS mentions; "
+            "medications and allergies; social or contextual factors; objective / exam / vitals / "
+            "labs if spoken; assessment or differential (tentative if inferred); "
+            "plan (tests, treatments, referrals, patient education); follow-up and return precautions; "
+            "red flags or urgent escalation only if discussed or clearly warranted from stated facts; "
+            "gaps and uncertainties.\n\n"
+            "Avoid meeting-style bullets (generic \"insights\", marketing language). "
+            "Add one brief disclaimer (in the overview or as a final key point) that the summary "
+            "must be verified against the source audio/record and the responsible clinician.\n\n"
+            f"Output language must be {output_lang_label}.\n\n"
+            f"Transcript:\n\n{transcript_excerpt}"
+        )
+    else:
+        system_prompt = (
+            "You are an expert analyst. "
+            "Return ONLY valid JSON: {\"overview\":string,\"key_points\":[string]} . "
+            "No markdown fences."
+        )
+        user_prompt = (
+            "Summarize this transcript.\n\n"
+            "* A short 3–4 sentence overview.\n"
+            "* 5–8 key points (strings in the array).\n"
+            "Focus on decisions, insights, and actionable ideas. Ignore filler.\n\n"
+            f"Output language must be {output_lang_label}.\n\n"
+            f"Transcript:\n\n{transcript_excerpt}"
+        )
     parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
     overview = str((parsed or {}).get("overview") or "").strip()
     key_points = (parsed or {}).get("key_points")
@@ -1973,7 +2012,7 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
     return {"overview": overview, "key_points": key_points}
 
 
-def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'):
+def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False):
     """One OpenAI call: full transcript + summary (only for moderately sized input)."""
     timeout_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
     read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
@@ -1986,6 +2025,28 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         "{\"clean_transcript\":string,\"overview\":string,\"key_points\":[string]} . "
         "Do not include markdown fences. Keep original language and directionality."
     )
+    if is_medical:
+        task2 = (
+            "Task 2 – Clinical summary (documentation support only; not a substitute for judgment)\n"
+            "overview — 3–5 sentences from the encounter: chief concern as stated; relevant voiced history; "
+            "stated assessments if any; plan themes only if stated. Flag ambiguity explicitly.\n\n"
+            "key_points — 8–12 strings, each starting with a short section label in the output language. "
+            "Only transcript-grounded content. Include where applicable: chief concern; HPI; symptoms/ROS; "
+            "medications and allergies (or not stated); social context; objective/exam/vitals/labs if spoken; "
+            "assessment/differential (tentative); plan; follow-up and precautions; red flags only if discussed "
+            "or clearly warranted from stated facts; gaps/uncertainties.\n"
+            "Do not invent clinical facts. Add a brief disclaimer that the text must be verified against "
+            "the recording and the responsible clinician.\n\n"
+        )
+    else:
+        task2 = (
+            "Task 2 – Summary\n"
+            "Create a separate summary including:\n\n"
+            "* A short 3–4 sentence overview\n"
+            "* 5–8 bullet key points\n"
+            "Focus on decisions, insights, and actionable ideas.\n"
+            "Ignore filler conversation.\n\n"
+        )
     user_prompt = (
         "You are editing a transcript.\n\n"
         "Task 1 – Clean Transcript\n\n"
@@ -1998,12 +2059,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         f"* IMPORTANT: each line in clean_transcript must be at most {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
         f"* Add line breaks as needed to keep line length <= {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
         "* Do NOT summarize or remove content.\n\n"
-        "Task 2 – Summary\n"
-        "Create a separate summary including:\n\n"
-        "* A short 3–4 sentence overview\n"
-        "* 5–8 bullet key points\n"
-        "Focus on decisions, insights, and actionable ideas.\n"
-        "Ignore filler conversation.\n\n"
+        f"{task2}"
         "Return as JSON fields only (clean_transcript, overview, key_points).\n"
         f"Output language must be {output_lang_label} for all fields.\n\n"
         f"Language hint: {lang_hint}\n\n"
@@ -2026,7 +2082,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
     }
 
 
-def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he'):
+def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False):
     """Generate clean transcript paragraphs + summary. Uses chunked calls when input is very long."""
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
@@ -2040,7 +2096,9 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he')
     parallel = max(1, min(8, int(os.environ.get('FORMAT_TRANSCRIPT_PARALLEL', '2'))))
 
     if len(transcript_text) <= max_single:
-        return _format_transcript_and_summary_single_shot(transcript_text, target_lang=target_lang)
+        return _format_transcript_and_summary_single_shot(
+            transcript_text, target_lang=target_lang, is_medical=is_medical
+        )
 
     logging.info(
         "format_transcript: chunked path total_chars=%s chunk≈%s parallel=%s",
@@ -2088,7 +2146,9 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he')
             + "\n\n[… פסקה מקוצרת — המשך התמלול …]\n\n"
             + clean_merged[-(summary_in_max // 2) :]
         )
-    summary = _format_summary_only_openai(summ_input, target_lang, format_read_sec, read_retries)
+    summary = _format_summary_only_openai(
+        summ_input, target_lang, format_read_sec, read_retries, is_medical=is_medical
+    )
     return {
         "clean_transcript": clean_merged,
         "overview": summary.get("overview") or "",
@@ -2286,6 +2346,7 @@ def api_format_transcript_summary():
     data = request.json or {}
     mode = str(data.get('mode') or '').strip().lower()
     target_lang = data.get('targetLang') or data.get('target_lang') or 'he'
+    is_medical = _request_json_is_medical(data)
     req_job_id = (data.get('jobId') or data.get('job_id') or '').strip() or None
     req_user_id = (data.get('userId') or data.get('user_id') or '').strip() or None
     read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
@@ -2331,7 +2392,9 @@ def api_format_transcript_summary():
             )
         summary_timeout = int(os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC', '120') or 120)
         try:
-            summary = _format_summary_only_openai(summ_input, target_lang, summary_timeout, read_retries)
+            summary = _format_summary_only_openai(
+                summ_input, target_lang, summary_timeout, read_retries, is_medical=is_medical
+            )
             elapsed = time.time() - t0
             _apply_format_timing(elapsed)
             return jsonify({
@@ -2355,7 +2418,9 @@ def api_format_transcript_summary():
     if not raw_text:
         return jsonify({"error": "No transcript text provided"}), 400
     try:
-        out = _format_transcript_and_summary_via_openai(raw_text, target_lang=target_lang)
+        out = _format_transcript_and_summary_via_openai(
+            raw_text, target_lang=target_lang, is_medical=is_medical
+        )
         ct = str((out or {}).get('clean_transcript') or '').strip()
         if ct:
             out['clean_transcript'] = _wrap_text_to_max_chars(ct)
@@ -2430,7 +2495,9 @@ def api_export_docx():
         if not isinstance(fmt, dict):
             if allow_gpt_fallback:
                 try:
-                    fmt = _format_transcript_and_summary_via_openai(raw_text, target_lang='he')
+                    fmt = _format_transcript_and_summary_via_openai(
+                        raw_text, target_lang='he', is_medical=_request_json_is_medical(data)
+                    )
                     format_source = 'gpt_fallback'
                 except Exception as ai_err:
                     logging.warning("export_docx: AI format failed (%s), using raw text", ai_err)

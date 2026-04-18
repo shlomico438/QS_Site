@@ -56,11 +56,55 @@ window.hasMultipleSpeakers = false;
 let isSignUpMode = true;
 const QS_MEDICAL_MODE_KEY = 'qs_medical_mode';
 
+/** Keys that may be written while medical lockdown is on (HIPAA: block job/transcript cache, not auth). */
+function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
+    const k = String(key || '');
+    if (k === QS_MEDICAL_MODE_KEY || k === 'locale' || k === 'qs_console') return true;
+    // Supabase Auth persists session under sb-<project-ref>-… (e.g. auth-token, PKCE). Blocking these breaks Google OAuth / refresh.
+    if (k.startsWith('sb-')) return true;
+    if (k === 'supabase.auth.token') return true;
+    return false;
+}
+
 function isMedicalModeEnabled() {
     return window.isMedicalMode === true;
 }
 
+function _qsRevokeLocalPreviewAudio() {
+    const u = window._qsLocalPreviewAudioUrl;
+    if (u && String(u).startsWith('blob:')) {
+        try { URL.revokeObjectURL(u); } catch (_) {}
+    }
+    window._qsLocalPreviewAudioUrl = null;
+    window._qsLocalPreviewAudioMime = null;
+}
+
+/** Blob preview URL for playback after transcribe. In medical mode localStorage is blocked — keep in memory only. */
+function setLocalPreviewAudio(objectUrl, mime) {
+    _qsRevokeLocalPreviewAudio();
+    window._qsLocalPreviewAudioUrl = objectUrl || null;
+    window._qsLocalPreviewAudioMime = mime ? String(mime) : '';
+    if (!isMedicalModeEnabled()) {
+        try {
+            if (objectUrl) localStorage.setItem('currentAudioUrl', objectUrl);
+            else localStorage.removeItem('currentAudioUrl');
+            localStorage.setItem('currentAudioMime', window._qsLocalPreviewAudioMime);
+        } catch (_) {}
+    }
+}
+
+function getLocalPreviewAudioUrl() {
+    if (window._qsLocalPreviewAudioUrl) return window._qsLocalPreviewAudioUrl;
+    try { return localStorage.getItem('currentAudioUrl'); } catch (_) { return null; }
+}
+
+function getLocalPreviewAudioMime() {
+    if (window._qsLocalPreviewAudioMime) return window._qsLocalPreviewAudioMime;
+    try { return localStorage.getItem('currentAudioMime') || ''; } catch (_) { return ''; }
+}
+
 function clearSensitiveStorageForMedicalMode() {
+    _qsRevokeLocalPreviewAudio();
     const keysToWipe = [
         'activeJobId', 'lastJobId', 'lastJobDbId', 'lastS3Key', 'pendingS3Key', 'pendingJobId',
         'pendingExportType', 'pendingOpenGenerateMenu', 'currentAudioUrl', 'currentAudioMime'
@@ -95,8 +139,7 @@ function setMedicalMode(enabled) {
     const originalSetItem = Storage.prototype.setItem;
     Storage.prototype.setItem = function(key, value) {
         const k = String(key || '');
-        const isAllowed = k === QS_MEDICAL_MODE_KEY || k === 'locale' || k === 'qs_console';
-        if (window.isMedicalMode === true && !isAllowed) return;
+        if (window.isMedicalMode === true && !_qsStorageKeyAllowedDuringMedicalLockdown(k)) return;
         return originalSetItem.call(this, key, value);
     };
 })();
@@ -227,6 +270,15 @@ window.retryTriggerForActiveJob = async function() {
 
 // --- AUTH STATE: after email confirmation (magic link) Supabase creates the session; close modal and refresh ---
 supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_OUT') {
+        // Medical UI + lockdown must not survive logout; persisted pref would also block Supabase session keys on next visit.
+        try {
+            setMedicalMode(false);
+        } catch (_) {}
+        if (typeof window.applyMedicalModeUi === 'function') {
+            try { window.applyMedicalModeUi(); } catch (_) {}
+        }
+    }
     if (event === 'SIGNED_IN' && session) {
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
@@ -738,6 +790,10 @@ async function setupNavbarAuth(userOverride) {
         }
     } else {
         if (personalLink) personalLink.style.display = 'none';
+        // Do not keep HIPAA/medical UI or lockdown when there is no authenticated user (stale qs_medical_mode after logout).
+        if (isMedicalModeEnabled()) {
+            setMedicalMode(false);
+        }
         navBtn.innerHTML = typeof window.t === 'function' ? window.t('nav_sign_in') : 'Sign In';
         navBtn.style.color = "#5d5dff";
         navBtn.href = "#";
@@ -2269,7 +2325,8 @@ const QS_FORMAT_MULTI_REQUEST_CHARS = 4000;
 async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
     const base = () => ({
         target_lang: targetLang,
-        jobId: jobId || undefined
+        jobId: jobId || undefined,
+        isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
     });
     if (!fullText || fullText.length <= QS_FORMAT_MULTI_REQUEST_CHARS) {
         const res = await fetch('/api/format_transcript_summary', {
@@ -3318,7 +3375,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
 const googleLoginBtn = document.getElementById('google-login');
 if (googleLoginBtn) {
     googleLoginBtn.addEventListener('click', async () => {
-        if (window.currentSegments && window.currentSegments.length > 0) {
+        if (window.currentSegments && window.currentSegments.length > 0 && !isMedicalModeEnabled()) {
             localStorage.setItem('pendingTranscript', JSON.stringify(window.currentSegments));
         }
         const { error } = await supabase.auth.signInWithOAuth({
@@ -4171,6 +4228,10 @@ function stopProcessingStateUI(reason) {
 
 function _processingIntroThreeSentencesHe(loggedIn) {
     const s2 = 'התהליך עשוי לקחת כמה דקות.';
+    if (isMedicalModeEnabled()) {
+        const s3 = loggedIn ? '' : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
+        return s3 ? `${s2}\n\n${s3}` : s2;
+    }
     const s3 = loggedIn
         ? 'אפשר לסגור את העמוד — נשלח לך מייל ברגע שהוידאו יהיה מוכן עם הכתוביות.'
         : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
@@ -4179,6 +4240,10 @@ function _processingIntroThreeSentencesHe(loggedIn) {
 
 function _processingIntroThreeSentencesEn(loggedIn) {
     const s2 = 'This may take a few minutes.';
+    if (isMedicalModeEnabled()) {
+        const s3 = loggedIn ? '' : 'Sign in to the site so we can notify you by email when it is ready.';
+        return s3 ? `${s2}\n\n${s3}` : s2;
+    }
     const s3 = loggedIn
         ? "You can leave this page — we'll email you when your video and subtitles are ready."
         : 'Sign in to the site so we can notify you by email when it is ready.';
@@ -4276,6 +4341,9 @@ function resetScreenToInitial() {
     if (audioPlayerContainer) audioPlayerContainer.style.display = 'none';
     if (audioSource) audioSource.removeAttribute('src');
     if (mainAudio) mainAudio.load();
+    _qsRevokeLocalPreviewAudio();
+    try { localStorage.removeItem('currentAudioUrl'); } catch (_) {}
+    try { localStorage.removeItem('currentAudioMime'); } catch (_) {}
 
     if (videoWrapper) {
         videoWrapper.style.display = 'none';
@@ -5161,7 +5229,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const mainVideo = document.getElementById('main-video');
         const audioSource = document.getElementById('audio-source');
         const mainAudio = document.getElementById('main-audio');
-        const savedUrl = localStorage.getItem('currentAudioUrl');
+        const savedUrl = getLocalPreviewAudioUrl();
 
         if (window.uploadWasVideo === true) {
             // Video: show mp4 viewer immediately so user can edit transcript (no separate "edit video" step)
@@ -5174,7 +5242,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const videoSrc = document.getElementById('video-source');
             if (videoSrc && savedUrl) {
                 videoSrc.src = savedUrl;
-                let mime = localStorage.getItem('currentAudioMime') || 'video/mp4';
+                let mime = getLocalPreviewAudioMime() || 'video/mp4';
                 if (mime.toLowerCase().includes('quicktime') || (savedUrl + '').toLowerCase().includes('.mov')) mime = 'video/mp4';
                 videoSrc.type = mime;
             }
@@ -5202,7 +5270,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (mainVideo) mainVideo.style.display = 'none';
             if (audioSource && mainAudio && savedUrl) {
                 audioSource.src = savedUrl;
-                const mime = localStorage.getItem('currentAudioMime') || '';
+                const mime = getLocalPreviewAudioMime() || '';
                 if (mime) audioSource.type = mime;
                 else audioSource.type = 'audio/mp4';
                 mainAudio.load();
@@ -7175,10 +7243,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             // CREATE A LOCAL PREVIEW URL
             const objectUrl = URL.createObjectURL(file);
-            localStorage.setItem('currentAudioUrl', objectUrl);
             const storeMime = (file.type || '').toLowerCase();
             const mimeForMov = (/\.mov$/i.test(file.name) || storeMime.includes('quicktime')) ? 'video/mp4' : (file.type || '');
-            localStorage.setItem('currentAudioMime', mimeForMov);
+            setLocalPreviewAudio(objectUrl, mimeForMov);
 
             const currentFile = file; // Captured for use in the fetch
             fileInput.value = ""; // Reset for next selection
