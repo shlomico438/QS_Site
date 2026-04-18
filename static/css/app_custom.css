@@ -659,6 +659,14 @@ audio {
     flex-wrap: nowrap;
 }
 
+.main-app-container.medical-mode .controls-bar .toolbar-group {
+    justify-content: center;
+}
+
+.main-app-container.medical-mode .controls-bar .generate-btn-wrap {
+    margin-inline: auto;
+}
+
 .generate-btn-wrap {
     flex: 0 1 auto;
 }
@@ -798,8 +806,8 @@ input:checked + .slider:before { transform: translateX(16px); }
     max-width: 180px;
     padding: 0 12px;
     border-radius: 8px;
-    border: 1px solid #4338ca;
-    background: #5d5dff;
+    border: 1px solid #0f766e;
+    background: #0d9488;
     color: #fff;
     font-weight: 600;
     font-size: 0.82rem;
@@ -818,8 +826,8 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 
 #btn-download.generate-select-btn:hover {
-    border-color: #3730a3;
-    background: #4f46e5;
+    border-color: #0f766e;
+    background: #0f766e;
     color: #fff;
 }
 
@@ -835,6 +843,358 @@ input:checked + .slider:before { transform: translateX(16px); }
     position: relative;
     margin-bottom: 10px;
 }
+
+.main-app-container.medical-mode {
+    border: none;
+    border-radius: 16px;
+    background: #ffffff;
+    box-shadow: 0 8px 28px rgba(15, 23, 42, 0.10);
+    padding: 14px;
+}
+
+.medical-confirm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(3px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.medical-confirm-modal {
+  width: min(92vw, 360px);
+  background: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+  padding: 16px;
+  text-align: right;
+  direction: rtl;
+}
+
+.medical-confirm-modal h3 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  color: #0f172a;
+}
+
+.medical-confirm-modal p {
+  margin: 0 0 14px;
+  color: #334155;
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+
+.medical-confirm-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.medical-confirm-btn {
+  border: none;
+  border-radius: 9px;
+  padding: 8px 14px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.medical-confirm-btn.secondary {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.medical-confirm-btn.danger {
+  background: #BE123C;
+  color: #ffffff;
+}
+
+.medical-record-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.medical-recording-timer-slot {
+  width: 100%;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+  text-align: center;
+  direction: ltr;
+}
+
+.medical-record-timer {
+  min-width: 56px;
+  text-align: center;
+  color: #0d9488;
+  font-weight: 700;
+  font-size: 1.2rem;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  margin: 0;
+}
+
+#medical-recording-wrap .medical-record-timer {
+  display: none !important;
+  margin-top: 8px;
+}
+
+.medical-circle-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.medical-record-outer {
+  width: 86px;
+  height: 86px;
+  border-radius: 50%;
+  background: #0d9488;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.medical-record-outer.is-idle {
+  background: #0d9488;
+  animation: none;
+}
+
+.medical-record-outer.is-paused {
+  background: #0d9488;
+  animation: none;
+}
+
+.medical-record-outer.is-recording {
+  background: #BE123C;
+  animation: medical-record-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes medical-record-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(190, 18, 60, 0.45); }
+  70% { box-shadow: 0 0 0 14px rgba(190, 18, 60, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(190, 18, 60, 0); }
+}
+
+.medical-record-shape {
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+}
+
+.medical-record-shape-pause {
+  color: #ffffff;
+}
+
+#medical-record-mic-svg {
+  width: 32px;
+  height: 32px;
+}
+
+#medical-record-pause-symbol {
+  position: relative;
+  display: inline-block;
+  width: 18px;
+  height: 24px;
+  line-height: 0;
+}
+
+#medical-record-pause-symbol::before,
+#medical-record-pause-symbol::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 4px;
+  height: 24px;
+  border-radius: 2px;
+  background: #ffffff;
+}
+
+#medical-record-pause-symbol::before { left: 3px; }
+#medical-record-pause-symbol::after { right: 3px; }
+
+#medical-result-tabs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  margin: 0 auto 10px;
+}
+
+#medical-result-tabs .format-ab-option {
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #374151;
+  font-size: 0.86rem;
+  padding: 8px 16px;
+  min-width: 120px;
+  text-align: center;
+}
+
+#medical-result-tabs .format-ab-option.is-active {
+  background: #0f766e;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.medical-transcript-top-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  margin: 0;
+}
+
+.medical-side-action-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 52px;
+}
+
+.medical-side-action-label {
+  font-size: 0.68rem;
+  line-height: 1;
+  color: #475569;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.medical-side-action-btn {
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 2rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background-color 0.15s ease;
+}
+
+.medical-side-action-btn:hover {
+  background: #e2e8f0;
+}
+
+.medical-copy-btn {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+#medical-session-header {
+  background: linear-gradient(180deg, rgba(13, 148, 136, 0.11) 0%, rgba(13, 148, 136, 0.04) 100%);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.main-app-container.medical-mode #audio-player-container {
+  background: transparent !important;
+  margin-bottom: 18px !important;
+}
+
+.main-app-container.medical-mode #main-audio {
+  width: 100%;
+  background: transparent;
+  border-radius: 10px;
+}
+
+.main-app-container.medical-mode #transcript-window {
+  border-radius: 12px;
+  padding-top: 58px;
+  width: 100%;
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #ffffff;
+}
+
+.main-app-container.medical-mode #transcript-window.medical-wave-active {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.main-app-container.medical-mode #transcript-window::-webkit-scrollbar {
+  width: 10px;
+}
+
+.main-app-container.medical-mode #transcript-window::-webkit-scrollbar-track {
+  background: #ffffff;
+}
+
+.main-app-container.medical-mode #transcript-window::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+  border: 2px solid #ffffff;
+}
+
+.medical-copy-icon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+}
+
+.medical-copy-icon::before,
+.medical-copy-icon::after {
+  content: "";
+  position: absolute;
+  border: 1.8px solid #111827;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.medical-copy-icon::before {
+  width: 11px;
+  height: 9px;
+  top: 3px;
+  left: 1px;
+}
+
+.medical-copy-icon::after {
+  width: 11px;
+  height: 9px;
+  top: 0;
+  left: 4px;
+  background: #ffffff;
+}
 /* 5. Transcript + centered processing overlay share one flex column */
 .transcript-area-wrap {
     position: relative;
@@ -846,6 +1206,20 @@ input:checked + .slider:before { transform: translateX(16px); }
 }
 
 .transcript-area-wrap > #transcript-window {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.medical-transcript-shell {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+}
+
+.medical-transcript-shell > #transcript-window {
     flex: 1 1 auto;
     min-height: 0;
 }

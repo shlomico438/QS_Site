@@ -7,8 +7,8 @@
 <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
 
 <div class="app-mode">
-    <div class="main-app-container">
-        <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content">
+    <div class="main-app-container" id="main-app-container">
+        <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content" style="display:none;">
             <h1>
                 <span class="seo-he">תמלול ויצירת כתוביות לסרטונים</span>
                 <span class="seo-en">AI Transcription &amp; Automatic Subtitle Generator</span>
@@ -66,6 +66,10 @@
                 </details>
             </section>
         </section>
+        <section id="medical-session-header" style="display:none; margin-bottom:14px; text-align:center;">
+            <h2 id="medical-session-title" style="margin:0; color:#0f766e;">סשן הקלטה רפואי מאובטח</h2>
+            <p id="medical-session-subtitle" style="margin:4px 0 0; color:#0f766e;">תמלול קליני בתקן HIPAA פעיל</p>
+        </section>
 
          <div id="auth-modal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center; backdrop-filter: blur(4px);">
             <div style="background: white; padding: 32px; border-radius: 16px; width: 380px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
@@ -96,6 +100,16 @@
                 </p>
             </div>
         </div>
+        <div id="medical-delete-confirm-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-delete-confirm-title">
+                <h3 id="medical-delete-confirm-title">מחיקת הקלטה</h3>
+                <p id="medical-delete-confirm-message">האם אתה בטוח שברצונך למחוק הקלטה זו?</p>
+                <div class="medical-confirm-modal-actions">
+                    <button type="button" id="medical-delete-confirm-no" class="medical-confirm-btn secondary">ביטול</button>
+                    <button type="button" id="medical-delete-confirm-yes" class="medical-confirm-btn danger">מחק</button>
+                </div>
+            </div>
+        </div>
         <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
             <audio id="main-audio" controls style="width: 100%; max-width: 100%;">
                 <source id="audio-source" src="" type="audio/mpeg">
@@ -123,7 +137,30 @@
                 <button type="button" id="medical-tab-transcript" class="format-ab-option is-active">תמלול מלא</button>
                 <button type="button" id="medical-tab-summary" class="format-ab-option">סיכום רפואי</button>
             </div>
-            <div id="transcript-window" contenteditable="false">
+            <div class="medical-transcript-shell">
+                <div class="medical-transcript-top-actions">
+                    <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><img src="{{ url_for('static', filename='images/edit.png') }}" alt="Edit" style="width:20px; height:20px; object-fit:contain;"></button>
+                    <div class="action-buttons" id="edit-actions" style="display:none; gap: 10px;">
+                        <button class="btn-icon" onclick="window.saveEdits()" style="color:green;" data-i18n-title="save" title="Save">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                        </button>
+
+                        <button class="btn-icon" onclick="window.cancelEdits()" style="color:red;" data-i18n-title="cancel" title="Cancel">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                    <button type="button" id="medical-copy-btn" class="medical-copy-btn" aria-label="Copy current tab">
+                        <span class="medical-copy-icon" aria-hidden="true"></span>
+                    </button>
+                </div>
+                <div id="transcript-window" contenteditable="false">
+                </div>
+                <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <p id="processing-state-intro" class="processing-state-primary"></p>
@@ -186,21 +223,6 @@
                             </div>
                         </div>
                     </div>
-                    <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><img src="{{ url_for('static', filename='images/edit.png') }}" alt="Edit" style="width:20px; height:20px; object-fit:contain;"></button>
-                    <div class="action-buttons" id="edit-actions" style="display:none; gap: 10px;">
-                        <button class="btn-icon" onclick="window.saveEdits()" style="color:green;" data-i18n-title="save" title="Save">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="20 6 9 17 4 12"></polyline>
-                            </svg>
-                        </button>
-
-                        <button class="btn-icon" onclick="window.cancelEdits()" style="color:red;" data-i18n-title="cancel" title="Cancel">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                            </svg>
-                        </button>
-                    </div>
                 </div>
             </div>
         </div>
@@ -210,9 +232,44 @@
                 <input type="file" id="fileInput" accept="video/*,audio/*,.json,application/json" hidden>
                 <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">התחל כאן</button>
             </div>
-            <div id="medical-recording-wrap" style="display:none; text-align:center; margin-bottom:12px;">
-                <button class="btn btn-primary" id="medical-record-btn" type="button" style="font-size:1.1rem; padding:14px 26px;">התחל הקלטה</button>
-                <div id="medical-record-timer" style="margin-top:8px; color:#b91c1c; font-weight:700;">00:00</div>
+            <div id="medical-recording-wrap" style="display:none; margin-bottom:12px;">
+                <div class="medical-record-controls">
+                    <div id="medical-cancel-stack" class="medical-side-action-stack" style="display:none;">
+                        <button id="medical-cancel-btn" type="button" class="medical-side-action-btn" aria-label="מחק הקלטה">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                        </button>
+                        <span class="medical-side-action-label">מחק</span>
+                    </div>
+                    <button id="medical-record-btn" type="button" class="medical-circle-btn medical-circle-btn-record" aria-label="Record">
+                        <span class="medical-record-outer">
+                            <span id="medical-record-shape" class="medical-record-shape">
+                                <svg id="medical-record-mic-svg" viewBox="0 0 24 24" aria-hidden="true">
+                                    <rect x="8" y="3" width="8" height="12" rx="4" ry="4" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                                    <path d="M6 11.5c0 3.3 2.7 6 6 6s6-2.7 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                                    <line x1="12" y1="17.5" x2="12" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></line>
+                                    <line x1="9" y1="21" x2="15" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></line>
+                                </svg>
+                                <span id="medical-record-pause-symbol" style="display:none;" aria-hidden="true"></span>
+                            </span>
+                        </span>
+                    </button>
+                    <div id="medical-confirm-stack" class="medical-side-action-stack" style="display:none;">
+                        <button id="medical-confirm-btn" type="button" class="medical-side-action-btn" aria-label="שמור הקלטה">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                                <line x1="9" y1="15" x2="15" y2="15"></line>
+                            </svg>
+                        </button>
+                        <span class="medical-side-action-label">שמור</span>
+                    </div>
+                </div>
+                <div id="medical-record-timer" class="medical-record-timer" style="visibility:hidden;"></div>
             </div>
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
             <div class="progress-container" id="p-container" style="display:none;">

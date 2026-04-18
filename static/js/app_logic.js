@@ -79,8 +79,6 @@ function setMedicalMode(enabled) {
     try {
         const navToggle = document.getElementById('nav-medical-mode-toggle');
         if (navToggle) navToggle.checked = on;
-        const profileToggle = document.getElementById('user-menu-medical-mode');
-        if (profileToggle) profileToggle.checked = on;
     } catch (_) {}
     try {
         if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
@@ -705,6 +703,10 @@ function _hideToastNow() {
 function setSeoHomeContentVisibility(visible) {
     const seo = document.getElementById('seo-home-content');
     if (!seo) return;
+    if (isMedicalModeEnabled()) {
+        seo.style.display = 'none';
+        return;
+    }
     seo.style.display = visible ? '' : 'none';
 }
 /** @param {object} [userOverride] - If provided (e.g. from updateUser), use this user instead of getUser() so the UI shows fresh data. */
@@ -2228,6 +2230,23 @@ function buildTranscriptPlainBodyForExport() {
     return paragraphs.join('\n\n');
 }
 
+function getMedicalActiveTabTextForCopy() {
+    const active = String(window.medicalActiveTab || 'summary');
+    if (active === 'summary') {
+        const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+        const overview = String(fmt.overview || '').trim();
+        const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+        const lines = [];
+        lines.push('סקירה:');
+        lines.push(overview || 'אין סיכום רפואי זמין עדיין.');
+        lines.push('');
+        lines.push('נקודות מפתח:');
+        (points.length ? points : ['לא הוחזרו נקודות מפתח.']).forEach((p) => lines.push(p));
+        return lines.join('\n').trim();
+    }
+    return String(buildTranscriptPlainBodyForExport() || '').trim();
+}
+
 async function commitActiveWordTokenEditIfAny() {
     try {
         const win = document.getElementById('transcript-window');
@@ -3155,7 +3174,14 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     .map((line) => (line.trim() ? (rlm + line) : line))
                     .join('\n');
             };
-            await deliverBlobToUser(new Blob([toRtlTxt(text)], { type: 'text/plain;charset=utf-8' }), name, 'text/plain;charset=utf-8');
+            const txtBlob = new Blob([toRtlTxt(text)], { type: 'text/plain;charset=utf-8' });
+            const delivered = await deliverBlobToUser(txtBlob, name, 'text/plain;charset=utf-8');
+            if (!delivered) {
+                const fallbackOk = await downloadBlobAsFileOnly(txtBlob, name);
+                if (!fallbackOk) {
+                    throw new Error('Unable to download TXT on this device. Please allow file sharing/download prompts.');
+                }
+            }
         };
 
         const _exportKindDocx = async (kind, dlName) => {
@@ -3200,7 +3226,13 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 );
             }
             const blob = await res.blob();
-            await deliverBlobToUser(blob, dlName);
+            const delivered = await deliverBlobToUser(blob, dlName);
+            if (!delivered) {
+                const fallbackOk = await downloadBlobAsFileOnly(blob, dlName);
+                if (!fallbackOk) {
+                    throw new Error(`Unable to download ${kind} DOCX on this device. Please allow file sharing/download prompts.`);
+                }
+            }
         };
         const _exportKindTxt = async (kind) => {
             const payload = _buildExportPayload();
@@ -3316,13 +3348,6 @@ if (toggleAuthBtn) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     if (typeof window.applyTranslations === 'function') window.applyTranslations();
-    const navMedicalToggle = document.getElementById('nav-medical-mode-toggle');
-    if (navMedicalToggle) {
-        navMedicalToggle.checked = isMedicalModeEnabled();
-        navMedicalToggle.addEventListener('change', () => {
-            setMedicalMode(!!navMedicalToggle.checked);
-        });
-    }
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
 
@@ -3350,6 +3375,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const transcriptWindow = document.getElementById('transcript-window');
     const mainAudio = document.getElementById('main-audio');
     const dBtn = document.getElementById('btn-download');
+    const dBtnLabel = document.querySelector('#btn-download .btn-download-label');
     const dMenu = document.getElementById('download-menu');
     /** Assigned after export-panel helpers load; clears defaults each time user opens export panel. */
     let resetExportPanelSelectionsOnOpen = () => {};
@@ -3452,6 +3478,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         dBtn.onclick = function(e) {
             e.preventDefault();
             e.stopPropagation();
+            if (isMedicalModeEnabled()) {
+                const activeDocKind = String(window.medicalActiveTab || 'summary') === 'summary' ? 'summary' : 'transcript';
+                window.downloadFile('docx', null, { docxKinds: [activeDocKind], docxKind: activeDocKind });
+                return;
+            }
             const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
             if (isHidden) {
                 const movieInput = document.querySelector('#docx-submenu .export-extra-choice[data-export-kind="movie"]');
@@ -4204,6 +4235,7 @@ function resetScreenToInitial() {
     window.isTriggering = false;
     qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
+    window._medicalHasResult = false;
     window.currentFormattedDoc = null;
     window._qsDocPreferSegmentsAfterEdit = false;
     setSeoHomeContentVisibility(true);
@@ -4328,10 +4360,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileInput = document.getElementById('fileInput');
     const medicalRecordWrap = document.getElementById('medical-recording-wrap');
     const medicalRecordBtn = document.getElementById('medical-record-btn');
+    const medicalRecordOuter = medicalRecordBtn ? medicalRecordBtn.querySelector('.medical-record-outer') : null;
+    const medicalRecordShape = document.getElementById('medical-record-shape');
+    const medicalRecordMicSvg = document.getElementById('medical-record-mic-svg');
+    const medicalRecordPauseSymbol = document.getElementById('medical-record-pause-symbol');
+    const medicalCancelBtn = document.getElementById('medical-cancel-btn');
+    const medicalConfirmBtn = document.getElementById('medical-confirm-btn');
+    const medicalCancelStack = document.getElementById('medical-cancel-stack');
+    const medicalConfirmStack = document.getElementById('medical-confirm-stack');
     const medicalRecordTimer = document.getElementById('medical-record-timer');
+    const medicalRecordingTimerSlot = document.getElementById('medical-recording-timer-slot');
+    const medicalDeleteConfirmModal = document.getElementById('medical-delete-confirm-modal');
+    const medicalDeleteConfirmYes = document.getElementById('medical-delete-confirm-yes');
+    const medicalDeleteConfirmNo = document.getElementById('medical-delete-confirm-no');
     const medicalTabsWrap = document.getElementById('medical-result-tabs');
     const medicalTabTranscript = document.getElementById('medical-tab-transcript');
     const medicalTabSummary = document.getElementById('medical-tab-summary');
+    const medicalCopyBtn = document.getElementById('medical-copy-btn');
     const mobileSessionBtn = document.getElementById('mobile-new-session-btn');
     const navNewSessionBtn = document.getElementById('nav-new-session-btn');
     const statusTxt = document.getElementById('upload-status');
@@ -4341,19 +4386,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
     setTranscriptActionButtonsVisible(false);
-    window.medicalActiveTab = window.medicalActiveTab || 'transcript';
+    window.medicalActiveTab = window.medicalActiveTab || 'summary';
     window._medicalRecorder = null;
     window._medicalRecorderChunks = [];
     window._medicalRecorderTimer = null;
     window._medicalRecordingStartedAt = 0;
+    window._medicalRecordingAccumMs = 0;
+    window._medicalRecorderPaused = false;
+    window._medicalSubmitOnStop = false;
+    window._medicalWave = window._medicalWave || null;
+    if (medicalRecordTimer) medicalRecordTimer.style.display = 'none';
 
     function updateMedicalTabUi() {
         if (!medicalTabsWrap) return;
-        const hasTranscript = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
-        const showTabs = isMedicalModeEnabled() && hasTranscript;
+        const hasSegments = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+        const hasWordModel = Array.isArray(window.currentWords) && window.currentWords.length > 0
+            && Array.isArray(window.currentCaptions) && window.currentCaptions.length > 0;
+        const hasFormattedSummary = !!(
+            window.currentFormattedDoc &&
+            (
+                String(window.currentFormattedDoc.overview || '').trim() ||
+                (Array.isArray(window.currentFormattedDoc.key_points) && window.currentFormattedDoc.key_points.length > 0)
+            )
+        );
+        const hasTranscript = hasSegments || hasWordModel;
+        const showTabs = isMedicalModeEnabled() && (hasTranscript || hasFormattedSummary || window._medicalHasResult === true);
         medicalTabsWrap.style.display = showTabs ? 'flex' : 'none';
+        if (medicalCopyBtn) medicalCopyBtn.style.display = showTabs ? 'inline-flex' : 'none';
         if (!showTabs) return;
-        const isSummary = String(window.medicalActiveTab || 'transcript') === 'summary';
+        // In medical mode, summary should be the main/default tab, including simulation.
+        if (!window.medicalActiveTab) {
+            window.medicalActiveTab = hasFormattedSummary ? 'summary' : 'transcript';
+        }
+        const isSummary = String(window.medicalActiveTab || 'summary') === 'summary';
         if (medicalTabTranscript) medicalTabTranscript.classList.toggle('is-active', !isSummary);
         if (medicalTabSummary) medicalTabSummary.classList.toggle('is-active', isSummary);
     }
@@ -4361,9 +4426,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.applyMedicalModeUi = function() {
         const on = isMedicalModeEnabled();
+        const mainAppContainer = document.getElementById('main-app-container');
+        const medicalHeader = document.getElementById('medical-session-header');
+        const medicalTitle = document.getElementById('medical-session-title');
+        const medicalSubtitle = document.getElementById('medical-session-subtitle');
+        const seoHome = document.getElementById('seo-home-content');
+        const downloadBtnLabel = document.querySelector('#btn-download .btn-download-label');
         if (medicalRecordWrap) medicalRecordWrap.style.display = on ? '' : 'none';
         if (mainBtn) mainBtn.style.display = on ? 'none' : '';
-        if (on) window.medicalActiveTab = 'transcript';
+        if (downloadBtnLabel) downloadBtnLabel.textContent = on ? 'הורדה בפורמט Docx' : 'ייצוא והורדה';
+        if (seoHome) seoHome.style.display = on ? 'none' : '';
+        if (mainAppContainer) mainAppContainer.classList.toggle('medical-mode', on);
+        if (medicalHeader) medicalHeader.style.display = on ? '' : 'none';
+        if (medicalTitle) medicalTitle.textContent = 'סשן הקלטה רפואי מאובטח';
+        if (medicalSubtitle) medicalSubtitle.textContent = 'תמלול קליני בתקן HIPAA פעיל';
+        if (on) window.medicalActiveTab = 'summary';
         updateMedicalTabUi();
     };
 
@@ -4375,12 +4452,233 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderMedicalRecordingTimer() {
-        if (!medicalRecordTimer) return;
-        const elapsedMs = Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+        const timerTarget = medicalRecordingTimerSlot || medicalRecordTimer;
+        if (!timerTarget) return;
+        const base = Number(window._medicalRecordingAccumMs || 0);
+        const runningDelta = window._medicalRecorderPaused
+            ? 0
+            : Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+        const elapsedMs = Math.max(0, base + runningDelta);
         const totalSec = Math.floor(elapsedMs / 1000);
         const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
         const ss = String(totalSec % 60).padStart(2, '0');
-        medicalRecordTimer.textContent = `${mm}:${ss}`;
+        timerTarget.textContent = `${mm}:${ss}`;
+    }
+
+    function setMedicalTimerVisibility(show) {
+        if (!medicalRecordTimer && !medicalRecordingTimerSlot) return;
+        if (show) {
+            if (medicalRecordingTimerSlot) {
+                medicalRecordingTimerSlot.style.display = 'flex';
+                medicalRecordingTimerSlot.style.visibility = 'visible';
+            } else if (medicalRecordTimer) {
+                medicalRecordTimer.style.visibility = 'visible';
+            }
+            return;
+        }
+        if (medicalRecordingTimerSlot) {
+            medicalRecordingTimerSlot.style.visibility = 'hidden';
+            medicalRecordingTimerSlot.style.display = 'none';
+            medicalRecordingTimerSlot.textContent = '';
+        }
+        if (medicalRecordTimer) {
+            medicalRecordTimer.style.visibility = 'hidden';
+            medicalRecordTimer.textContent = '';
+        }
+    }
+
+    function attachMedicalRecordingTimerSlot() {
+        if (!medicalRecordingTimerSlot) return;
+        const transcriptWindowEl = document.getElementById('transcript-window');
+        if (transcriptWindowEl && medicalRecordingTimerSlot.parentNode !== transcriptWindowEl) {
+            transcriptWindowEl.appendChild(medicalRecordingTimerSlot);
+        }
+        medicalRecordingTimerSlot.style.display = 'flex';
+    }
+
+    function detachMedicalRecordingTimerSlot() {
+        if (!medicalRecordingTimerSlot) return;
+        const shell = document.querySelector('.medical-transcript-shell');
+        if (shell && medicalRecordingTimerSlot.parentNode !== shell) {
+            shell.appendChild(medicalRecordingTimerSlot);
+        }
+        medicalRecordingTimerSlot.style.display = 'none';
+    }
+
+    function confirmMedicalDeleteRecording() {
+        return new Promise((resolve) => {
+            if (!medicalDeleteConfirmModal || !medicalDeleteConfirmYes || !medicalDeleteConfirmNo) {
+                resolve(window.confirm('האם אתה בטוח שברצונך למחוק הקלטה זו?'));
+                return;
+            }
+            medicalDeleteConfirmModal.style.display = 'flex';
+            medicalDeleteConfirmModal.setAttribute('aria-hidden', 'false');
+            const cleanup = () => {
+                medicalDeleteConfirmModal.style.display = 'none';
+                medicalDeleteConfirmModal.setAttribute('aria-hidden', 'true');
+                medicalDeleteConfirmYes.removeEventListener('click', onYes);
+                medicalDeleteConfirmNo.removeEventListener('click', onNo);
+                medicalDeleteConfirmModal.removeEventListener('click', onBackdrop);
+                document.removeEventListener('keydown', onEsc);
+            };
+            const onYes = () => {
+                cleanup();
+                resolve(true);
+            };
+            const onNo = () => {
+                cleanup();
+                resolve(false);
+            };
+            const onBackdrop = (e) => {
+                if (e.target === medicalDeleteConfirmModal) onNo();
+            };
+            const onEsc = (e) => {
+                if (e.key === 'Escape') onNo();
+            };
+            medicalDeleteConfirmYes.addEventListener('click', onYes);
+            medicalDeleteConfirmNo.addEventListener('click', onNo);
+            medicalDeleteConfirmModal.addEventListener('click', onBackdrop);
+            document.addEventListener('keydown', onEsc);
+        });
+    }
+
+    function setMedicalRecordingVisualState(mode) {
+        const isRecording = mode === 'recording';
+        const isPaused = mode === 'paused';
+        const isIdle = mode === 'idle';
+        const isActive = isRecording || isPaused;
+        if (medicalRecordShape) {
+            medicalRecordShape.classList.toggle('medical-record-shape-pause', isActive);
+        }
+        if (medicalRecordOuter) {
+            medicalRecordOuter.classList.toggle('is-idle', isIdle);
+            medicalRecordOuter.classList.toggle('is-recording', isRecording);
+            medicalRecordOuter.classList.toggle('is-paused', isPaused);
+        }
+        if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = isPaused || !isActive ? '' : 'none';
+        if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = (!isPaused && isActive) ? '' : 'none';
+        if (medicalCancelStack) medicalCancelStack.style.display = isPaused ? 'flex' : 'none';
+        if (medicalConfirmStack) medicalConfirmStack.style.display = isPaused ? 'flex' : 'none';
+        if (medicalRecordShape) medicalRecordShape.style.opacity = '1';
+    }
+
+    function pauseMedicalWaveform() {
+        const wf = window._medicalWave;
+        if (!wf) return;
+        try {
+            if (wf.rafId) cancelAnimationFrame(wf.rafId);
+        } catch (_) {}
+        wf.rafId = null;
+    }
+
+    function stopMedicalWaveform(keepCanvas = true) {
+        const wf = window._medicalWave;
+        if (!wf) return;
+        pauseMedicalWaveform();
+        try { if (wf.audioCtx) wf.audioCtx.close(); } catch (_) {}
+        wf.audioCtx = null;
+        wf.analyser = null;
+        wf.dataArray = null;
+        wf.sourceNode = null;
+        wf.lastTs = 0;
+        if (!keepCanvas) {
+            const host = document.getElementById('medical-wave-wrap');
+            if (host && host.parentNode) host.parentNode.removeChild(host);
+            window._medicalWave = null;
+        }
+    }
+
+    function ensureMedicalWaveformCanvas() {
+        const transcriptWindow = document.getElementById('transcript-window');
+        if (!transcriptWindow) return null;
+        transcriptWindow.classList.add('medical-wave-active');
+        let wrap = document.getElementById('medical-wave-wrap');
+        let canvas = document.getElementById('medical-wave-canvas');
+        if (!wrap) {
+            wrap = document.createElement('div');
+            wrap.id = 'medical-wave-wrap';
+            wrap.style.cssText = 'width:100%; height:110px; display:flex; align-items:center; justify-content:center; overflow:hidden;';
+            canvas = document.createElement('canvas');
+            canvas.id = 'medical-wave-canvas';
+            canvas.width = 900;
+            canvas.height = 96;
+            canvas.style.cssText = 'width:100%; height:96px; display:block;';
+            wrap.appendChild(canvas);
+            transcriptWindow.innerHTML = '';
+            transcriptWindow.appendChild(wrap);
+            if (medicalRecordingTimerSlot) transcriptWindow.appendChild(medicalRecordingTimerSlot);
+        } else if (!canvas) {
+            canvas = document.createElement('canvas');
+            canvas.id = 'medical-wave-canvas';
+            canvas.width = 900;
+            canvas.height = 96;
+            canvas.style.cssText = 'width:100%; height:96px; display:block;';
+            wrap.appendChild(canvas);
+        }
+        return canvas;
+    }
+
+    function startMedicalWaveform(stream) {
+        const existing = window._medicalWave;
+        if (existing && existing.canvas && existing.ctx && existing.analyser && existing.dataArray && existing.audioCtx) {
+            pauseMedicalWaveform();
+            existing.lastTs = 0;
+        } else {
+            const canvas = ensureMedicalWaveformCanvas();
+            if (!canvas) return;
+            stopMedicalWaveform(true);
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            const audioCtx = new Ctx();
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            analyser.smoothingTimeConstant = 0.78;
+            const sourceNode = audioCtx.createMediaStreamSource(stream);
+            sourceNode.connect(analyser);
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            window._medicalWave = {
+                canvas, ctx, audioCtx, analyser, dataArray, sourceNode,
+                rafId: null, lastTs: 0
+            };
+        }
+
+        const draw = (ts) => {
+            const wf = window._medicalWave;
+            if (!wf || window._medicalRecorderPaused || !window._medicalRecorder) return;
+            const { canvas: c, ctx: x, analyser: a, dataArray: arr } = wf;
+            const prev = wf.lastTs || ts;
+            const dt = Math.max(0.001, (ts - prev) / 1000);
+            wf.lastTs = ts;
+            const shiftPx = Math.max(1, Math.round(28 * dt)); // approx 28px/sec to the left
+            x.drawImage(c, -shiftPx, 0);
+            x.fillStyle = '#ffffff';
+            x.fillRect(c.width - shiftPx, 0, shiftPx, c.height);
+            a.getByteTimeDomainData(arr);
+            let sumSq = 0;
+            for (let i = 0; i < arr.length; i++) {
+                const n = (arr[i] - 128) / 128;
+                sumSq += n * n;
+            }
+            const rms = Math.sqrt(sumSq / arr.length);
+            // Keep the waveform responsive but avoid clipping at normal speech levels.
+            const amp = Math.min(1, rms * 5.8);
+            const centerY = c.height / 2;
+            const maxHalf = Math.max(2, Math.floor((c.height / 2) - 4));
+            const half = Math.max(2, Math.min(maxHalf, Math.round((c.height * 0.42) * amp)));
+            x.strokeStyle = '#0f766e';
+            x.lineWidth = 2;
+            x.beginPath();
+            x.moveTo(c.width - 2, centerY - half);
+            x.lineTo(c.width - 2, centerY + half);
+            x.stroke();
+            wf.rafId = requestAnimationFrame(draw);
+        };
+        window._medicalWave.rafId = requestAnimationFrame(draw);
     }
 
     async function pushFileIntoPickerAndUpload(file) {
@@ -4400,41 +4698,78 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         rec.onstop = async () => {
             try {
-                stopMedicalRecordingTimer();
-                if (medicalRecordBtn) {
-                    medicalRecordBtn.textContent = 'התחל הקלטה';
-                    medicalRecordBtn.style.background = '';
+                if (!window._medicalRecorderPaused) {
+                    window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
                 }
+                stopMedicalRecordingTimer();
+                setMedicalRecordingVisualState('idle');
+                const shouldSubmit = !!window._medicalSubmitOnStop;
                 const mime = (rec.mimeType || 'audio/webm').toLowerCase();
                 const ext = mime.includes('ogg') ? 'ogg' : 'webm';
                 const blob = new Blob(window._medicalRecorderChunks, { type: mime });
                 const file = new File([blob], `medical_recording_${Date.now()}.${ext}`, { type: mime });
-                await pushFileIntoPickerAndUpload(file);
+                if (shouldSubmit) {
+                    await pushFileIntoPickerAndUpload(file);
+                }
             } catch (e) {
                 if (typeof showStatus === 'function') showStatus(`Recording upload failed: ${e.message || e}`, true);
             } finally {
+                stopMedicalWaveform(true);
                 (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
                 window._medicalRecorder = null;
                 window._medicalRecorderChunks = [];
+                window._medicalRecorderPaused = false;
+                window._medicalRecordingAccumMs = 0;
+                window._medicalRecordingStartedAt = 0;
+                window._medicalSubmitOnStop = false;
+                setMedicalTimerVisibility(false);
+                detachMedicalRecordingTimerSlot();
             }
         };
-        rec.start();
-        window._medicalRecorder = rec;
+        try {
+            attachMedicalRecordingTimerSlot();
+            rec.start();
+            window._medicalRecorder = rec;
+            startMedicalWaveform(stream);
+        } catch (e) {
+            detachMedicalRecordingTimerSlot();
+            setMedicalTimerVisibility(false);
+            try { if (rec.state !== 'inactive') rec.stop(); } catch (_) {}
+            (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
+            window._medicalRecorder = null;
+            throw e;
+        }
+        window._medicalRecordingAccumMs = 0;
+        window._medicalRecorderPaused = false;
+        window._medicalSubmitOnStop = false;
         window._medicalRecordingStartedAt = Date.now();
+        setMedicalTimerVisibility(true);
         renderMedicalRecordingTimer();
         stopMedicalRecordingTimer();
         window._medicalRecorderTimer = setInterval(renderMedicalRecordingTimer, 500);
-        if (medicalRecordBtn) {
-            medicalRecordBtn.textContent = 'עצור הקלטה';
-            medicalRecordBtn.style.background = '#dc2626';
-        }
+        setMedicalRecordingVisualState('recording');
     }
 
     async function toggleMedicalRecording() {
         if (!isMedicalModeEnabled()) return;
         const rec = window._medicalRecorder;
         if (rec && rec.state === 'recording') {
-            rec.stop();
+            try { rec.pause(); } catch (_) { return; }
+            window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+            window._medicalRecorderPaused = true;
+            setMedicalRecordingVisualState('paused');
+            renderMedicalRecordingTimer();
+            pauseMedicalWaveform();
+            return;
+        }
+        if (rec && rec.state === 'paused') {
+            try { rec.resume(); } catch (_) { return; }
+            window._medicalRecordingStartedAt = Date.now();
+            window._medicalRecorderPaused = false;
+            setMedicalRecordingVisualState('recording');
+            renderMedicalRecordingTimer();
+            const stream = rec.stream;
+            if (stream) startMedicalWaveform(stream);
             return;
         }
         try {
@@ -4447,8 +4782,32 @@ document.addEventListener('DOMContentLoaded', () => {
     if (medicalRecordBtn) {
         medicalRecordBtn.addEventListener('click', () => { toggleMedicalRecording(); });
     }
+    if (medicalCancelBtn) {
+        medicalCancelBtn.addEventListener('click', async () => {
+            const rec = window._medicalRecorder;
+            if (!rec) return;
+            const ok = await confirmMedicalDeleteRecording();
+            if (!ok) return;
+            window._medicalSubmitOnStop = false;
+            stopMedicalWaveform(true);
+            try { rec.stop(); } catch (_) {}
+        });
+    }
+    if (medicalConfirmBtn) {
+        medicalConfirmBtn.addEventListener('click', () => {
+            const rec = window._medicalRecorder;
+            if (!rec) return;
+            window._medicalSubmitOnStop = true;
+            stopMedicalWaveform(true);
+            try { rec.stop(); } catch (_) {}
+        });
+    }
     if (medicalTabTranscript) {
-        medicalTabTranscript.addEventListener('click', () => {
+        medicalTabTranscript.addEventListener('click', (e) => {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
             window.medicalActiveTab = 'transcript';
             updateMedicalTabUi();
             if (typeof window.render === 'function') window.render();
@@ -4458,10 +4817,26 @@ document.addEventListener('DOMContentLoaded', () => {
         medicalTabSummary.addEventListener('click', () => {
             window.medicalActiveTab = 'summary';
             updateMedicalTabUi();
-            if (typeof window.render === 'function') window.render();
-            else renderTranscriptFromCues(window.currentSegments || []);
+            renderTranscriptFromCues(window.currentSegments || []);
         });
     }
+    if (medicalCopyBtn) {
+        medicalCopyBtn.addEventListener('click', async () => {
+            const text = getMedicalActiveTabTextForCopy();
+            if (!text) {
+                if (typeof showStatus === 'function') showStatus('אין טקסט להעתקה.', true);
+                return;
+            }
+            try {
+                await navigator.clipboard.writeText(text);
+                if (typeof showStatus === 'function') showStatus('הטקסט הועתק.', false);
+            } catch (e) {
+                if (typeof showStatus === 'function') showStatus('העתקה נכשלה.', true);
+            }
+        });
+    }
+    setMedicalRecordingVisualState('idle');
+    setMedicalTimerVisibility(false);
     window.applyMedicalModeUi();
 
     function setDiarizationBusyState(isBusy) {
@@ -4603,6 +4978,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (transcriptWindow && mainBtn) {
         transcriptWindow.addEventListener('click', (e) => {
+            if (isMedicalModeEnabled()) return;
             if (window.isTriggering) return;
             if (transcriptWindow.classList.contains('transcript-editing')) return;
             if (transcriptWindow.classList.contains('transcript-sync-mode')) return;
@@ -4621,6 +4997,10 @@ document.addEventListener('DOMContentLoaded', () => {
         transcriptWindowEl.classList.toggle('hide-time', !isTimeToggleVisible());
     }
     const rerenderTranscriptView = () => {
+        if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary') {
+            renderTranscriptFromCues(window.currentSegments || []);
+            return;
+        }
         const hasWordModel =
             Array.isArray(window.currentWords) &&
             Array.isArray(window.currentCaptions) &&
@@ -4854,6 +5234,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         setTranscriptActionButtonsVisible(true);
+        window._medicalHasResult = true;
+        try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
 
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
@@ -5099,11 +5481,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const transcriptWindow = document.getElementById('transcript-window');
         if (transcriptWindow) {
-            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
+            const shouldRenderMedicalSummaryFirst =
+                isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
+            if (shouldRenderMedicalSummaryFirst) {
+                renderTranscriptFromCues(window.currentSegments || []);
+            } else if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
                 renderWordCaptionEditor();
             } else {
                 window.render();
             }
+            try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
             // Show subtitle style selector when subtitles are available (video only; audio uses transcript only)
             window.showSubtitleStyleSelector();
             // NEW: Live Preview for Subtitles (bind once — handleJobUpdate can run multiple times per session)
@@ -5518,6 +5905,39 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.saveEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
+        const isMedicalSummaryEdit =
+            isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
+        if (isMedicalSummaryEdit) {
+            const overviewEl = win ? win.querySelector('#medical-summary-overview') : null;
+            const pointsList = win ? win.querySelector('#medical-summary-points') : null;
+            const existing = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : {};
+            const overview = overviewEl
+                ? String(overviewEl.innerText || '').trim().replace(/\s+/g, ' ')
+                : '';
+            const key_points = pointsList
+                ? Array.from(pointsList.querySelectorAll('li'))
+                    .map((li) => String(li.innerText || '').trim().replace(/\s+/g, ' '))
+                    .filter(Boolean)
+                : [];
+            window.currentFormattedDoc = {
+                ...existing,
+                overview,
+                key_points
+            };
+            win.contentEditable = 'false';
+            win.style.border = "1px solid #e2e8f0";
+            win.style.backgroundColor = "transparent";
+            win.classList.remove('transcript-editing', 'transcript-sync-mode');
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            _qsSetSyncModeButtonActive(false);
+            if (editActions) editActions.style.display = 'none';
+            window._qsForceLegacyEditMode = false;
+            try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
+            return;
+        }
         const timingOnly = !!window._qsTimingMode;
         // Edits should immediately drive doc view/export text, even if old GPT formatted text still exists.
         window._qsDocPreferSegmentsAfterEdit = true;
@@ -5843,6 +6263,23 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.cancelEdits = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
+        const isMedicalSummaryEdit =
+            isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
+        if (isMedicalSummaryEdit) {
+            if (window.transcriptBackup) {
+                win.innerHTML = window.transcriptBackup;
+            }
+            win.contentEditable = 'false';
+            win.style.border = "1px solid #e2e8f0";
+            win.style.backgroundColor = "transparent";
+            win.classList.remove('transcript-editing', 'transcript-sync-mode');
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            _qsSetSyncModeButtonActive(false);
+            if (editActions) editActions.style.display = 'none';
+            window._qsForceLegacyEditMode = false;
+            return;
+        }
 
         // Unified word editor (edit + timing): one backup restores text and timings
         if (window.wordEditBackup && Array.isArray(window.wordEditBackup.words) && Array.isArray(window.wordEditBackup.captions)) {
@@ -6289,8 +6726,34 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
         const isEditable = win.contentEditable === 'true';
+        const isMedicalSummaryEdit =
+            isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
 
         if (!isEditable) {
+            if (isMedicalSummaryEdit) {
+                window._qsForceLegacyEditMode = false;
+                win.contentEditable = 'true';
+                win.style.border = "2px solid #1e3a8a";
+                win.style.backgroundColor = "#fff";
+                win.classList.add('transcript-editing');
+                window.transcriptBackup = win.innerHTML;
+                if (editActions) editActions.style.display = 'flex';
+                requestAnimationFrame(() => {
+                    const overview = win.querySelector('#medical-summary-overview');
+                    if (overview) {
+                        const sel = window.getSelection();
+                        if (sel) {
+                            const range = document.createRange();
+                            range.selectNodeContents(overview);
+                            range.collapse(false);
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                        }
+                        overview.focus();
+                    }
+                });
+                return;
+            }
             // --- START EDITING ---
             // Word-caption editor (desktop + mobile): enable in subtitle mode.
             // In document mode we use legacy paragraph edit so user edits flowing paragraphs directly.
@@ -7188,6 +7651,7 @@ function renderTranscriptFromCues(cues) {
     try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
     const container = document.getElementById('transcript-window');
     if (!container) return;
+    container.classList.remove('medical-wave-active');
     const isMedical = isMedicalModeEnabled();
     const activeTab = String(window.medicalActiveTab || 'transcript');
     container.onclick = null;
@@ -7205,12 +7669,12 @@ function renderTranscriptFromCues(cues) {
         const overview = String(fmt.overview || '').trim();
         const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
         const pointsHtml = points.length
-            ? `<ul style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${p.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`).join('')}</ul>`
-            : '<div style="color:#6b7280;">אין סיכום רפואי זמין עדיין.</div>';
+            ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${p.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`).join('')}</ul>`
+            : '<div id="medical-summary-empty" style="color:#6b7280;">אין סיכום רפואי זמין עדיין.</div>';
         container.innerHTML = `
-            <div style="direction:rtl; text-align:right; line-height:1.6;">
+            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;">
                 <div style="font-weight:700; margin-bottom:6px;">סקירה</div>
-                <div>${(overview || 'אין סיכום רפואי זמין עדיין.').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+                <div id="medical-summary-overview">${(overview || 'אין סיכום רפואי זמין עדיין.').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
                 <div style="font-weight:700; margin:14px 0 6px;">נקודות מפתח</div>
                 ${pointsHtml}
             </div>
