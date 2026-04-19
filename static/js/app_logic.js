@@ -1752,7 +1752,62 @@ function initOpenAppHasLoadedTranscriptPayload() {
     return false;
 }
 
-/** After opening a standard (non-medical) job from the library: show meeting summary + transcript together. */
+const QS_OPEN_STD_SUMMARY_HOST_ID = 'qs-open-standard-summary-host';
+
+function clearOpenJobStandardSummaryHost() {
+    const h = document.getElementById(QS_OPEN_STD_SUMMARY_HOST_ID);
+    if (h) {
+        h.innerHTML = '';
+        h.style.display = 'none';
+    }
+}
+
+/** Meeting summary for ?open= (non-medical): sits above #transcript-window so timing/sync caption editor stays intact. */
+function fillOpenJobStandardSummaryHost(fmt) {
+    if (!fmt || typeof fmt !== 'object') {
+        clearOpenJobStandardSummaryHost();
+        return;
+    }
+    const overview = String(fmt.overview || '').trim();
+    const kps = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+    if (!overview && !kps.length) {
+        clearOpenJobStandardSummaryHost();
+        return;
+    }
+    const tw = document.getElementById('transcript-window');
+    if (!tw || !tw.parentNode) return;
+    let h = document.getElementById(QS_OPEN_STD_SUMMARY_HOST_ID);
+    if (!h) {
+        h = document.createElement('div');
+        h.id = QS_OPEN_STD_SUMMARY_HOST_ID;
+        h.className = 'qs-open-standard-summary-host';
+        tw.parentNode.insertBefore(h, tw);
+    }
+    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const dir = isRtl ? 'rtl' : 'ltr';
+    const align = isRtl ? 'right' : 'left';
+    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    let inner = (
+        `<div class="qs-open-nonmedical-summary" dir="${dir}" style="text-align:${align};padding:14px 16px;background:#f1f5f9;border-radius:12px;line-height:1.65;">` +
+        '<div style="font-weight:700;margin-bottom:8px;">סיכום</div>' +
+        `<div style="margin-bottom:${kps.length ? '10px' : '0'};">${esc(overview) || '—'}</div>`
+    );
+    if (kps.length) {
+        inner += '<div style="font-weight:700;margin:10px 0 6px;">נקודות מפתח</div><ul style="margin:0;padding-inline-start:20px;">';
+        inner += kps.map((p) => `<li>${esc(p)}</li>`).join('');
+        inner += '</ul>';
+    }
+    inner += '</div>';
+    h.innerHTML = inner;
+    h.style.display = 'block';
+    h.style.marginBottom = '14px';
+}
+
+/**
+ * After opening a standard job from the library: summary + transcript.
+ * When words/captions exist, summary goes in a host above #transcript-window and `renderWordCaptionEditor` keeps sync handles.
+ */
 function renderOpenJobSummaryPlusTranscriptNonMedical() {
     const transcriptWindow = document.getElementById('transcript-window');
     if (!transcriptWindow || !Array.isArray(window.currentSegments) || window.currentSegments.length === 0) return;
@@ -1761,6 +1816,19 @@ function renderOpenJobSummaryPlusTranscriptNonMedical() {
     const overview = String(fmt.overview || '').trim();
     const kps = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
     if (!overview && !kps.length) return;
+
+    const hasWordModel =
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 &&
+        window.currentCaptions.length > 0;
+    if (hasWordModel) {
+        fillOpenJobStandardSummaryHost(fmt);
+        if (typeof renderWordCaptionEditor === 'function') renderWordCaptionEditor();
+        return;
+    }
+
+    clearOpenJobStandardSummaryHost();
     const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
     const isRtl = locale.startsWith('he') || locale.startsWith('ar');
     const dir = isRtl ? 'rtl' : 'ltr';
@@ -1807,6 +1875,7 @@ async function initOpenInApp(jobId) {
     setSeoHomeContentVisibility(false);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+    try { clearOpenJobStandardSummaryHost(); } catch (_) {}
     // Fetch job without result first so we never 400 if result column is missing.
     // Accept both jobs.id (UUID) and runpod_job_id values like "job_..." / "job_sim_...".
     // Use maybeSingle() to avoid 406 when no row matches (PostgREST returns 406 for .single() when 0 rows).
@@ -1958,14 +2027,12 @@ async function initOpenInApp(jobId) {
         });
     } catch (_) {}
 
-    // Word-level data: non-medical uses caption editor; medical uses summary/transcript panes (not subtitle rows).
-    if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
+    // Medical + word model: paint summary/transcript tabs once; non-medical timing UI is built at end of open (with optional summary host).
+    if (isMedicalModeEnabled() &&
+        Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 && window.currentCaptions.length > 0) {
         try {
-            if (isMedicalModeEnabled()) {
-                renderTranscriptFromCues(window.currentSegments || []);
-            } else {
-                renderWordCaptionEditor();
-            }
+            renderTranscriptFromCues(window.currentSegments || []);
         } catch (_) {}
     }
 
@@ -2092,9 +2159,16 @@ async function initOpenInApp(jobId) {
             (String(fmtN.overview || '').trim() ||
                 (Array.isArray(fmtN.key_points) && fmtN.key_points.some((p) => String(p || '').trim())))
         );
+        const hasWordModel =
+            Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
+            window.currentWords.length > 0 && window.currentCaptions.length > 0;
         if (hasTranscriptForOpen && hasStdSumm && typeof renderOpenJobSummaryPlusTranscriptNonMedical === 'function') {
             renderOpenJobSummaryPlusTranscriptNonMedical();
+        } else if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
+            clearOpenJobStandardSummaryHost();
+            renderWordCaptionEditor();
         } else if (typeof window.render === 'function') {
+            clearOpenJobStandardSummaryHost();
             window.render();
         }
     } else if (typeof window.render === 'function') {
