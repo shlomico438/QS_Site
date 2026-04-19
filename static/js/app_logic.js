@@ -1752,6 +1752,56 @@ function initOpenAppHasLoadedTranscriptPayload() {
     return false;
 }
 
+/** After opening a standard (non-medical) job from the library: show meeting summary + transcript together. */
+function renderOpenJobSummaryPlusTranscriptNonMedical() {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow || !Array.isArray(window.currentSegments) || window.currentSegments.length === 0) return;
+    const fmt = window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object' ? window.currentFormattedDoc : null;
+    if (!fmt) return;
+    const overview = String(fmt.overview || '').trim();
+    const kps = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+    if (!overview && !kps.length) return;
+    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const dir = isRtl ? 'rtl' : 'ltr';
+    const align = isRtl ? 'right' : 'left';
+    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    let summaryBlock = (
+        `<div class="qs-open-nonmedical-summary" dir="${dir}" style="text-align:${align};margin-bottom:16px;padding:14px 16px;background:#f1f5f9;border-radius:12px;line-height:1.65;">` +
+        '<div style="font-weight:700;margin-bottom:8px;">סיכום</div>' +
+        `<div style="margin-bottom:${kps.length ? '10px' : '0'};">${esc(overview) || '—'}</div>`
+    );
+    if (kps.length) {
+        summaryBlock += '<div style="font-weight:700;margin:10px 0 6px;">נקודות מפתח</div><ul style="margin:0;padding-inline-start:20px;">';
+        summaryBlock += kps.map((p) => `<li>${esc(p)}</li>`).join('');
+        summaryBlock += '</ul>';
+    }
+    summaryBlock += '</div>';
+    summaryBlock += `<div style="font-weight:700;margin:12px 0 8px;" dir="${dir}">תמלול</div>`;
+
+    window.isDocumentMode = true;
+    const docParagraphs = typeof getDocFormatParagraphs === 'function' ? getDocFormatParagraphs() : [];
+    let bodyHtml = '';
+    if (docParagraphs.length) {
+        bodyHtml = docParagraphs.map((p) => {
+            const safe = String(p || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em;"><p style="margin: 0; line-height: 1.7;">${safe}</p></div>`;
+        }).join('');
+    } else {
+        const groupedData = groupSegmentsBySpeaker(window.currentSegments, false);
+        bodyHtml = groupedData.map((g, rowIndex) => {
+            const startNum = Number(g.start);
+            const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
+            const safe = String(g.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return `<div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom:2px;cursor:pointer;"${rowClick}><p style="margin:0;line-height:1.35;">${safe}</p></div>`;
+        }).join('');
+    }
+    transcriptWindow.innerHTML = summaryBlock + bodyHtml;
+    transcriptWindow.style.direction = dir;
+    transcriptWindow.style.textAlign = align;
+    transcriptWindow.contentEditable = 'false';
+}
+
 /** Load a job in the app when user clicks "Open in app" (/?open=jobId). Loads file URL + transcript JSON. */
 async function initOpenInApp(jobId) {
     setSeoHomeContentVisibility(false);
@@ -1786,6 +1836,14 @@ async function initOpenInApp(jobId) {
         return;
     }
     const resolvedJobId = job.id;
+    // Personal / ?open= on clinical media: turn on HIPAA UI so תמלול + סיכום רפואי tabs are available (not transcript-only).
+    if (isMedicalLayoutRawAudioKey(job.input_s3_key) && !isMedicalModeEnabled()) {
+        if (typeof setMedicalMode === 'function') setMedicalMode(true);
+    }
+    if (isMedicalModeEnabled()) {
+        window.medicalActiveTab = 'summary';
+        window._medicalHasResult = true;
+    }
     // Prefer transcript from S3 (result_s3_key); fallback to jobs.result
     let segments = [];
     let hasTranscriptForOpen = false;
@@ -1900,9 +1958,15 @@ async function initOpenInApp(jobId) {
         });
     } catch (_) {}
 
-    // If we have word-level data, show the token-based caption view (read-only) immediately.
+    // Word-level data: non-medical uses caption editor; medical uses summary/transcript panes (not subtitle rows).
     if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
-        try { renderWordCaptionEditor(); } catch (_) {}
+        try {
+            if (isMedicalModeEnabled()) {
+                renderTranscriptFromCues(window.currentSegments || []);
+            } else {
+                renderWordCaptionEditor();
+            }
+        } catch (_) {}
     }
 
     const res = await fetch('/api/get_presigned_url', {
@@ -2021,7 +2085,24 @@ async function initOpenInApp(jobId) {
         setMainButtonAction(hasTranscriptOrSummary ? 'upload' : 'transcribe_loaded_file');
     }
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
-    if (typeof window.render === 'function') window.render();
+    if (!isMedicalModeEnabled()) {
+        const fmtN = window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object' ? window.currentFormattedDoc : null;
+        const hasStdSumm = !!(
+            fmtN &&
+            (String(fmtN.overview || '').trim() ||
+                (Array.isArray(fmtN.key_points) && fmtN.key_points.some((p) => String(p || '').trim())))
+        );
+        if (hasTranscriptForOpen && hasStdSumm && typeof renderOpenJobSummaryPlusTranscriptNonMedical === 'function') {
+            renderOpenJobSummaryPlusTranscriptNonMedical();
+        } else if (typeof window.render === 'function') {
+            window.render();
+        }
+    } else if (typeof window.render === 'function') {
+        window.render();
+    }
+    try {
+        if (isMedicalModeEnabled() && typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+    } catch (_) {}
     if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
     const speakerToggle = document.getElementById('toggle-speaker');
     if (window.aiDiarizationRan && speakerToggle) speakerToggle.checked = true;
@@ -5121,7 +5202,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             window.medicalActiveTab = 'transcript';
             updateMedicalTabUi();
-            if (typeof window.render === 'function') window.render();
+            if (typeof renderMedicalTranscriptMainView === 'function') {
+                renderMedicalTranscriptMainView();
+            } else if (typeof window.render === 'function') {
+                window.render();
+            }
         });
     }
     if (medicalTabSummary) {
@@ -5311,6 +5396,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary') {
             renderTranscriptFromCues(window.currentSegments || []);
             return;
+        }
+        if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript') {
+            if (typeof renderMedicalTranscriptMainView === 'function') {
+                renderMedicalTranscriptMainView();
+                return;
+            }
         }
         const hasWordModel =
             Array.isArray(window.currentWords) &&
@@ -5749,6 +5840,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             console.warn('[GPT] save formatted payload failed:', e);
                         }
                     })();
+                    try {
+                        if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript' &&
+                            typeof renderMedicalTranscriptMainView === 'function') {
+                            renderMedicalTranscriptMainView();
+                        }
+                    } catch (_) {}
                 })
                 .catch((e) => {
                     console.warn('[GPT] format_transcript_summary failed (background), export will fallback:', e);
@@ -5828,10 +5925,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const transcriptWindow = document.getElementById('transcript-window');
         if (transcriptWindow) {
-            const shouldRenderMedicalSummaryFirst =
-                isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
-            if (shouldRenderMedicalSummaryFirst) {
-                renderTranscriptFromCues(window.currentSegments || []);
+            if (isMedicalModeEnabled()) {
+                if (String(window.medicalActiveTab || 'summary') === 'summary') {
+                    renderTranscriptFromCues(window.currentSegments || []);
+                } else if (typeof renderMedicalTranscriptMainView === 'function') {
+                    renderMedicalTranscriptMainView();
+                } else {
+                    renderTranscriptFromCues(window.currentSegments || []);
+                }
             } else if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
                 renderWordCaptionEditor();
             } else {
@@ -5997,6 +6098,22 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.render = function() {
         const transcriptWindow = document.getElementById('transcript-window');
         if (!transcriptWindow || !window.currentSegments) return;
+
+        // Medical UI uses tabs + formatted views, not the generic segment/subtitle renderer.
+        if (isMedicalModeEnabled()) {
+            if (String(window.medicalActiveTab || 'summary') === 'summary') {
+                if (typeof renderTranscriptFromCues === 'function') {
+                    renderTranscriptFromCues(window.currentSegments || []);
+                }
+                return;
+            }
+            if (typeof renderMedicalTranscriptMainView === 'function') {
+                renderMedicalTranscriptMainView();
+            } else if (typeof renderTranscriptFromCues === 'function') {
+                renderTranscriptFromCues(window.currentSegments || []);
+            }
+            return;
+        }
 
         // Subtitle mode = per-segment lines; Doc mode = glued paragraphs by speaker.
         window.isDocumentMode = isDocumentFormatEnabled();
@@ -8055,6 +8172,43 @@ function _medicalHasFormattedSummaryContent() {
     if (String(fmt.overview || '').trim()) return true;
     const kp = fmt.key_points;
     return Array.isArray(kp) && kp.some((p) => String(p || '').trim());
+}
+
+/**
+ * Medical "תמלול" tab: prefer GPT `clean_transcript` paragraphs, not word/caption subtitle rows.
+ */
+function renderMedicalTranscriptMainView() {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow) return;
+    if (!isMedicalModeEnabled()) return;
+    if (String(window.medicalActiveTab || 'summary') !== 'transcript') return;
+    const preferSeg = !!window._qsDocPreferSegmentsAfterEdit;
+    let clean = '';
+    if (!preferSeg) {
+        clean = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+    }
+    if (!clean) {
+        clean = String(buildTranscriptPlainBodyForExport() || '').trim();
+    }
+    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const textDirection = isRtl ? 'rtl' : 'ltr';
+    const textAlign = isRtl ? 'right' : 'left';
+    if (clean) {
+        const paragraphs = clean.split(/\r?\n+/).map((l) => String(l || '').trim()).filter(Boolean);
+        const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        transcriptWindow.innerHTML = paragraphs.map((p) => (
+            '<div class="paragraph-row qs-medical-formatted-transcript" style="display:block; margin-bottom:0.55em;">' +
+            `<p style="margin:0; line-height:1.72; white-space:pre-wrap;" dir="${textDirection}">${esc(p)}</p></div>`
+        )).join('');
+        transcriptWindow.style.direction = textDirection;
+        transcriptWindow.style.textAlign = textAlign;
+        transcriptWindow.contentEditable = 'false';
+        return;
+    }
+    if (typeof renderTranscriptFromCues === 'function') {
+        renderTranscriptFromCues(window.currentSegments || []);
+    }
 }
 
 function _medicalHasTranscriptModel(cues) {
