@@ -41,6 +41,7 @@ window.currentSegments = [];
 window._getPrimaryMediaElement = function() {
     const v = document.getElementById('main-video');
     const a = document.getElementById('main-audio');
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return a || v;
     if (window.uploadWasVideo === true) return v || a;
     return a || v;
 };
@@ -68,6 +69,65 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
 
 function isMedicalModeEnabled() {
     return window.isMedicalMode === true;
+}
+
+/** Medical / HIPAA pipeline stores recordings under raw-audio (e.g. audio-only WebM from MediaRecorder). */
+function isMedicalLayoutRawAudioKey(s3Key) {
+    return String(s3Key || '').includes('/raw-audio/');
+}
+
+/** Canonical transcript JSON S3 key from input media key (matches siteapp `_derive_output_key_base` + `.json`). */
+function deriveTranscriptJsonKeyFromInputS3Key(inputKey) {
+    const s = String(inputKey || '').trim();
+    if (!s) return '';
+    if (s.includes('/input/')) {
+        return s.replace('/input/', '/output/', 1).replace(/\.[^/.]+$/i, '.json');
+    }
+    if (s.includes('/raw-audio/')) {
+        return s.replace('/raw-audio/', '/summaries/', 1).replace(/\.[^/.]+$/i, '.json');
+    }
+    return s.replace(/\.[^/.]+$/i, '.json');
+}
+
+function _s3KeyBasenameStem(key) {
+    const part = String(key || '').trim().split('/').pop() || '';
+    return part.replace(/\.[^.]+$/i, '');
+}
+
+/** True when `resultKey` is the JSON that corresponds to `inputKey` (full key or same filename stem). */
+function transcriptResultKeyMatchesInput(inputKey, resultKey) {
+    const exp = deriveTranscriptJsonKeyFromInputS3Key(inputKey);
+    const r = String(resultKey || '').trim();
+    if (!exp || !r) return false;
+    if (r === exp) return true;
+    try {
+        if (decodeURIComponent(r) === decodeURIComponent(exp)) return true;
+    } catch (_) {}
+    return _s3KeyBasenameStem(r) === _s3KeyBasenameStem(exp);
+}
+
+/** In-memory when HIPAA blocks persisting lastS3Key; also fallback after reading storage. */
+function currentJobInputS3KeyHint() {
+    try {
+        const m = String(typeof window !== 'undefined' ? (window._qsInputS3KeyForGpt || '') : '').trim();
+        if (m) return m;
+    } catch (_) {}
+    try {
+        return String(localStorage.getItem('lastS3Key') || '').trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+/** Use clinical GPT prompts when medical mode is on or the job media key is a HIPAA/medical layout path. */
+function effectiveIsMedicalForFormatting() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return true;
+    const k = currentJobInputS3KeyHint();
+    if (!k) return false;
+    if (typeof isMedicalLayoutRawAudioKey === 'function' && isMedicalLayoutRawAudioKey(k)) return true;
+    if (k.includes('/summaries/')) return true;
+    if (k.startsWith('medical/')) return true;
+    return false;
 }
 
 function _qsRevokeLocalPreviewAudio() {
@@ -1265,7 +1325,7 @@ async function initPersonalPage() {
     wrap.style.display = 'block';
     const { data: jobs, error } = await supabase
         .from('jobs')
-        .select('id, created_at, input_s3_key, result_s3_key, runpod_job_id, metadata')
+        .select('id, created_at, input_s3_key, result_s3_key, runpod_job_id, metadata, status')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
@@ -1301,12 +1361,8 @@ async function initPersonalPage() {
         const rem = mins % 60;
         return rem ? `${hrs} hr ${rem} min` : `${hrs} hr`;
     };
-    const deriveResultJsonKey = (inputKey) => {
-        const s = String(inputKey || '').trim();
-        if (!s) return '';
-        if (s.includes('/input/')) return s.replace('/input/', '/output/').replace(/\.[^/.]+$/i, '.json');
-        return s.replace(/\.[^/.]+$/i, '.json');
-    };
+    /** Must match siteapp `_derive_output_key_base` + `.json` so Personal S3 probes find the transcript. */
+    const deriveResultJsonKey = deriveTranscriptJsonKeyFromInputS3Key;
     const canProbeKeyForUser = (key) => String(key || '').startsWith(`users/${user.id}/`);
     const extractDurationSeconds = (job) => {
         const md = (job && job.metadata && typeof job.metadata === 'object') ? job.metadata : {};
@@ -1335,7 +1391,16 @@ async function initPersonalPage() {
             const md = (job && job.metadata && typeof job.metadata === 'object') ? job.metadata : {};
             const resultKey = String(job.result_s3_key || '').trim();
             const resultKeyMeta = String(md.result_s3_key || md.resultS3Key || '').trim();
-            const transcriptExists = !!(resultKey || resultKeyMeta || md.transcript_exists === true);
+            const st = String(job.status || '').trim().toLowerCase();
+            const statusLooksTranscribed = (
+                ['processed', 'post-processed', 'exported', 'completed'].includes(st)
+            );
+            const transcriptExists = !!(
+                resultKey ||
+                resultKeyMeta ||
+                md.transcript_exists === true ||
+                statusLooksTranscribed
+            );
             return {
                 file_id: job.id,
                 file_name: String(md.display_name || '').trim() || displayNameFromKey(job.input_s3_key),
@@ -1641,7 +1706,11 @@ async function initPersonalPage() {
                         const existsRes = await fetch('/api/s3_exists', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ s3Key: k, userId: user.id })
+                            body: JSON.stringify({
+                                s3Key: k,
+                                userId: user.id,
+                                isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
+                            })
                         });
                         const ej = await existsRes.json().catch(() => ({}));
                         if (existsRes.ok && ej && ej.exists === true) return true;
@@ -1666,6 +1735,21 @@ async function initPersonalPage() {
             render();
         }
     })();
+}
+
+/** True when open-in-app (or equivalent) already has transcript/summary data in memory. */
+function initOpenAppHasLoadedTranscriptPayload() {
+    if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return true;
+    if (Array.isArray(window.currentWords) && window.currentWords.length > 0) return true;
+    const fmt = window.currentFormattedDoc;
+    if (!fmt || typeof fmt !== 'object') return false;
+    if (String(fmt.clean_transcript || '').trim()) return true;
+    if (String(fmt.overview || '').trim()) return true;
+    if (Array.isArray(fmt.key_points) && fmt.key_points.length > 0) return true;
+    if (String(fmt.medical_chief_complaint || '').trim()) return true;
+    if (String(fmt.medical_examination_transcript || '').trim()) return true;
+    if (String(fmt.medical_patient_recommendations || '').trim()) return true;
+    return false;
 }
 
 /** Load a job in the app when user clicks "Open in app" (/?open=jobId). Loads file URL + transcript JSON. */
@@ -1706,14 +1790,28 @@ async function initOpenInApp(jobId) {
     let segments = [];
     let hasTranscriptForOpen = false;
     const { data: keyRow } = await supabase.from('jobs').select('result_s3_key').eq('id', resolvedJobId).eq('user_id', user.id).maybeSingle();
-    if (keyRow && keyRow.result_s3_key) {
+    let resultKeyToFetch = (keyRow && keyRow.result_s3_key) ? String(keyRow.result_s3_key).trim() : '';
+    const derivedResultKey = deriveTranscriptJsonKeyFromInputS3Key(job.input_s3_key);
+    if (resultKeyToFetch && derivedResultKey && !transcriptResultKeyMatchesInput(job.input_s3_key, resultKeyToFetch)) {
+        console.warn('[word-edit] open-in-app: result_s3_key does not match input_s3_key; using derived transcript key', {
+            input_s3_key: job.input_s3_key,
+            stored_result_s3_key: resultKeyToFetch,
+            derived_result_key: derivedResultKey
+        });
+        resultKeyToFetch = derivedResultKey;
+    }
+    if (resultKeyToFetch) {
         hasTranscriptForOpen = true;
         try {
-            console.log('[word-edit] open-in-app: fetching transcript JSON', { result_s3_key: keyRow.result_s3_key });
+            console.log('[word-edit] open-in-app: fetching transcript JSON', { result_s3_key: resultKeyToFetch });
             const urlRes = await fetch('/api/get_presigned_url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ s3Key: keyRow.result_s3_key, userId: user.id })
+                body: JSON.stringify({
+                    s3Key: resultKeyToFetch,
+                    userId: user.id,
+                    isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
+                })
             });
             const urlJson = await urlRes.json();
             if (urlJson.url) {
@@ -1762,18 +1860,31 @@ async function initOpenInApp(jobId) {
     }
     if (segments.length === 0) {
         const { data: resultData } = await supabase.from('jobs').select('result').eq('id', resolvedJobId).eq('user_id', user.id).maybeSingle();
-        if (resultData && resultData.result && Array.isArray(resultData.result.segments)) {
-            segments = resultData.result.segments;
-            if (segments.length > 0) hasTranscriptForOpen = true;
-        }
-        const resFmt = resultData && resultData.result ? pickFormattedFromObject(resultData.result) : null;
-        if (resFmt) {
-            window.currentFormattedDoc = resFmt;
-            window._qsDocPreferSegmentsAfterEdit = false;
-            hasTranscriptForOpen = true;
+        const res = resultData && resultData.result && typeof resultData.result === 'object' ? resultData.result : null;
+        if (res) {
+            if (Array.isArray(res.words) && Array.isArray(res.captions) && res.words.length > 0 && res.captions.length > 0) {
+                window.currentWords = res.words;
+                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, res.captions, 27);
+                segments = _captionsToCues(window.currentWords, window.currentCaptions);
+                hasTranscriptForOpen = true;
+            } else if (Array.isArray(res.segments)) {
+                segments = res.segments;
+                if (segments.length > 0) hasTranscriptForOpen = true;
+            }
+            const resFmt = pickFormattedFromObject(res);
+            if (resFmt) {
+                window.currentFormattedDoc = resFmt;
+                window._qsDocPreferSegmentsAfterEdit = false;
+                hasTranscriptForOpen = true;
+            }
         }
     }
-    if (!Array.isArray(window.currentWords) || !Array.isArray(window.currentCaptions)) {
+    const hasWordModel =
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 &&
+        window.currentCaptions.length > 0;
+    if (!hasWordModel) {
         window.currentWords = null;
         window.currentCaptions = null;
     }
@@ -1797,7 +1908,11 @@ async function initOpenInApp(jobId) {
     const res = await fetch('/api/get_presigned_url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ s3Key: job.input_s3_key, userId: user.id })
+        body: JSON.stringify({
+            s3Key: job.input_s3_key,
+            userId: user.id,
+            isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
+        })
     });
     const json = await res.json();
     if (!json.url) {
@@ -1806,8 +1921,14 @@ async function initOpenInApp(jobId) {
     }
     const filename = decodeURIComponent((job.input_s3_key || '').split('/').pop() || 'file');
     window.originalFileName = filename.replace(/\.[^.]+$/, '') || 'file';
-    const isAudio = /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(filename);
-    const isVideo = !isAudio && /\.(mp4|mov|webm|m4v|mkv|avi)$/i.test(filename);
+    const forceMedicalAudio =
+        isMedicalModeEnabled() || isMedicalLayoutRawAudioKey(job.input_s3_key);
+    let isAudio = /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(filename);
+    let isVideo = !isAudio && /\.(mp4|mov|webm|m4v|mkv|avi)$/i.test(filename);
+    if (forceMedicalAudio) {
+        isAudio = true;
+        isVideo = false;
+    }
     window.uploadWasVideo = isVideo;
     const uniqueSpeakers = new Set(window.currentSegments.map(s => s.speaker).filter(Boolean));
     window.aiDiarizationRan = uniqueSpeakers.size > 1;
@@ -1884,17 +2005,20 @@ async function initOpenInApp(jobId) {
             else if (ext === '.mp3') audioSource.type = 'audio/mpeg';
             else if (ext === '.wav') audioSource.type = 'audio/wav';
             else if (ext === '.ogg') audioSource.type = 'audio/ogg';
+            else if (ext === '.webm') audioSource.type = 'audio/webm';
             else audioSource.type = 'audio/mp4';
             mainAudio.load();
         }
     }
 
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
-    setTranscriptActionButtonsVisible(!!hasTranscriptForOpen);
+    const hasTranscriptOrSummary = hasTranscriptForOpen || initOpenAppHasLoadedTranscriptPayload();
+    setTranscriptActionButtonsVisible(!!hasTranscriptOrSummary);
     const mainBtn = document.getElementById('main-btn');
     if (mainBtn) {
         mainBtn.disabled = false;
-        setMainButtonAction(hasTranscriptForOpen ? 'upload' : 'transcribe_loaded_file');
+        // "upload" mode → translated upload_and_process ("Start here" / התחל כאן), not transcribe — job already has output.
+        setMainButtonAction(hasTranscriptOrSummary ? 'upload' : 'transcribe_loaded_file');
     }
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (typeof window.render === 'function') window.render();
@@ -1903,6 +2027,9 @@ async function initOpenInApp(jobId) {
     if (window.aiDiarizationRan && speakerToggle) speakerToggle.checked = true;
     localStorage.setItem('lastJobDbId', job.id);
     localStorage.setItem('lastS3Key', job.input_s3_key || '');
+    try {
+        window._qsInputS3KeyForGpt = String(job.input_s3_key || '').trim() || null;
+    } catch (_) {}
     if (isVideo && window.currentSegments.length > 0 && typeof window.currentSubtitleStyle === 'undefined') {
         window.currentSubtitleStyle = localStorage.getItem('subtitleStyle') || 'tiktok';
     }
@@ -2135,13 +2262,23 @@ function extractSegmentsFromJobPayload(payload) {
 
 function normalizeFormattedFields(f) {
     if (!f || typeof f !== 'object') return null;
-    return {
+    const out = {
         clean_transcript: String(f.clean_transcript || '').trim(),
         overview: String(f.overview || '').trim(),
         key_points: Array.isArray(f.key_points)
             ? f.key_points.map((p) => String(p || '').trim()).filter(Boolean)
             : []
     };
+    if (
+        f.medical_chief_complaint != null ||
+        f.medical_examination_transcript != null ||
+        f.medical_patient_recommendations != null
+    ) {
+        out.medical_chief_complaint = String(f.medical_chief_complaint || '').trim();
+        out.medical_examination_transcript = String(f.medical_examination_transcript || '').trim();
+        out.medical_patient_recommendations = String(f.medical_patient_recommendations || '').trim();
+    }
+    return out;
 }
 
 /** GPT-shaped formatting: nested `formatted`, flat keys, or under result/output/data (worker payloads). */
@@ -2149,7 +2286,14 @@ function pickFormattedFromObject(obj, depth = 0) {
     if (!obj || typeof obj !== 'object' || depth > 5) return null;
     const nested = obj.formatted;
     if (nested && typeof nested === 'object') return normalizeFormattedFields(nested);
-    if (obj.clean_transcript != null || obj.overview != null || Array.isArray(obj.key_points)) {
+    if (
+        obj.clean_transcript != null ||
+        obj.overview != null ||
+        Array.isArray(obj.key_points) ||
+        obj.medical_chief_complaint != null ||
+        obj.medical_examination_transcript != null ||
+        obj.medical_patient_recommendations != null
+    ) {
         return normalizeFormattedFields(obj);
     }
     for (const k of ['result', 'output', 'data', 'transcript']) {
@@ -2290,6 +2434,21 @@ function getMedicalActiveTabTextForCopy() {
     const active = String(window.medicalActiveTab || 'summary');
     if (active === 'summary') {
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+        const mc = String(fmt.medical_chief_complaint || '').trim();
+        const me = String(fmt.medical_examination_transcript || '').trim();
+        const mr = String(fmt.medical_patient_recommendations || '').trim();
+        if (mc || me || mr) {
+            const lines = [];
+            lines.push('תלונה עיקרית (סיכום המפגש ללא בדיקה):');
+            lines.push(mc || 'לא צוין.');
+            lines.push('');
+            lines.push('בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר):');
+            lines.push(me || 'לא צוין.');
+            lines.push('');
+            lines.push('המלצות למטופל:');
+            lines.push(mr || 'לא צוין.');
+            return lines.join('\n').trim();
+        }
         const overview = String(fmt.overview || '').trim();
         const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
         const lines = [];
@@ -2323,10 +2482,12 @@ const QS_FORMAT_MULTI_REQUEST_CHARS = 4000;
  * @returns {Promise<{ ok: boolean, res: Response, fmt: Record<string, unknown> }>}
  */
 async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
+    const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
     const base = () => ({
         target_lang: targetLang,
         jobId: jobId || undefined,
-        isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
+        isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
+        ...(hint ? { input_s3_key: hint } : {}),
     });
     if (!fullText || fullText.length <= QS_FORMAT_MULTI_REQUEST_CHARS) {
         const res = await fetch('/api/format_transcript_summary', {
@@ -2378,13 +2539,17 @@ async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
     if (!sumRes.ok || (sumFmt && sumFmt.error)) {
         return { ok: false, res: sumRes, fmt: sumFmt };
     }
-    const fmt = {
+    const rawFmt = {
         clean_transcript: String(sumFmt.clean_transcript || merged || '').trim(),
         overview: String(sumFmt.overview || '').trim(),
         key_points: Array.isArray(sumFmt.key_points)
             ? sumFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
             : []
     };
+    for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
+        if (sumFmt[k] != null) rawFmt[k] = sumFmt[k];
+    }
+    const fmt = normalizeFormattedFields(rawFmt);
     return { ok: true, res: sumRes, fmt };
 }
 
@@ -2395,21 +2560,36 @@ function syncFormattedDocWithCurrentSegments() {
     const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
         ? window.currentFormattedDoc
         : {};
-    window.currentFormattedDoc = {
+    const next = {
         clean_transcript: clean,
         overview: String(prev.overview || '').trim(),
         key_points: Array.isArray(prev.key_points)
             ? prev.key_points.map((p) => String(p || '').trim()).filter(Boolean)
             : []
     };
+    if (
+        prev.medical_chief_complaint != null ||
+        prev.medical_examination_transcript != null ||
+        prev.medical_patient_recommendations != null
+    ) {
+        next.medical_chief_complaint = String(prev.medical_chief_complaint || '').trim();
+        next.medical_examination_transcript = String(prev.medical_examination_transcript || '').trim();
+        next.medical_patient_recommendations = String(prev.medical_patient_recommendations || '').trim();
+    }
+    window.currentFormattedDoc = next;
 }
 
 async function ensureFormattedViaApiForExport() {
     const fullText = buildTranscriptTextForGptFormat();
     if (!fullText.trim()) return false;
     const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
+    const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
     if (typeof showStatus === 'function') {
-        showStatus('מעצב תמלול לייצוא…', false, { duration: 720000 });
+        showStatus(
+            medFmt ? 'מייצר סיכום רפואי ומעצב תמלול (GPT)…' : 'מעצב תמלול לייצוא…',
+            false,
+            { duration: 720000 }
+        );
     }
     try {
         const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
@@ -2422,13 +2602,17 @@ async function ensureFormattedViaApiForExport() {
             }
             return false;
         }
-        window.currentFormattedDoc = {
+        const rawFmt = {
             clean_transcript: String(fmt.clean_transcript || '').trim(),
             overview: String(fmt.overview || '').trim(),
             key_points: Array.isArray(fmt.key_points)
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                 : []
         };
+        for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
+            if (fmt[k] != null) rawFmt[k] = fmt[k];
+        }
+        window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
         window._qsDocPreferSegmentsAfterEdit = false;
         console.log(
             '[export] GPT formatting computed for export (clean_transcript length=%s)',
@@ -2436,7 +2620,8 @@ async function ensureFormattedViaApiForExport() {
         );
         try {
             const { data: { user } } = await supabase.auth.getUser();
-            const s3Key = localStorage.getItem('lastS3Key');
+            const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
+                String(localStorage.getItem('lastS3Key') || '').trim();
             if (user && s3Key && (window.currentSegments || []).length) {
                 const saveRes = await fetch('/api/save_job_result', {
                     method: 'POST',
@@ -2448,7 +2633,8 @@ async function ensureFormattedViaApiForExport() {
                         words: window.currentWords || undefined,
                         captions: window.currentCaptions || undefined,
                         formatted: window.currentFormattedDoc,
-                        stage: 'gpt'
+                        stage: 'gpt',
+                        isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
                     })
                 });
                 if (saveRes.ok) console.log('[export] saved transcript JSON with formatted to S3 for next open');
@@ -2457,12 +2643,33 @@ async function ensureFormattedViaApiForExport() {
         } catch (e) {
             console.warn('[export] persist formatted after API format:', e);
         }
+        try {
+            if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
+                window.medicalActiveTab = 'summary';
+                if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+            }
+        } catch (_) {}
+        if (typeof showStatus === 'function') {
+            showStatus(
+                medFmt ? 'סיכום רפואי ותמלול מעוצב עודכנו.' : 'עיצוב התמלול הושלם.',
+                false,
+                { duration: 5000 }
+            );
+        }
         return true;
     } catch (e) {
         console.warn('[export] ensureFormattedViaApiForExport:', e);
+        if (typeof showStatus === 'function') {
+            showStatus('עיצוב/סיכום נכשל: ' + String((e && e.message) || e).slice(0, 160), true);
+        }
         return false;
     }
 }
+
+/** Re-run GPT transcript formatting + (for clinical jobs) medical three-part summary; same as export fallback. */
+window.qsRegenerateMedicalSummaryFromTranscript = function qsRegenerateMedicalSummaryFromTranscript() {
+    return ensureFormattedViaApiForExport();
+};
 
 async function tryRecoverSegmentsForExport() {
     if (
@@ -3183,7 +3390,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         const hasSummaryBits = !!(
             fmtDoc &&
             (String(fmtDoc.overview || '').trim() ||
-                (Array.isArray(fmtDoc.key_points) && fmtDoc.key_points.length))
+                (Array.isArray(fmtDoc.key_points) && fmtDoc.key_points.length) ||
+                String(fmtDoc.medical_chief_complaint || '').trim() ||
+                String(fmtDoc.medical_examination_transcript || '').trim() ||
+                String(fmtDoc.medical_patient_recommendations || '').trim())
         );
         if ((wantTranscript && !hasClean) || (wantSummary && !hasSummaryBits)) {
             await ensureFormattedViaApiForExport();
@@ -3206,10 +3416,25 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             const keyPoints = Array.isArray(fmt && fmt.key_points)
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                 : [];
-            return { clean, overview, keyPoints };
+            const mc = String((fmt && fmt.medical_chief_complaint) || '').trim();
+            const me = String((fmt && fmt.medical_examination_transcript) || '').trim();
+            const mr = String((fmt && fmt.medical_patient_recommendations) || '').trim();
+            return { clean, overview, keyPoints, mc, me, mr };
         };
         const _buildKindText = (kind, payload) => {
             if (kind === 'summary') {
+                if (payload.mc || payload.me || payload.mr) {
+                    const lines = [];
+                    lines.push('תלונה עיקרית (סיכום המפגש ללא בדיקה):');
+                    lines.push(payload.mc || 'לא צוין.');
+                    lines.push('');
+                    lines.push('בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר):');
+                    lines.push(payload.me || 'לא צוין.');
+                    lines.push('');
+                    lines.push('המלצות למטופל:');
+                    lines.push(payload.mr || 'לא צוין.');
+                    return lines.join('\n').trim();
+                }
                 const lines = [];
                 lines.push('סקירה:');
                 lines.push(payload.overview || 'N/A');
@@ -3257,6 +3482,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 overview: String(baseFmt.overview || ''),
                 key_points: Array.isArray(baseFmt.key_points) ? baseFmt.key_points : []
             };
+            for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
+                if (baseFmt[k] != null) formattedForServer[k] = String(baseFmt[k] || '');
+            }
             const t0 = performance.now();
             const res = await fetch('/api/export_docx', {
                 method: 'POST',
@@ -3267,7 +3495,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     segments: window.currentSegments || [],
                     formatted: formattedForServer,
                     allow_gpt_fallback: false,
-                    filename: docBase
+                    filename: docBase,
+                    isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
                 })
             });
             if (!res.ok) {
@@ -4479,7 +4708,10 @@ document.addEventListener('DOMContentLoaded', () => {
             window.currentFormattedDoc &&
             (
                 String(window.currentFormattedDoc.overview || '').trim() ||
-                (Array.isArray(window.currentFormattedDoc.key_points) && window.currentFormattedDoc.key_points.length > 0)
+                (Array.isArray(window.currentFormattedDoc.key_points) && window.currentFormattedDoc.key_points.length > 0) ||
+                String(window.currentFormattedDoc.medical_chief_complaint || '').trim() ||
+                String(window.currentFormattedDoc.medical_examination_transcript || '').trim() ||
+                String(window.currentFormattedDoc.medical_patient_recommendations || '').trim()
             )
         );
         const hasTranscript = hasSegments || hasWordModel;
@@ -5205,7 +5437,38 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (jobId) window._lastProcessedJobId = jobId;
 
-        const dbId = localStorage.getItem('lastJobDbId');
+        let dbId = localStorage.getItem('lastJobDbId');
+        let inputS3KeyForJob = null;
+        try {
+            const { data: { user: uAlign } } = await supabase.auth.getUser();
+            const rjid = String(jobId || '').trim();
+            if (uAlign && rjid) {
+                const { data: runRow, error: runRowErr } = await supabase
+                    .from('jobs')
+                    .select('id, input_s3_key')
+                    .eq('runpod_job_id', rjid)
+                    .eq('user_id', uAlign.id)
+                    .maybeSingle();
+                if (!runRowErr && runRow && runRow.id) {
+                    dbId = runRow.id;
+                    inputS3KeyForJob = String(runRow.input_s3_key || '').trim() || null;
+                    try {
+                        localStorage.setItem('lastJobDbId', runRow.id);
+                        if (inputS3KeyForJob) localStorage.setItem('lastS3Key', inputS3KeyForJob);
+                    } catch (_) {}
+                }
+            }
+        } catch (e) {
+            console.warn('[qs] handleJobUpdate: could not align jobs row with RunPod job id', e);
+        }
+        if (!inputS3KeyForJob) {
+            try {
+                inputS3KeyForJob = String(localStorage.getItem('lastS3Key') || '').trim() || null;
+            } catch (_) {}
+        }
+        try {
+            if (inputS3KeyForJob) window._qsInputS3KeyForGpt = inputS3KeyForJob;
+        } catch (_) {}
 
         if (window._checkStatusPollInterval) {
             clearInterval(window._checkStatusPollInterval);
@@ -5449,19 +5712,24 @@ document.addEventListener('DOMContentLoaded', () => {
             runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId)
                 .then(({ ok, fmt }) => {
                     if (!ok || !fmt || typeof fmt !== 'object') return;
-                    window.currentFormattedDoc = {
+                    const rawFmt = {
                         clean_transcript: String(fmt.clean_transcript || '').trim(),
                         overview: String(fmt.overview || '').trim(),
                         key_points: Array.isArray(fmt.key_points)
                             ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                             : []
                     };
+                    for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
+                        if (fmt[k] != null) rawFmt[k] = fmt[k];
+                    }
+                    window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
                     window._qsDocPreferSegmentsAfterEdit = false;
                     // Persist formatted payload so future exports can use cached formatting.
                     (async () => {
                         try {
                             const { data: { user } } = await supabase.auth.getUser();
-                            const s3Key = localStorage.getItem('lastS3Key');
+                            const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
+                                String(localStorage.getItem('lastS3Key') || '').trim();
                             if (!user || !s3Key || !(window.currentSegments || []).length) return;
                             await fetch('/api/save_job_result', {
                                 method: 'POST',
@@ -5473,7 +5741,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                     words: window.currentWords || undefined,
                                     captions: window.currentCaptions || undefined,
                                     formatted: window.currentFormattedDoc,
-                                    stage: 'gpt'
+                                    stage: 'gpt',
+                                    isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
                                 })
                             });
                         } catch (e) {
@@ -5487,18 +5756,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 0);
 
         // Ensure global segments are set (already handled above); keep legacy flow happy.
-        const gptPostProcessed = (
-            (translationMeta && Number(translationMeta.ok_count || 0) > 0 && Number(translationMeta.error_count || 0) === 0) ||
-            translatedCount > 0
-        );
-        const finalStatus = gptPostProcessed ? 'post-processed' : 'processed';
+        const finalStatus = 'processed';
 
         // Persist transcript: save JSON to S3 and store only result_s3_key in DB (or fallback to result.segments)
         if (typeof updateJobStatus === 'function' && dbId) {
             (async () => {
                 try {
                     const { data: { user } } = await supabase.auth.getUser();
-                    const s3Key = localStorage.getItem('lastS3Key');
+                    const s3Key = (inputS3KeyForJob || localStorage.getItem('lastS3Key') || '').trim();
+                    const medForSave = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) ||
+                        (typeof isMedicalLayoutRawAudioKey === 'function' && isMedicalLayoutRawAudioKey(s3Key));
                     if (user && s3Key && window.currentSegments.length) {
                         const res = await fetch('/api/save_job_result', {
                             method: 'POST',
@@ -5510,7 +5777,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 words: window.currentWords || undefined,
                                 captions: window.currentCaptions || undefined,
                                 formatted: window.currentFormattedDoc || undefined,
-                                stage: 'gpt'
+                                stage: 'gpt',
+                                isMedical: medForSave
                             })
                         });
                         const data = res.ok ? await res.json() : {};
@@ -5987,24 +6255,41 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const isMedicalSummaryEdit =
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
         if (isMedicalSummaryEdit) {
+            const chiefEl = win ? win.querySelector('#medical-summary-chief') : null;
+            const examEl = win ? win.querySelector('#medical-summary-exam') : null;
+            const recEl = win ? win.querySelector('#medical-summary-rec') : null;
             const overviewEl = win ? win.querySelector('#medical-summary-overview') : null;
             const pointsList = win ? win.querySelector('#medical-summary-points') : null;
             const existing = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
                 ? window.currentFormattedDoc
                 : {};
-            const overview = overviewEl
-                ? String(overviewEl.innerText || '').trim().replace(/\s+/g, ' ')
-                : '';
-            const key_points = pointsList
-                ? Array.from(pointsList.querySelectorAll('li'))
-                    .map((li) => String(li.innerText || '').trim().replace(/\s+/g, ' '))
-                    .filter(Boolean)
-                : [];
-            window.currentFormattedDoc = {
-                ...existing,
-                overview,
-                key_points
-            };
+            const strip = (el) => (el ? String(el.innerText || '').trim().replace(/\s+/g, ' ') : '');
+            if (chiefEl || examEl || recEl) {
+                const medical_chief_complaint = strip(chiefEl);
+                const medical_examination_transcript = strip(examEl);
+                const medical_patient_recommendations = strip(recEl);
+                const kp = [medical_examination_transcript, medical_patient_recommendations].filter(Boolean);
+                window.currentFormattedDoc = {
+                    ...existing,
+                    overview: medical_chief_complaint,
+                    key_points: kp,
+                    medical_chief_complaint,
+                    medical_examination_transcript,
+                    medical_patient_recommendations
+                };
+            } else {
+                const overview = strip(overviewEl);
+                const key_points = pointsList
+                    ? Array.from(pointsList.querySelectorAll('li'))
+                        .map((li) => String(li.innerText || '').trim().replace(/\s+/g, ' '))
+                        .filter(Boolean)
+                    : [];
+                window.currentFormattedDoc = {
+                    ...existing,
+                    overview,
+                    key_points
+                };
+            }
             win.contentEditable = 'false';
             win.style.border = "1px solid #e2e8f0";
             win.style.backgroundColor = "transparent";
@@ -6818,17 +7103,19 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window.transcriptBackup = win.innerHTML;
                 if (editActions) editActions.style.display = 'flex';
                 requestAnimationFrame(() => {
+                    const chief = win.querySelector('#medical-summary-chief');
                     const overview = win.querySelector('#medical-summary-overview');
-                    if (overview) {
+                    const target = chief || overview;
+                    if (target) {
                         const sel = window.getSelection();
                         if (sel) {
                             const range = document.createRange();
-                            range.selectNodeContents(overview);
+                            range.selectNodeContents(target);
                             range.collapse(false);
                             sel.removeAllRanges();
                             sel.addRange(range);
                         }
-                        overview.focus();
+                        target.focus();
                     }
                 });
                 return;
@@ -7216,8 +7503,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     return;
                 }
 
-                const isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
-                const isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
+                let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
+                let isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
+                if (isMedicalModeEnabled()) {
+                    isAudio = true;
+                    isVideo = false;
+                }
                 window.uploadWasVideo = !!isVideo;
                 if (isVideo) {
                     const url = URL.createObjectURL(file);
@@ -7254,8 +7545,39 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             // CREATE A LOCAL PREVIEW URL
             const objectUrl = URL.createObjectURL(file);
+            if (isMedicalModeEnabled()) {
+                const audioContainer = document.getElementById('audio-player-container');
+                const videoWrapper = document.getElementById('video-wrapper');
+                const videoPlayer = document.getElementById('video-player-container');
+                const video = document.getElementById('main-video');
+                const audioSource = document.getElementById('audio-source');
+                const mainAudio = document.getElementById('main-audio');
+                if (videoWrapper) {
+                    videoWrapper.style.display = 'none';
+                    videoWrapper.classList.remove('visible');
+                }
+                try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
+                if (video) video.style.display = 'none';
+                if (audioContainer && videoWrapper && videoPlayer && audioContainer.parentNode === videoPlayer) {
+                    videoWrapper.parentNode.insertBefore(audioContainer, videoWrapper);
+                }
+                if (audioContainer) audioContainer.style.display = 'block';
+                if (audioSource && mainAudio) {
+                    audioSource.src = objectUrl;
+                    const mt = (file.type || '').toLowerCase();
+                    if (mt.includes('webm')) audioSource.type = 'audio/webm';
+                    else if (mt.includes('ogg')) audioSource.type = 'audio/ogg';
+                    else if (mt.includes('mpeg') || /\.mp3$/i.test(file.name)) audioSource.type = 'audio/mpeg';
+                    else if (mt.includes('mp4') || mt.includes('m4a') || /\.m4a$/i.test(file.name)) audioSource.type = 'audio/mp4';
+                    else audioSource.type = file.type || 'audio/webm';
+                    mainAudio.load();
+                }
+                if (videoPlayer) videoPlayer.style.display = 'block';
+            }
             const storeMime = (file.type || '').toLowerCase();
-            const mimeForMov = (/\.mov$/i.test(file.name) || storeMime.includes('quicktime')) ? 'video/mp4' : (file.type || '');
+            const mimeForMov = isMedicalModeEnabled()
+                ? (storeMime.includes('webm') ? 'audio/webm' : (file.type || 'audio/webm'))
+                : ((/\.mov$/i.test(file.name) || storeMime.includes('quicktime')) ? 'video/mp4' : (file.type || ''));
             setLocalPreviewAudio(objectUrl, mimeForMov);
 
             const currentFile = file; // Captured for use in the fetch
@@ -7727,6 +8049,9 @@ function srtFromCues(cues) {
 function _medicalHasFormattedSummaryContent() {
     const fmt = window.currentFormattedDoc;
     if (!fmt || typeof fmt !== 'object') return false;
+    if (String(fmt.medical_chief_complaint || '').trim()) return true;
+    if (String(fmt.medical_examination_transcript || '').trim()) return true;
+    if (String(fmt.medical_patient_recommendations || '').trim()) return true;
     if (String(fmt.overview || '').trim()) return true;
     const kp = fmt.key_points;
     return Array.isArray(kp) && kp.some((p) => String(p || '').trim());
@@ -7762,19 +8087,41 @@ function renderTranscriptFromCues(cues) {
         (_medicalHasTranscriptModel(cues) || _medicalHasFormattedSummaryContent());
     if (showMedicalSummaryPane) {
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
-        const overview = String(fmt.overview || '').trim();
-        const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
-        const pointsHtml = points.length
-            ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${p.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</li>`).join('')}</ul>`
-            : '<div id="medical-summary-empty" style="color:#6b7280;">אין סיכום רפואי זמין עדיין.</div>';
-        container.innerHTML = `
+        const hasStructured =
+            fmt.medical_chief_complaint != null ||
+            fmt.medical_examination_transcript != null ||
+            fmt.medical_patient_recommendations != null;
+        const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const emptyMsg = 'אין סיכום רפואי זמין עדיין.';
+        if (hasStructured) {
+            const chief = String(fmt.medical_chief_complaint || '').trim();
+            const exam = String(fmt.medical_examination_transcript || '').trim();
+            const rec = String(fmt.medical_patient_recommendations || '').trim();
+            container.innerHTML = `
+            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;">
+                <div style="font-weight:700; margin-bottom:6px;">תלונה עיקרית (סיכום המפגש ללא בדיקה)</div>
+                <div id="medical-summary-chief">${esc(chief || emptyMsg)}</div>
+                <div style="font-weight:700; margin:14px 0 6px;">בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר)</div>
+                <div id="medical-summary-exam">${esc(exam || 'לא צוין.')}</div>
+                <div style="font-weight:700; margin:14px 0 6px;">המלצות למטופל</div>
+                <div id="medical-summary-rec">${esc(rec || 'לא צוין.')}</div>
+            </div>
+        `;
+        } else {
+            const overview = String(fmt.overview || '').trim();
+            const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+            const pointsHtml = points.length
+                ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+                : '<div id="medical-summary-empty" style="color:#6b7280;">אין סיכום רפואי זמין עדיין.</div>';
+            container.innerHTML = `
             <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;">
                 <div style="font-weight:700; margin-bottom:6px;">סקירה</div>
-                <div id="medical-summary-overview">${(overview || 'אין סיכום רפואי זמין עדיין.').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+                <div id="medical-summary-overview">${esc(overview || emptyMsg)}</div>
                 <div style="font-weight:700; margin:14px 0 6px;">נקודות מפתח</div>
                 ${pointsHtml}
             </div>
         `;
+        }
         container.contentEditable = 'false';
         return;
     }

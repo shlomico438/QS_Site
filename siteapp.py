@@ -8,7 +8,7 @@ try:
 except ImportError:
     pass
 
-from flask import Flask, render_template, request, jsonify, redirect, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, send_from_directory, Response, stream_with_context
 from flask_socketio import SocketIO, join_room
 import json
 import requests  # Added for RunPod API calls
@@ -32,6 +32,7 @@ from io import BytesIO
 import smtplib
 import ssl
 from email.message import EmailMessage
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 
 # --- CONFIGURATION ---
@@ -128,6 +129,29 @@ def _resolve_storage_profile(user_id, input_s3_key=None, is_medical=None):
         "input_prefix": f"users/{safe_user}/raw-audio" if inferred_medical else f"users/{safe_user}/input",
         "output_prefix": f"users/{safe_user}/summaries" if inferred_medical else f"users/{safe_user}/output",
     }
+
+
+def _presign_bucket_for_key(user_id, s3_key, data=None):
+    """S3 bucket for presigned GET/HEAD: HIPAA paths (raw-audio, summaries, medical/) or explicit isMedical."""
+    key = str(s3_key or '').strip()
+    path_medical = ('/raw-audio/' in key) or ('/summaries/' in key) or key.startswith('medical/')
+    explicit = _request_json_is_medical(data) if isinstance(data, dict) else False
+    medical = path_medical or explicit
+    prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=medical)
+    return prof['bucket']
+
+
+def _s3_key_needs_same_origin_stream(s3_key):
+    """HIPAA buckets often omit CORS; <video crossorigin> and fetch() to S3 then fail — stream via the app instead."""
+    k = str(s3_key or '').strip()
+    return ('/raw-audio/' in k) or ('/summaries/' in k) or k.startswith('medical/')
+
+
+def _media_stream_token_serializer():
+    return URLSafeTimedSerializer(
+        str(app.config.get('SECRET_KEY') or ''),
+        salt='qs-s3-media-stream-v1',
+    )
 
 
 def _is_local_host(host):
@@ -579,6 +603,17 @@ def get_presigned_url():
             if not s3_key.startswith(f"users/{user_id}/"):
                 return jsonify({"error": "Access denied: key does not belong to user"}), 403
 
+        bucket = _presign_bucket_for_key(user_id, s3_key, data)
+        if not bucket:
+            return jsonify({"error": "S3 bucket not configured"}), 500
+
+        # Same-origin stream avoids S3 CORS (required for <video crossorigin="anonymous"> and fetch()).
+        if _s3_key_needs_same_origin_stream(s3_key):
+            tok = _media_stream_token_serializer().dumps({'user_id': user_id, 's3_key': s3_key})
+            base = _public_base_url(request)
+            url = f"{base}/api/stream_s3_media/{tok}"
+            return jsonify({"url": url, "via": "app_proxy"})
+
         s3_client = boto3.client(
             's3',
             aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
@@ -586,7 +621,7 @@ def get_presigned_url():
             region_name=os.environ.get('AWS_REGION')
         )
         params = {
-            'Bucket': os.environ.get('S3_BUCKET'),
+            'Bucket': bucket,
             'Key': s3_key
         }
         # Serve .mov with video/mp4 so Chrome/Firefox use MP4 decoder (many .mov are H.264)
@@ -603,6 +638,98 @@ def get_presigned_url():
     except Exception as e:
         print(f"S3 Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/stream_s3_media/<token>', methods=['GET', 'HEAD'])
+def stream_s3_media(token):
+    """Stream S3 bytes same-origin (see get_presigned_url app_proxy). Supports Range for video/audio seeking."""
+    try:
+        payload = _media_stream_token_serializer().loads(token, max_age=3600)
+    except SignatureExpired:
+        return jsonify({"error": "Link expired"}), 410
+    except BadSignature:
+        return jsonify({"error": "Invalid link"}), 403
+
+    user_id = str((payload or {}).get('user_id') or '').strip()
+    s3_key = str((payload or {}).get('s3_key') or '').strip()
+    if not s3_key:
+        return jsonify({"error": "Invalid payload"}), 400
+    if s3_key.startswith('users/'):
+        if not user_id or not s3_key.startswith(f'users/{user_id}/'):
+            return jsonify({"error": "Access denied"}), 403
+
+    bucket = _presign_bucket_for_key(user_id, s3_key, None)
+    if not bucket:
+        return jsonify({"error": "S3 bucket not configured"}), 500
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.environ.get('AWS_REGION')
+    )
+
+    def _ctype_override(ct, key):
+        if key and str(key).lower().endswith('.mov'):
+            return 'video/mp4'
+        return ct or 'application/octet-stream'
+
+    if request.method == 'HEAD':
+        try:
+            ho = s3_client.head_object(Bucket=bucket, Key=s3_key)
+        except ClientError as ce:
+            code = str((ce.response or {}).get('Error', {}).get('Code', '')).strip()
+            if code in ('404', 'NoSuchKey', 'NotFound'):
+                return '', 404
+            raise
+        h = {
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'private, no-store',
+            'Content-Type': _ctype_override(ho.get('ContentType'), s3_key),
+        }
+        if ho.get('ContentLength') is not None:
+            h['Content-Length'] = str(int(ho['ContentLength']))
+        return Response('', status=200, headers=h)
+
+    get_kw = {'Bucket': bucket, 'Key': s3_key}
+    rng = request.headers.get('Range')
+    if rng:
+        get_kw['Range'] = rng
+    try:
+        obj = s3_client.get_object(**get_kw)
+    except ClientError as ce:
+        code = str((ce.response or {}).get('Error', {}).get('Code', '')).strip()
+        if code in ('404', 'NoSuchKey', 'NotFound'):
+            return jsonify({"error": "Not found"}), 404
+        raise
+
+    status = 206 if obj.get('ContentRange') else 200
+    h = {
+        'Accept-Ranges': obj.get('AcceptRanges') or 'bytes',
+        'Cache-Control': 'private, no-store',
+        'Content-Type': _ctype_override(obj.get('ContentType'), s3_key),
+    }
+    if obj.get('ContentLength') is not None:
+        h['Content-Length'] = str(int(obj['ContentLength']))
+    if obj.get('ContentRange'):
+        h['Content-Range'] = obj['ContentRange']
+    if obj.get('ETag'):
+        h['ETag'] = obj['ETag']
+
+    body = obj['Body']
+
+    def gen():
+        try:
+            for chunk in body.iter_chunks(chunk_size=262144):
+                if chunk:
+                    yield chunk
+        finally:
+            try:
+                body.close()
+            except Exception:
+                pass
+
+    return Response(stream_with_context(gen()), status=status, headers=h)
 
 
 @app.route('/api/s3_exists', methods=['POST'])
@@ -622,6 +749,10 @@ def api_s3_exists():
             if not s3_key.startswith(f"users/{user_id}/"):
                 return jsonify({"error": "Access denied: key does not belong to user"}), 403
 
+        bucket = _presign_bucket_for_key(user_id, s3_key, data)
+        if not bucket:
+            return jsonify({"error": "S3 bucket not configured"}), 500
+
         s3_client = boto3.client(
             's3',
             aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
@@ -629,7 +760,7 @@ def api_s3_exists():
             region_name=os.environ.get('AWS_REGION')
         )
         try:
-            s3_client.head_object(Bucket=os.environ.get('S3_BUCKET'), Key=s3_key)
+            s3_client.head_object(Bucket=bucket, Key=s3_key)
             return jsonify({"exists": True}), 200
         except ClientError as ce:
             code = str((ce.response or {}).get('Error', {}).get('Code', '')).strip()
@@ -781,6 +912,21 @@ def _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt', is_medical=
         return None
 
 
+def _normalize_formatted_dict_for_storage(formatted):
+    """Persist GPT `formatted` block; include optional medical three-part fields when present."""
+    if not isinstance(formatted, dict):
+        return None
+    out = {
+        "clean_transcript": str(formatted.get("clean_transcript") or "").strip(),
+        "overview": str(formatted.get("overview") or "").strip(),
+        "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
+    }
+    for mk in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
+        if mk in formatted:
+            out[mk] = str(formatted.get(mk) or "").strip()
+    return out
+
+
 @app.route('/api/save_job_result', methods=['POST'])
 def save_job_result():
     """Save transcript JSON to S3; return the result_s3_key. Store only the key in DB, not the full JSON."""
@@ -796,7 +942,8 @@ def save_job_result():
         stage = (data.get('stage') or 'gpt').strip().lower()
         if stage == 'raw':
             stage = 'gpt'
-        is_medical = bool(data.get('isMedical'))
+        key_s = str(input_s3_key or '')
+        is_medical = bool(data.get('isMedical')) or ('/raw-audio/' in key_s) or ('/summaries/' in key_s) or key_s.startswith('medical/')
         if not user_id or not input_s3_key:
             return jsonify({"error": "userId and input_s3_key (or s3Key) required"}), 400
         _require_medical_kms_or_raise(is_medical)
@@ -818,22 +965,18 @@ def save_job_result():
             if formatted is not None:
                 if not isinstance(formatted, dict):
                     return jsonify({"error": "formatted must be an object"}), 400
-                transcript["formatted"] = {
-                    "clean_transcript": str(formatted.get("clean_transcript") or "").strip(),
-                    "overview": str(formatted.get("overview") or "").strip(),
-                    "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
-                }
+                norm = _normalize_formatted_dict_for_storage(formatted)
+                if norm is not None:
+                    transcript["formatted"] = norm
             # JSON null: omit formatted from new object (explicit clear)
         else:
             # Client omitted `formatted` (e.g. saveEdits) — do not wipe GPT block already on S3.
             existing = _get_transcript_json_from_s3(user_id, input_s3_key, stage=stage, is_medical=is_medical)
             exf = existing.get("formatted") if isinstance(existing, dict) else None
             if isinstance(exf, dict):
-                transcript["formatted"] = {
-                    "clean_transcript": str(exf.get("clean_transcript") or "").strip(),
-                    "overview": str(exf.get("overview") or "").strip(),
-                    "key_points": [str(p).strip() for p in (exf.get("key_points") or []) if str(p).strip()],
-                }
+                norm = _normalize_formatted_dict_for_storage(exf)
+                if norm is not None:
+                    transcript["formatted"] = norm
 
         # Preserve formatted.clean_transcript exactly as provided (e.g. GPT paragraph structure).
         # DOCX export applies its own wrapping when generating the .docx bytes.
@@ -1426,26 +1569,21 @@ def _get_job_timings_from_db(runpod_job_id: str, user_id: str = None) -> dict:
     return {}
 
 
-def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> None:
-    """Update jobs table with PROCESS TIMING data. Matches by runpod_job_id column or metadata.job_id."""
+def _jobs_patch_by_runpod_job_id(runpod_job_id, user_id, payload):
+    """PATCH the jobs row for this RunPod id (same PostgREST strategies as timing updates). Returns True if a row updated."""
+    if not payload:
+        return False
     supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
     service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
     if not supabase_url or not service_key:
-        logging.warning("_update_job_timings: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set, skipping")
-        return
-    payload = {k: v for k, v in timings.items() if v is not None}
-    if not payload:
-        logging.debug("_update_job_timings: no values to update for %s", runpod_job_id)
-        return
+        return False
     from urllib.parse import quote
 
     rid = str(runpod_job_id or "").strip()
     if not rid:
-        return
+        return False
     if len(rid) >= 2 and rid[0] == rid[-1] and rid[0] in "\"'":
         rid = rid[1:-1].strip()
-    # PostgREST: URL-encode the raw value (eq.<encoded>) matches text columns. eq.%22...%22 (JSON-style
-    # quotes in the URL) often matches zero rows; try unquoted encoding first (same as _get_job_row_by_runpod_job_id).
     rj = quote(rid, safe="")
     rj_quoted = quote(f'"{rid}"', safe="")
     uid_s = _jobs_table_user_id_filter(user_id)
@@ -1456,37 +1594,42 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
+    body = dict(payload)
+    if "updated_at" not in body:
+        body["updated_at"] = datetime.utcnow().isoformat() + "Z"
+
+    def _rows_updated(resp):
+        if resp.status_code not in (200, 204):
+            return False
+        if not resp.text:
+            return resp.status_code == 204
+        try:
+            data = resp.json()
+        except Exception:
+            return False
+        return isinstance(data, list) and len(data) > 0
+
     try:
         url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
         if uid:
             url += f"&user_id=eq.{uid}"
-        r = requests.patch(url, json=payload, headers=headers, timeout=10)
-        if r.status_code in (200, 204):
-            updated = r.json() if r.text else []
-            if isinstance(updated, list) and len(updated) > 0:
-                logging.info("_update_job_timings: updated job %s with %s (%d rows)", rid, list(payload.keys()), len(updated))
-                return
-            logging.warning("_update_job_timings: PATCH 200 but 0 rows matched for %s (filter: runpod_job_id=eq.%s)", rid, rj[:56])
-        # Fallback 1: quoted filter (legacy / odd PostgREST configs)
+        r = requests.patch(url, json=body, headers=headers, timeout=10)
+        if _rows_updated(r):
+            _invalidate_job_poll_row_cache(runpod_job_id)
+            return True
         url_alt = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_quoted}"
         if uid:
             url_alt += f"&user_id=eq.{uid}"
-        r2 = requests.patch(url_alt, json=payload, headers=headers, timeout=10)
-        if r2.status_code in (200, 204):
-            updated2 = r2.json() if r2.text else []
-            if isinstance(updated2, list) and len(updated2) > 0:
-                logging.info("_update_job_timings: updated job %s (fallback quoted filter) with %s", rid, list(payload.keys()))
-                return
-        # Fallback 2: runpod_job_id only (no user_id) in case UUID filter fails
+        r2 = requests.patch(url_alt, json=body, headers=headers, timeout=10)
+        if _rows_updated(r2):
+            _invalidate_job_poll_row_cache(runpod_job_id)
+            return True
         if uid:
             url_no_uid = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
-            r3 = requests.patch(url_no_uid, json=payload, headers=headers, timeout=10)
-            if r3.status_code in (200, 204):
-                updated3 = r3.json() if r3.text else []
-                if isinstance(updated3, list) and len(updated3) > 0:
-                    logging.info("_update_job_timings: updated job %s (no user_id) with %s", rid, list(payload.keys()))
-                    return
-        # Fallback 3: GET job by runpod_job_id, then PATCH by id (most reliable)
+            r3 = requests.patch(url_no_uid, json=body, headers=headers, timeout=10)
+            if _rows_updated(r3):
+                _invalidate_job_poll_row_cache(runpod_job_id)
+                return True
         for rj_try in (rj, rj_quoted):
             get_url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_try}&select=id"
             get_r = requests.get(get_url, headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"}, timeout=5)
@@ -1495,16 +1638,55 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
                 if isinstance(rows, list) and len(rows) > 0 and rows[0].get("id"):
                     job_uuid = rows[0]["id"]
                     patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{job_uuid}"
-                    r4 = requests.patch(patch_url, json=payload, headers=headers, timeout=10)
-                    if r4.status_code in (200, 204):
-                        updated4 = r4.json() if r4.text else []
-                        if isinstance(updated4, list) and len(updated4) > 0:
-                            logging.info("_update_job_timings: updated job %s (by id) with %s", rid, list(payload.keys()))
-                            return
-                    break
-        logging.warning("_update_job_timings: all attempts failed for %s. Last: %s %s", rid, r.status_code, r.text[:200] if r.text else "")
+                    r4 = requests.patch(patch_url, json=body, headers=headers, timeout=10)
+                    if _rows_updated(r4):
+                        _invalidate_job_poll_row_cache(runpod_job_id)
+                        return True
+                break
+        return False
     except Exception as e:
-        logging.warning("Could not update job timings for %s: %s", rid, e)
+        logging.warning("_jobs_patch_by_runpod_job_id failed for %s: %s", runpod_job_id, e)
+        return False
+
+
+def _mark_job_transcript_ready_on_gpu_callback(runpod_job_id, user_id, result_s3_key, callback_input_s3_key):
+    """Persist canonical result_s3_key and processed status when GPU JSON is on S3 (tab close / client race safe)."""
+    if not runpod_job_id or not result_s3_key:
+        return
+    row = _get_job_row_by_runpod_job_id(runpod_job_id, select="id,input_s3_key")
+    if isinstance(row, dict) and row.get("input_s3_key") and callback_input_s3_key:
+        db_in = str(row.get("input_s3_key") or "").strip()
+        cb_in = str(callback_input_s3_key or "").strip()
+        if db_in and cb_in and db_in != cb_in:
+            logging.warning(
+                "gpu_callback: input_s3_key differs between DB job row and callback (db=%s callback=%s)",
+                db_in[:120],
+                cb_in[:120],
+            )
+    if _jobs_patch_by_runpod_job_id(
+        runpod_job_id,
+        user_id,
+        {"status": "processed", "result_s3_key": result_s3_key},
+    ):
+        logging.info("gpu_callback: jobs row -> processed with result_s3_key for runpod_job_id=%s", runpod_job_id)
+    else:
+        logging.warning("gpu_callback: could not PATCH jobs row (processed/result_s3_key) for runpod_job_id=%s", runpod_job_id)
+
+
+def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> None:
+    """Update jobs table with PROCESS TIMING data. Matches by runpod_job_id column or metadata.job_id."""
+    if not (os.environ.get('SUPABASE_URL') or '').strip() or not (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip():
+        logging.warning("_update_job_timings: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set, skipping")
+        return
+    payload = {k: v for k, v in timings.items() if v is not None}
+    if not payload:
+        logging.debug("_update_job_timings: no values to update for %s", runpod_job_id)
+        return
+    rid = str(runpod_job_id or "").strip()
+    if _jobs_patch_by_runpod_job_id(runpod_job_id, user_id, payload):
+        logging.info("_update_job_timings: updated job %s with %s", rid, list(payload.keys()))
+        return
+    logging.warning("_update_job_timings: all attempts failed for %s", rid)
 
 
 def get_runpod_endpoint_status(pod_id):
@@ -1893,6 +2075,38 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
     raise RuntimeError(f"OpenAI read timed out: {last_timeout_exc}") from last_timeout_exc
 
 
+def _medical_summary_from_parsed(parsed, want_hebrew):
+    """Map OpenAI three-part clinical JSON (+ legacy overview/key_points) to stored formatted fields."""
+    chief = str((parsed or {}).get("chief_complaint") or "").strip()
+    exam = str((parsed or {}).get("examination_transcript") or "").strip()
+    rec = str((parsed or {}).get("patient_recommendations") or "").strip()
+    if not chief and not exam and not rec:
+        chief = str((parsed or {}).get("overview") or "").strip()
+        kps = (parsed or {}).get("key_points")
+        if isinstance(kps, list):
+            kps = [str(p).strip() for p in kps if str(p).strip()]
+            if len(kps) >= 1:
+                exam = kps[0]
+            if len(kps) >= 2:
+                rec = kps[1]
+    kp_for_tr = []
+    if exam:
+        kp_for_tr.append(exam)
+    if rec:
+        kp_for_tr.append(rec)
+    chief_t, kp_t = _maybe_translate_summary_to_hebrew(chief, kp_for_tr, want_hebrew)
+    exam_t = kp_t[0] if len(kp_t) >= 1 else exam
+    rec_t = kp_t[1] if len(kp_t) >= 2 else rec
+    kp_out = [p for p in (exam_t, rec_t) if p]
+    return {
+        "overview": chief_t,
+        "key_points": kp_out,
+        "medical_chief_complaint": chief_t,
+        "medical_examination_transcript": exam_t,
+        "medical_patient_recommendations": rec_t,
+    }
+
+
 def _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew):
     if not want_hebrew:
         return overview, key_points
@@ -1963,29 +2177,24 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
             "Write only from the transcript: do not invent symptoms, diagnoses, medications, "
             "allergies, vitals, labs, imaging, or exam findings that are not clearly stated or "
             "fairly implied. Use tentative language and explicit uncertainty when information is missing. "
-            "Return ONLY valid JSON: {\"overview\":string,\"key_points\":[string]} . "
+            "Return ONLY valid JSON with exactly these string keys: "
+            "{\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
             "No markdown fences."
         )
         user_prompt = (
-            "From this clinical encounter transcript, produce documentation-oriented text for "
-            "clinician workflow support. This is not a substitute for professional judgment or the "
-            "primary record.\n\n"
-            "overview — 3–5 sentences: chief concern / reason for encounter as stated; "
-            "relevant history or context voiced; stated assessments or working impressions if "
-            "explicitly mentioned; plan themes only if stated. If the transcript is ambiguous, say so.\n\n"
-            "key_points — 8–12 strings. Each line should start with a short section label in the "
-            "output language, then the content. Cover only what appears in the transcript. "
-            "Include where applicable (use \"not stated\" or equivalent when a topic was not discussed):\n"
-            "Chief concern; HPI / narrative; associated symptoms or ROS mentions; "
-            "medications and allergies; social or contextual factors; objective / exam / vitals / "
-            "labs if spoken; assessment or differential (tentative if inferred); "
-            "plan (tests, treatments, referrals, patient education); follow-up and return precautions; "
-            "red flags or urgent escalation only if discussed or clearly warranted from stated facts; "
-            "gaps and uncertainties.\n\n"
-            "Avoid meeting-style bullets (generic \"insights\", marketing language). "
-            "Add one brief disclaimer (in the overview or as a final key point) that the summary "
-            "must be verified against the source audio/record and the responsible clinician.\n\n"
-            f"Output language must be {output_lang_label}.\n\n"
+            "From this clinical encounter transcript, produce three sections in the output language "
+            f"({output_lang_label}). Documentation support only; not a substitute for judgment or the chart.\n\n"
+            "chief_complaint — \"תלונה עיקרית\": concise narrative of the encounter focus (reason for visit, "
+            "what the patient reported, relevant context). This is a summary of the visit, not a verbatim transcript "
+            "and not the physical examination section. If unclear, say so.\n\n"
+            "examination_transcript — \"בדיקה\": as verbatim as possible for what the physician said during the "
+            "encounter regarding examination, instructions in an exam context, and similar clinician speech. "
+            "If nothing was said or not in the transcript, write an explicit not-stated phrase in the output language.\n\n"
+            "patient_recommendations — \"המלצות למטופל\": recommendations, home care, follow-up, medications for the "
+            "patient, return precautions, red flags only if stated in the transcript. If none, not-stated in the "
+            "output language.\n\n"
+            "End patient_recommendations with one short line that the text must be verified against the recording "
+            "and the responsible clinician.\n\n"
             f"Transcript:\n\n{transcript_excerpt}"
         )
     else:
@@ -2003,6 +2212,8 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
             f"Transcript:\n\n{transcript_excerpt}"
         )
     parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
+    if is_medical:
+        return _medical_summary_from_parsed(parsed, want_hebrew)
     overview = str((parsed or {}).get("overview") or "").strip()
     key_points = (parsed or {}).get("key_points")
     if not isinstance(key_points, list):
@@ -2019,26 +2230,32 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
     output_lang_label = 'Hebrew' if want_hebrew else target_lang
-    system_prompt = (
-        "You are an expert transcript editor. "
-        "Return ONLY valid JSON in this exact shape: "
-        "{\"clean_transcript\":string,\"overview\":string,\"key_points\":[string]} . "
-        "Do not include markdown fences. Keep original language and directionality."
-    )
     if is_medical:
+        system_prompt = (
+            "You are an expert transcript editor for clinical encounters. "
+            "Return ONLY valid JSON with exactly these keys: "
+            "{\"clean_transcript\":string,\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
+            "Do not include markdown fences. Keep original language and directionality for clean_transcript."
+        )
         task2 = (
-            "Task 2 – Clinical summary (documentation support only; not a substitute for judgment)\n"
-            "overview — 3–5 sentences from the encounter: chief concern as stated; relevant voiced history; "
-            "stated assessments if any; plan themes only if stated. Flag ambiguity explicitly.\n\n"
-            "key_points — 8–12 strings, each starting with a short section label in the output language. "
-            "Only transcript-grounded content. Include where applicable: chief concern; HPI; symptoms/ROS; "
-            "medications and allergies (or not stated); social context; objective/exam/vitals/labs if spoken; "
-            "assessment/differential (tentative); plan; follow-up and precautions; red flags only if discussed "
-            "or clearly warranted from stated facts; gaps/uncertainties.\n"
-            "Do not invent clinical facts. Add a brief disclaimer that the text must be verified against "
-            "the recording and the responsible clinician.\n\n"
+            "Task 2 – Clinical summary (documentation support only; not a substitute for judgment or the chart).\n"
+            "chief_complaint — \"תלונה עיקרית\": narrative summary of the encounter (reason for visit, patient-reported concerns, context). "
+            "This is a summary of the visit without the physical examination section, not a verbatim transcript. If unclear, say so.\n\n"
+            "examination_transcript — \"בדיקה\": as verbatim as possible for what the physician said about examination and related instructions. "
+            "If nothing appears in the transcript, use an explicit not-stated phrase in the output language.\n\n"
+            "patient_recommendations — \"המלצות למטופל\": recommendations for the patient (home care, follow-up, medications, return precautions, red flags only if stated). "
+            "End this field with one short line that the text must be verified against the recording and the responsible clinician.\n\n"
+        )
+        json_tail = (
+            "Return as JSON fields only: clean_transcript, chief_complaint, examination_transcript, patient_recommendations.\n"
         )
     else:
+        system_prompt = (
+            "You are an expert transcript editor. "
+            "Return ONLY valid JSON in this exact shape: "
+            "{\"clean_transcript\":string,\"overview\":string,\"key_points\":[string]} . "
+            "Do not include markdown fences. Keep original language and directionality."
+        )
         task2 = (
             "Task 2 – Summary\n"
             "Create a separate summary including:\n\n"
@@ -2047,6 +2264,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "Focus on decisions, insights, and actionable ideas.\n"
             "Ignore filler conversation.\n\n"
         )
+        json_tail = "Return as JSON fields only (clean_transcript, overview, key_points).\n"
     user_prompt = (
         "You are editing a transcript.\n\n"
         "Task 1 – Clean Transcript\n\n"
@@ -2060,7 +2278,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         f"* Add line breaks as needed to keep line length <= {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
         "* Do NOT summarize or remove content.\n\n"
         f"{task2}"
-        "Return as JSON fields only (clean_transcript, overview, key_points).\n"
+        f"{json_tail}"
         f"Output language must be {output_lang_label} for all fields.\n\n"
         f"Language hint: {lang_hint}\n\n"
         "Transcript:\n\n"
@@ -2069,6 +2287,16 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
     parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
     clean_transcript = str((parsed or {}).get("clean_transcript") or "").strip()
     clean_transcript = _wrap_text_to_max_chars(clean_transcript)
+    if is_medical:
+        summary_block = _medical_summary_from_parsed(parsed, want_hebrew)
+        return {
+            "clean_transcript": clean_transcript,
+            "overview": summary_block["overview"],
+            "key_points": summary_block["key_points"],
+            "medical_chief_complaint": summary_block["medical_chief_complaint"],
+            "medical_examination_transcript": summary_block["medical_examination_transcript"],
+            "medical_patient_recommendations": summary_block["medical_patient_recommendations"],
+        }
     overview = str((parsed or {}).get("overview") or "").strip()
     key_points = (parsed or {}).get("key_points")
     if not isinstance(key_points, list):
@@ -2149,11 +2377,16 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
     summary = _format_summary_only_openai(
         summ_input, target_lang, format_read_sec, read_retries, is_medical=is_medical
     )
-    return {
+    out = {
         "clean_transcript": clean_merged,
         "overview": summary.get("overview") or "",
         "key_points": summary.get("key_points") or [],
     }
+    if is_medical:
+        for k in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
+            if k in summary:
+                out[k] = summary[k]
+    return out
 
 
 # --- TRANSLATE SEGMENTS (GPT via Node script from package.json) ---
@@ -2347,6 +2580,10 @@ def api_format_transcript_summary():
     mode = str(data.get('mode') or '').strip().lower()
     target_lang = data.get('targetLang') or data.get('target_lang') or 'he'
     is_medical = _request_json_is_medical(data)
+    if not is_medical:
+        sk = str(data.get('input_s3_key') or data.get('inputS3Key') or data.get('s3Key') or '').strip()
+        if '/raw-audio/' in sk or '/summaries/' in sk or sk.startswith('medical/'):
+            is_medical = True
     req_job_id = (data.get('jobId') or data.get('job_id') or '').strip() or None
     req_user_id = (data.get('userId') or data.get('user_id') or '').strip() or None
     read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
@@ -2397,12 +2634,17 @@ def api_format_transcript_summary():
             )
             elapsed = time.time() - t0
             _apply_format_timing(elapsed)
-            return jsonify({
+            payload = {
                 "clean_transcript": full_clean,
                 "overview": summary.get("overview") or "",
                 "key_points": summary.get("key_points") or [],
                 "gpt_format_sec": round(float(elapsed), 3),
-            }), 200
+            }
+            if is_medical:
+                for k in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
+                    if k in summary:
+                        payload[k] = summary[k]
+            return jsonify(payload), 200
         except Exception as e:
             logging.warning("format_transcript_summary summary_only failed: %s", e)
             return jsonify({"error": str(e)}), 500
@@ -2508,14 +2750,28 @@ def api_export_docx():
                 format_source = 'raw_no_gpt'
 
         if kind == 'summary':
-            overview   = str(fmt.get('overview') or '').strip()
-            key_points = [str(p).strip() for p in (fmt.get('key_points') or []) if str(p).strip()]
-            lines = []
-            lines.append('סקירה:')
-            lines.append(overview or 'N/A')
-            lines.append('')
-            lines.append('נקודות מפתח:')
-            lines.extend(key_points or ['לא הוחזרו נקודות מפתח.'])
+            mc = str(fmt.get('medical_chief_complaint') or '').strip()
+            me = str(fmt.get('medical_examination_transcript') or '').strip()
+            mr = str(fmt.get('medical_patient_recommendations') or '').strip()
+            if mc or me or mr:
+                lines = []
+                lines.append('תלונה עיקרית (סיכום המפגש ללא בדיקה):')
+                lines.append(mc or 'לא צוין.')
+                lines.append('')
+                lines.append('בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר):')
+                lines.append(me or 'לא צוין.')
+                lines.append('')
+                lines.append('המלצות למטופל:')
+                lines.append(mr or 'לא צוין.')
+            else:
+                overview   = str(fmt.get('overview') or '').strip()
+                key_points = [str(p).strip() for p in (fmt.get('key_points') or []) if str(p).strip()]
+                lines = []
+                lines.append('סקירה:')
+                lines.append(overview or 'N/A')
+                lines.append('')
+                lines.append('נקודות מפתח:')
+                lines.extend(key_points or ['לא הוחזרו נקודות מפתח.'])
             dl_name = filename + '_summary.docx'
         else:
             clean = str(fmt.get('clean_transcript') or '').strip() or raw_text
@@ -2583,6 +2839,7 @@ def gpu_callback():
             result_dict['result_s3_key'] = result_s3_key
             data = dict(data)
             data['result'] = result_dict
+            _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
         except Exception as e:
             logging.exception("Failed to save job result to S3 for %s", job_id)
             return jsonify({"ok": False, "error": "Failed to save result", "detail": str(e)}), 500
