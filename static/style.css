@@ -108,7 +108,8 @@ html, body {
 .navbar {
     position: sticky;
     top: 0;
-    height: var(--nav-height);
+    min-height: var(--nav-height);
+    height: auto;
     background: white;
     border-bottom: 1px solid #eee;
     z-index: 1000;
@@ -116,6 +117,7 @@ html, body {
     align-items: center;
     padding: 0 40px;
     overflow: visible; /* don't clip globe or language dropdown */
+    flex-shrink: 0; /* body is flex column + main flex:1; never compress the header */
 
     /* 1. Center the Container */
     justify-content: center;

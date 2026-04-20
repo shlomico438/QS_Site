@@ -10,6 +10,12 @@ main.main-content {
     overflow: hidden !important;
     padding: 0 !important;
 }
+/* Body is display:flex; column — keep header from shrinking when main uses flex:1 + overflow hidden (mobile). */
+header.navbar,
+.navbar {
+    flex-shrink: 0 !important;
+}
+
 /* Personal area: allow main to scroll so user can see all files */
 main.main-content:has(.personal-area-page) {
     overflow-y: auto !important;
@@ -2419,10 +2425,13 @@ html[dir="rtl"] .upload-status {
         display: none !important;
     }
 
-    /* Optional: Compact the header to save more space */
+    /* Keep full header (logo + lang + menu); min-height auto was letting flex shrink clip it */
     .navbar {
         padding: 0.5rem 1rem !important;
-        min-height: auto !important;
+        padding-top: calc(0.5rem + env(safe-area-inset-top, 0px)) !important;
+        min-height: var(--nav-height) !important;
+        height: auto !important;
+        flex-shrink: 0 !important;
     }
     /* --- BASE NAVBAR STYLES (Desktop) --- */
 
