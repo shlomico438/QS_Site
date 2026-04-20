@@ -3099,6 +3099,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             if (typeof showStatus === 'function') showStatus("No transcript available to export.", true);
             return;
         }
+        try {
+            fetch('/api/runpod_scale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ min: 1 }) }).catch(() => {});
+        } catch (_) { /* ignore */ }
         const video = document.getElementById('main-video');
         const videoUrl = video ? (video.currentSrc || video.src || (video.querySelector('source') && video.querySelector('source').src) || '') : '';
         if (!video || !videoUrl || videoUrl.startsWith('data:')) {
@@ -3424,6 +3427,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         if (typeof showStatus === 'function') showStatus("No transcript available to export.", true);
         return;
     }
+    try {
+        fetch('/api/runpod_scale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ min: 1 }) }).catch(() => {});
+    } catch (_) { /* ignore */ }
     const showTime = isTimeToggleVisible();
     const showSpeaker = document.getElementById('toggle-speaker')?.checked;
 
@@ -9625,20 +9631,23 @@ function renderWordCaptionEditor() {
         const bodyBlock = (timingMode && ci === timingSel)
             ? `
               <div class="caption-row-body qs-sync-caption-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
-                <div class="segment-content-wrapper">
-                  <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0;">${tokenHtml}</div>
-                  ${toolbarHtml}
-                </div>
+                ${toolbarHtml}
                 <button type="button" class="qs-sync-handle qs-sync-handle--end" data-ci="${ci}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
+                <div class="segment-content-wrapper segment-content-wrapper--sync-text">
+                  <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0; direction:${textDirection}; text-align:${textAlign};">${tokenHtml}</div>
+                </div>
               </div>`
             : `
               <div class="caption-row-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
                 <div class="segment-content-wrapper">
                   <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0;">${tokenHtml}</div>
-                  ${toolbarHtml}
+                  ${(!timingMode && isEditing) ? '' : toolbarHtml}
                 </div>
               </div>`;
         const tsBlock = `<div class="caption-ts segment-timestamps">${tsLine}</div>`;
+        const captionMainHeader = (!timingMode && isEditing)
+            ? `<div class="caption-row-ts-toolbar-row" dir="ltr">${toolbarHtml}${tsBlock}</div>`
+            : tsBlock;
         const syncFlex = (timingMode && ci === timingSel)
             ? `<div class="qs-sync-row-flex" style="display:flex; flex-direction:row; align-items:center; gap:16px; width:100%;">
             <button type="button" class="qs-sync-handle qs-sync-handle--start" data-ci="${ci}" data-qs-sync-handle="start" aria-label="גרור לשינוי זמן התחלה"></button>
@@ -9647,7 +9656,7 @@ function renderWordCaptionEditor() {
             </div>
           </div>`
             : `<div class="caption-row-main" style="display:flex; flex-direction:column; gap:0; align-items:stretch;">
-              ${tsBlock}${bodyBlock}
+              ${captionMainHeader}${bodyBlock}
             </div>`;
         return `
           <div class="caption-row${rowExtraClass}${rowSelClass}" data-ci="${ci}" data-start="${start}" data-end="${endT}" style="margin-bottom:2px; direction:${textDirection}; text-align:${textAlign}; display:flex; flex-direction:column; align-items:stretch;">
@@ -9683,6 +9692,23 @@ function renderWordCaptionEditor() {
             grid-template-rows: auto auto;
             row-gap: 0 !important;
           }
+          #transcript-window .caption-row-ts-toolbar-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 0 16px;
+            margin: 0 0 6px 0;
+          }
+          #transcript-window .caption-row-ts-toolbar-row .caption-ts.segment-timestamps {
+            margin-bottom: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            flex: 1;
+            min-width: 0;
+          }
           #transcript-window .caption-ts {
             margin: 0 !important;
             padding: 0 !important;
@@ -9710,6 +9736,24 @@ function renderWordCaptionEditor() {
             box-sizing: border-box;
           }
           #transcript-window .qs-sync-legacy-text-row .segment-content-wrapper {
+            width: auto;
+          }
+          #transcript-window .caption-row-body.qs-sync-caption-body {
+            direction: ltr;
+            gap: 0;
+          }
+          #transcript-window .caption-row-body.qs-sync-caption-body .qs-caption-toolbar {
+            margin-right: 10px;
+          }
+          #transcript-window .caption-row-body.qs-sync-caption-body .qs-sync-handle--end {
+            margin-right: 4px;
+            flex-shrink: 0;
+          }
+          #transcript-window .segment-content-wrapper.segment-content-wrapper--sync-text {
+            padding: 0 16px 0 0;
+            gap: 0;
+            flex: 1;
+            min-width: 0;
             width: auto;
           }
           #transcript-window .caption-row-body {

@@ -88,6 +88,24 @@ def _runpod_skip_warmup():
     return v in ('1', 'true', 'yes', 'on')
 
 
+def _schedule_runpod_min_workers(min_workers: int):
+    """Fire-and-forget GraphQL workersMin update (does not block request handlers)."""
+    if SIMULATION_MODE and str(os.environ.get('RUNPOD_SCALE_IN_SIMULATION', '')).strip().lower() not in (
+        '1', 'true', 'yes', 'on',
+    ):
+        return
+
+    def _run():
+        try:
+            from runpod_endpoint_workers import set_runpod_endpoint_min_workers
+
+            set_runpod_endpoint_min_workers(int(min_workers))
+        except Exception as e:
+            logging.warning("RunPod workersMin=%s scheduling failed: %s", min_workers, e)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _public_base_url(req):
     """Best-effort public base URL for third-party callbacks (RunPod -> site)."""
     explicit = (os.environ.get('PUBLIC_BASE_URL') or '').strip().rstrip('/')
@@ -2769,6 +2787,25 @@ def api_docx_force_rtl():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/runpod_scale', methods=['POST'])
+def api_runpod_scale():
+    """Optional: client asks to scale RunPod workersMin (e.g. before TXT export). Body: {\"min\": 0|1}."""
+    try:
+        data = request.json or {}
+        raw = data.get('min', data.get('workersMin', 0))
+        try:
+            m = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "min must be an integer"}), 400
+        if m not in (0, 1):
+            return jsonify({"error": "min must be 0 or 1"}), 400
+        _schedule_runpod_min_workers(m)
+        return jsonify({"ok": True, "min": m}), 200
+    except Exception as e:
+        logging.warning("api_runpod_scale: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/export_docx', methods=['POST'])
 def api_export_docx():
     """
@@ -2779,6 +2816,7 @@ def api_export_docx():
     does not need a separate AI call.
     """
     try:
+        _schedule_runpod_min_workers(1)
         data = request.json or {}
         kind     = str(data.get('kind') or 'transcript').lower()
         raw_text = str(data.get('text') or '').strip()
@@ -2912,6 +2950,7 @@ def gpu_callback():
             data = dict(data)
             data['result'] = result_dict
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
+            _schedule_runpod_min_workers(0)
         except Exception as e:
             logging.exception("Failed to save job result to S3 for %s", job_id)
             return jsonify({"ok": False, "error": "Failed to save result", "detail": str(e)}), 500
