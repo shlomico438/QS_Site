@@ -1,9 +1,12 @@
 /* --- APP LAYOUT --- */
-/* 1. Force the Main Content to be a fixed Flexbox */
+/* Main fills space below navbar (body is flex column). Do not use 100vh here — that stacks under the header and causes a small page scrollbar. */
 main.main-content {
     display: flex !important;
     flex-direction: column !important;
-    height: 100vh !important; /* Full Viewport Height */
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    max-height: none !important;
     overflow: hidden !important;
     padding: 0 !important;
 }
@@ -183,10 +186,11 @@ body.landing-logo-large .nav-logo img {
     flex: 1;
     display: flex;
     flex-direction: column;
+    min-height: 0;
 
-    /* CRITICAL: Subtract the 80px Navbar height so it fits exactly */
-    height: calc(100vh - 80px) !important;
-    max-height: calc(100vh - 80px) !important;
+    /* Fill main (already below navbar); avoids double-subtracting header height vs 100vh */
+    height: 100% !important;
+    max-height: 100% !important;
 
     background-color: #f8f9fa;
     overflow: hidden !important; /* STOP the page from scrolling */
@@ -204,6 +208,12 @@ body.landing-logo-large .nav-logo img {
     box-sizing: border-box;
     overflow: hidden !important; /* Forces children to stay inside */
     min-height: 0 !important;   /* Critical Flexbox Fix */
+}
+
+/* Open / transcript session: avoid horizontal bleed from borders + padding */
+body.has-transcript-actions .main-app-container {
+    padding-left: 12px;
+    padding-right: 12px;
 }
 
 /* --- AUDIO PLAYER --- */
@@ -227,7 +237,8 @@ audio {
 /* --- VIDEO PLAYER (shown when Styled Subtitles is clicked) --- */
 #video-wrapper {
     flex: 0 0 auto;
-    margin-bottom: 12px;
+    margin-top: 0;
+    margin-bottom: 10px;
     gap: 12px;
     align-items: flex-start;
 }
@@ -406,6 +417,7 @@ audio {
     cursor: pointer;
     padding: 0;
     transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+    forced-color-adjust: none;
 }
 
 #subtitle-style-drawer .subtitle-color-btn[data-subtitle-color="black"] { background: #111111; }
@@ -803,6 +815,67 @@ input:checked + .slider:before { transform: translateX(16px); }
     fill: none;
     stroke: currentColor;
     stroke-width: 2;
+}
+
+/* Toolbar: keep icons full color on iOS / forced-colors; tint like the purple export CTA */
+.controls-bar .btn-icon,
+.controls-bar .btn-icon img,
+.controls-bar .btn-icon svg {
+    forced-color-adjust: none;
+    -webkit-filter: none;
+    filter: none;
+}
+
+.controls-bar #btn-edit.btn-icon {
+    color: #4338ca;
+    border-color: #a5b4fc;
+    background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
+}
+
+.controls-bar #btn-edit.btn-icon:hover {
+    background: linear-gradient(180deg, #e0e7ff 0%, #c7d2fe 100%);
+    border-color: #818cf8;
+}
+
+.controls-bar #subtitle-style-toggle.subtitle-style-toggle-btn {
+    color: #4338ca;
+    border-color: #a5b4fc;
+    background: linear-gradient(180deg, #f5f3ff 0%, #ede9fe 100%);
+    font-weight: 800;
+}
+
+.controls-bar #subtitle-style-toggle.subtitle-style-toggle-btn:hover {
+    border-color: #818cf8;
+    background: linear-gradient(180deg, #ede9fe 0%, #ddd6fe 100%);
+}
+
+.controls-bar #edit-actions .btn-icon svg {
+    stroke: currentColor;
+}
+
+.controls-bar #edit-actions .btn-icon:first-of-type {
+    color: #15803d;
+    border-color: #86efac;
+    background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%);
+}
+
+.controls-bar #edit-actions .btn-icon:first-of-type:hover {
+    border-color: #4ade80;
+}
+
+.controls-bar #edit-actions .btn-icon:last-of-type {
+    color: #b91c1c;
+    border-color: #fca5a5;
+    background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+}
+
+.controls-bar #edit-actions .btn-icon:last-of-type:hover {
+    border-color: #f87171;
+}
+
+/* Export panel titles: emoji / color glyph presentation on mobile */
+.export-panel-section .option-card-title {
+    font-family: system-ui, -apple-system, "Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
 }
 
 /* Regular mode: match primary / export panel purple */
@@ -2467,13 +2540,16 @@ html[dir="rtl"] .upload-status {
    Clamp player height with dvh so transcript + CTA remain visible without page scrolling. */
 @media screen and (max-width: 768px) and (orientation: portrait) {
     @supports not (-webkit-touch-callout: none) {
+        /* Same flex fill as desktop: avoid main = 100dvh + navbar overflow scrollbar */
         main.main-content {
-            height: 100dvh !important;
-            max-height: 100dvh !important;
+            flex: 1 1 auto !important;
+            min-height: 0 !important;
+            height: auto !important;
+            max-height: none !important;
         }
         .app-mode {
-            height: calc(100dvh - 80px) !important;
-            max-height: calc(100dvh - 80px) !important;
+            height: 100% !important;
+            max-height: 100% !important;
         }
         #video-player-container {
             max-height: min(34dvh, 300px) !important;
