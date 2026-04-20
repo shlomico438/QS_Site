@@ -46,8 +46,20 @@ TRANSLATE_SCRIPT = APP_ROOT / 'scripts' / 'translate.js'
 S3_BUCKET = os.environ.get("S3_BUCKET")
 MEDICAL_S3_BUCKET = os.environ.get("MEDICAL_S3_BUCKET") or "quickscribe-hippa-backet"
 
-# GPT clean transcript + DOCX export: max characters per wrapped line (override with TRANSCRIPT_LINE_MAX_CHARS).
+# GPT clean transcript + optional TXT re-flow: max characters per wrapped line (TRANSCRIPT_LINE_MAX_CHARS, default 200).
+# Paragraph breaks in stored text are \\n\\n; single \\n is line wrap within a paragraph (preview splits on any newline).
 TRANSCRIPT_LINE_MAX_CHARS = int(os.environ.get("TRANSCRIPT_LINE_MAX_CHARS", "200"))
+FORMAT_WRAP_SOFT_EXTRA_CHARS = max(0, int(os.environ.get("FORMAT_WRAP_SOFT_EXTRA_CHARS", "120") or 0))
+# Merge short \\n\\n-separated fragments into one paragraph when each fragment is at most this many chars.
+FORMAT_SHORT_PARA_MERGE_CHARS = max(80, int(os.environ.get("FORMAT_SHORT_PARA_MERGE_CHARS", "120") or 120))
+
+_GPT_TASK1_CLEAN_TRANSCRIPT = (
+    "Task 1 – Clean transcript (meetings and clinical encounters)\n\n"
+    "* Fix grammar and punctuation lightly; keep spoken wording as much as possible.\n"
+    "* Paragraphs: use a blank line (two newlines: \\n\\n) only when the topic or speaker clearly changes.\n"
+    "* Within a paragraph write continuous text; do not insert line breaks for width or arbitrary character counts.\n"
+    "* Do NOT summarize, omit, or invent content beyond what the transcript supports.\n\n"
+)
 
 
 def _safe_rsid(value, fallback):
@@ -210,9 +222,8 @@ def _merge_caption_lines_into_paragraphs(text):
             collapsed.append(line)
     if not collapsed:
         return ""
-    # GPT often uses \n\n between hard-wrapped ~30–80 char fragments; merge those runs into real paragraphs.
-    # Threshold just below line wrap so typical cue/GPT fragments merge; longer \n\n-separated blocks stay separate.
-    short_thresh = min(TRANSCRIPT_LINE_MAX_CHARS, int(os.environ.get('FORMAT_SHORT_PARA_MERGE_CHARS', '120')))
+    # GPT often uses \n\n between short cue fragments; merge those runs into one paragraph.
+    short_thresh = min(TRANSCRIPT_LINE_MAX_CHARS, FORMAT_SHORT_PARA_MERGE_CHARS)
     merged = []
     buf = []
     for p in collapsed:
@@ -235,12 +246,23 @@ def _wrap_line_max_chars(text, max_chars=None):
     s = str(text or "").strip()
     if not s:
         return []
+    soft = FORMAT_WRAP_SOFT_EXTRA_CHARS
     out = []
     rest = s
     while len(rest) > max_chars:
         cut = rest.rfind(' ', 0, max_chars + 1)
+        if cut <= 0 and soft > 0:
+            hi = min(len(rest), max_chars + soft)
+            cut = rest.rfind(' ', 0, hi + 1)
         if cut <= 0:
-            cut = max_chars
+            # Prefer breaking after sentence/clause punctuation before a hard cut (helps RTL / long tokens).
+            punct = '.,?!;:…،؛'
+            best = -1
+            scan = min(len(rest), max_chars + (soft or 0))
+            for i, ch in enumerate(rest[:scan]):
+                if ch in punct:
+                    best = i + 1
+            cut = best if best > 0 else max_chars
         out.append(rest[:cut].rstrip())
         rest = rest[cut:].lstrip()
     if rest:
@@ -248,18 +270,40 @@ def _wrap_line_max_chars(text, max_chars=None):
     return out
 
 
+def _normalize_clean_transcript_storage(text):
+    """Paragraphs = blank lines (\\n\\n). Collapse stray single newlines; no character-based line re-wrap."""
+    return _merge_caption_lines_into_paragraphs(text)
+
+
+def _docx_body_lines_from_clean_transcript(text):
+    """One DOCX paragraph per logical \\n\\n block; collapse single-\\n line wraps inside each block to spaces."""
+    text = _normalize_clean_transcript_storage(text).strip()
+    if not text:
+        return []
+    out = []
+    for p in re.split(r'(?:\r?\n\s*){2,}', text):
+        one = re.sub(r'\s*\r?\n\s*', ' ', p.strip())
+        one = re.sub(r' {2,}', ' ', one).strip()
+        if one:
+            out.append(one)
+    return out
+
+
 def _wrap_text_to_max_chars(text, max_chars=None):
-    """Wrap multi-line text to max chars per line, preserving paragraph breaks."""
+    """Optional narrow display: wrap inside each \\n\\n paragraph with single newlines; keeps \\n\\n between paragraphs."""
     if max_chars is None:
         max_chars = TRANSCRIPT_LINE_MAX_CHARS
-    text = _merge_caption_lines_into_paragraphs(text)
-    result = []
-    for raw_line in str(text or "").splitlines():
-        if not raw_line.strip():
-            result.append("")
+    text = _normalize_clean_transcript_storage(text)
+    if not str(text or '').strip():
+        return ''
+    blocks_out = []
+    for block in re.split(r'(?:\r?\n\s*){2,}', str(text)):
+        line = re.sub(r'\s*\r?\n\s*', ' ', block)
+        line = re.sub(r' {2,}', ' ', line).strip()
+        if not line:
             continue
-        result.extend(_wrap_line_max_chars(raw_line, max_chars=max_chars))
-    return "\n".join(result).strip()
+        blocks_out.append('\n'.join(_wrap_line_max_chars(line, max_chars=max_chars)))
+    return '\n\n'.join(blocks_out).strip()
 
 
 def _build_rtl_docx(lines, bold_first=False):
@@ -925,6 +969,41 @@ def _normalize_formatted_dict_for_storage(formatted):
         if mk in formatted:
             out[mk] = str(formatted.get(mk) or "").strip()
     return out
+
+
+def _existing_formatted_norm_for_merge(user_id, input_s3_key):
+    """If transcript JSON already on S3 has a non-empty GPT `formatted` block, return normalized dict for merge.
+
+    Duplicate or late gpu_callback writes must not wipe manual / post-GPT formatting.
+    """
+    if not user_id or not input_s3_key:
+        return None
+    if str(user_id).strip().lower() == 'anonymous':
+        return None
+    key_s = str(input_s3_key)
+    try:
+        is_med = ('/raw-audio/' in key_s) or ('/summaries/' in key_s) or key_s.startswith('medical/')
+        existing = _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt', is_medical=is_med)
+        if not isinstance(existing, dict):
+            return None
+        fused = existing.get('formatted')
+        if not isinstance(fused, dict):
+            return None
+        norm = _normalize_formatted_dict_for_storage(fused)
+        if not norm:
+            return None
+        if not (
+            str(norm.get('clean_transcript') or '').strip()
+            or str(norm.get('overview') or '').strip()
+            or (norm.get('key_points') and len(norm['key_points']) > 0)
+            or str(norm.get('medical_chief_complaint') or '').strip()
+            or str(norm.get('medical_examination_transcript') or '').strip()
+            or str(norm.get('medical_patient_recommendations') or '').strip()
+        ):
+            return None
+        return norm
+    except Exception:
+        return None
 
 
 @app.route('/api/save_job_result', methods=['POST'])
@@ -2141,7 +2220,7 @@ def _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew):
 
 
 def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, read_retries=0):
-    """Format one transcript fragment into clean_transcript only (paragraphs, wrapped to TRANSCRIPT_LINE_MAX_CHARS)."""
+    """Format one transcript fragment into clean_transcript (same rules as full-job format)."""
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
     output_lang_label = 'Hebrew' if want_hebrew else target_lang
@@ -2151,13 +2230,8 @@ def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, 
         "No markdown fences. Keep original language and directionality."
     )
     user_prompt = (
-        "Edit this transcript fragment.\n\n"
-        "* Correct grammar and punctuation; keep the original wording as much as possible.\n"
-        "* Split into clear paragraphs (2–4 sentences each); new paragraph when the topic changes.\n"
-        "* Prefer paragraph length under 350-450 characters.\n"
-        "* Avoid sentences longer than 120 characters.\n"
-        f"* Each LINE in clean_transcript must be at most {TRANSCRIPT_LINE_MAX_CHARS} characters; use line breaks.\n"
-        "* Do NOT summarize or omit content.\n\n"
+        f"{_GPT_TASK1_CLEAN_TRANSCRIPT}"
+        "This request is one fragment of a longer transcript; keep paragraph boundaries natural at the edges.\n\n"
         f"Output language: {output_lang_label}\n\n"
         f"Fragment:\n\n{chunk_text}"
     )
@@ -2267,16 +2341,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         json_tail = "Return as JSON fields only (clean_transcript, overview, key_points).\n"
     user_prompt = (
         "You are editing a transcript.\n\n"
-        "Task 1 – Clean Transcript\n\n"
-        "* Correct grammar and punctuation.\n"
-        "* Keep the original wording as much as possible.\n"
-        "* Split the text into clear paragraphs (2–4 sentences each).\n"
-        "* Start a new paragraph when the topic changes.\n"
-        "* Prefer paragraph length under 350-450 characters.\n"
-        "* Avoid sentences longer than 120 characters.\n"
-        f"* IMPORTANT: each line in clean_transcript must be at most {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
-        f"* Add line breaks as needed to keep line length <= {TRANSCRIPT_LINE_MAX_CHARS} characters.\n"
-        "* Do NOT summarize or remove content.\n\n"
+        f"{_GPT_TASK1_CLEAN_TRANSCRIPT}"
         f"{task2}"
         f"{json_tail}"
         f"Output language must be {output_lang_label} for all fields.\n\n"
@@ -2285,8 +2350,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         f"{transcript_text}"
     )
     parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
-    clean_transcript = str((parsed or {}).get("clean_transcript") or "").strip()
-    clean_transcript = _wrap_text_to_max_chars(clean_transcript)
+    clean_transcript = _wrap_text_to_max_chars(str((parsed or {}).get("clean_transcript") or "").strip())
     if is_medical:
         summary_block = _medical_summary_from_parsed(parsed, want_hebrew)
         return {
@@ -2531,13 +2595,18 @@ def api_translate_segments():
 
 @app.route('/api/wrap_transcript_text', methods=['POST'])
 def api_wrap_transcript_text():
-    """Re-flow clean_transcript for TXT export (same merge+wrap as DOCX). Client TXT was raw GPT line breaks (~30 chars)."""
+    """Re-flow clean_transcript (merge + wrap). Optional JSON wrapChars overrides TRANSCRIPT_LINE_MAX_CHARS."""
     data = request.json or {}
     text = str(data.get('text') or '').strip()
     if not text:
         return jsonify({"error": "No text provided"}), 400
     try:
-        return jsonify({"text": _wrap_text_to_max_chars(text)}), 200
+        wc = data.get('wrapChars')
+        if wc is not None and str(wc).strip() != '':
+            out = _wrap_text_to_max_chars(text, max_chars=int(wc))
+        else:
+            out = _wrap_text_to_max_chars(text)
+        return jsonify({"text": out}), 200
     except Exception as e:
         logging.warning("wrap_transcript_text failed: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -2663,9 +2732,6 @@ def api_format_transcript_summary():
         out = _format_transcript_and_summary_via_openai(
             raw_text, target_lang=target_lang, is_medical=is_medical
         )
-        ct = str((out or {}).get('clean_transcript') or '').strip()
-        if ct:
-            out['clean_transcript'] = _wrap_text_to_max_chars(ct)
         elapsed = time.time() - t0
         _apply_format_timing(elapsed)
         out['gpt_format_sec'] = round(float(elapsed), 3)
@@ -2775,8 +2841,7 @@ def api_export_docx():
             dl_name = filename + '_summary.docx'
         else:
             clean = str(fmt.get('clean_transcript') or '').strip() or raw_text
-            clean = _wrap_text_to_max_chars(clean)
-            lines = [l for l in clean.split('\n') if l.strip()]
+            lines = _docx_body_lines_from_clean_transcript(clean)
             dl_name = filename + '.docx'
 
         docx_bytes = _build_rtl_docx(lines)
@@ -2834,6 +2899,13 @@ def gpu_callback():
             if w is not None and c is not None:
                 transcript_payload["words"] = w
                 transcript_payload["captions"] = c
+            preserved_fmt = _existing_formatted_norm_for_merge(user_id, input_s3_key)
+            if preserved_fmt:
+                transcript_payload["formatted"] = preserved_fmt
+                logging.info(
+                    "gpu_callback: merged existing formatted onto new segments (input_s3_key suffix=%s)",
+                    input_s3_key.rsplit('/', 1)[-1][:80],
+                )
             result_s3_key = _put_transcript_json_to_s3(user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt')
             result_dict = dict(result) if isinstance(result, dict) else {}
             result_dict['result_s3_key'] = result_s3_key

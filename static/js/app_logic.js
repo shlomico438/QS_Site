@@ -1754,120 +1754,13 @@ function initOpenAppHasLoadedTranscriptPayload() {
 
 const QS_OPEN_STD_SUMMARY_HOST_ID = 'qs-open-standard-summary-host';
 
+/** Remove legacy ?open= summary strip above #transcript-window (regular mode no longer shows inline summary). */
 function clearOpenJobStandardSummaryHost() {
     const h = document.getElementById(QS_OPEN_STD_SUMMARY_HOST_ID);
     if (h) {
         h.innerHTML = '';
         h.style.display = 'none';
     }
-}
-
-/** Meeting summary for ?open= (non-medical): sits above #transcript-window so timing/sync caption editor stays intact. */
-function fillOpenJobStandardSummaryHost(fmt) {
-    if (!fmt || typeof fmt !== 'object') {
-        clearOpenJobStandardSummaryHost();
-        return;
-    }
-    const overview = String(fmt.overview || '').trim();
-    const kps = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
-    if (!overview && !kps.length) {
-        clearOpenJobStandardSummaryHost();
-        return;
-    }
-    const tw = document.getElementById('transcript-window');
-    if (!tw || !tw.parentNode) return;
-    let h = document.getElementById(QS_OPEN_STD_SUMMARY_HOST_ID);
-    if (!h) {
-        h = document.createElement('div');
-        h.id = QS_OPEN_STD_SUMMARY_HOST_ID;
-        h.className = 'qs-open-standard-summary-host';
-        tw.parentNode.insertBefore(h, tw);
-    }
-    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
-    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-    const dir = isRtl ? 'rtl' : 'ltr';
-    const align = isRtl ? 'right' : 'left';
-    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    let inner = (
-        `<div class="qs-open-nonmedical-summary" dir="${dir}" style="text-align:${align};padding:14px 16px;background:#f1f5f9;border-radius:12px;line-height:1.65;">` +
-        '<div style="font-weight:700;margin-bottom:8px;">סיכום</div>' +
-        `<div style="margin-bottom:${kps.length ? '10px' : '0'};">${esc(overview) || '—'}</div>`
-    );
-    if (kps.length) {
-        inner += '<div style="font-weight:700;margin:10px 0 6px;">נקודות מפתח</div><ul style="margin:0;padding-inline-start:20px;">';
-        inner += kps.map((p) => `<li>${esc(p)}</li>`).join('');
-        inner += '</ul>';
-    }
-    inner += '</div>';
-    h.innerHTML = inner;
-    h.style.display = 'block';
-    h.style.marginBottom = '14px';
-}
-
-/**
- * After opening a standard job from the library: summary + transcript.
- * When words/captions exist, summary goes in a host above #transcript-window and `renderWordCaptionEditor` keeps sync handles.
- */
-function renderOpenJobSummaryPlusTranscriptNonMedical() {
-    const transcriptWindow = document.getElementById('transcript-window');
-    if (!transcriptWindow || !Array.isArray(window.currentSegments) || window.currentSegments.length === 0) return;
-    const fmt = window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object' ? window.currentFormattedDoc : null;
-    if (!fmt) return;
-    const overview = String(fmt.overview || '').trim();
-    const kps = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
-    if (!overview && !kps.length) return;
-
-    const hasWordModel =
-        Array.isArray(window.currentWords) &&
-        Array.isArray(window.currentCaptions) &&
-        window.currentWords.length > 0 &&
-        window.currentCaptions.length > 0;
-    if (hasWordModel) {
-        fillOpenJobStandardSummaryHost(fmt);
-        if (typeof renderWordCaptionEditor === 'function') renderWordCaptionEditor();
-        return;
-    }
-
-    clearOpenJobStandardSummaryHost();
-    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
-    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-    const dir = isRtl ? 'rtl' : 'ltr';
-    const align = isRtl ? 'right' : 'left';
-    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    let summaryBlock = (
-        `<div class="qs-open-nonmedical-summary" dir="${dir}" style="text-align:${align};margin-bottom:16px;padding:14px 16px;background:#f1f5f9;border-radius:12px;line-height:1.65;">` +
-        '<div style="font-weight:700;margin-bottom:8px;">סיכום</div>' +
-        `<div style="margin-bottom:${kps.length ? '10px' : '0'};">${esc(overview) || '—'}</div>`
-    );
-    if (kps.length) {
-        summaryBlock += '<div style="font-weight:700;margin:10px 0 6px;">נקודות מפתח</div><ul style="margin:0;padding-inline-start:20px;">';
-        summaryBlock += kps.map((p) => `<li>${esc(p)}</li>`).join('');
-        summaryBlock += '</ul>';
-    }
-    summaryBlock += '</div>';
-    summaryBlock += `<div style="font-weight:700;margin:12px 0 8px;" dir="${dir}">תמלול</div>`;
-
-    window.isDocumentMode = true;
-    const docParagraphs = typeof getDocFormatParagraphs === 'function' ? getDocFormatParagraphs() : [];
-    let bodyHtml = '';
-    if (docParagraphs.length) {
-        bodyHtml = docParagraphs.map((p) => {
-            const safe = String(p || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em;"><p style="margin: 0; line-height: 1.7;">${safe}</p></div>`;
-        }).join('');
-    } else {
-        const groupedData = groupSegmentsBySpeaker(window.currentSegments, false);
-        bodyHtml = groupedData.map((g, rowIndex) => {
-            const startNum = Number(g.start);
-            const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
-            const safe = String(g.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return `<div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom:2px;cursor:pointer;"${rowClick}><p style="margin:0;line-height:1.35;">${safe}</p></div>`;
-        }).join('');
-    }
-    transcriptWindow.innerHTML = summaryBlock + bodyHtml;
-    transcriptWindow.style.direction = dir;
-    transcriptWindow.style.textAlign = align;
-    transcriptWindow.contentEditable = 'false';
 }
 
 /** Load a job in the app when user clicks "Open in app" (/?open=jobId). Loads file URL + transcript JSON. */
@@ -2153,22 +2046,13 @@ async function initOpenInApp(jobId) {
     }
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (!isMedicalModeEnabled()) {
-        const fmtN = window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object' ? window.currentFormattedDoc : null;
-        const hasStdSumm = !!(
-            fmtN &&
-            (String(fmtN.overview || '').trim() ||
-                (Array.isArray(fmtN.key_points) && fmtN.key_points.some((p) => String(p || '').trim())))
-        );
+        try { clearOpenJobStandardSummaryHost(); } catch (_) {}
         const hasWordModel =
             Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
             window.currentWords.length > 0 && window.currentCaptions.length > 0;
-        if (hasTranscriptForOpen && hasStdSumm && typeof renderOpenJobSummaryPlusTranscriptNonMedical === 'function') {
-            renderOpenJobSummaryPlusTranscriptNonMedical();
-        } else if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
-            clearOpenJobStandardSummaryHost();
+        if (hasTranscriptForOpen && hasWordModel && typeof renderWordCaptionEditor === 'function') {
             renderWordCaptionEditor();
-        } else if (typeof window.render === 'function') {
-            clearOpenJobStandardSummaryHost();
+        } else if (hasTranscriptForOpen && typeof window.render === 'function') {
             window.render();
         }
     } else if (typeof window.render === 'function') {
@@ -2231,6 +2115,29 @@ async function updateJobStatus(dbId, status, resultPayload = null) {
         .update(payload)
         .eq('id', dbId);
     if (error) console.error('updateJobStatus:', error);
+}
+
+/**
+ * After a successful /api/save_job_result, persist result_s3_key on the jobs row.
+ * When the row pointed at another job's JSON (e.g. stale runpod id), downloads and ?open= would otherwise keep loading the wrong file.
+ */
+async function syncJobResultS3KeyFromSaveResponse(saveRes, dbIdOverride) {
+    if (!saveRes || !saveRes.ok) return;
+    let data = {};
+    try {
+        data = await saveRes.json();
+    } catch (_) {}
+    const key = data && data.result_s3_key ? String(data.result_s3_key).trim() : '';
+    const dbId = String(dbIdOverride || localStorage.getItem('lastJobDbId') || '').trim();
+    if (!key || !dbId || typeof updateJobStatus !== 'function') return;
+    try {
+        const { data: jr } = await supabase.from('jobs').select('status').eq('id', dbId).maybeSingle();
+        const st = (jr && jr.status) ? String(jr.status) : 'processed';
+        await updateJobStatus(dbId, st, { result_s3_key: key });
+        console.log('[jobs] synced result_s3_key after save', { dbId, result_s3_key: key });
+    } catch (e) {
+        console.warn('[jobs] sync result_s3_key after save failed:', e);
+    }
 }
 
 /** On export: update existing job to exported/completed, or create one if no row or wrong user (e.g. signed in as different user). */
@@ -2792,8 +2699,12 @@ async function ensureFormattedViaApiForExport() {
                         isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
                     })
                 });
-                if (saveRes.ok) console.log('[export] saved transcript JSON with formatted to S3 for next open');
-                else console.warn('[export] save_job_result after format failed', saveRes.status);
+                if (saveRes.ok) {
+                    await syncJobResultS3KeyFromSaveResponse(saveRes, null);
+                    console.log('[export] saved transcript JSON with formatted to S3 for next open');
+                } else {
+                    console.warn('[export] save_job_result after format failed', saveRes.status);
+                }
             }
         } catch (e) {
             console.warn('[export] persist formatted after API format:', e);
@@ -4550,9 +4461,12 @@ function getDocFormatParagraphs() {
     const fromFmt = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
     const clean = fromSeg || fromFmt;
     if (!clean) return [];
+    // Match backend DOCX paragraph logic:
+    // - Paragraphs split only by blank lines (\n\n)
+    // - Single \n inside a paragraph are display wraps and collapse to spaces
     return clean
-        .split(/\r?\n+/)
-        .map((line) => String(line || '').trim())
+        .split(/(?:\r?\n\s*){2,}/)
+        .map((block) => String(block || '').replace(/\s*\r?\n\s*/g, ' ').replace(/ {2,}/g, ' ').trim())
         .filter(Boolean);
 }
 
@@ -5467,6 +5381,11 @@ document.addEventListener('DOMContentLoaded', () => {
         transcriptWindowEl.classList.toggle('hide-time', !isTimeToggleVisible());
     }
     const rerenderTranscriptView = () => {
+        const twRerender = document.getElementById('transcript-window');
+        const toggleTimeSync = document.getElementById('toggle-time');
+        if (toggleTimeSync && twRerender) {
+            twRerender.classList.toggle('hide-time', !isTimeToggleVisible());
+        }
         if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary') {
             renderTranscriptFromCues(window.currentSegments || []);
             return;
@@ -5482,6 +5401,22 @@ document.addEventListener('DOMContentLoaded', () => {
             Array.isArray(window.currentCaptions) &&
             window.currentWords.length > 0 &&
             window.currentCaptions.length > 0;
+        const inWordCaptionChrome = !!(
+            window._qsTimingMode ||
+            (twRerender &&
+                (twRerender.classList.contains('transcript-editing') ||
+                    twRerender.classList.contains('transcript-sync-mode')))
+        );
+        if (
+            hasWordModel &&
+            typeof renderWordCaptionEditor === 'function' &&
+            isDocumentFormatEnabled() &&
+            !inWordCaptionChrome &&
+            typeof window.render === 'function'
+        ) {
+            window.render();
+            return;
+        }
         if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
             renderWordCaptionEditor();
             return;
@@ -5896,7 +5831,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
                                 String(localStorage.getItem('lastS3Key') || '').trim();
                             if (!user || !s3Key || !(window.currentSegments || []).length) return;
-                            await fetch('/api/save_job_result', {
+                            const saveFmtRes = await fetch('/api/save_job_result', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
@@ -5910,6 +5845,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                     isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
                                 })
                             });
+                            if (saveFmtRes.ok) {
+                                await syncJobResultS3KeyFromSaveResponse(saveFmtRes, dbId);
+                            }
                         } catch (e) {
                             console.warn('[GPT] save formatted payload failed:', e);
                         }
@@ -6007,10 +5945,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     renderTranscriptFromCues(window.currentSegments || []);
                 }
-            } else if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
-                renderWordCaptionEditor();
             } else {
-                window.render();
+                // Library ?open= puts summary in a host above #transcript-window; clear it on a fresh transcribe result.
+                try { clearOpenJobStandardSummaryHost(); } catch (_) {}
+                if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
+                    renderWordCaptionEditor();
+                } else {
+                    window.render();
+                }
             }
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
             // Show subtitle style selector when subtitles are available (video only; audio uses transcript only)
@@ -7312,14 +7254,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 return;
             }
             // --- START EDITING ---
-            // Word-caption editor (desktop + mobile): enable in subtitle mode.
-            // In document mode we use legacy paragraph edit so user edits flowing paragraphs directly.
             const hasWordModel = Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length;
             const docMode = isDocumentFormatEnabled();
+            // Unified word-caption screen (pre-HIPAA): text + drag timing + nudges on one surface; window stays contentEditable=false.
+            if (hasWordModel && !docMode && win.classList.contains('transcript-editing') && window._qsTimingMode && !window._qsForceLegacyEditMode) {
+                window.saveEdits();
+                return;
+            }
+            // Word-caption editor (desktop + mobile): subtitle mode — tokens + line timing together (no separate timing button).
+            // Document mode uses legacy paragraph edit below.
             if (hasWordModel && !docMode) {
                 window._qsForceLegacyEditMode = false;
                 win.contentEditable = 'false';
-                // Backup the underlying model so Cancel truly discards edits
                 try {
                     window.wordEditBackup = {
                         words: JSON.parse(JSON.stringify(window.currentWords)),
@@ -7329,17 +7275,19 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 } catch (_) {
                     window.wordEditBackup = null;
                 }
-                // Pencil edit should edit text first; timing remains on the dedicated sync button.
-                window._qsTimingModeBackup = null;
-                window._qsTimingMode = false;
-                win.classList.add('transcript-editing');
-                win.classList.remove('transcript-sync-mode');
-                _qsSetSyncModeButtonActive(false);
+                try {
+                    window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
+                } catch (_) {
+                    window._qsTimingModeBackup = null;
+                }
+                window._qsTimingMode = true;
+                if (!Number.isFinite(window._qsTimingSelectedCi)) window._qsTimingSelectedCi = 0;
+                win.classList.add('transcript-editing', 'transcript-sync-mode');
+                _qsSetSyncModeButtonActive(true);
                 renderWordCaptionEditor();
                 if (editActions) editActions.style.display = 'flex';
                 win.style.border = "2px solid #1e3a8a";
                 win.style.backgroundColor = "#fff";
-                // Focus first line for keyboard navigation
                 requestAnimationFrame(() => {
                     try {
                         const first = win.querySelector('.caption-row .caption-text');
@@ -8593,6 +8541,20 @@ function _qsCaptionTimeRangeHtml(startSec, endSec) {
     return `<span dir="ltr" class="qs-time-range">${a} \u2192 ${b}</span>`;
 }
 
+/** Whole-line shift: sign left, value inside thin ↔ track (see .qs-line-time-drag). */
+function _qsUpdateLineTimeDragDeltaLabel(container, ci, deltaSec) {
+    if (!container || !Number.isFinite(ci)) return;
+    const chip = container.querySelector(`.qs-line-time-drag[data-ci="${ci}"]`)
+        || container.querySelector(`.qs-line-time-drag[data-timing-idx="${ci}"]`);
+    if (!chip) return;
+    const signEl = chip.querySelector('.qs-line-time-drag__sign');
+    const valEl = chip.querySelector('.qs-line-time-drag__value');
+    if (!signEl || !valEl) return;
+    const d = Number(deltaSec) || 0;
+    signEl.textContent = d >= 0 ? '+' : '\u2212';
+    valEl.textContent = `${Math.abs(d).toFixed(2)}s`;
+}
+
 function _qsCloneTimingStateForBackup() {
     try {
         return {
@@ -8863,20 +8825,25 @@ function initQsSyncDirectManipulation(container) {
     );
 
     let rafPending = false;
+    let latestRefreshCi = null;
     const scheduleVisualRefresh = (ci) => {
+        latestRefreshCi = ci;
         if (rafPending) return;
         rafPending = true;
         requestAnimationFrame(() => {
             rafPending = false;
-            if (!window._qsTimingMode || !container.isConnected) return;
+            const ciRun = latestRefreshCi;
+            latestRefreshCi = null;
+            if (!window._qsTimingMode || !container.isConnected || ciRun == null) return;
             if (useWords) {
                 window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                _qsSyncRefreshWordRowTimesDom(container, ci);
+                _qsSyncRefreshWordRowTimesDom(container, ciRun);
             } else {
-                _qsSyncRefreshLegacyRowDom(container, ci);
+                _qsSyncRefreshLegacyRowDom(container, ciRun);
             }
             _qsSyncUpdateOverlapClasses(container);
             if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+            if (latestRefreshCi != null) scheduleVisualRefresh(latestRefreshCi);
         });
     };
 
@@ -8946,6 +8913,7 @@ function initQsSyncDirectManipulation(container) {
                 const dx = ev.clientX - state.startX;
                 const deltaSec = _qsSyncDxToDeltaSec(dx);
                 applyDelta(deltaSec);
+                _qsUpdateLineTimeDragDeltaLabel(container, ci, 0);
                 const sign = deltaSec >= 0 ? '+' : '';
                 tooltip.textContent = `${sign}${deltaSec.toFixed(2)}s`;
                 tooltip.style.display = 'block';
@@ -8972,6 +8940,84 @@ function initQsSyncDirectManipulation(container) {
             window.addEventListener('pointerup', onUp, true);
             window.addEventListener('pointercancel', onUp, true);
             try { handleEl.setPointerCapture(e.pointerId); } catch (_) {}
+            _qsUpdateLineTimeDragDeltaLabel(container, ci, 0);
+            return;
+        }
+
+        const lineDragEl = e.target && e.target.closest && e.target.closest('.qs-line-time-drag');
+        if (lineDragEl && container.contains(lineDragEl)) {
+            let ci = parseInt(lineDragEl.getAttribute('data-ci'), 10);
+            if (!Number.isFinite(ci)) ci = parseInt(lineDragEl.getAttribute('data-timing-idx'), 10);
+            if (!Number.isFinite(ci) || ci < 0) return;
+            if (useWords && ci >= window.currentCaptions.length) return;
+            if (!useWords && (!window.currentSegments || ci >= window.currentSegments.length)) return;
+            if (ci !== window._qsTimingSelectedCi) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            let baselineSnaps = null;
+            let baselineSeg = null;
+            if (useWords) {
+                const cap = window.currentCaptions[ci];
+                baselineSnaps = _qsSyncWordRangeSnaps(cap.wordStartIndex, cap.wordEndIndex);
+                if (!baselineSnaps) return;
+            } else {
+                const seg = window.currentSegments[ci];
+                const end = seg.end != null ? seg.end : seg.start + 1;
+                baselineSeg = { start: seg.start, end: end };
+            }
+
+            const state = {
+                ci,
+                startX: e.clientX,
+                useWords,
+                baselineSnaps,
+                baselineSeg,
+                pointerId: e.pointerId,
+            };
+            const tooltip = _qsSyncEnsureTooltip();
+
+            function detachLine() {
+                window.removeEventListener('pointermove', onLineMove, true);
+                window.removeEventListener('pointerup', onLineUp, true);
+                window.removeEventListener('pointercancel', onLineUp, true);
+            }
+
+            function onLineMove(ev) {
+                if (ev.pointerId !== state.pointerId) return;
+                const dx = ev.clientX - state.startX;
+                const deltaSec = _qsSyncDxToDeltaSec(dx);
+                if (useWords) {
+                    _qsSyncApplyWordMoveFromBaseline(ci, state.baselineSnaps, deltaSec);
+                } else {
+                    _qsSyncApplyLegacyMoveFromBaseline(ci, state.baselineSeg, deltaSec);
+                }
+                _qsUpdateLineTimeDragDeltaLabel(container, ci, deltaSec);
+                scheduleVisualRefresh(ci);
+                tooltip.style.display = 'none';
+            }
+
+            function onLineUp(ev) {
+                if (ev.pointerId !== state.pointerId) return;
+                const ciFinal = state.ci;
+                detachLine();
+                tooltip.style.display = 'none';
+                if (useWords) {
+                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                    try { renderWordCaptionEditor(); } catch (_) {}
+                } else {
+                    try { renderLegacyTimingModeTranscript(container); } catch (_) {}
+                }
+                if (typeof window.refreshVideoSubtitles === 'function') window.refreshVideoSubtitles();
+                _qsSeekToCaptionStart(ciFinal);
+            }
+
+            window.addEventListener('pointermove', onLineMove, true);
+            window.addEventListener('pointerup', onLineUp, true);
+            window.addEventListener('pointercancel', onLineUp, true);
+            try { lineDragEl.setPointerCapture(e.pointerId); } catch (_) {}
+            _qsUpdateLineTimeDragDeltaLabel(container, ci, 0);
             return;
         }
 
@@ -8979,6 +9025,12 @@ function initQsSyncDirectManipulation(container) {
             '.caption-row.qs-timing-line-selected, .paragraph-row.qs-timing-legacy-row.qs-timing-line-selected'
         );
         if (!row || !container.contains(row)) return;
+
+        {
+            let tn = e.target;
+            if (tn && tn.nodeType === Node.TEXT_NODE && tn.parentElement) tn = tn.parentElement;
+            if (tn && tn.closest && tn.closest('.qs-line-time-drag')) return;
+        }
 
         // Unified edit + timing: never start line-drag from words or token input — those need native focus / token edit clicks.
         if (container.classList.contains('transcript-editing')) {
@@ -9031,6 +9083,7 @@ function initQsSyncDirectManipulation(container) {
             } else {
                 _qsSyncApplyLegacyMoveFromBaseline(ci, state.baselineSeg, deltaSec);
             }
+            _qsUpdateLineTimeDragDeltaLabel(container, ci, deltaSec);
             scheduleVisualRefresh(ci);
         }
 
@@ -9262,25 +9315,38 @@ function renderLegacyTimingModeTranscript(container) {
         }
         const timeLine = _qsCaptionTimeRangeHtml(cs, endSec);
         if (idx === sel) {
+            const legacyLineDrag = `
+                <div class="qs-line-time-drag-wrap">
+                    <button type="button" class="qs-line-time-drag" data-timing-idx="${idx}" aria-label="גרור להזיז את כל השורה בזמן">
+                        <span class="qs-line-time-drag__track" aria-hidden="true"></span>
+                        <span class="qs-line-time-drag__inner" dir="ltr">
+                            <span class="qs-line-time-drag__sign">+</span><span class="qs-line-time-drag__value">0.00s</span>
+                        </span>
+                    </button>
+                </div>`;
             return `
-        <div class="paragraph-row qs-timing-legacy-row qs-sync-legacy-selected${ov}${sl}" data-timing-idx="${idx}" id="seg-${Math.floor(c.start)}" style="display:flex; flex-direction:row; align-items:center; gap:8px; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
+        <div class="paragraph-row qs-timing-legacy-row qs-sync-legacy-selected${ov}${sl}" data-timing-idx="${idx}" id="seg-${Math.floor(c.start)}" style="display:flex; flex-direction:row; align-items:center; gap:16px; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
             <button type="button" class="qs-sync-handle qs-sync-handle--start" data-timing-idx="${idx}" data-qs-sync-handle="start" aria-label="גרור לשינוי זמן התחלה"></button>
             <div style="flex:1; min-width:0; display:flex; flex-direction:column; align-items:stretch;">
-                <div class="qs-sync-legacy-ts" style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.15;">${timeLine}</div>
+                <div class="qs-sync-legacy-ts segment-timestamps">${timeLine}</div>
                 <div class="qs-sync-text-stack">
-                    <div class="qs-sync-legacy-text-row" style="display:flex; flex-direction:row; align-items:center; gap:6px; max-width:100%; margin-top:-2px;">
-                        <p data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:0 1 auto; min-width:0;">${safe}</p>
+                    <div class="qs-sync-legacy-text-row" style="display:flex; flex-direction:row; align-items:center; width:100%; max-width:100%; min-width:0;">
+                        <div class="segment-content-wrapper">
+                            <p data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:1; min-width:0;">${safe}</p>
+                        </div>
                         <button type="button" class="qs-sync-handle qs-sync-handle--end" data-timing-idx="${idx}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
                     </div>
-                    <div class="qs-sync-move-hint" aria-hidden="true"><span class="qs-sync-move-hint-icon">↔</span><span class="qs-sync-move-hint-text">Drag to move</span></div>
+                    ${legacyLineDrag}
                 </div>
             </div>
         </div>`;
         }
         return `
         <div class="paragraph-row qs-timing-legacy-row${ov}${sl}" data-timing-idx="${idx}" id="seg-${Math.floor(c.start)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
-            <div class="qs-sync-legacy-ts" style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.15;">${timeLine}</div>
-            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;">${safe}</p>
+            <div class="qs-sync-legacy-ts segment-timestamps">${timeLine}</div>
+            <div class="segment-content-wrapper">
+              <p data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:1; min-width:0;">${safe}</p>
+            </div>
         </div>`;
     }).join('');
     container.innerHTML = html;
@@ -9485,24 +9551,9 @@ function renderWordCaptionEditor() {
     const textAlign = isRtl ? 'right' : 'left';
     const isEditing = container.classList.contains('transcript-editing');
     const timingMode = !!window._qsTimingMode;
-    const documentMode = isDocumentFormatEnabled();
     container.classList.toggle('qs-rtl', !!isRtl);
 
-    // In read-only document mode, render paragraph text (caption rows stay while editing/timing).
-    if (documentMode && !timingMode && !isEditing) {
-        const docParagraphs = getDocFormatParagraphs();
-        if (docParagraphs.length) {
-            const htmlDoc = docParagraphs.map((p) => {
-                const safe = String(p || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                return `<div class="paragraph-row" style="display:block; margin-bottom: 0.5em; direction:${textDirection}; text-align:${textAlign};"><p style="margin: 0; line-height: 1.7; white-space: pre-wrap;">${safe}</p></div>`;
-            }).join('');
-            container.innerHTML = htmlDoc;
-            container.style.direction = textDirection;
-            container.style.textAlign = textAlign;
-            container.contentEditable = 'false';
-            return;
-        }
-    }
+    // Document ("מסמך") layout is handled by rerenderTranscriptView → window.render when not editing/syncing.
 
     function syncInlineStylePanel(ci) {
         if (!Number.isFinite(ci)) return;
@@ -9546,6 +9597,15 @@ function renderWordCaptionEditor() {
             `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${posLabelMap[p] || p}</button>`
         ).join('');
         const styleTooltip = 'עיצוב שורה. גררו כדי לבחור כמה שורות.';
+        const lineTimeDragChip = (timingMode && ci === timingSel && isEditing) ? `
+            <div class="qs-line-time-drag-wrap">
+                <button type="button" class="qs-line-time-drag" data-ci="${ci}" aria-label="גרור להזיז את כל השורה בזמן">
+                    <span class="qs-line-time-drag__track" aria-hidden="true"></span>
+                    <span class="qs-line-time-drag__inner" dir="ltr">
+                        <span class="qs-line-time-drag__sign">+</span><span class="qs-line-time-drag__value">0.00s</span>
+                    </span>
+                </button>
+            </div>` : '';
         const toolbarHtml = isEditing ? `
             <div class="qs-caption-toolbar" style="display:flex;align-items:center;gap:6px;flex-shrink:0;opacity:0;transition:opacity .12s ease;">
               <button type="button" class="qs-style-btn" data-ci="${ci}" title="${styleTooltip}" aria-label="${styleTooltip}">🎨</button>
@@ -9564,25 +9624,26 @@ function renderWordCaptionEditor() {
             : formatTime(start);
         const bodyBlock = (timingMode && ci === timingSel)
             ? `
-              <div class="caption-row-body qs-sync-caption-body" style="display:flex; gap:6px; align-items:center; margin-top:0; max-width:100%; flex-wrap:wrap;">
-                <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:0 1 auto; min-width:0;">${tokenHtml}</div>
+              <div class="caption-row-body qs-sync-caption-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
+                <div class="segment-content-wrapper">
+                  <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0;">${tokenHtml}</div>
+                  ${toolbarHtml}
+                </div>
                 <button type="button" class="qs-sync-handle qs-sync-handle--end" data-ci="${ci}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
-                ${toolbarHtml}
               </div>`
             : `
-              <div class="caption-row-body" style="display:flex; gap:10px; align-items:flex-start; margin-top:0;">
-                <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1;">${tokenHtml}</div>
-                ${toolbarHtml}
+              <div class="caption-row-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
+                <div class="segment-content-wrapper">
+                  <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0;">${tokenHtml}</div>
+                  ${toolbarHtml}
+                </div>
               </div>`;
-        const tsBlock = `<div class="caption-ts" style="font-size:0.74em; color:#9ca3af; line-height:1.15; margin-bottom:0;">${tsLine}</div>`;
-        const moveHint = (timingMode && ci === timingSel)
-            ? `<div class="qs-sync-move-hint" aria-hidden="true"><span class="qs-sync-move-hint-icon">↔</span><span class="qs-sync-move-hint-text">Drag to move</span></div>`
-            : '';
+        const tsBlock = `<div class="caption-ts segment-timestamps">${tsLine}</div>`;
         const syncFlex = (timingMode && ci === timingSel)
-            ? `<div class="qs-sync-row-flex" style="display:flex; flex-direction:row; align-items:center; gap:8px; width:100%;">
+            ? `<div class="qs-sync-row-flex" style="display:flex; flex-direction:row; align-items:center; gap:16px; width:100%;">
             <button type="button" class="qs-sync-handle qs-sync-handle--start" data-ci="${ci}" data-qs-sync-handle="start" aria-label="גרור לשינוי זמן התחלה"></button>
             <div class="qs-sync-row-core" style="flex:1; min-width:0; display:flex; flex-direction:column; gap:0; align-items:stretch;">
-              ${tsBlock}<div class="qs-sync-text-stack">${bodyBlock}${moveHint}</div>
+              ${tsBlock}<div class="qs-sync-text-stack">${bodyBlock}${lineTimeDragChip}</div>
             </div>
           </div>`
             : `<div class="caption-row-main" style="display:flex; flex-direction:column; gap:0; align-items:stretch;">
@@ -9627,10 +9688,39 @@ function renderWordCaptionEditor() {
             padding: 0 !important;
             line-height: 1 !important;
           }
+          #transcript-window .caption-ts.segment-timestamps,
+          #transcript-window .qs-sync-legacy-ts.segment-timestamps,
+          #transcript-window .segment-timestamps {
+            color: #64748b;
+            font-size: 0.85rem;
+            margin: 0 0 6px 0 !important;
+            padding: 0 16px !important;
+            box-sizing: border-box;
+            line-height: 1.15 !important;
+            display: block;
+          }
+          #transcript-window .segment-content-wrapper {
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex: 1;
+            min-width: 0;
+            width: 100%;
+            box-sizing: border-box;
+          }
+          #transcript-window .qs-sync-legacy-text-row .segment-content-wrapper {
+            width: auto;
+          }
           #transcript-window .caption-row-body {
             margin-top: 0 !important;
             padding-top: 0 !important;
-            align-items: flex-start !important;
+            align-items: center !important;
+          }
+          #transcript-window .qs-caption-toolbar {
+            margin: 0;
+            padding: 0;
+            flex-shrink: 0;
           }
           #transcript-window .caption-text {
             margin: 0 !important;
@@ -9649,7 +9739,8 @@ function renderWordCaptionEditor() {
             border-radius: 10px;
           }
           #transcript-window.transcript-editing .caption-row:hover .qs-caption-toolbar,
-          #transcript-window.transcript-editing .caption-row.qs-line-selected .qs-caption-toolbar {
+          #transcript-window.transcript-editing .caption-row.qs-line-selected .qs-caption-toolbar,
+          #transcript-window.transcript-sync-mode .caption-row.qs-timing-line-selected .qs-caption-toolbar {
             opacity: 1 !important;
           }
           #transcript-window.transcript-editing .caption-row.qs-line-selected {
@@ -9706,19 +9797,87 @@ function renderWordCaptionEditor() {
             pointer-events: none;
             text-shadow: 0 0 0 rgba(59,130,246,0.4);
           }
-          #transcript-window .qs-caption-toolbar .qs-nudge-btn {
-            width: 32px;
-            height: 30px;
-            border: none;
-            background: rgba(255,255,255,0.95);
-            border-radius: 10px;
-            cursor: pointer;
-            font-size: 18px;
-            line-height: 1;
-            box-shadow: 0 4px 14px rgba(0,0,0,0.08);
-            padding: 0;
+          #transcript-window .qs-line-time-drag-wrap {
+            display: flex;
+            justify-content: center;
+            margin-top: 0;
+            padding-bottom: 0;
           }
-          #transcript-window .qs-caption-toolbar .qs-nudge-btn:hover { background: rgba(243,244,246,1); }
+          #transcript-window .qs-line-time-drag {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 3px 12px;
+            min-width: 5.75rem;
+            min-height: 1.35rem;
+            border: none;
+            background: transparent;
+            cursor: grab;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            font: inherit;
+            line-height: 1.15;
+          }
+          #transcript-window .qs-line-time-drag:active { cursor: grabbing; }
+          #transcript-window .qs-line-time-drag__track {
+            position: absolute;
+            left: 4px;
+            right: 4px;
+            top: 50%;
+            height: 1px;
+            margin-top: -0.5px;
+            background: #94a3b8;
+            pointer-events: none;
+            opacity: 0.85;
+          }
+          #transcript-window .qs-line-time-drag__track::before {
+            content: '';
+            position: absolute;
+            left: -4px;
+            top: 100%;
+            margin-top: -1px;
+            border-style: solid;
+            border-width: 3px 5px 3px 0;
+            border-color: transparent #94a3b8 transparent transparent;
+          }
+          #transcript-window .qs-line-time-drag__track::after {
+            content: '';
+            position: absolute;
+            right: -4px;
+            top: 100%;
+            margin-top: -1px;
+            border-style: solid;
+            border-width: 3px 0 3px 5px;
+            border-color: transparent transparent transparent #94a3b8;
+          }
+          #transcript-window .qs-line-time-drag__inner {
+            position: relative;
+            z-index: 1;
+            display: inline-flex;
+            align-items: baseline;
+            gap: 2px;
+            padding: 0 5px;
+            margin: 0;
+            background: rgba(255,255,255,0.88);
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.02em;
+            box-shadow: 0 0 0 1px rgba(148,163,184,0.25);
+          }
+          #transcript-window .qs-line-time-drag__sign {
+            font-weight: 700;
+            color: #64748b;
+            flex: 0 0 auto;
+          }
+          #transcript-window .qs-line-time-drag__value {
+            color: #475569;
+            flex: 0 0 auto;
+          }
           #transcript-window .qs-style-btn {
             width: 34px;
             height: 30px;
@@ -9777,8 +9936,11 @@ function renderWordCaptionEditor() {
           #transcript-window[data-multi-select="1"] .caption-row.qs-line-selected.qs-multi-lead .qs-style-btn {
             display: inline-block;
           }
-          #transcript-window[data-multi-select="1"] .caption-row.qs-line-selected .qs-nudge-btn {
+          #transcript-window[data-multi-select="1"] .caption-row.qs-line-selected .qs-line-time-drag-wrap {
             display: none;
+          }
+          #transcript-window[data-multi-select="1"] .caption-row.qs-line-selected.qs-multi-lead .qs-line-time-drag-wrap {
+            display: flex;
           }
           #qs-nudge-feedback-live {
             position: absolute;
