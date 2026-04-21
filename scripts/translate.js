@@ -92,15 +92,18 @@ async function processBatch(apiKey, model, items, targetLang) {
     'You are an expert transcript correction engine.',
     'Return ONLY valid JSON with this shape: {"results":[{"id":number,"text":string}]}.',
     'Do not add extra keys.',
-    'Do not translate.',
+    'Do not translate to another language; input and output must stay in the same language as each segment.',
+    'Preserve how the speaker actually spoke: keep colloquial wording, informal tone, repetition, and spoken rhythm.',
+    'Only fix clear spelling mistakes, wrong words from mis-hearing (ASR), basic grammar, and punctuation—minimal edits.',
+    'Do not summarize, do not formalize, do not rewrite into literary or report style, and do not add or remove ideas.',
     'Preserve original language and writing direction (RTL/LTR).',
-    'Do not add explanations or comments.',
-    'Fix obvious transcription errors only.'
+    'Do not add explanations or comments.'
   ].join(' ');
 
   const userPrompt = [
     `Target language hint: ${targetLang || 'he'}.`,
-    'Fix the text values and return the exact same JSON structure with same ids.',
+    'Correct each text in place: same spoken voice as the transcript, only grammar/spelling/ASR fixes.',
+    'Return the same JSON shape with the same ids.',
     JSON.stringify(batchInput)
   ].join('\n\n');
 

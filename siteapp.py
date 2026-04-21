@@ -61,9 +61,19 @@ _GPT_TASK1_CLEAN_TRANSCRIPT = (
     "* Do NOT summarize, omit, or invent content beyond what the transcript supports.\n\n"
 )
 
-# Medical / clinical: written documentation should not copy verbal discourse markers (e.g. Hebrew אז as filler).
+# Medical: protocol voice applies ONLY to Task 2 summary fields—not to clean_transcript (dialogue).
+_GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE = (
+    "Clinical encounter — clean_transcript only: keep the running doctor–patient dialogue. Preserve natural speech: "
+    "first/second person, bedside phrasing, oral rhythm, and typical spoken connectors (e.g. Hebrew אז) when they "
+    "reflect real speech. Task 1 rules: light grammar, spelling, and punctuation only—same as non-clinical clean "
+    "transcript. Do NOT rewrite clean_transcript into passive third person, chart/protocol prose, or formal clinical "
+    "documentation; that style is ONLY for Task 2 (chief_complaint, examination_transcript, patient_recommendations).\n\n"
+)
+
+# Medical / clinical: written documentation for summary fields only (not the dialogue transcript).
 _GPT_MEDICAL_WRITTEN_STYLE_NOTE = (
-    "Clinical written style (all narrative fields, including clean_transcript and the three summary sections): "
+    "Clinical written style for Task 2 ONLY (chief_complaint, examination_transcript, patient_recommendations)—"
+    "never for clean_transcript: "
     "Use formal, professional clinical prose—clear, compact sentences suitable for a chart or formal letter—not "
     "spoken Hebrew transcribed verbatim. "
     "Chart / protocol voice (not bedside speech): text is for the medical record, not how the clinician addressed "
@@ -2008,12 +2018,16 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
         system_prompt = (
             "You are an expert transcript correction engine. "
             "Return ONLY valid JSON with this exact shape: {\"results\":[{\"id\":number,\"text\":string}]}. "
-            "Do not add extra keys. Do not translate. Preserve original language and writing direction (RTL/LTR). "
-            "Do not add explanations. Fix obvious transcription errors only."
+            "Do not add extra keys. Do not translate to another language; keep the same language as each segment. "
+            "Preserve how the speaker actually spoke: colloquial wording, informal tone, repetition, and spoken rhythm. "
+            "Only fix clear spelling mistakes, wrong words from mis-hearing (ASR), basic grammar, and punctuation—minimal edits. "
+            "Do not summarize, do not formalize, do not rewrite into report style, and do not add or remove ideas. "
+            "Preserve original language and writing direction (RTL/LTR). Do not add explanations."
         )
         user_prompt = (
             f"Target language hint: {target_lang or 'he'}.\n\n"
-            "Fix the text values and return the exact same JSON structure with same ids.\n\n"
+            "Correct each text in place: same spoken voice as the transcript, only grammar/spelling/ASR fixes. "
+            "Return the same JSON structure with the same ids.\n\n"
             f"{json.dumps(batch_input, ensure_ascii=False)}"
         )
         def _request_with_model(model_name):
@@ -2405,9 +2419,11 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "Return ONLY valid JSON with exactly these keys: "
             "{\"clean_transcript\":string,\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
             "Do not include markdown fences. Keep original language and directionality for clean_transcript. "
+            "clean_transcript must read as spoken encounter dialogue; chart/protocol style applies only to the three summary fields. "
         )
         task2 = (
             "Task 2 – Clinical summary (documentation support only; not a substitute for judgment or the chart).\n"
+            f"{_GPT_MEDICAL_WRITTEN_STYLE_NOTE}"
             "chief_complaint — \"תלונה עיקרית\": chart-style narrative (reason for visit, patient-reported concerns, context)—"
             "third person / המטופל, not direct address to the patient. "
             "Summary of the visit without the physical examination section, not a verbatim transcript. If unclear, say so.\n\n"
@@ -2439,7 +2455,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "Ignore filler conversation.\n\n"
         )
         json_tail = "Return as JSON fields only (clean_transcript, overview, key_points).\n"
-    task1_clean = _GPT_TASK1_CLEAN_TRANSCRIPT + (_GPT_MEDICAL_WRITTEN_STYLE_NOTE if is_medical else "")
+    task1_clean = _GPT_TASK1_CLEAN_TRANSCRIPT + (_GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else "")
     user_prompt = (
         "You are editing a transcript.\n\n"
         f"{task1_clean}"
@@ -2453,9 +2469,6 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
     parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
     clean_transcript = _wrap_text_to_max_chars(str((parsed or {}).get("clean_transcript") or "").strip())
     if is_medical:
-        clean_transcript = _apply_hebrew_clinical_chart_voice(
-            _strip_spoken_hebrew_az_connector(clean_transcript)
-        )
         summary_block = _medical_summary_from_parsed(parsed, want_hebrew)
         return {
             "clean_transcript": clean_transcript,
@@ -2534,10 +2547,6 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
 
     clean_merged = "\n\n".join(p.strip() for p in clean_parts if p and str(p).strip())
     clean_merged = _wrap_text_to_max_chars(clean_merged)
-    if is_medical:
-        clean_merged = _apply_hebrew_clinical_chart_voice(
-            _strip_spoken_hebrew_az_connector(clean_merged)
-        )
 
     summ_input = clean_merged
     if len(summ_input) > summary_in_max:
