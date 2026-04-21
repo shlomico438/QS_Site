@@ -2322,6 +2322,14 @@ function extractSegmentsFromJobPayload(payload) {
     return Array.isArray(segments) ? segments : [];
 }
 
+/** Legacy GPT verification prefix; strip on ingest so UI/export stay clean. */
+function _stripLeadingMedicalExamLegacyPrefix(s) {
+    let t = String(s || '').trim();
+    if (t.startsWith('+++ ')) return t.slice(4).trim();
+    if (t.startsWith('+++')) return t.slice(3).trimStart();
+    return t;
+}
+
 function normalizeFormattedFields(f) {
     if (!f || typeof f !== 'object') return null;
     const out = {
@@ -2337,7 +2345,7 @@ function normalizeFormattedFields(f) {
         f.medical_patient_recommendations != null
     ) {
         out.medical_chief_complaint = String(f.medical_chief_complaint || '').trim();
-        out.medical_examination_transcript = String(f.medical_examination_transcript || '').trim();
+        out.medical_examination_transcript = _stripLeadingMedicalExamLegacyPrefix(f.medical_examination_transcript);
         out.medical_patient_recommendations = String(f.medical_patient_recommendations || '').trim();
     }
     return out;
@@ -2501,10 +2509,10 @@ function getMedicalActiveTabTextForCopy() {
         const mr = String(fmt.medical_patient_recommendations || '').trim();
         if (mc || me || mr) {
             const lines = [];
-            lines.push('תלונה עיקרית (סיכום המפגש ללא בדיקה):');
+            lines.push('תלונה עיקרית:');
             lines.push(mc || 'לא צוין.');
             lines.push('');
-            lines.push('בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר):');
+            lines.push('בדיקה:');
             lines.push(me || 'לא צוין.');
             lines.push('');
             lines.push('המלצות למטופל:');
@@ -2680,6 +2688,16 @@ async function ensureFormattedViaApiForExport() {
             '[export] GPT formatting computed for export (clean_transcript length=%s)',
             String(window.currentFormattedDoc.clean_transcript || '').length
         );
+        if (medFmt && window.currentFormattedDoc) {
+            try {
+                const d = window.currentFormattedDoc;
+                console.info('[export] medical summary fields (char counts)', {
+                    medical_chief_complaint: String(d.medical_chief_complaint || '').length,
+                    medical_examination_transcript: String(d.medical_examination_transcript || '').length,
+                    medical_patient_recommendations: String(d.medical_patient_recommendations || '').length
+                });
+            } catch (_) {}
+        }
         try {
             const { data: { user } } = await supabase.auth.getUser();
             const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
@@ -2713,6 +2731,7 @@ async function ensureFormattedViaApiForExport() {
             if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
                 window.medicalActiveTab = 'summary';
                 if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+                if (typeof window.render === 'function') window.render();
             }
         } catch (_) {}
         if (typeof showStatus === 'function') {
@@ -2732,8 +2751,13 @@ async function ensureFormattedViaApiForExport() {
     }
 }
 
-/** Re-run GPT transcript formatting + (for clinical jobs) medical three-part summary; same as export fallback. */
-window.qsRegenerateMedicalSummaryFromTranscript = function qsRegenerateMedicalSummaryFromTranscript() {
+/**
+ * Re-run GPT transcript formatting + (for clinical jobs) the three-part medical summary.
+ * Replaces `window.currentFormattedDoc` from the transcript (same as export formatting path).
+ * Clinical paragraphs stay in the session target language (usually Hebrew)—not the colored UI hints.
+ * Unsaved edits in the summary pane are not sent here; calling this after local edits will overwrite them.
+ */
+window.qsRegenerateMedicalSummaryFromTranscript = async function qsRegenerateMedicalSummaryFromTranscript() {
     return ensureFormattedViaApiForExport();
 };
 
@@ -3497,10 +3521,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             if (kind === 'summary') {
                 if (payload.mc || payload.me || payload.mr) {
                     const lines = [];
-                    lines.push('תלונה עיקרית (סיכום המפגש ללא בדיקה):');
+                    lines.push('תלונה עיקרית:');
                     lines.push(payload.mc || 'לא צוין.');
                     lines.push('');
-                    lines.push('בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר):');
+                    lines.push('בדיקה:');
                     lines.push(payload.me || 'לא צוין.');
                     lines.push('');
                     lines.push('המלצות למטופל:');
@@ -6244,6 +6268,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const win = document.getElementById('transcript-window');
         // Legacy paragraph edit: whole window is contenteditable; inline jumpTo on <p> would fight the caret — keep blocked.
         if (win && win.contentEditable === 'true') return;
+        if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary' &&
+            win && win.classList.contains('transcript-editing')) return;
         const t = typeof seconds === 'number' ? seconds : Number(seconds);
         if (!Number.isFinite(t)) return;
         const player = (typeof window._getPrimaryMediaElement === 'function')
@@ -6394,9 +6420,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const isMedicalSummaryEdit =
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
         if (isMedicalSummaryEdit) {
-            const chiefEl = win ? win.querySelector('#medical-summary-chief') : null;
-            const examEl = win ? win.querySelector('#medical-summary-exam') : null;
-            const recEl = win ? win.querySelector('#medical-summary-rec') : null;
+            const chiefEl = win ? (win.querySelector('[data-medical-section="chief"]') || win.querySelector('#medical-summary-chief')) : null;
+            const examEl = win ? (win.querySelector('[data-medical-section="exam"]') || win.querySelector('#medical-summary-exam')) : null;
+            const recEl = win ? (win.querySelector('[data-medical-section="rec"]') || win.querySelector('#medical-summary-rec')) : null;
             const overviewEl = win ? win.querySelector('#medical-summary-overview') : null;
             const pointsList = win ? win.querySelector('#medical-summary-points') : null;
             const existing = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
@@ -6405,7 +6431,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const strip = (el) => (el ? String(el.innerText || '').trim().replace(/\s+/g, ' ') : '');
             if (chiefEl || examEl || recEl) {
                 const medical_chief_complaint = strip(chiefEl);
-                const medical_examination_transcript = strip(examEl);
+                const medical_examination_transcript = _stripLeadingMedicalExamLegacyPrefix(strip(examEl));
                 const medical_patient_recommendations = strip(recEl);
                 const kp = [medical_examination_transcript, medical_patient_recommendations].filter(Boolean);
                 window.currentFormattedDoc = {
@@ -6430,6 +6456,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 };
             }
             win.contentEditable = 'false';
+            _qsSetMedicalSummaryPaneEditable(win, false);
             win.style.border = "1px solid #e2e8f0";
             win.style.backgroundColor = "transparent";
             win.classList.remove('transcript-editing', 'transcript-sync-mode');
@@ -6773,6 +6800,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 win.innerHTML = window.transcriptBackup;
             }
             win.contentEditable = 'false';
+            _qsSetMedicalSummaryPaneEditable(win, false);
             win.style.border = "1px solid #e2e8f0";
             win.style.backgroundColor = "transparent";
             win.classList.remove('transcript-editing', 'transcript-sync-mode');
@@ -7228,21 +7256,23 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     window.toggleEditMode = function() {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
-        const isEditable = win.contentEditable === 'true';
         const isMedicalSummaryEdit =
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
+        const isEditable = (isMedicalSummaryEdit && win)
+            ? win.classList.contains('transcript-editing')
+            : (win.contentEditable === 'true');
 
         if (!isEditable) {
             if (isMedicalSummaryEdit) {
                 window._qsForceLegacyEditMode = false;
-                win.contentEditable = 'true';
+                window.transcriptBackup = win.innerHTML;
+                _qsSetMedicalSummaryPaneEditable(win, true);
                 win.style.border = "2px solid #1e3a8a";
                 win.style.backgroundColor = "#fff";
                 win.classList.add('transcript-editing');
-                window.transcriptBackup = win.innerHTML;
                 if (editActions) editActions.style.display = 'flex';
                 requestAnimationFrame(() => {
-                    const chief = win.querySelector('#medical-summary-chief');
+                    const chief = win.querySelector('[data-medical-section="chief"]') || win.querySelector('#medical-summary-chief');
                     const overview = win.querySelector('#medical-summary-overview');
                     const target = chief || overview;
                     if (target) {
@@ -8191,6 +8221,27 @@ function srtFromCues(cues) {
     }).join('\n');
 }
 
+/** Enable editing only on medical summary body fields; keep the shell and section titles non-editable. */
+function _qsSetMedicalSummaryPaneEditable(win, editable) {
+    if (!win) return;
+    const on = editable ? 'true' : 'false';
+    win.contentEditable = 'false';
+    const marked = win.querySelectorAll('[data-medical-section="chief"], [data-medical-section="exam"], [data-medical-section="rec"]');
+    if (marked.length) {
+        marked.forEach((el) => { el.contentEditable = on; });
+    } else {
+        win.querySelectorAll('#medical-summary-chief, #medical-summary-exam, #medical-summary-rec').forEach((el) => {
+            el.contentEditable = on;
+        });
+    }
+    const overview = win.querySelector('#medical-summary-overview');
+    if (overview) overview.contentEditable = on;
+    const points = win.querySelector('#medical-summary-points');
+    if (points) {
+        points.querySelectorAll('li').forEach((li) => { li.contentEditable = on; });
+    }
+}
+
 function _medicalHasFormattedSummaryContent() {
     const fmt = window.currentFormattedDoc;
     if (!fmt || typeof fmt !== 'object') return false;
@@ -8280,26 +8331,26 @@ function renderTranscriptFromCues(cues) {
             const exam = String(fmt.medical_examination_transcript || '').trim();
             const rec = String(fmt.medical_patient_recommendations || '').trim();
             container.innerHTML = `
-            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;">
-                <div style="font-weight:700; margin-bottom:6px;">תלונה עיקרית (סיכום המפגש ללא בדיקה)</div>
-                <div id="medical-summary-chief">${esc(chief || emptyMsg)}</div>
-                <div style="font-weight:700; margin:14px 0 6px;">בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר)</div>
-                <div id="medical-summary-exam">${esc(exam || 'לא צוין.')}</div>
-                <div style="font-weight:700; margin:14px 0 6px;">המלצות למטופל</div>
-                <div id="medical-summary-rec">${esc(rec || 'לא צוין.')}</div>
+            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;" contenteditable="false">
+                <div style="font-weight:700; margin-bottom:6px;" contenteditable="false">תלונה עיקרית</div>
+                <div id="medical-summary-chief" data-medical-section="chief">${esc(chief || emptyMsg)}</div>
+                <div style="font-weight:700; margin:14px 0 6px;" contenteditable="false">בדיקה</div>
+                <div id="medical-summary-exam" data-medical-section="exam">${esc(exam || 'לא צוין.')}</div>
+                <div style="font-weight:700; margin:14px 0 6px;" contenteditable="false">המלצות למטופל</div>
+                <div id="medical-summary-rec" data-medical-section="rec">${esc(rec || 'לא צוין.')}</div>
             </div>
         `;
         } else {
             const overview = String(fmt.overview || '').trim();
             const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
             const pointsHtml = points.length
-                ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
-                : '<div id="medical-summary-empty" style="color:#6b7280;">אין סיכום רפואי זמין עדיין.</div>';
+                ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;" contenteditable="false">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+                : '<div id="medical-summary-empty" style="color:#6b7280;" contenteditable="false">אין סיכום רפואי זמין עדיין.</div>';
             container.innerHTML = `
-            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;">
-                <div style="font-weight:700; margin-bottom:6px;">סקירה</div>
+            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;" contenteditable="false">
+                <div style="font-weight:700; margin-bottom:6px;" contenteditable="false">סקירה</div>
                 <div id="medical-summary-overview">${esc(overview || emptyMsg)}</div>
-                <div style="font-weight:700; margin:14px 0 6px;">נקודות מפתח</div>
+                <div style="font-weight:700; margin:14px 0 6px;" contenteditable="false">נקודות מפתח</div>
                 ${pointsHtml}
             </div>
         `;

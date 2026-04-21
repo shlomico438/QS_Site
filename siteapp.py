@@ -61,6 +61,25 @@ _GPT_TASK1_CLEAN_TRANSCRIPT = (
     "* Do NOT summarize, omit, or invent content beyond what the transcript supports.\n\n"
 )
 
+# Medical / clinical: written documentation should not copy verbal discourse markers (e.g. Hebrew אז as filler).
+_GPT_MEDICAL_WRITTEN_STYLE_NOTE = (
+    "Clinical written style (all narrative fields, including clean_transcript and the three summary sections): "
+    "Use formal, professional clinical prose—clear, compact sentences suitable for a chart or formal letter—not "
+    "spoken Hebrew transcribed verbatim. "
+    "Chart / protocol voice (not bedside speech): text is for the medical record, not how the clinician addressed "
+    "the patient. In Hebrew, rewrite first- or second-person clinician→patient wording into neutral chart style—"
+    "passive or third person (המטופל / נסמך / נשלח / הומלץ / הופנה). Examples: prefer \"נשלח למיון\", "
+    "\"המטופל הופנה למיון\", \"הומלץ הגעה למיון\" over \"אני שלחתי אותך למיון\" or \"שלחתי אותך למיון\"; "
+    "avoid אתה, אותך, לך, אליך in chief_complaint and examination_transcript except for a necessary direct quote. "
+    "patient_recommendations may stay patient-directed where instructions require it. "
+    "In Hebrew, never keep the oral pattern \"…, אז …\" or \"…בגלל ש… , אז …\" (punctuation + אז + consequence). "
+    "Rewrite without \"אז\": one fluent sentence, or \"לפיכך\"/\"ולכן\", or omit the connector—e.g. prefer "
+    "\"…בבטן ימנית תחתונה, נשלח המטופל למיון לשלול אפנדיציטיס\" over "
+    "\"…תחתונה, אז אני שלחתי אותך למיון…\". "
+    "Likewise omit אז ככה, אוקיי, נו, כאילו, בעצם, and similar fillers unless they are a required direct quote. "
+    "Never change facts, findings, numbers, or instructions.\n\n"
+)
+
 
 def _safe_rsid(value, fallback):
     s = str(value or '').strip().upper()
@@ -2177,6 +2196,41 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
             time.sleep(min(12, 2 * (attempt + 1)))
     raise RuntimeError(f"OpenAI read timed out: {last_timeout_exc}") from last_timeout_exc
 
+# Oral Hebrew: "…, אז …" / "…. אז …" is common in speech but not in written clinical prose.
+_SPOKEN_AZ_AFTER_PUNCT_RE = re.compile(r'([\.,])\s*אז\s+')
+
+
+def _strip_spoken_hebrew_az_connector(text):
+    """Remove oral 'אז' after comma or period when it only introduces the next phrase (conservative rewrite)."""
+    t = str(text or "")
+    if not t or 'אז' not in t:
+        return t
+    return _SPOKEN_AZ_AFTER_PUNCT_RE.sub(r'\1 ', t)
+
+
+def _apply_hebrew_clinical_chart_voice(text):
+    """Rewrite common clinician→patient Hebrew into impersonal protocol phrasing (narrow replacements)."""
+    t = str(text or "")
+    if not t:
+        return t
+    t = re.sub(r'אני\s+שלחתי\s+אותך\s+למיון', 'נשלח למיון', t)
+    t = re.sub(r'שלחתי\s+אותך\s+למיון', 'נשלח למיון', t)
+    t = re.sub(r'אני\s+שלחתי\s+אותך\s+לאשפוז', 'נשלח לאשפוז', t)
+    t = re.sub(r'שלחתי\s+אותך\s+לאשפוז', 'נשלח לאשפוז', t)
+    return t
+
+
+def _strip_leading_exam_trace_legacy_prefix(exam_text):
+    """Strip legacy '+++ ' prefix from examination_transcript (older formatted jobs / model output)."""
+    t = str(exam_text or "").strip()
+    if not t:
+        return t
+    if t.startswith("+++ "):
+        return t[4:].strip()
+    if t.startswith("+++"):
+        return t[3:].lstrip().strip()
+    return t
+
 
 def _medical_summary_from_parsed(parsed, want_hebrew):
     """Map OpenAI three-part clinical JSON (+ legacy overview/key_points) to stored formatted fields."""
@@ -2200,6 +2254,10 @@ def _medical_summary_from_parsed(parsed, want_hebrew):
     chief_t, kp_t = _maybe_translate_summary_to_hebrew(chief, kp_for_tr, want_hebrew)
     exam_t = kp_t[0] if len(kp_t) >= 1 else exam
     rec_t = kp_t[1] if len(kp_t) >= 2 else rec
+    chief_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(chief_t))
+    rec_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(rec_t))
+    exam_t = _strip_leading_exam_trace_legacy_prefix(exam_t)
+    exam_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(exam_t))
     kp_out = [p for p in (exam_t, rec_t) if p]
     return {
         "overview": chief_t,
@@ -2282,12 +2340,17 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
         user_prompt = (
             "From this clinical encounter transcript, produce three sections in the output language "
             f"({output_lang_label}). Documentation support only; not a substitute for judgment or the chart.\n\n"
-            "chief_complaint — \"תלונה עיקרית\": concise narrative of the encounter focus (reason for visit, "
-            "what the patient reported, relevant context). This is a summary of the visit, not a verbatim transcript "
-            "and not the physical examination section. If unclear, say so.\n\n"
-            "examination_transcript — \"בדיקה\": as verbatim as possible for what the physician said during the "
-            "encounter regarding examination, instructions in an exam context, and similar clinician speech. "
-            "If nothing was said or not in the transcript, write an explicit not-stated phrase in the output language.\n\n"
+            f"{_GPT_MEDICAL_WRITTEN_STYLE_NOTE}"
+            "chief_complaint — \"תלונה עיקרית\": concise chart-style narrative (reason for visit, patient-reported "
+            "concerns, context)—third person / המטופל where natural, not bedside \"אתה מתלונן\". "
+            "Not the physical examination block. If unclear, say so.\n\n"
+            "examination_transcript — \"בדיקה\": capture examination narrative, findings, and exam-related decisions "
+            "in substance and sequence, but phrase them as chart/protocol documentation—not as bedside address to the patient "
+            "(depersonalize: no \"אני שלחתי אותך\"; use e.g. \"נשלח למיון\" / \"הופנה למיון\"). "
+            "Light edits only: grammar, punctuation, professional clinical tone, without altering meaning, omitting "
+            "stated detail, or inventing content. "
+            "If nothing was said or not in the transcript, write an explicit not-stated phrase "
+            "in the output language.\n\n"
             "patient_recommendations — \"המלצות למטופל\": recommendations, home care, follow-up, medications for the "
             "patient, return precautions, red flags only if stated in the transcript. If none, not-stated in the "
             "output language.\n\n"
@@ -2333,14 +2396,19 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "You are an expert transcript editor for clinical encounters. "
             "Return ONLY valid JSON with exactly these keys: "
             "{\"clean_transcript\":string,\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
-            "Do not include markdown fences. Keep original language and directionality for clean_transcript."
+            "Do not include markdown fences. Keep original language and directionality for clean_transcript. "
         )
         task2 = (
             "Task 2 – Clinical summary (documentation support only; not a substitute for judgment or the chart).\n"
-            "chief_complaint — \"תלונה עיקרית\": narrative summary of the encounter (reason for visit, patient-reported concerns, context). "
-            "This is a summary of the visit without the physical examination section, not a verbatim transcript. If unclear, say so.\n\n"
-            "examination_transcript — \"בדיקה\": as verbatim as possible for what the physician said about examination and related instructions. "
-            "If nothing appears in the transcript, use an explicit not-stated phrase in the output language.\n\n"
+            "chief_complaint — \"תלונה עיקרית\": chart-style narrative (reason for visit, patient-reported concerns, context)—"
+            "third person / המטופל, not direct address to the patient. "
+            "Summary of the visit without the physical examination section, not a verbatim transcript. If unclear, say so.\n\n"
+            "examination_transcript — \"בדיקה\": examination narrative, findings, and related decisions—in substance "
+            "and sequence—written for the protocol: neutral / passive / third person, not clinician→patient second person "
+            "(e.g. \"נשלח למיון\" not \"אני שלחתי אותך למיון\"). "
+            "Light edits only: grammar, punctuation, professional tone, without changing meaning, dropping stated detail, "
+            "or inventing content. "
+            "If nothing appears in the transcript for this section, use an explicit not-stated phrase in the output language.\n\n"
             "patient_recommendations — \"המלצות למטופל\": recommendations for the patient (home care, follow-up, medications, return precautions, red flags only if stated). "
             "End this field with one short line that the text must be verified against the recording and the responsible clinician.\n\n"
         )
@@ -2363,9 +2431,10 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "Ignore filler conversation.\n\n"
         )
         json_tail = "Return as JSON fields only (clean_transcript, overview, key_points).\n"
+    task1_clean = _GPT_TASK1_CLEAN_TRANSCRIPT + (_GPT_MEDICAL_WRITTEN_STYLE_NOTE if is_medical else "")
     user_prompt = (
         "You are editing a transcript.\n\n"
-        f"{_GPT_TASK1_CLEAN_TRANSCRIPT}"
+        f"{task1_clean}"
         f"{task2}"
         f"{json_tail}"
         f"Output language must be {output_lang_label} for all fields.\n\n"
@@ -2376,6 +2445,9 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
     parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
     clean_transcript = _wrap_text_to_max_chars(str((parsed or {}).get("clean_transcript") or "").strip())
     if is_medical:
+        clean_transcript = _apply_hebrew_clinical_chart_voice(
+            _strip_spoken_hebrew_az_connector(clean_transcript)
+        )
         summary_block = _medical_summary_from_parsed(parsed, want_hebrew)
         return {
             "clean_transcript": clean_transcript,
@@ -2454,6 +2526,10 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
 
     clean_merged = "\n\n".join(p.strip() for p in clean_parts if p and str(p).strip())
     clean_merged = _wrap_text_to_max_chars(clean_merged)
+    if is_medical:
+        clean_merged = _apply_hebrew_clinical_chart_voice(
+            _strip_spoken_hebrew_az_connector(clean_merged)
+        )
 
     summ_input = clean_merged
     if len(summ_input) > summary_in_max:
@@ -2865,10 +2941,10 @@ def api_export_docx():
             mr = str(fmt.get('medical_patient_recommendations') or '').strip()
             if mc or me or mr:
                 lines = []
-                lines.append('תלונה עיקרית (סיכום המפגש ללא בדיקה):')
+                lines.append('תלונה עיקרית:')
                 lines.append(mc or 'לא צוין.')
                 lines.append('')
-                lines.append('בדיקה (תמלול מדויק ככל האפשר של מה שהרופא אמר):')
+                lines.append('בדיקה:')
                 lines.append(me or 'לא צוין.')
                 lines.append('')
                 lines.append('המלצות למטופל:')
