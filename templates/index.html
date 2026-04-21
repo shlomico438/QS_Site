@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
+{% if medical_entry %}
+<script>
+window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
+</script>
+{% endif %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}">
 <script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>

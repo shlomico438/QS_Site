@@ -204,6 +204,13 @@ function setMedicalMode(enabled) {
     };
 })();
 
+try {
+    if (typeof window !== 'undefined' && window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH) {
+        setMedicalMode(true);
+        try { delete window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH; } catch (_) { window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = false; }
+    }
+} catch (_) {}
+
 /** HTTP statuses where hammering the server is pointless; stop polling after a short streak. */
 function qsIsSevereServerPollError(status) {
     return status === 502 || status === 503 || status === 504 || status === 429;

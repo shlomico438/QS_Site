@@ -1392,7 +1392,15 @@ def handle_exception(e):
 
 # --- WEB ROUTES ---
 @app.route('/')
-def index(): return render_template('index.html')
+def index():
+    return render_template('index.html', medical_entry=False)
+
+
+@app.route('/medical')
+@app.route('/medical/')
+def medical_app():
+    """Dedicated entry URL for HIPAA/clinical mode (parallel to the in-app medical toggle)."""
+    return render_template('index.html', medical_entry=True)
 
 
 @app.route('/favicon.ico')
