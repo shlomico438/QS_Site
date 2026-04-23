@@ -187,6 +187,12 @@ try {
     }
 } catch (_) {}
 
+const QS_MEDICAL_REASSERT_AFTER_LOGOUT = 'qs_reassert_medical_after_logout';
+
+function _qsSetMedicalReassertOnNextPageLoad() {
+    try { sessionStorage.setItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT, '1'); } catch (_) {}
+}
+
 function setMedicalMode(enabled, opts) {
     opts = opts || {};
     const bypassUrlLock = opts.bypassMedicalUrlLock === true;
@@ -217,8 +223,14 @@ function setMedicalMode(enabled, opts) {
 
 (() => {
     try {
-        const raw = localStorage.getItem(QS_MEDICAL_MODE_KEY);
-        window.isMedicalMode = String(raw || '').trim() === '1';
+        if (String(sessionStorage.getItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT) || '').trim() === '1') {
+            try { sessionStorage.removeItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT); } catch (_) {}
+            try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+            window.isMedicalMode = true;
+        } else {
+            const raw = localStorage.getItem(QS_MEDICAL_MODE_KEY);
+            window.isMedicalMode = String(raw || '').trim() === '1';
+        }
     } catch (_) {
         window.isMedicalMode = false;
     }
@@ -364,6 +376,12 @@ window.retryTriggerForActiveJob = async function() {
 // --- AUTH STATE: after email confirmation (magic link) Supabase creates the session; close modal and refresh ---
 supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') {
+        try {
+            const p = (window.location && window.location.pathname)
+                ? String(window.location.pathname).replace(/\/+$/, '') || '/'
+                : '/';
+            if (p === '/medical') window.__QS_MEDICAL_URL_ENTRY = true;
+        } catch (_) {}
         try {
             window.__QS_UX_USER_SIGNED_IN = false;
         } catch (_) {}
@@ -879,7 +897,18 @@ async function setupNavbarAuth(userOverride) {
         navBtn.onclick = (e) => {
             e.preventDefault();
             if (e.target.id === 'nav-logout-btn' || e.target.closest('#nav-logout-btn')) {
-                supabase.auth.signOut().then(() => window.location.reload());
+                (async () => {
+                    try {
+                        const p = (window.location.pathname || '').replace(/\/+$/, '') || '/';
+                        if (p === '/medical') {
+                            if (typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
+                                _qsSetMedicalReassertOnNextPageLoad();
+                            }
+                        }
+                    } catch (_) {}
+                    await supabase.auth.signOut();
+                    window.location.reload();
+                })();
                 return;
             }
             toggleUserMenu();
@@ -1113,6 +1142,12 @@ async function loadUserMenuProfile(user) {
                     if (typeof showStatus === 'function') showStatus(msg, true);
                     return;
                 }
+                try {
+                    const p = (window.location.pathname || '').replace(/\/+$/, '') || '/';
+                    if (p === '/medical' && typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
+                        _qsSetMedicalReassertOnNextPageLoad();
+                    }
+                } catch (_) {}
                 await supabase.auth.signOut();
                 window.location.reload();
             } catch (e) {
@@ -4428,6 +4463,12 @@ async function updateUIForUser() {
     if (user && authBtn) {
         authBtn.innerText = typeof window.t === 'function' ? window.t('nav_logout') : "Log Out";
         authBtn.onclick = async () => {
+            try {
+                const p = (window.location.pathname || '').replace(/\/+$/, '') || '/';
+                if (p === '/medical' && typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
+                    _qsSetMedicalReassertOnNextPageLoad();
+                }
+            } catch (_) {}
             await supabase.auth.signOut();
             window.location.reload();
         };
