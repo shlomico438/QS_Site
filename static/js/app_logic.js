@@ -942,6 +942,35 @@ function setSeoHomeContentVisibility(visible) {
     }
     seo.style.display = visible ? '' : 'none';
 }
+
+/** Keep marketing SEO block in sync: hide when a job/transcript is active (standard mode), same as after upload. */
+function syncSeoBlockWithAppState() {
+    const seo = document.getElementById('seo-home-content');
+    if (!seo) return;
+    if (isMedicalModeEnabled()) {
+        seo.style.display = 'none';
+        return;
+    }
+    if (window.isTriggering) {
+        seo.style.display = 'none';
+        return;
+    }
+    if (typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
+        seo.style.display = 'none';
+        return;
+    }
+    try {
+        const pContainer = document.getElementById('p-container');
+        if (pContainer) {
+            const st = window.getComputedStyle(pContainer);
+            if (st && st.display !== 'none' && pContainer.offsetWidth > 0) {
+                seo.style.display = 'none';
+                return;
+            }
+        }
+    } catch (_) {}
+    seo.style.display = '';
+}
 /** @param {object} [userOverride] - If provided (e.g. from updateUser), use this user instead of getUser() so the UI shows fresh data. */
 async function setupNavbarAuth(userOverride) {
     const navBtn = document.getElementById('nav-auth-btn');
@@ -4977,7 +5006,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalRecordWrap) medicalRecordWrap.style.display = on ? '' : 'none';
         if (mainBtn) mainBtn.style.display = on ? 'none' : '';
         if (downloadBtnLabel) downloadBtnLabel.textContent = on ? 'הורדה בפורמט Docx' : 'ייצוא והורדה';
-        if (seoHome) seoHome.style.display = on ? 'none' : '';
+        if (on) {
+            if (seoHome) seoHome.style.display = 'none';
+        } else {
+            if (typeof syncSeoBlockWithAppState === 'function') {
+                syncSeoBlockWithAppState();
+            } else if (seoHome) {
+                seoHome.style.display = 'none';
+            }
+        }
         if (mainAppContainer) mainAppContainer.classList.toggle('medical-mode', on);
         if (medicalHeader) medicalHeader.style.display = on ? '' : 'none';
         if (medicalTitle) medicalTitle.textContent = 'סשן הקלטה רפואי מאובטח';
@@ -4987,6 +5024,21 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
                 if (typeof window.toggleSubtitleStyleDrawer === 'function') window.toggleSubtitleStyleDrawer(false);
+            } catch (_) {}
+        } else {
+            try {
+                const tw = document.getElementById('transcript-window');
+                if (tw) tw.classList.remove('medical-wave-active');
+            } catch (_) {}
+            try {
+                if (typeof setTranscriptActionButtonsVisible === 'function' && typeof initOpenAppHasLoadedTranscriptPayload === 'function') {
+                    setTranscriptActionButtonsVisible(!!initOpenAppHasLoadedTranscriptPayload());
+                }
+            } catch (_) {}
+            try {
+                if (typeof window._qsRerenderTranscriptView === 'function') {
+                    window._qsRerenderTranscriptView();
+                }
             } catch (_) {}
         }
         updateMedicalTabUi();
@@ -5597,6 +5649,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderTranscriptFromCues(window.currentSegments || []);
         }
     };
+    try { window._qsRerenderTranscriptView = rerenderTranscriptView; } catch (_) {}
     document.getElementById('toggle-time')?.addEventListener('change', () => rerenderTranscriptView());
     const subtitleModeBtn = document.getElementById('format-mode-subtitle');
     const docModeBtn = document.getElementById('format-mode-doc');
