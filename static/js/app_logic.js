@@ -175,7 +175,33 @@ function clearSensitiveStorageForMedicalMode() {
     }
 }
 
-function setMedicalMode(enabled) {
+try {
+    window.__QS_UX_USER_SIGNED_IN = false;
+} catch (_) {}
+try {
+    if (!window.__QS_MEDICAL_URL_ENTRY) {
+        const p = (window.location && window.location.pathname)
+            ? String(window.location.pathname).replace(/\/+$/, '') || '/'
+            : '/';
+        if (p === '/medical') window.__QS_MEDICAL_URL_ENTRY = true;
+    }
+} catch (_) {}
+
+function setMedicalMode(enabled, opts) {
+    opts = opts || {};
+    const bypassUrlLock = opts.bypassMedicalUrlLock === true;
+    if (!enabled && window.__QS_MEDICAL_URL_ENTRY && !bypassUrlLock && !window.__QS_UX_USER_SIGNED_IN) {
+        try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+        window.isMedicalMode = true;
+        try {
+            const navToggle = document.getElementById('nav-medical-mode-toggle');
+            if (navToggle) navToggle.checked = true;
+        } catch (_) {}
+        if (typeof window.applyMedicalModeUi === 'function') {
+            try { window.applyMedicalModeUi(); } catch (_) {}
+        }
+        return;
+    }
     const on = !!enabled;
     window.isMedicalMode = on;
     try { localStorage.setItem(QS_MEDICAL_MODE_KEY, on ? '1' : '0'); } catch (_) {}
@@ -338,9 +364,15 @@ window.retryTriggerForActiveJob = async function() {
 // --- AUTH STATE: after email confirmation (magic link) Supabase creates the session; close modal and refresh ---
 supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') {
-        // Medical UI + lockdown must not survive logout; persisted pref would also block Supabase session keys on next visit.
         try {
-            setMedicalMode(false);
+            window.__QS_UX_USER_SIGNED_IN = false;
+        } catch (_) {}
+        try {
+            if (window.__QS_MEDICAL_URL_ENTRY) {
+                setMedicalMode(true);
+            } else {
+                setMedicalMode(false);
+            }
         } catch (_) {}
         if (typeof window.applyMedicalModeUi === 'function') {
             try { window.applyMedicalModeUi(); } catch (_) {}
@@ -834,6 +866,7 @@ async function setupNavbarAuth(userOverride) {
     if (!navBtn) return;
 
     const user = userOverride != null ? userOverride : (await supabase.auth.getUser()).data?.user;
+    try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
 
     const personalLink = document.getElementById('nav-personal-link');
     if (user) {
@@ -857,8 +890,9 @@ async function setupNavbarAuth(userOverride) {
         }
     } else {
         if (personalLink) personalLink.style.display = 'none';
-        // Do not keep HIPAA/medical UI or lockdown when there is no authenticated user (stale qs_medical_mode after logout).
-        if (isMedicalModeEnabled()) {
+        if (window.__QS_MEDICAL_URL_ENTRY) {
+            setMedicalMode(true);
+        } else if (isMedicalModeEnabled()) {
             setMedicalMode(false);
         }
         navBtn.innerHTML = typeof window.t === 'function' ? window.t('nav_sign_in') : 'Sign In';
@@ -984,7 +1018,7 @@ async function loadUserMenuProfile(user) {
     if (medicalModeInput) {
         medicalModeInput.checked = isMedicalModeEnabled();
         medicalModeInput.onchange = () => {
-            setMedicalMode(!!medicalModeInput.checked);
+            setMedicalMode(!!medicalModeInput.checked, { bypassMedicalUrlLock: true });
             if (messageEl) {
                 messageEl.style.display = 'block';
                 messageEl.textContent = medicalModeInput.checked
