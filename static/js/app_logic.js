@@ -56,11 +56,61 @@ window.originalFileName = '';
 window.hasMultipleSpeakers = false;
 let isSignUpMode = true;
 const QS_MEDICAL_MODE_KEY = 'qs_medical_mode';
+/** Set when user has opened /medical (so OAuth can land on /#$ and we still restore HIPAA UI after sign-out). */
+const QS_MEDICAL_LANDING_KEY = 'qs_medical_landing';
+
+function _qsReadMedicalLanding() {
+    try {
+        return String(localStorage.getItem(QS_MEDICAL_LANDING_KEY) || '').trim() === '1';
+    } catch (_) {
+        return false;
+    }
+}
+function _qsSetMedicalLanding() {
+    try { localStorage.setItem(QS_MEDICAL_LANDING_KEY, '1'); } catch (_) {}
+}
+/** True if this browser should return to the medical (HIPAA) product surface after sign-out. */
+function _qsWantsPostLogoutMedical() {
+    try {
+        const p = (window.location && window.location.pathname)
+            ? String(window.location.pathname).replace(/\/+$/, '') || '/'
+            : '/';
+        if (p === '/medical') return true;
+    } catch (_) {}
+    try {
+        if (window.__QS_MEDICAL_URL_ENTRY) return true;
+    } catch (_) {}
+    return _qsReadMedicalLanding();
+}
+async function _qsSignOutThenMedicalOrReload() {
+    const wantMedical = typeof _qsWantsPostLogoutMedical === 'function' && _qsWantsPostLogoutMedical();
+    try {
+        if (wantMedical) {
+            if (typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
+                _qsSetMedicalReassertOnNextPageLoad();
+            }
+            try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+            if (typeof _qsSetMedicalLanding === 'function') {
+                _qsSetMedicalLanding();
+            }
+        }
+    } catch (_) {}
+    await supabase.auth.signOut();
+    if (wantMedical) {
+        try {
+            window.location.assign('/medical');
+        } catch (_) {
+            try { window.location.href = '/medical'; } catch (__) { window.location.reload(); }
+        }
+        return;
+    }
+    window.location.reload();
+}
 
 /** Keys that may be written while medical lockdown is on (HIPAA: block job/transcript cache, not auth). */
 function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     const k = String(key || '');
-    if (k === QS_MEDICAL_MODE_KEY || k === 'locale' || k === 'qs_console') return true;
+    if (k === QS_MEDICAL_MODE_KEY || k === QS_MEDICAL_LANDING_KEY || k === 'locale' || k === 'qs_console') return true;
     // Supabase Auth persists session under sb-<project-ref>-… (e.g. auth-token, PKCE). Blocking these breaks Google OAuth / refresh.
     if (k.startsWith('sb-')) return true;
     if (k === 'supabase.auth.token') return true;
@@ -183,7 +233,13 @@ try {
         const p = (window.location && window.location.pathname)
             ? String(window.location.pathname).replace(/\/+$/, '') || '/'
             : '/';
-        if (p === '/medical') window.__QS_MEDICAL_URL_ENTRY = true;
+        if (p === '/medical') {
+            window.__QS_MEDICAL_URL_ENTRY = true;
+            _qsSetMedicalLanding();
+        }
+    }
+    if (!window.__QS_MEDICAL_URL_ENTRY && _qsReadMedicalLanding()) {
+        window.__QS_MEDICAL_URL_ENTRY = true;
     }
 } catch (_) {}
 
@@ -196,7 +252,7 @@ function _qsSetMedicalReassertOnNextPageLoad() {
 function setMedicalMode(enabled, opts) {
     opts = opts || {};
     const bypassUrlLock = opts.bypassMedicalUrlLock === true;
-    if (!enabled && window.__QS_MEDICAL_URL_ENTRY && !bypassUrlLock && !window.__QS_UX_USER_SIGNED_IN) {
+    if (!enabled && (window.__QS_MEDICAL_URL_ENTRY || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())) && !bypassUrlLock && !window.__QS_UX_USER_SIGNED_IN) {
         try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
         window.isMedicalMode = true;
         try {
@@ -226,6 +282,8 @@ function setMedicalMode(enabled, opts) {
         if (String(sessionStorage.getItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT) || '').trim() === '1') {
             try { sessionStorage.removeItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT); } catch (_) {}
             try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+            try { _qsSetMedicalLanding(); } catch (_) {}
+            try { window.__QS_MEDICAL_URL_ENTRY = true; } catch (_) {}
             window.isMedicalMode = true;
         } else {
             const raw = localStorage.getItem(QS_MEDICAL_MODE_KEY);
@@ -244,6 +302,9 @@ function setMedicalMode(enabled, opts) {
 
 try {
     if (typeof window !== 'undefined' && window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH) {
+        if (typeof _qsSetMedicalLanding === 'function') {
+            _qsSetMedicalLanding();
+        }
         setMedicalMode(true);
         try { delete window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH; } catch (_) { window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = false; }
     }
@@ -381,6 +442,9 @@ supabase.auth.onAuthStateChange((event, session) => {
                 ? String(window.location.pathname).replace(/\/+$/, '') || '/'
                 : '/';
             if (p === '/medical') window.__QS_MEDICAL_URL_ENTRY = true;
+            if (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding()) {
+                window.__QS_MEDICAL_URL_ENTRY = true;
+            }
         } catch (_) {}
         try {
             window.__QS_UX_USER_SIGNED_IN = false;
@@ -898,16 +962,12 @@ async function setupNavbarAuth(userOverride) {
             e.preventDefault();
             if (e.target.id === 'nav-logout-btn' || e.target.closest('#nav-logout-btn')) {
                 (async () => {
-                    try {
-                        const p = (window.location.pathname || '').replace(/\/+$/, '') || '/';
-                        if (p === '/medical') {
-                            if (typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
-                                _qsSetMedicalReassertOnNextPageLoad();
-                            }
-                        }
-                    } catch (_) {}
-                    await supabase.auth.signOut();
-                    window.location.reload();
+                    if (typeof _qsSignOutThenMedicalOrReload === 'function') {
+                        await _qsSignOutThenMedicalOrReload();
+                    } else {
+                        await supabase.auth.signOut();
+                        window.location.reload();
+                    }
                 })();
                 return;
             }
@@ -919,7 +979,7 @@ async function setupNavbarAuth(userOverride) {
         }
     } else {
         if (personalLink) personalLink.style.display = 'none';
-        if (window.__QS_MEDICAL_URL_ENTRY) {
+        if (window.__QS_MEDICAL_URL_ENTRY || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())) {
             setMedicalMode(true);
         } else if (isMedicalModeEnabled()) {
             setMedicalMode(false);
@@ -1142,14 +1202,12 @@ async function loadUserMenuProfile(user) {
                     if (typeof showStatus === 'function') showStatus(msg, true);
                     return;
                 }
-                try {
-                    const p = (window.location.pathname || '').replace(/\/+$/, '') || '/';
-                    if (p === '/medical' && typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
-                        _qsSetMedicalReassertOnNextPageLoad();
-                    }
-                } catch (_) {}
-                await supabase.auth.signOut();
-                window.location.reload();
+                if (typeof _qsSignOutThenMedicalOrReload === 'function') {
+                    await _qsSignOutThenMedicalOrReload();
+                } else {
+                    await supabase.auth.signOut();
+                    window.location.reload();
+                }
             } catch (e) {
                 if (typeof showStatus === 'function') showStatus(e?.message || (T('save_failed') || 'Failed'), true);
             }
@@ -4463,14 +4521,12 @@ async function updateUIForUser() {
     if (user && authBtn) {
         authBtn.innerText = typeof window.t === 'function' ? window.t('nav_logout') : "Log Out";
         authBtn.onclick = async () => {
-            try {
-                const p = (window.location.pathname || '').replace(/\/+$/, '') || '/';
-                if (p === '/medical' && typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
-                    _qsSetMedicalReassertOnNextPageLoad();
-                }
-            } catch (_) {}
-            await supabase.auth.signOut();
-            window.location.reload();
+            if (typeof _qsSignOutThenMedicalOrReload === 'function') {
+                await _qsSignOutThenMedicalOrReload();
+            } else {
+                await supabase.auth.signOut();
+                window.location.reload();
+            }
         };
     }
 }

@@ -4,6 +4,7 @@
 <script>
 window.__QS_MEDICAL_URL_ENTRY = true;
 window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
+try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
 </script>
 {% endif %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}">
