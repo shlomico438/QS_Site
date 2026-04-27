@@ -126,23 +126,50 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
 
 const QS_MEDICAL_AUTH_SNAPSHOT_KEY = 'qs_medical_auth_snapshot';
 
+/** True if medical UI has transcript/summary data worth persisting across sign-in (incl. clinical-only fields). */
+function medicalSnapshotSourceHasContent() {
+    if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return true;
+    if (Array.isArray(window.currentWords) && window.currentWords.length > 0) return true;
+    const doc = window.currentFormattedDoc;
+    if (doc && typeof doc === 'object') {
+        if (String(doc.clean_transcript || '').trim() || String(doc.overview || '').trim()) return true;
+        if (Array.isArray(doc.key_points) && doc.key_points.length > 0) return true;
+        if (
+            String(doc.medical_chief_complaint || '').trim() ||
+            String(doc.medical_examination_transcript || '').trim() ||
+            String(doc.medical_patient_recommendations || '').trim()
+        ) {
+            return true;
+        }
+    }
+    if (window._medicalHasResult === true) return true;
+    return false;
+}
+
 /** Serialize transcript UI so a Supabase sign-in (OAuth / magic link) can reload without losing the session. */
 function saveMedicalAuthSnapshotForPendingSignIn() {
     if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
-    const hasSegs = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+    if (!medicalSnapshotSourceHasContent()) return;
     const doc = window.currentFormattedDoc;
-    const hasDoc = doc && typeof doc === 'object' && (String(doc.clean_transcript || '').trim() || String(doc.overview || '').trim());
-    if (!hasSegs && !hasDoc) return;
     const snap = {
-        v: 1,
+        v: 2,
         segments: window.currentSegments || [],
         words: window.currentWords || null,
         captions: window.currentCaptions || null,
-        currentFormattedDoc: doc || null,
+        currentFormattedDoc: doc && typeof doc === 'object' ? doc : null,
         medicalActiveTab: String(window.medicalActiveTab || 'transcript'),
         _medicalHasResult: window._medicalHasResult === true,
         _qsInputS3KeyForGpt: String(typeof window._qsInputS3KeyForGpt === 'string' ? window._qsInputS3KeyForGpt : (window._qsInputS3KeyForGpt || '') || '').trim() || null
     };
+    try {
+        const ljid = (typeof localStorage !== 'undefined' && localStorage.getItem('lastJobDbId')) || '';
+        const ls = (typeof localStorage !== 'undefined' && localStorage.getItem('lastS3Key')) || '';
+        const ljidRun = (typeof localStorage !== 'undefined' && localStorage.getItem('lastJobId')) || '';
+        const act = (typeof localStorage !== 'undefined' && localStorage.getItem('activeJobId')) || '';
+        if (ljid || ls || ljidRun || act) {
+            snap.jobPointers = { lastJobDbId: ljid, lastS3Key: ls, lastJobId: ljidRun, activeJobId: act };
+        }
+    } catch (_) {}
     try {
         const s = JSON.stringify(snap);
         if (s.length > 4_500_000) return;
@@ -177,10 +204,27 @@ function restoreMedicalAuthSnapshotAfterSignIn() {
         clearMedicalAuthSnapshot();
         return;
     }
-    if (!snap || snap.v !== 1) {
+    if (!snap || (snap.v !== 1 && snap.v !== 2)) {
         clearMedicalAuthSnapshot();
         return;
     }
+    try {
+        const jp = snap.jobPointers;
+        if (jp && typeof jp === 'object') {
+            if (jp.lastJobDbId) {
+                try { localStorage.setItem('lastJobDbId', String(jp.lastJobDbId)); } catch (_) {}
+            }
+            if (jp.lastS3Key) {
+                try { localStorage.setItem('lastS3Key', String(jp.lastS3Key)); } catch (_) {}
+            }
+            if (jp.lastJobId) {
+                try { localStorage.setItem('lastJobId', String(jp.lastJobId)); } catch (_) {}
+            }
+            if (jp.activeJobId) {
+                try { localStorage.setItem('activeJobId', String(jp.activeJobId)); } catch (_) {}
+            }
+        }
+    } catch (_) {}
     window.currentSegments = Array.isArray(snap.segments) ? snap.segments : [];
     window.currentWords = snap.words || null;
     window.currentCaptions = snap.captions || null;
@@ -916,20 +960,10 @@ async function requireUserForCopyOrDownload() {
     return false;
 }
 
-/** True if URL is /?open=jobId or /medical?open= (email "ready" link, open-in-app, etc.). */
-function urlHasOpenJobQuery() {
-    try {
-        return /[?&]open=/.test((window.location && window.location.search) || '');
-    } catch (_) {
-        return false;
-    }
-}
-
 async function maybeShowInitialRegistrationPrompt() {
     try {
         const modal = document.getElementById('auth-modal');
         if (!modal) return;
-        if (urlHasOpenJobQuery()) return;
         const { data: { user } } = await supabase.auth.getUser();
         if (user) return;
         if (sessionStorage.getItem('qs_reg_prompt_dismissed') === '1') return;
@@ -5808,6 +5842,11 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await navigator.clipboard.writeText(text);
                 if (typeof showStatus === 'function') showStatus('הטקסט הועתק.', false);
+                try {
+                    if (typeof ensureJobRecordOnExport === 'function') {
+                        await ensureJobRecordOnExport();
+                    }
+                } catch (_) {}
                 try {
                     if (String(sessionStorage.getItem('qs_pefb_shown') || '') !== '1') {
                         if (String(sessionStorage.getItem('qs_medical_show_feedback_on_next_copy') || '') === '1') {
