@@ -119,6 +119,8 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     if (k === 'qs_medical_sign_in_for_copy' || k === 'qs_medical_show_feedback_on_next_copy') return true;
     if (k === 'qs_pefb_copy' || k === 'qs_pefb_export' || k.startsWith('qs_pefb_')) return true;
     if (k === 'qs_reg_prompt_dismissed') return true;
+    // Current job pointers only (not cached transcript text): required so jobs row + result_s3_key updates work; Personal list reads jobs table.
+    if (k === 'lastJobDbId' || k === 'lastS3Key' || k === 'lastJobId' || k === 'activeJobId' || k === 'pendingS3Key' || k === 'pendingJobId') return true;
     return false;
 }
 
@@ -8448,6 +8450,22 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             try {
                 const { data: { user: uploadUser } } = await supabase.auth.getUser();
+                if (isMedicalModeEnabled() && !uploadUser) {
+                    hideProgressBar();
+                    setDiarizationBusyState(false);
+                    if (mainBtn) mainBtn.disabled = false;
+                    const T = typeof window.t === 'function' ? window.t : (x) => x;
+                    if (typeof showStatus === 'function') {
+                        showStatus(
+                            T('medical_sign_in_to_upload') || 'Sign in to upload. Your completed recordings are saved in your list.',
+                            true
+                        );
+                    }
+                    isSignUpMode = true;
+                    applyAuthModalMode();
+                    if (typeof window.toggleModal === 'function') window.toggleModal(true);
+                    return;
+                }
                 const userId = uploadUser ? uploadUser.id : null;
 
                 // 1. Get the Signed URL from Python (key will be under users/{userId}/ or users/anonymous/)
