@@ -118,27 +118,9 @@ def _runpod_skip_warmup():
 
 
 def _schedule_runpod_min_workers(min_workers: int):
-    """Fire-and-forget GraphQL workersMin update (does not block request handlers)."""
-    if SIMULATION_MODE and str(os.environ.get('RUNPOD_SCALE_IN_SIMULATION', '')).strip().lower() not in (
-        '1', 'true', 'yes', 'on',
-    ):
-        print(
-            f"[RunPod] Skipping workersMin={min_workers} (SIMULATION_MODE=1; set RUNPOD_SCALE_IN_SIMULATION=1 to call API).",
-            flush=True,
-        )
-        return
-
-    def _run():
-        try:
-            from runpod_endpoint_workers import set_runpod_endpoint_min_workers
-
-            set_runpod_endpoint_min_workers(int(min_workers))
-        except Exception as e:
-            print(f"[RunPod] ❌ workersMin={min_workers} thread failed: {e}", flush=True)
-            logging.warning("RunPod workersMin=%s scheduling failed: %s", min_workers, e)
-
-    print(f"[RunPod] Scheduled background workersMin={min_workers} (GraphQL)...", flush=True)
-    threading.Thread(target=_run, daemon=True).start()
+    """Temporarily disabled: do not change RunPod endpoint workersMin."""
+    print(f"[RunPod] workersMin autoscaling disabled; ignoring requested min={min_workers}.", flush=True)
+    return
 
 
 def _public_base_url(req):
