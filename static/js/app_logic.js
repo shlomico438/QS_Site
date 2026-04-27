@@ -114,7 +114,96 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     // Supabase Auth persists session under sb-<project-ref>-… (e.g. auth-token, PKCE). Blocking these breaks Google OAuth / refresh.
     if (k.startsWith('sb-')) return true;
     if (k === 'supabase.auth.token') return true;
+    // One-shot in-memory → survive sign-in round-trip; feedback session flags (Storage patch applies to sessionStorage too).
+    if (k === 'qs_medical_auth_snapshot') return true;
+    if (k === 'qs_medical_sign_in_for_copy' || k === 'qs_medical_show_feedback_on_next_copy') return true;
+    if (k === 'qs_pefb_copy' || k === 'qs_pefb_export' || k.startsWith('qs_pefb_')) return true;
+    if (k === 'qs_reg_prompt_dismissed') return true;
     return false;
+}
+
+const QS_MEDICAL_AUTH_SNAPSHOT_KEY = 'qs_medical_auth_snapshot';
+
+/** Serialize transcript UI so a Supabase sign-in (OAuth / magic link) can reload without losing the session. */
+function saveMedicalAuthSnapshotForPendingSignIn() {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+    const hasSegs = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+    const doc = window.currentFormattedDoc;
+    const hasDoc = doc && typeof doc === 'object' && (String(doc.clean_transcript || '').trim() || String(doc.overview || '').trim());
+    if (!hasSegs && !hasDoc) return;
+    const snap = {
+        v: 1,
+        segments: window.currentSegments || [],
+        words: window.currentWords || null,
+        captions: window.currentCaptions || null,
+        currentFormattedDoc: doc || null,
+        medicalActiveTab: String(window.medicalActiveTab || 'transcript'),
+        _medicalHasResult: window._medicalHasResult === true,
+        _qsInputS3KeyForGpt: String(typeof window._qsInputS3KeyForGpt === 'string' ? window._qsInputS3KeyForGpt : (window._qsInputS3KeyForGpt || '') || '').trim() || null
+    };
+    try {
+        const s = JSON.stringify(snap);
+        if (s.length > 4_500_000) return;
+        try {
+            localStorage.setItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY, s);
+        } catch (e) {
+            try { sessionStorage.setItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY, s); } catch (_) {}
+        }
+    } catch (e) {
+        console.warn('[medical] auth snapshot', e);
+    }
+}
+
+function clearMedicalAuthSnapshot() {
+    try { localStorage.removeItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY); } catch (_) {}
+    try { sessionStorage.removeItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY); } catch (_) {}
+}
+
+function restoreMedicalAuthSnapshotAfterSignIn() {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+    let raw = '';
+    try {
+        raw = localStorage.getItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY) || sessionStorage.getItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY) || '';
+    } catch (_) {
+        return;
+    }
+    if (!raw) return;
+    let snap;
+    try {
+        snap = JSON.parse(raw);
+    } catch (_) {
+        clearMedicalAuthSnapshot();
+        return;
+    }
+    if (!snap || snap.v !== 1) {
+        clearMedicalAuthSnapshot();
+        return;
+    }
+    window.currentSegments = Array.isArray(snap.segments) ? snap.segments : [];
+    window.currentWords = snap.words || null;
+    window.currentCaptions = snap.captions || null;
+    window.currentFormattedDoc = snap.currentFormattedDoc || null;
+    window.medicalActiveTab = (snap.medicalActiveTab === 'summary' ? 'summary' : 'transcript');
+    window._medicalHasResult = snap._medicalHasResult === true;
+    if (snap._qsInputS3KeyForGpt) {
+        try { window._qsInputS3KeyForGpt = String(snap._qsInputS3KeyForGpt); } catch (_) {}
+    }
+    clearMedicalAuthSnapshot();
+    try {
+        if (String(window.medicalActiveTab) === 'summary') {
+            if (typeof renderTranscriptFromCues === 'function') {
+                renderTranscriptFromCues(window.currentSegments || []);
+            }
+        } else if (typeof renderMedicalTranscriptMainView === 'function') {
+            renderMedicalTranscriptMainView();
+        } else if (typeof renderTranscriptFromCues === 'function') {
+            renderTranscriptFromCues(window.currentSegments || []);
+        }
+    } catch (e) {
+        console.warn('[medical] restore render', e);
+    }
+    try { if (typeof updateMedicalTabUi === 'function') updateMedicalTabUi(); } catch (_) {}
+    try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
 }
 
 function isMedicalModeEnabled() {
@@ -473,6 +562,14 @@ supabase.auth.onAuthStateChange((event, session) => {
                 window.location.hash = '';
             }
         }
+        try { restoreMedicalAuthSnapshotAfterSignIn(); } catch (_) {}
+        try {
+            const signForCopy = String(sessionStorage.getItem('qs_medical_sign_in_for_copy') || '').trim() === '1';
+            if (signForCopy) {
+                try { sessionStorage.removeItem('qs_medical_sign_in_for_copy'); } catch (_) {}
+                try { sessionStorage.setItem('qs_medical_show_feedback_on_next_copy', '1'); } catch (_) {}
+            }
+        } catch (_) {}
         // Session was not ready on the first DOMContentLoaded tick (email magic link, PKCE) — run ?open= now.
         if (typeof runOpenQueryIfPresent === 'function') {
             void runOpenQueryIfPresent();
@@ -769,6 +866,11 @@ window.toggleModal = function(show) {
         // Save the key before the user starts logging in
         const currentKey = localStorage.getItem('lastS3Key');
         if (currentKey) localStorage.setItem('pendingS3Key', currentKey);
+        try {
+            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+                saveMedicalAuthSnapshotForPendingSignIn();
+            }
+        } catch (_) {}
     }
     const modal = document.getElementById('auth-modal');
     if (modal) modal.style.display = show ? 'flex' : 'none';
@@ -793,6 +895,12 @@ function applyAuthModalMode() {
 async function requireUserForCopyOrDownload() {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) return true;
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            saveMedicalAuthSnapshotForPendingSignIn();
+            try { sessionStorage.setItem('qs_medical_sign_in_for_copy', '1'); } catch (_) {}
+        }
+    } catch (_) {}
     isSignUpMode = true;
     applyAuthModalMode();
     if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -4014,6 +4122,11 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
 const googleLoginBtn = document.getElementById('google-login');
 if (googleLoginBtn) {
     googleLoginBtn.addEventListener('click', async () => {
+        try {
+            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+                saveMedicalAuthSnapshotForPendingSignIn();
+            }
+        } catch (_) {}
         if (window.currentSegments && window.currentSegments.length > 0 && !isMedicalModeEnabled()) {
             localStorage.setItem('pendingTranscript', JSON.stringify(window.currentSegments));
         }
@@ -4117,6 +4230,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (typeof window.applyTranslations === 'function') window.applyTranslations();
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
+
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            let hasSnap = false;
+            try {
+                hasSnap = !!(localStorage.getItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY) || sessionStorage.getItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY));
+            } catch (_) {}
+            const { data: { user: bootUser } } = await supabase.auth.getUser();
+            if (hasSnap) {
+                if (bootUser) {
+                    try { restoreMedicalAuthSnapshotAfterSignIn(); } catch (_) {}
+                } else {
+                    try { clearMedicalAuthSnapshot(); } catch (_) {}
+                }
+            }
+        }
+    } catch (_) {}
 
     // Home page: "Open in app" — load job by ?open=jobId (retried from SIGNED_IN if session is not ready yet)
     const pathname = typeof window.location !== 'undefined' ? window.location.pathname : '';
@@ -5667,9 +5797,18 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await navigator.clipboard.writeText(text);
                 if (typeof showStatus === 'function') showStatus('הטקסט הועתק.', false);
-                setTimeout(() => {
-                    try { void maybeShowPostExportFeedbackModal('medical_copy'); } catch (_) {}
-                }, 400);
+                try {
+                    if (String(sessionStorage.getItem('qs_pefb_copy') || '') === '1') {
+                        // Feedback already shown or skipped this session
+                    } else {
+                        if (String(sessionStorage.getItem('qs_medical_show_feedback_on_next_copy') || '') === '1') {
+                            try { sessionStorage.removeItem('qs_medical_show_feedback_on_next_copy'); } catch (_) {}
+                        }
+                        setTimeout(() => {
+                            try { void maybeShowPostExportFeedbackModal('medical_copy'); } catch (_) {}
+                        }, 400);
+                    }
+                } catch (_) {}
             } catch (e) {
                 if (typeof showStatus === 'function') showStatus('העתקה נכשלה.', true);
             }
