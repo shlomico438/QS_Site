@@ -774,6 +774,51 @@ window.toggleModal = function(show) {
     if (modal) modal.style.display = show ? 'flex' : 'none';
 };
 
+function applyAuthModalMode() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const titleEl = document.getElementById('modal-title');
+    const signupFieldsEl = document.getElementById('signup-fields');
+    const authSubmitBtnEl = document.getElementById('auth-submit-btn');
+    const authSwitchTextEl = document.getElementById('auth-switch-text');
+    const toggleAuthModeEl = document.getElementById('toggle-auth-mode');
+    const skipBtn = document.getElementById('auth-skip-for-now');
+    if (titleEl) titleEl.textContent = isSignUpMode ? T('get_started') : T('welcome_back');
+    if (signupFieldsEl) signupFieldsEl.style.display = isSignUpMode ? 'block' : 'none';
+    if (authSubmitBtnEl) authSubmitBtnEl.textContent = T('send_magic_link');
+    if (authSwitchTextEl) authSwitchTextEl.textContent = isSignUpMode ? T('already_have') : T('need_account');
+    if (toggleAuthModeEl) toggleAuthModeEl.textContent = isSignUpMode ? T('log_in') : T('sign_up');
+    if (skipBtn) skipBtn.style.display = isSignUpMode ? '' : 'none';
+}
+
+async function requireUserForCopyOrDownload() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) return true;
+    isSignUpMode = true;
+    applyAuthModalMode();
+    if (typeof window.toggleModal === 'function') window.toggleModal(true);
+    const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+    if (typeof showStatus === 'function') {
+        showStatus(
+            isHebrewUi ? 'התחברו כדי להעתיק או להוריד.' : 'Sign in to copy or download.',
+            true
+        );
+    }
+    return false;
+}
+
+async function maybeShowInitialRegistrationPrompt() {
+    try {
+        const modal = document.getElementById('auth-modal');
+        if (!modal) return;
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) return;
+        if (sessionStorage.getItem('qs_reg_prompt_dismissed') === '1') return;
+        isSignUpMode = true;
+        applyAuthModalMode();
+        if (typeof window.toggleModal === 'function') window.toggleModal(true);
+    } catch (_) {}
+}
+
 // --- SUBTITLE CHUNKER ---
 function splitLongSegments(segments, maxChars = 40) {
     const result = [];
@@ -3086,11 +3131,81 @@ async function _flushMobileBatchShare() {
     }
 }
 
+window._postExportFeedbackStars = 0;
+
+function setPostExportFeedbackStars(n) {
+    const v = Math.max(0, Math.min(5, Number(n) || 0));
+    window._postExportFeedbackStars = v;
+    try {
+        document.querySelectorAll('.post-exp-star-btn').forEach((btn) => {
+            const sn = parseInt(btn.getAttribute('data-post-exp-star'), 10);
+            btn.style.color = v >= sn ? '#f59e0b' : '#d1d5db';
+        });
+    } catch (_) {}
+}
+
+/**
+ * After a file is delivered to the user, optionally show feedback for signed-in users (once per session).
+ */
+function maybeQueuePostExportFeedbackPrompt(safeFilename) {
+    const name = String(safeFilename || '').toLowerCase();
+    if (!name || name === 'download.bin') return;
+    if (!/\.(srt|vtt|txt|docx?|mp4|mov|webm|m4a|mp3|zip)$/i.test(name)) {
+        if (!/transcript|summary|subtitle|סיכום|תמלול/i.test(name)) return;
+    }
+    if (sessionStorage.getItem('qs_pefb_export') === '1') return;
+    try {
+        const am = document.getElementById('auth-modal');
+        if (am) {
+            const d = am.style.display || '';
+            if (d === 'flex' || (window.getComputedStyle && window.getComputedStyle(am).display === 'flex')) return;
+        }
+    } catch (_) {}
+    setTimeout(() => {
+        try { void maybeShowPostExportFeedbackModal('export'); } catch (_) {}
+    }, 500);
+}
+
+/** @param {'export'|'medical_copy'} kind */
+async function maybeShowPostExportFeedbackModal(kind) {
+    const sessionKey = kind === 'medical_copy' ? 'qs_pefb_copy' : 'qs_pefb_export';
+    if (sessionStorage.getItem(sessionKey) === '1') return;
+    const hp = document.getElementById('post-exp-fb-website');
+    if (hp && String(hp.value || '').trim()) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const m = document.getElementById('post-export-feedback-modal');
+    if (!m) return;
+    if (m.style.display === 'flex') return;
+    sessionStorage.setItem(sessionKey, '1');
+    try {
+        window._qsFeedbackModalSource = kind === 'medical_copy' ? 'medical_copy' : 'post_export';
+    } catch (_) {}
+    m.style.display = 'flex';
+    m.setAttribute('aria-hidden', 'false');
+    const pl = document.getElementById('post-exp-fb-like');
+    const pi = document.getElementById('post-exp-fb-improve');
+    if (pl) pl.value = '';
+    if (pi) pi.value = '';
+    if (hp) hp.value = '';
+    setPostExportFeedbackStars(0);
+    try { if (typeof window.applyTranslations === 'function') window.applyTranslations(); } catch (_) {}
+}
+
+function closePostExportFeedbackModal() {
+    const m = document.getElementById('post-export-feedback-modal');
+    if (m) {
+        m.style.display = 'none';
+        m.setAttribute('aria-hidden', 'true');
+    }
+}
+
 async function deliverBlobToUser(blob, filename, mimeType) {
     const safeName = String(filename || 'download.bin');
     const fileType = String(mimeType || blob?.type || 'application/octet-stream');
     if (isMobileClient() && window._qsMobileBatchShareMode) {
         _queueMobileBatchFile(blob, safeName, fileType);
+        try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
         return true;
     }
     if (isMobileClient() && navigator.share && typeof File !== 'undefined') {
@@ -3099,6 +3214,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
             const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
             if (canShare) {
                 await navigator.share({ files: [file] });
+                try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
                 return true;
             }
         } catch (_) {}
@@ -3109,6 +3225,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
     }
     if (typeof saveAs !== 'undefined') {
         saveAs(blob, safeName);
+        try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
         return true;
     }
     const url = URL.createObjectURL(blob);
@@ -3117,6 +3234,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
     a.download = safeName;
     a.click();
     URL.revokeObjectURL(url);
+    try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
     return true;
 }
 
@@ -3298,6 +3416,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         if (!movieUser) {
             logMovieStage('No user – show sign-in');
             if (typeof showStatus === 'function') showStatus("Please sign in to download the movie.", true);
+            isSignUpMode = true;
+            applyAuthModalMode();
             window.pendingExportType = 'movie';
             localStorage.setItem('pendingExportType', 'movie');
             localStorage.setItem('pendingS3Key', localStorage.getItem('lastS3Key') || '');
@@ -3617,6 +3737,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const { data: { user: activeUser } } = bypassUser ? { data: { user: bypassUser } } : await supabase.auth.getUser();
     if (!activeUser) {
         console.log("💾 Parking export type:", type);
+        isSignUpMode = true;
+        applyAuthModalMode();
         window.pendingExportType = type;
         localStorage.setItem('pendingExportType', type);
         localStorage.setItem('pendingS3Key', localStorage.getItem('lastS3Key') || '');
@@ -3905,18 +4027,89 @@ if (googleLoginBtn) {
     });
 }
 
+const authSkipForNowBtn = document.getElementById('auth-skip-for-now');
+if (authSkipForNowBtn) {
+    authSkipForNowBtn.addEventListener('click', () => {
+        try { sessionStorage.setItem('qs_reg_prompt_dismissed', '1'); } catch (_) {}
+        if (typeof window.toggleModal === 'function') window.toggleModal(false);
+    });
+}
+
+document.querySelectorAll('.post-exp-star-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+        const v = parseInt(btn.getAttribute('data-post-exp-star'), 10);
+        if (!Number.isFinite(v)) return;
+        if (window._postExportFeedbackStars === v) setPostExportFeedbackStars(0);
+        else setPostExportFeedbackStars(v);
+    });
+});
+const postExpFbClose = document.getElementById('post-exp-fb-close');
+if (postExpFbClose) {
+    postExpFbClose.addEventListener('click', () => closePostExportFeedbackModal());
+}
+const postExpFbSubmit = document.getElementById('post-exp-fb-submit');
+if (postExpFbSubmit) {
+    postExpFbSubmit.addEventListener('click', async () => {
+        const websiteEl = document.getElementById('post-exp-fb-website');
+        if (websiteEl && String(websiteEl.value || '').trim()) {
+            closePostExportFeedbackModal();
+            return;
+        }
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            closePostExportFeedbackModal();
+            return;
+        }
+        const like = (document.getElementById('post-exp-fb-like') && document.getElementById('post-exp-fb-like').value || '').trim();
+        const improve = (document.getElementById('post-exp-fb-improve') && document.getElementById('post-exp-fb-improve').value || '').trim();
+        const stars = Number(window._postExportFeedbackStars || 0);
+        if (!like && !improve && !stars) {
+            closePostExportFeedbackModal();
+            return;
+        }
+        const info = getAuthUserDisplayInfo(user);
+        const email = (info.email || user.email || '').trim();
+        const name = (String(info.displayName || '').replace(/\s*\|\s*.*$/, '').trim());
+        if (!email) {
+            closePostExportFeedbackModal();
+            return;
+        }
+        try {
+            await fetch('/api/registration-feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email,
+                    name,
+                    like,
+                    improve,
+                    stars,
+                    source: (window._qsFeedbackModalSource || 'post_export'),
+                    website: websiteEl ? websiteEl.value : ''
+                })
+            });
+        } catch (_) {}
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        if (typeof showStatus === 'function') {
+            showStatus(T('post_export_feedback_thanks') || 'Thank you for the feedback.', false, { duration: 3500 });
+        }
+        closePostExportFeedbackModal();
+    });
+}
+const postExportFbModal = document.getElementById('post-export-feedback-modal');
+if (postExportFbModal) {
+    postExportFbModal.addEventListener('click', (e) => {
+        if (e.target === postExportFbModal) closePostExportFeedbackModal();
+    });
+}
+
 // Toggle auth mode (Sign Up / Log In) — magic link flow is the same for both
 const toggleAuthBtn = document.getElementById('toggle-auth-mode');
 if (toggleAuthBtn) {
     toggleAuthBtn.addEventListener('click', (e) => {
         e.preventDefault();
         isSignUpMode = !isSignUpMode;
-        const T = typeof window.t === 'function' ? window.t : (k) => k;
-        document.getElementById('modal-title').innerText = isSignUpMode ? T('get_started') : T('welcome_back');
-        document.getElementById('signup-fields').style.display = isSignUpMode ? "block" : "none";
-        document.getElementById('auth-submit-btn').innerText = T('send_magic_link');
-        document.getElementById('auth-switch-text').innerText = isSignUpMode ? T('already_have') : T('need_account');
-        document.getElementById('toggle-auth-mode').innerText = isSignUpMode ? T('log_in') : T('sign_up');
+        applyAuthModalMode();
     });
 }
 
@@ -3927,9 +4120,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Home page: "Open in app" — load job by ?open=jobId (retried from SIGNED_IN if session is not ready yet)
     const pathname = typeof window.location !== 'undefined' ? window.location.pathname : '';
-    if (pathname === '/' || pathname === '' || !pathname) {
-        if (typeof runOpenQueryIfPresent === 'function') {
+    const isMainAppHome = pathname === '/' || pathname === '' || !pathname;
+    const isMedicalEntry = pathname === '/medical';
+    if (isMainAppHome || isMedicalEntry) {
+        if (isMainAppHome && typeof runOpenQueryIfPresent === 'function') {
             await runOpenQueryIfPresent();
+        }
+        if (typeof maybeShowInitialRegistrationPrompt === 'function') {
+            await maybeShowInitialRegistrationPrompt();
         }
     }
 
@@ -4309,22 +4507,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 localStorage.removeItem('pendingJobId');
                 localStorage.setItem('pendingOpenGenerateMenu', '1');
 
-                // Force the modal into "Sign Up" (registration) mode.
-                try {
-                    isSignUpMode = true;
-                    const T = typeof window.t === 'function' ? window.t : (k) => k;
-                    const modalTitleEl = document.getElementById('modal-title');
-                    const signupFieldsEl = document.getElementById('signup-fields');
-                    const authSubmitBtnEl = document.getElementById('auth-submit-btn');
-                    const authSwitchTextEl = document.getElementById('auth-switch-text');
-                    const toggleAuthModeEl = document.getElementById('toggle-auth-mode');
-
-                    if (modalTitleEl) modalTitleEl.innerText = T('get_started');
-                    if (signupFieldsEl) signupFieldsEl.style.display = 'block';
-                    if (authSubmitBtnEl) authSubmitBtnEl.innerText = T('send_magic_link');
-                    if (authSwitchTextEl) authSwitchTextEl.innerText = T('already_have');
-                    if (toggleAuthModeEl) toggleAuthModeEl.innerText = T('log_in');
-                } catch (_) {}
+                isSignUpMode = true;
+                try { applyAuthModalMode(); } catch (_) {}
 
                 closeDownloadMenu();
                 if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -5471,6 +5655,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (medicalCopyBtn) {
         medicalCopyBtn.addEventListener('click', async () => {
+            if (typeof requireUserForCopyOrDownload === 'function') {
+                const ok = await requireUserForCopyOrDownload();
+                if (!ok) return;
+            }
             const text = getMedicalActiveTabTextForCopy();
             if (!text) {
                 if (typeof showStatus === 'function') showStatus('אין טקסט להעתקה.', true);
@@ -5479,6 +5667,9 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await navigator.clipboard.writeText(text);
                 if (typeof showStatus === 'function') showStatus('הטקסט הועתק.', false);
+                setTimeout(() => {
+                    try { void maybeShowPostExportFeedbackModal('medical_copy'); } catch (_) {}
+                }, 400);
             } catch (e) {
                 if (typeof showStatus === 'function') showStatus('העתקה נכשלה.', true);
             }

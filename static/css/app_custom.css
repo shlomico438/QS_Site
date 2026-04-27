@@ -27,6 +27,27 @@ main.main-content:has(.blog-page) {
     overflow-x: hidden !important;
 }
 
+/* Auth + post-export optional feedback: align questions with app direction */
+.registration-feedback-block .reg-feedback-label,
+.registration-feedback-block .reg-feedback-hint,
+.registration-feedback-block .reg-feedback-textarea {
+    text-align: right;
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+}
+html[lang="en"] .registration-feedback-block .reg-feedback-label,
+html[lang="en"] .registration-feedback-block .reg-feedback-hint,
+html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
+    text-align: left;
+}
+.registration-feedback-block .reg-feedback-stars-title {
+    text-align: center !important;
+    width: 100%;
+    display: block;
+}
+#post-export-feedback-modal { align-items: center; justify-content: center; }
+
 /* Initial homepage SEO content (visible before upload starts) */
 .seo-home-content {
     max-width: 900px;

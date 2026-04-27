@@ -401,6 +401,19 @@ html, body {
     border: 1px solid #eee;
 }
 
+.blog-post-accuracy-cta {
+    margin: 28px 0 0;
+    text-align: center;
+}
+.blog-post-accuracy-cta a {
+    color: #5d5dff;
+    font-weight: 600;
+    text-decoration: none;
+}
+.blog-post-accuracy-cta a:hover {
+    text-decoration: underline;
+}
+
 /* =========================
    FOOTER
 ========================= */

@@ -2910,6 +2910,51 @@ def api_runpod_scale():
         return jsonify({"error": str(e)}), 500
 
 
+REGISTRATION_FEEDBACK_RECIPIENT = "shlomi.cohen@getquickscribe.com"
+
+
+@app.route("/api/registration-feedback", methods=["POST"])
+def api_registration_feedback():
+    """Optional, non-mandatory feedback during signup (email flow). Emailed to the product team."""
+    try:
+        data = request.get_json(silent=True) or {}
+        if str(data.get("website") or "").strip():
+            return jsonify({"ok": True}), 200
+        email = str(data.get("email") or "").strip()[:320]
+        name = str(data.get("name") or "").strip()[:200]
+        like = str(data.get("like") or "").strip()[:2000]
+        improve = str(data.get("improve") or "").strip()[:2000]
+        try:
+            stars = int(data.get("stars") or 0)
+        except (TypeError, ValueError):
+            stars = 0
+        if stars < 0 or stars > 5:
+            stars = 0
+        if not like and not improve and stars <= 0:
+            return jsonify({"ok": True, "skipped": True}), 200
+        if not email:
+            return jsonify({"error": "email required for feedback"}), 400
+        source = str(data.get("source") or "auth_modal").strip()[:80] or "auth_modal"
+        body = (
+            f"QuickScribe user feedback (optional)\n"
+            f"Source: {source}\n\n"
+            f"User email: {email}\n"
+            f"Name: {name or '(not provided)'}\n"
+            f"Star rating: {stars if stars else '(not rated)'}\n\n"
+            f"What they liked:\n{like or '(empty)'}\n\n"
+            f"What to improve:\n{improve or '(empty)'}\n"
+        )
+        subj = "QuickScribe — user feedback (" + source + ")"
+        ok = _send_email_via_zoho(REGISTRATION_FEEDBACK_RECIPIENT, subj, body)
+        if not ok:
+            logging.warning("api_registration_feedback: SMTP send failed to %s", REGISTRATION_FEEDBACK_RECIPIENT)
+            return jsonify({"error": "send failed"}), 500
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        logging.warning("api_registration_feedback: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/export_docx', methods=['POST'])
 def api_export_docx():
     """
