@@ -935,7 +935,7 @@ function applyAuthModalMode() {
     if (authSubmitBtnEl) authSubmitBtnEl.textContent = T('send_magic_link');
     if (authSwitchTextEl) authSwitchTextEl.textContent = isSignUpMode ? T('already_have') : T('need_account');
     if (toggleAuthModeEl) toggleAuthModeEl.textContent = isSignUpMode ? T('log_in') : T('sign_up');
-    if (skipBtn) skipBtn.style.display = isSignUpMode ? '' : 'none';
+    if (skipBtn) skipBtn.style.display = '';
 }
 
 async function requireUserForCopyOrDownload() {
@@ -966,7 +966,7 @@ async function maybeShowInitialRegistrationPrompt() {
         if (!modal) return;
         const { data: { user } } = await supabase.auth.getUser();
         if (user) return;
-        if (sessionStorage.getItem('qs_reg_prompt_dismissed') === '1') return;
+        if (window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE === true) return;
         isSignUpMode = true;
         applyAuthModalMode();
         if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -1125,6 +1125,9 @@ function _showToast(message, duration = 3000) {
     }
     clearTimeout(toast._hideTimer);
     toast.textContent = message;
+    const long = String(message).length > 55;
+    toast.style.whiteSpace = long ? 'normal' : 'nowrap';
+    toast.style.maxWidth = long ? 'min(92vw, 520px)' : '92vw';
     toast.style.opacity = '1';
     toast._hideTimer = setTimeout(() => { toast.style.opacity = '0'; }, duration);
 }
@@ -3488,6 +3491,13 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const baseName = getExportBaseNameNoExt() || 'transcript';
     await commitActiveWordTokenEditIfAny();
 
+    if (!bypassUser && typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        if (typeof requireUserForCopyOrDownload === 'function') {
+            const ok = await requireUserForCopyOrDownload();
+            if (!ok) return;
+        }
+    }
+
     if (type === 'movie') {
         const movieStageT0 = Date.now();
         let movieExportSucceeded = false;
@@ -4185,13 +4195,34 @@ if (googleLoginBtn) {
     });
 }
 
+function dismissAuthModalAsGuest() {
+    window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE = true;
+    if (typeof window.toggleModal === 'function') window.toggleModal(false);
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (typeof showStatus === 'function') {
+        const msg = T('auth_skipped_hint') || 'You can keep working in this window. To upload, copy, export, or use your list — use Sign in in the top bar.';
+        showStatus(msg, false, { duration: 8000 });
+    }
+}
+
 const authSkipForNowBtn = document.getElementById('auth-skip-for-now');
 if (authSkipForNowBtn) {
-    authSkipForNowBtn.addEventListener('click', () => {
-        try { sessionStorage.setItem('qs_reg_prompt_dismissed', '1'); } catch (_) {}
-        if (typeof window.toggleModal === 'function') window.toggleModal(false);
+    authSkipForNowBtn.addEventListener('click', () => dismissAuthModalAsGuest());
+}
+
+const authModalOverlay = document.getElementById('auth-modal');
+if (authModalOverlay) {
+    authModalOverlay.addEventListener('click', (e) => {
+        if (e.target === authModalOverlay) dismissAuthModalAsGuest();
     });
 }
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const am = document.getElementById('auth-modal');
+    if (!am || am.style.display !== 'flex') return;
+    e.preventDefault();
+    dismissAuthModalAsGuest();
+}, true);
 
 document.querySelectorAll('.post-exp-star-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -4294,15 +4325,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
 
     // Home page: "Open in app" — load job by ?open=jobId (retried from SIGNED_IN if session is not ready yet)
-    const pathname = typeof window.location !== 'undefined' ? window.location.pathname : '';
-    const isMainAppHome = pathname === '/' || pathname === '' || !pathname;
+    const pathname = typeof window.location !== 'undefined' ? String(window.location.pathname || '').replace(/\/+$/, '') || '/' : '/';
+    const isMainAppHome = pathname === '/';
     const isMedicalEntry = pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
         if (typeof runOpenQueryIfPresent === 'function') {
             await runOpenQueryIfPresent();
         }
         if (typeof maybeShowInitialRegistrationPrompt === 'function') {
-            await maybeShowInitialRegistrationPrompt();
+            setTimeout(() => {
+                void maybeShowInitialRegistrationPrompt();
+            }, 1400);
         }
     }
 
@@ -8489,22 +8522,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             try {
                 const { data: { user: uploadUser } } = await supabase.auth.getUser();
-                if (isMedicalModeEnabled() && !uploadUser) {
-                    hideProgressBar();
-                    setDiarizationBusyState(false);
-                    if (mainBtn) mainBtn.disabled = false;
-                    const T = typeof window.t === 'function' ? window.t : (x) => x;
-                    if (typeof showStatus === 'function') {
-                        showStatus(
-                            T('medical_sign_in_to_upload') || 'Sign in to upload. Your completed recordings are saved in your list.',
-                            true
-                        );
-                    }
-                    isSignUpMode = true;
-                    applyAuthModalMode();
-                    if (typeof window.toggleModal === 'function') window.toggleModal(true);
-                    return;
-                }
                 const userId = uploadUser ? uploadUser.id : null;
 
                 // 1. Get the Signed URL from Python (key will be under users/{userId}/ or users/anonymous/)
