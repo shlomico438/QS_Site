@@ -914,10 +914,20 @@ async function requireUserForCopyOrDownload() {
     return false;
 }
 
+/** True if URL is /?open=jobId or /medical?open= (email "ready" link, open-in-app, etc.). */
+function urlHasOpenJobQuery() {
+    try {
+        return /[?&]open=/.test((window.location && window.location.search) || '');
+    } catch (_) {
+        return false;
+    }
+}
+
 async function maybeShowInitialRegistrationPrompt() {
     try {
         const modal = document.getElementById('auth-modal');
         if (!modal) return;
+        if (urlHasOpenJobQuery()) return;
         const { data: { user } } = await supabase.auth.getUser();
         if (user) return;
         if (sessionStorage.getItem('qs_reg_prompt_dismissed') === '1') return;
@@ -2401,7 +2411,7 @@ async function initOpenInApp(jobId) {
 async function runOpenQueryIfPresent() {
     try {
         const p = (window.location && window.location.pathname) ? String(window.location.pathname).replace(/\/+$/, '') || '/' : '/';
-        if (p !== '/') return;
+        if (p !== '/' && p !== '/medical') return;
         const search = (window.location && window.location.search) || '';
         const m = search.match(/[?&]open=([^&]+)/);
         if (!m || !m[1]) return;
@@ -3261,7 +3271,7 @@ function maybeQueuePostExportFeedbackPrompt(safeFilename) {
     if (!/\.(srt|vtt|txt|docx?|mp4|mov|webm|m4a|mp3|zip)$/i.test(name)) {
         if (!/transcript|summary|subtitle|סיכום|תמלול/i.test(name)) return;
     }
-    if (sessionStorage.getItem('qs_pefb_export') === '1') return;
+    if (String(sessionStorage.getItem('qs_pefb_shown') || '') === '1') return;
     try {
         const am = document.getElementById('auth-modal');
         if (am) {
@@ -3276,8 +3286,7 @@ function maybeQueuePostExportFeedbackPrompt(safeFilename) {
 
 /** @param {'export'|'medical_copy'} kind */
 async function maybeShowPostExportFeedbackModal(kind) {
-    const sessionKey = kind === 'medical_copy' ? 'qs_pefb_copy' : 'qs_pefb_export';
-    if (sessionStorage.getItem(sessionKey) === '1') return;
+    if (String(sessionStorage.getItem('qs_pefb_shown') || '') === '1') return;
     const hp = document.getElementById('post-exp-fb-website');
     if (hp && String(hp.value || '').trim()) return;
     const { data: { user } } = await supabase.auth.getUser();
@@ -3285,7 +3294,7 @@ async function maybeShowPostExportFeedbackModal(kind) {
     const m = document.getElementById('post-export-feedback-modal');
     if (!m) return;
     if (m.style.display === 'flex') return;
-    sessionStorage.setItem(sessionKey, '1');
+    try { sessionStorage.setItem('qs_pefb_shown', '1'); } catch (_) {}
     try {
         window._qsFeedbackModalSource = kind === 'medical_copy' ? 'medical_copy' : 'post_export';
     } catch (_) {}
@@ -4253,7 +4262,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isMainAppHome = pathname === '/' || pathname === '' || !pathname;
     const isMedicalEntry = pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
-        if (isMainAppHome && typeof runOpenQueryIfPresent === 'function') {
+        if (typeof runOpenQueryIfPresent === 'function') {
             await runOpenQueryIfPresent();
         }
         if (typeof maybeShowInitialRegistrationPrompt === 'function') {
@@ -5798,9 +5807,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 await navigator.clipboard.writeText(text);
                 if (typeof showStatus === 'function') showStatus('הטקסט הועתק.', false);
                 try {
-                    if (String(sessionStorage.getItem('qs_pefb_copy') || '') === '1') {
-                        // Feedback already shown or skipped this session
-                    } else {
+                    if (String(sessionStorage.getItem('qs_pefb_shown') || '') !== '1') {
                         if (String(sessionStorage.getItem('qs_medical_show_feedback_on_next_copy') || '') === '1') {
                             try { sessionStorage.removeItem('qs_medical_show_feedback_on_next_copy'); } catch (_) {}
                         }
