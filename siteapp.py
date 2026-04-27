@@ -1429,6 +1429,11 @@ def about(): return render_template('about.html')
 @app.route('/blog')
 def blog(): return render_template('blog.html')
 
+
+@app.route('/accuracy')
+def accuracy():
+    return render_template('accuracy.html')
+
 @app.route('/contact')
 def contact():
     return render_template('contact.html')

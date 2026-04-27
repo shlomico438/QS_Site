@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+{% block page_title %}Accuracy Benchmark | QuickScribe{% endblock %}
+
+{% block head_extra %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/accuracy.css') }}">
+<meta name="description" content="QuickScribe achieves 94.36% accuracy on Hebrew transcription — independently verified. Compare to Whisper, Gemini, Sonix, and run the test yourself.">
+{% endblock %}
+
+{% block structured_data %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "QuickScribe Accuracy Benchmark",
+  "description": "QuickScribe achieves 94.36% accuracy (5.64% WER) on Hebrew transcription, outperforming OpenAI Whisper (77.27%), Google Gemini (76.02%), Sonix (71%), YouTube (47.81%), CapCut (42.57%), and Clipchamp (34.95%). Validated on a 7-minute Zoom meeting using Python WER evaluation against a human reference transcript.",
+  "about": {
+    "@type": "SoftwareApplication",
+    "name": "QuickScribe",
+    "applicationCategory": "AI Transcription",
+    "operatingSystem": "Web",
+    "description": "Hebrew-specialized AI transcription platform using Dual-Stage Language Routing and DSP audio enhancement. Achieves 94.36% accuracy on Hebrew audio — significantly above generic multilingual models.",
+    "featureList": [
+      "94.36% transcription accuracy on Hebrew audio",
+      "Dual-Stage Language Routing to specialized expert models",
+      "DSP pre-processing for real-world audio environments",
+      "Outperforms OpenAI Whisper, Google Gemini, Sonix, YouTube, CapCut, and Clipchamp"
+    ]
+  }
+}
+</script>
+{% endblock %}
+
+{% block content %}
+{% set root = request.url_root.rstrip('/') %}
+
+<div class="accuracy-page">
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <div class="hero">
+    <div class="hero-badge">
+      <span class="t-he">בדיקה עצמאית · פברואר 2026</span>
+      <span class="t-en">Independent Benchmark · February 2026</span>
+    </div>
+    <h1>
+      <span class="t-he" dir="rtl">תמלול בעברית,<br><em>סוף סוף בדיוק.</em></span>
+      <span class="t-en" dir="ltr">Hebrew transcription,<br><em>finally accurate.</em></span>
+    </h1>
+    <p class="hero-sub t-he" dir="rtl">הרצנו את QuickScribe מול מנועי התמלול המובילים על אודיו אמיתי מזום בעברית. התוצאות — לא היו אפילו קרובות.</p>
+    <p class="hero-sub t-en" dir="ltr">We ran QuickScribe against every major transcription engine on real Hebrew Zoom audio. The results weren’t even close.</p>
+
+    <div class="stat-hero">
+      <div class="stat-number">94.36%</div>
+      <div class="stat-label t-he" dir="rtl">דיוק תמלול</div>
+      <div class="stat-label t-en" dir="ltr">Transcription Accuracy</div>
+      <div class="stat-detail t-he" dir="rtl">5.64% WER · סטייה של +1 מילה מול קו בסיס אנושי</div>
+      <div class="stat-detail t-en" dir="ltr">5.64% Word Error Rate · +1 word variance vs human baseline</div>
+    </div>
+  </div>
+
+  <section>
+    <div class="section-label t-he" dir="rtl">המספרים</div>
+    <div class="section-label t-en" dir="ltr">The Numbers</div>
+    <h2>
+      <span class="t-he" dir="rtl">השוואה</span>
+      <span class="t-en" dir="ltr">How we compare</span>
+    </h2>
+
+    <div class="benchmark-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>
+              <span class="t-he">מנוע</span>
+              <span class="t-en">Engine</span>
+            </th>
+            <th>
+              <span class="t-he">דיוק</span>
+              <span class="t-en">Accuracy</span>
+            </th>
+            <th>WER</th>
+            <th>
+              <span class="t-he">סטיית מילים</span>
+              <span class="t-en">Word variance</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="winner">
+            <td>
+              <div class="engine-name">QuickScribe
+                <span class="winner-badge t-he">מנצח</span>
+                <span class="winner-badge t-en">Winner</span>
+              </div>
+            </td>
+            <td>
+              <div class="bar-wrap">
+                <span class="acc-high">94.36%</span>
+                <div class="bar"><div class="bar-fill" style="width:94.36%"></div></div>
+              </div>
+            </td>
+            <td class="acc-high">5.64%</td>
+            <td><span class="t-he" style="color:var(--green)">+1</span><span class="t-en" style="color:var(--green)">+1 word</span></td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">OpenAI Whisper</div></td>
+            <td><div class="bar-wrap"><span class="acc-mid">77.27%</span><div class="bar"><div class="bar-fill mid" style="width:77.27%"></div></div></div></td>
+            <td class="acc-mid">22.73%</td>
+            <td><span class="t-he" style="color:var(--red)">−40</span><span class="t-en" style="color:var(--red)">−40 words</span></td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">Google Gemini Pro</div></td>
+            <td><div class="bar-wrap"><span class="acc-mid">76.02%</span><div class="bar"><div class="bar-fill mid" style="width:76.02%"></div></div></div></td>
+            <td class="acc-mid">23.98%</td>
+            <td><span class="t-he" style="color:var(--green)">+1</span><span class="t-en" style="color:var(--green)">+1 word</span></td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">Sonix</div></td>
+            <td><div class="bar-wrap"><span class="acc-mid">71.00%</span><div class="bar"><div class="bar-fill mid" style="width:71%"></div></div></div></td>
+            <td class="acc-mid">29.00%</td>
+            <td><span class="t-he" style="color:var(--text-muted)">0</span><span class="t-en" style="color:var(--text-muted)">0 words</span></td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">YouTube</div></td>
+            <td><div class="bar-wrap"><span class="acc-low">47.81%</span><div class="bar"><div class="bar-fill low" style="width:47.81%"></div></div></div></td>
+            <td class="acc-low">52.19%</td>
+            <td><span class="t-he" style="color:var(--red)">+42</span><span class="t-en" style="color:var(--red)">+42 words</span></td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">CapCut</div></td>
+            <td><div class="bar-wrap"><span class="acc-low">42.57%</span><div class="bar"><div class="bar-fill low" style="width:42.57%"></div></div></div></td>
+            <td class="acc-low">57.43%</td>
+            <td><span class="t-he" style="color:var(--red)">+94</span><span class="t-en" style="color:var(--red)">+94 words</span></td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">Clipchamp</div></td>
+            <td><div class="bar-wrap"><span class="acc-low">34.95%</span><div class="bar"><div class="bar-fill low" style="width:34.95%"></div></div></div></td>
+            <td class="acc-low">65.05%</td>
+            <td><span class="t-he" style="color:var(--red)">−48</span><span class="t-en" style="color:var(--red)">−48 words</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <section>
+    <div class="section-label t-he" dir="rtl">מתודולוגיה</div>
+    <div class="section-label t-en" dir="ltr">Methodology</div>
+    <h2>
+      <span class="t-he" dir="rtl">מהו Word Error Rate (WER)?</span>
+      <span class="t-en" dir="ltr">What is Word Error Rate?</span>
+    </h2>
+    <div class="wer-explainer">
+      <div class="wer-card">
+        <h3>
+          <span class="t-he" dir="rtl">מה זה WER</span>
+          <span class="t-en" dir="ltr">WER explained</span>
+        </h3>
+        <p class="t-he" dir="rtl">WER (שיעור שגיאות מילה) הוא המדד המקובל למדידת דיוק תמלול. הוא סופר החלפות, מחיקות והוספות הדרשות כדי להפוך את פלט המכונה לטקסט אנושי נכון.</p>
+        <p class="t-en" dir="ltr">Word Error Rate (WER) is the gold standard for measuring transcription accuracy. It counts substitutions, deletions, and insertions required to turn a machine transcript into the correct human text.</p>
+        <div class="formula">WER = (S + D + I) / N<br>
+          <span class="t-he" style="color:var(--text-muted);font-size:0.75rem" dir="rtl">S=החלפות D=מחיקות I=הוספות N=מספר מילים</span>
+          <span class="t-en" style="color:var(--text-muted);font-size:0.75rem" dir="ltr">S=substitutions D=deletions I=insertions N=total words</span>
+        </div>
+      </div>
+      <div class="wer-card">
+        <h3>
+          <span class="t-he" dir="rtl">איך הורצה הבנצ׳מארק</span>
+          <span class="t-en" dir="ltr">How this benchmark was run</span>
+        </h3>
+        <p class="t-he" dir="rtl">תמללנו פגישת זום אמיתית של 7 דק׳ בעברית דרך כל מנוע, ואז אימתנו מול תמלול ייחוס אנושי באמצעות פונקציית WER בפייתון. אותו אודיו, אותו ייחוס, ללא “דגימה מוטה” — לכל מנוע.</p>
+        <p class="t-en" dir="ltr">We transcribed a 7-minute real-world Hebrew Zoom meeting through each engine, then validated results against a human reference transcript using a standard Python WER function. No cherry-picking — same audio, same reference, every engine.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <section>
+    <div class="try-it">
+      <div class="section-label t-he" dir="rtl">אימות עצמי</div>
+      <div class="section-label t-en" dir="ltr">Verify it yourself</div>
+      <h2>
+        <span class="t-he" dir="rtl">אל תסמכו רק עלינו</span>
+        <span class="t-en" dir="ltr">Don’t take our word for it</span>
+      </h2>
+      <p class="t-he" dir="rtl">הורידו את קובצי האודיו ואת תמלול הייחוס, הריצו כל מנוע שתרצו, ומדדו WER בעצמכם עם מחשבון מקוון — בלי התחייבות.</p>
+      <p class="t-en" dir="ltr">Download our test audio and the human-verified reference transcript, run any engine you want, and measure the WER yourself with a free online tool. No signup required.</p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num t-he" dir="rtl">שלב 01</div>
+          <div class="step-num t-en" dir="ltr">Step 01</div>
+          <h4>
+            <span class="t-he" dir="rtl">הורדת קבצי הבדיקה</span>
+            <span class="t-en" dir="ltr">Download test files</span>
+          </h4>
+          <p class="t-he" dir="rtl">אודיו 7 דק׳ (זום עברי) ותמלול ייחוס אנושי — למטה.</p>
+          <p class="t-en" dir="ltr">Get the original 7-min Hebrew Zoom audio and human reference transcript below.</p>
+        </div>
+        <div class="step">
+          <div class="step-num t-he" dir="rtl">שלב 02</div>
+          <div class="step-num t-en" dir="ltr">Step 02</div>
+          <h4>
+            <span class="t-he" dir="rtl">תמלול בכל מנוע</span>
+            <span class="t-en" dir="ltr">Transcribe with any engine</span>
+          </h4>
+          <p class="t-he" dir="rtl">הריצו דרך QuickScribe, Whisper, Gemini — מה שרוצים לבדוק.</p>
+          <p class="t-en" dir="ltr">Run the audio through QuickScribe, Whisper, Gemini — whichever tool you want to test.</p>
+        </div>
+        <div class="step">
+          <div class="step-num t-he" dir="rtl">שלב 03</div>
+          <div class="step-num t-en" dir="ltr">Step 03</div>
+          <h4>
+            <span class="t-he" dir="rtl">חישוב WER</span>
+            <span class="t-en" dir="ltr">Calculate WER</span>
+          </h4>
+          <p class="t-he" dir="rtl">הדביקו ייחוס + פלט מכונה בכלי WER חינמי.</p>
+          <p class="t-en" dir="ltr">Paste the human transcript and your machine output into the free WER tool and hit calculate.</p>
+        </div>
+      </div>
+
+      <div class="download-row">
+        <a href="{{ url_for('static', filename='accuracy/benchmark-hebrew-zoom-7min.mp3') }}" class="dl-btn" download>
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+          <span class="t-he">🎧 אודיו בדיקה (זום עברי · 7 דק׳)</span>
+          <span class="t-en">🎧 Test audio (Hebrew Zoom · 7 min)</span>
+        </a>
+        <a href="{{ url_for('static', filename='accuracy/human-reference-transcript.txt') }}" class="dl-btn" download>
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="t-he">📄 ייחוס אנושי (.txt)</span>
+          <span class="t-en">📄 Human reference transcript (.txt)</span>
+        </a>
+        <a href="{{ url_for('static', filename='accuracy/quickscribe-sample-transcript.txt') }}" class="dl-btn" download>
+          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="t-he">📄 דוגמת פלט QuickScribe (.txt)</span>
+          <span class="t-en">📄 QuickScribe sample output (.txt)</span>
+        </a>
+      </div>
+
+      <a href="https://www.amberscript.com/en/wer-tool/" target="_blank" rel="noopener" class="wer-link">
+        <span class="t-he">למחשבון WER חינמי →</span>
+        <span class="t-en">Open free WER calculator →</span>
+      </a>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <section>
+    <div class="section-label t-he" dir="rtl">המדע</div>
+    <div class="section-label t-en" dir="ltr">The science</div>
+    <h2>
+      <span class="t-he" dir="rtl">למה עברית “שוברת” מודלים גנריים</span>
+      <span class="t-en" dir="ltr">Why Hebrew breaks generic AI</span>
+    </h2>
+    <div class="why-grid">
+      <div class="why-card">
+        <span class="why-icon" aria-hidden="true">🧠</span>
+        <h3>
+          <span class="t-he" dir="rtl">קללת הרב־לשוניות</span>
+          <span class="t-en" dir="ltr">The curse of multilinguality</span>
+        </h3>
+        <p class="t-he" dir="rtl">מודלים שאומנו על עשרות שפות „מדללים” יכולת פונטית. דפוסי עיצורים ייחודיים, ניקוד חסר, ו־RTL — נדחסים בנתוני אימון גנריים.</p>
+        <p class="t-en" dir="ltr">Models trained on dozens of languages dilute capacity across competing phonetics. Hebrew’s structure is underrepresented in generic training data.</p>
+      </div>
+      <div class="why-card">
+        <span class="why-icon" aria-hidden="true">🎙️</span>
+        <h3>
+          <span class="t-he" dir="rtl">אודיו אמיתי = מלוכלך</span>
+          <span class="t-en" dir="ltr">Real-world audio is messy</span>
+        </h3>
+        <p class="t-he" dir="rtl">במעבדה — קול נקי. בפגישה — רעש, מיקרופון לא אחיד, הד. מודלים גנריים נשברים; ה־DSP אצלנו מכין את האות לפני הדיבור.</p>
+        <p class="t-en" dir="ltr">Lab = clean; meetings = noise and reverb. Generic models fail; QuickScribe’s DSP compensates first.</p>
+      </div>
+      <div class="why-card">
+        <span class="why-icon" aria-hidden="true">🔀</span>
+        <h3>
+          <span class="t-he" dir="rtl">ניתוב דו-שלבי</span>
+          <span class="t-en" dir="ltr">Dual-Stage Routing</span>
+        </h3>
+        <p class="t-he" dir="rtl">מזהים שפה, ואז מנתבים ל־מומחה עברי — לא לרב־לשוני אחד. התמחות מנצחת.</p>
+        <p class="t-en" dir="ltr">We detect language, then route to a dedicated Hebrew model — not a single shared multilingual one.</p>
+      </div>
+      <div class="why-card">
+        <span class="why-icon" aria-hidden="true">📊</span>
+        <h3>
+          <span class="t-he" dir="rtl">הפער מצטבר</span>
+          <span class="t-en" dir="ltr">The gap compounds</span>
+        </h3>
+        <p class="t-he" dir="rtl">94% מול 77% נשמע קטן — אבל בשעה: מאות שגיאות מול עשרות. תיקון ידני יכול לקחת יותר מהפגישה מחדש.</p>
+        <p class="t-en" dir="ltr">At 94% vs 77%, a 1-hour meeting is hundreds of errors vs many fewer — fix time explodes.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <section>
+    <div class="section-label t-he" dir="rtl">פרטי בנצ׳מארק</div>
+    <div class="section-label t-en" dir="ltr">Benchmark details</div>
+    <h2>
+      <span class="t-he" dir="rtl">שחזור עצמי</span>
+      <span class="t-en" dir="ltr">Reproducible methodology</span>
+    </h2>
+    <div class="tech-pills">
+      <span class="pill t-he">עברית</span>
+      <span class="pill t-en">Hebrew</span>
+      <span class="pill t-he">זום 7 דק׳</span>
+      <span class="pill t-en">7-min Zoom</span>
+      <span class="pill t-he">רעש אמיתי</span>
+      <span class="pill t-en">Real-world</span>
+      <span class="pill">Python WER</span>
+      <span class="pill t-he">ייחוס אנושי</span>
+      <span class="pill t-en">Human ref</span>
+      <span class="pill t-he">פברואר 2026</span>
+      <span class="pill t-en">Feb 2026</span>
+    </div>
+    <div class="method-box">
+      <p class="t-he" dir="rtl"><strong>מקור אודיו:</strong> פגישת Zoom בעברית, ~7 דק׳, משרד רגיל, מיקרופון רגיל.</p>
+      <p class="t-en" dir="ltr"><strong>Audio source:</strong> 7-min Hebrew Zoom under normal conditions, standard hardware.</p>
+      <p class="t-he" dir="rtl"><strong>ייחוס:</strong> תמלול אנושי איכותי כבסיס הערכה.</p>
+      <p class="t-en" dir="ltr"><strong>Reference:</strong> Human ground truth as baseline.</p>
+      <p class="t-he" dir="rtl"><strong>מנועים:</strong> QuickScribe, Whisper, Gemini Pro, Sonix, YouTube, CapCut, Clipchamp — אותו קובץ, ברירת מחדל.</p>
+      <p class="t-en" dir="ltr"><strong>Engines:</strong> Same file, default settings, all listed engines.</p>
+      <p class="t-he" dir="rtl"><strong>הערכה:</strong> WER סטנדרטי; סטיית מילים — הפרש ספירת מילים מול האנושי.</p>
+      <p class="t-en" dir="ltr"><strong>Evaluation:</strong> Standard WER; word variance = count difference vs human.</p>
+    </div>
+  </section>
+
+  <div class="cta-section">
+    <h2>
+      <span class="t-he" dir="rtl">בדקו בעצמכם ב־60 שניות</span>
+      <span class="t-en" dir="ltr">See it yourself in 60 seconds</span>
+    </h2>
+    <p>
+      <span class="t-he" dir="rtl">העלו אודיו בעברית וקבלו תמלול. בלי כרטיס. בלי התקנה.</span>
+      <span class="t-en" dir="ltr">Upload your Hebrew audio and get a transcript. No credit card. No setup.</span>
+    </p>
+    <a href="{{ root }}/" class="cta-btn">
+      <span class="t-he" dir="rtl">התחל לתמלל בחינם →</span>
+      <span class="t-en" dir="ltr">Start transcribing free →</span>
+    </a>
+  </div>
+</div>
+{% endblock %}

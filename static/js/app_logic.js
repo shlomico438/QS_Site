@@ -473,6 +473,10 @@ supabase.auth.onAuthStateChange((event, session) => {
                 window.location.hash = '';
             }
         }
+        // Session was not ready on the first DOMContentLoaded tick (email magic link, PKCE) — run ?open= now.
+        if (typeof runOpenQueryIfPresent === 'function') {
+            void runOpenQueryIfPresent();
+        }
     }
 });
 
@@ -2237,6 +2241,31 @@ async function initOpenInApp(jobId) {
     }
 }
 
+/**
+ * Load job from /?open=… once the user session exists. Magic-link and PKCE return after DOMContentLoaded;
+ * getUser() is often null on the first tick, so initOpenInApp must be retried from onAuthStateChange.
+ */
+async function runOpenQueryIfPresent() {
+    try {
+        const p = (window.location && window.location.pathname) ? String(window.location.pathname).replace(/\/+$/, '') || '/' : '/';
+        if (p !== '/') return;
+        const search = (window.location && window.location.search) || '';
+        const m = search.match(/[?&]open=([^&]+)/);
+        if (!m || !m[1]) return;
+        const jobId = decodeURIComponent(m[1]).trim();
+        if (!jobId) return;
+        if (window.__qsOpenHandledFor === jobId) return;
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        if (window.__qsOpenHandledFor === jobId) return;
+        if (typeof initOpenInApp !== 'function') return;
+        await initOpenInApp(jobId);
+        window.__qsOpenHandledFor = jobId;
+    } catch (e) {
+        console.warn('[qs] runOpenQueryIfPresent failed', e);
+    }
+}
+
 // Job lifecycle: only when user is signed in. pending → uploaded → processed → exported | completed | failed
 // jobs.id is UUID (auto-generated). We store the returned id as lastJobDbId for updates.
 
@@ -3896,14 +3925,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
 
-    // Home page: "Open in app" — load job by ?open=jobId (file URL + transcript)
+    // Home page: "Open in app" — load job by ?open=jobId (retried from SIGNED_IN if session is not ready yet)
     const pathname = typeof window.location !== 'undefined' ? window.location.pathname : '';
-    const search = typeof window.location !== 'undefined' ? (window.location.search || '') : '';
-    if (pathname === '/' || pathname === '') {
-        const openMatch = search.match(/[?&]open=([^&]+)/);
-        if (openMatch && openMatch[1]) {
-            const jobId = decodeURIComponent(openMatch[1]);
-            if (jobId && typeof initOpenInApp === 'function') await initOpenInApp(jobId);
+    if (pathname === '/' || pathname === '' || !pathname) {
+        if (typeof runOpenQueryIfPresent === 'function') {
+            await runOpenQueryIfPresent();
         }
     }
 
@@ -4797,6 +4823,7 @@ function startProcessingStateUI() {
 
 /** Reset the main screen to initial state (as on first load) — e.g. when user clicks Upload to start a new file. */
 function resetScreenToInitial() {
+    try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
     window.isTriggering = false;
     qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
@@ -5004,7 +5031,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const seoHome = document.getElementById('seo-home-content');
         const downloadBtnLabel = document.querySelector('#btn-download .btn-download-label');
         if (medicalRecordWrap) medicalRecordWrap.style.display = on ? '' : 'none';
-        if (mainBtn) mainBtn.style.display = on ? 'none' : '';
+        if (mainBtn) {
+            const allowMediaAfterLocalJson = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
+            if (on && !allowMediaAfterLocalJson) {
+                mainBtn.style.display = 'none';
+            } else {
+                mainBtn.style.display = '';
+            }
+            if (allowMediaAfterLocalJson) {
+                const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
+                mainBtn.innerText = T('add_local_media') || 'Add video or audio';
+            }
+        }
         if (downloadBtnLabel) downloadBtnLabel.textContent = on ? 'הורדה בפורמט Docx' : 'ייצוא והורדה';
         if (on) {
             if (seoHome) seoHome.style.display = 'none';
@@ -5032,7 +5070,9 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (_) {}
             try {
                 if (typeof setTranscriptActionButtonsVisible === 'function' && typeof initOpenAppHasLoadedTranscriptPayload === 'function') {
-                    setTranscriptActionButtonsVisible(!!initOpenAppHasLoadedTranscriptPayload());
+                    if (!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON) {
+                        setTranscriptActionButtonsVisible(!!initOpenAppHasLoadedTranscriptPayload());
+                    }
                 }
             } catch (_) {}
             try {
@@ -5041,6 +5081,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } catch (_) {}
         }
+        try {
+            if (window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON && typeof setTranscriptActionButtonsVisible === 'function') {
+                setTranscriptActionButtonsVisible(false);
+            }
+        } catch (_) {}
         updateMedicalTabUi();
     };
 
@@ -5534,6 +5579,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (mainBtn) {
         mainBtn.addEventListener('click', async () => {
+            if (window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON) {
+                if (fileInput) fileInput.click();
+                return;
+            }
             if (window.mainBtnAction === 'transcribe_loaded_file') {
                 const s3Key = localStorage.getItem('lastS3Key');
                 const dbId = localStorage.getItem('lastJobDbId');
@@ -7843,7 +7892,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                         window.uploadWasVideo = false;
                         window.originalFileName = file.name.replace(/\.json$/i, '') || 'transcript';
-                        setTranscriptActionButtonsVisible(true);
+                        try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = true; } catch (_) {}
+                        // Keep export / format toolbar hidden until local video or audio is attached (avoids jumping to export in medical: one-tap download).
+                        setTranscriptActionButtonsVisible(false);
                         syncSpeakerControls();
                         const transcriptWindow = document.getElementById('transcript-window');
                         if (transcriptWindow) {
@@ -7852,21 +7903,115 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             } else if (typeof window.render === 'function') {
                                 window.render();
                             }
-                            window.showSubtitleStyleSelector();
                         }
                         if (mainBtn) {
                             mainBtn.disabled = false;
-                            mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
                         }
                         setDiarizationBusyState(false);
                         hideProgressBar();
                         if (typeof showStatus === 'function') showStatus('JSON transcript loaded locally.', false, { duration: 5000 });
+                        if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
+                        if (typeof window.applyMedicalModeUi === 'function') {
+                            try { window.applyMedicalModeUi(); } catch (_) {}
+                        }
+                        try {
+                            document.querySelector('.upload-zone .upload-controls-row')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        } catch (_) {}
                     } catch (e) {
                         console.warn('JSON transcript load failed', e);
                         if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${e.message || e}`, true);
                     }
                     fileInput.value = '';
                     return;
+                }
+
+                // Debug: attach local video/audio when a transcript is already in memory (no upload/transcribe).
+                if (typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
+                    let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
+                    let isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
+                    if (isMedicalModeEnabled()) {
+                        isAudio = true;
+                        isVideo = false;
+                    }
+                    if (isVideo || isAudio) {
+                        const objectUrl = URL.createObjectURL(file);
+                        window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'media';
+                        window.uploadWasVideo = !!isVideo && !isMedicalModeEnabled();
+                        if (isVideo) {
+                            const src = document.getElementById('video-source');
+                            const video = document.getElementById('main-video');
+                            if (src) {
+                                src.src = objectUrl;
+                                const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
+                                src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+                            }
+                            if (video) {
+                                video.style.position = 'relative';
+                                video.style.zIndex = '1002';
+                                video.controls = true;
+                                video.load();
+                                video.pause();
+                                try { video.focus(); } catch (e) {}
+                            }
+                            const videoWrapper = document.getElementById('video-wrapper');
+                            const videoPlayer = document.getElementById('video-player-container');
+                            const playerContainer = document.getElementById('audio-player-container');
+                            if (playerContainer) playerContainer.style.display = 'none';
+                            if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+                            if (video) video.style.display = '';
+                            if (videoPlayer) videoPlayer.style.display = 'block';
+                        } else {
+                            const audioContainer = document.getElementById('audio-player-container');
+                            const videoWrapper = document.getElementById('video-wrapper');
+                            const videoPlayer = document.getElementById('video-player-container');
+                            const video = document.getElementById('main-video');
+                            const audioSource = document.getElementById('audio-source');
+                            const mainAudio = document.getElementById('main-audio');
+                            if (videoWrapper) {
+                                videoWrapper.style.display = 'none';
+                                videoWrapper.classList.remove('visible');
+                            }
+                            try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
+                            if (video) video.style.display = 'none';
+                            if (audioContainer && videoWrapper && videoPlayer && audioContainer.parentNode === videoPlayer) {
+                                videoWrapper.parentNode.insertBefore(audioContainer, videoWrapper);
+                            }
+                            if (audioContainer) audioContainer.style.display = 'block';
+                            if (audioSource && mainAudio) {
+                                audioSource.src = objectUrl;
+                                const mt = (file.type || '').toLowerCase();
+                                if (mt.includes('webm')) audioSource.type = 'audio/webm';
+                                else if (mt.includes('ogg')) audioSource.type = 'audio/ogg';
+                                else if (mt.includes('mpeg') || /\.mp3$/i.test(file.name)) audioSource.type = 'audio/mpeg';
+                                else if (mt.includes('mp4') || mt.includes('m4a') || /\.m4a$/i.test(file.name)) audioSource.type = 'audio/mp4';
+                                else audioSource.type = file.type || 'audio/webm';
+                                mainAudio.load();
+                            }
+                            if (videoPlayer) videoPlayer.style.display = 'block';
+                        }
+                        const storeMime = (file.type || '').toLowerCase();
+                        const mimeForMov = isMedicalModeEnabled()
+                            ? (storeMime.includes('webm') ? 'audio/webm' : (file.type || 'audio/webm'))
+                            : ((/\.mov$/i.test(file.name) || storeMime.includes('quicktime')) ? 'video/mp4' : (file.type || ''));
+                        setLocalPreviewAudio(objectUrl, mimeForMov);
+                        setTranscriptActionButtonsVisible(true);
+                        if (mainBtn) {
+                            mainBtn.disabled = false;
+                            mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
+                        }
+                        setDiarizationBusyState(false);
+                        hideProgressBar();
+                        try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
+                        if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
+                        if (typeof window.applyMedicalModeUi === 'function') {
+                            try { window.applyMedicalModeUi(); } catch (_) {}
+                        }
+                        if (typeof showStatus === 'function') {
+                            showStatus('Local media attached (no upload).', false, { duration: 5000 });
+                        }
+                        fileInput.value = '';
+                        return;
+                    }
                 }
 
                 let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
@@ -7947,6 +8092,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             setLocalPreviewAudio(objectUrl, mimeForMov);
 
             const currentFile = file; // Captured for use in the fetch
+            try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
             fileInput.value = ""; // Reset for next selection
 
             // 1. Get the snapshot of the toggle state RIGHT NOW

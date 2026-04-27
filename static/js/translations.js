@@ -7,6 +7,7 @@ window.translations = {
         // Nav (base)
         nav_about: "אודות",
         nav_blog: "בלוג",
+        nav_accuracy: "דיוק",
         nav_contact: "צור קשר",
         nav_personal: "איזור אישי",
         nav_sign_in: "התחבר",
@@ -94,6 +95,7 @@ window.translations = {
         start_new_session_confirm: "להתחיל סשן חדש? התמלול והמדיה הנוכחיים ינוקו מהמסך.",
         ready: "מוכן",
         upload_and_process: "התחל כאן",
+        add_local_media: "הוספת וידאו או אודיו (מקומי)",
         upload_placeholder: "",
         upload_disclaimer_accept: "הבנתי",
         upload_disclaimer_text: "התמלולים שלכם מעובדים בצורה מאובטחת, אך עשויים לעבור דרך שרתי פיתוח של צד שלישי.\n\nאנו מבקשים: אנא הימנעו מהעלאת חומרים בעלי רגישות גבוהה (כגון חסיון עורך דין-לקוח, סודיות רפואית, או פרטים מזהים רגישים).\n\nעם סיום תקופת הבטא והמעבר לשירות בתשלום, המערכת תעבור למודל פרטיות סגור ומחמיר לחלוטין.",
@@ -194,6 +196,7 @@ window.translations = {
     en: {
         nav_about: "About Us",
         nav_blog: "Blog",
+        nav_accuracy: "Accuracy",
         nav_contact: "Contact",
         nav_personal: "Personal Area",
         nav_sign_in: "Sign In",
@@ -274,6 +277,7 @@ window.translations = {
         start_new_session_confirm: "Start a new session? Current transcript and media will be cleared from the screen.",
         ready: "Ready",
         upload_and_process: "Start here",
+        add_local_media: "Add video or audio (local)",
         upload_placeholder: "",
         upload_disclaimer_accept: "I understand",
         upload_disclaimer_text: "Your transcripts are processed securely but may pass through third-party development servers.\n\nWe ask that you avoid uploading highly sensitive material (e.g. attorney-client privilege, medical confidentiality, or sensitive personal data).\n\nWhen the beta period ends and we move to a paid service, the system will switch to a fully closed, strict privacy model.",

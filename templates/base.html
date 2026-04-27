@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>תמלול אוטומטי בעברית ויצירת כתוביות לסרטונים | QuickScribe</title>
+    <title>{% block page_title %}תמלול אוטומטי בעברית ויצירת כתוביות לסרטונים | QuickScribe{% endblock %}</title>
     <meta name="description" content="QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.">
     <link rel="alternate" hreflang="he" href="{{ request.url_root.rstrip('/') }}/?lang=he">
     <link rel="alternate" hreflang="en" href="{{ request.url_root.rstrip('/') }}/?lang=en">
@@ -20,6 +20,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+    {% block structured_data %}{% endblock %}
+    {% block head_extra %}{% endblock %}
 </head>
 
 <body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
@@ -49,6 +51,7 @@
         <div class="nav-menu" id="nav-menu">
             <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
             <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
+            <a href="/accuracy" class="nav-item" data-i18n="nav_accuracy">Accuracy</a>
             <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
             <a href="/personal" class="nav-item nav-personal-link" id="nav-personal-link" style="display: none;" data-i18n="nav_personal">איזור אישי</a>
             <a href="#" class="nav-item nav-new-session-item" id="nav-new-session-btn" data-i18n="new_session">סשן חדש</a>
