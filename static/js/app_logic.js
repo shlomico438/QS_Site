@@ -6578,9 +6578,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     })();
                     try {
-                        if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript' &&
-                            typeof renderMedicalTranscriptMainView === 'function') {
-                            renderMedicalTranscriptMainView();
+                        if (isMedicalModeEnabled()) {
+                            const medTab = String(window.medicalActiveTab || 'summary');
+                            if (medTab === 'summary') {
+                                if (typeof renderTranscriptFromCues === 'function') {
+                                    renderTranscriptFromCues(window.currentSegments || []);
+                                }
+                            } else if (typeof renderMedicalTranscriptMainView === 'function') {
+                                renderMedicalTranscriptMainView();
+                            } else if (typeof renderTranscriptFromCues === 'function') {
+                                renderTranscriptFromCues(window.currentSegments || []);
+                            }
                         }
                     } catch (_) {}
                 })
