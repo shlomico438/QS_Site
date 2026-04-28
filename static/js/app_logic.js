@@ -69,6 +69,9 @@ function _qsReadMedicalLanding() {
 function _qsSetMedicalLanding() {
     try { localStorage.setItem(QS_MEDICAL_LANDING_KEY, '1'); } catch (_) {}
 }
+function _qsClearMedicalLanding() {
+    try { localStorage.removeItem(QS_MEDICAL_LANDING_KEY); } catch (_) {}
+}
 /** True if this browser should return to the medical (HIPAA) product surface after sign-out. */
 function _qsWantsPostLogoutMedical() {
     try {
@@ -364,17 +367,16 @@ try {
     window.__QS_UX_USER_SIGNED_IN = false;
 } catch (_) {}
 try {
-    if (!window.__QS_MEDICAL_URL_ENTRY) {
-        const p = (window.location && window.location.pathname)
-            ? String(window.location.pathname).replace(/\/+$/, '') || '/'
-            : '/';
-        if (p === '/medical') {
-            window.__QS_MEDICAL_URL_ENTRY = true;
-            _qsSetMedicalLanding();
-        }
-    }
-    if (!window.__QS_MEDICAL_URL_ENTRY && _qsReadMedicalLanding()) {
+    const p = (window.location && window.location.pathname)
+        ? String(window.location.pathname).replace(/\/+$/, '') || '/'
+        : '/';
+    if (p === '/medical') {
         window.__QS_MEDICAL_URL_ENTRY = true;
+        _qsSetMedicalLanding();
+    } else {
+        // Prevent sticky medical landing from forcing non-medical URLs into HIPAA mode.
+        window.__QS_MEDICAL_URL_ENTRY = false;
+        _qsClearMedicalLanding();
     }
 } catch (_) {}
 
@@ -1244,7 +1246,7 @@ async function setupNavbarAuth(userOverride) {
         }
     } else {
         if (personalLink) personalLink.style.display = 'none';
-        if (window.__QS_MEDICAL_URL_ENTRY || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())) {
+        if (window.__QS_MEDICAL_URL_ENTRY) {
             setMedicalMode(true);
         } else if (isMedicalModeEnabled()) {
             setMedicalMode(false);
