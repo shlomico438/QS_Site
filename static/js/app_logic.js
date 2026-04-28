@@ -967,6 +967,10 @@ async function maybeShowInitialRegistrationPrompt() {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) return;
         if (window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE === true) return;
+        if (window.isTriggering === true) return;
+        try {
+            if (String(localStorage.getItem('activeJobId') || '').trim()) return;
+        } catch (_) {}
         isSignUpMode = true;
         applyAuthModalMode();
         if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -4329,6 +4333,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isMainAppHome = pathname === '/';
     const isMedicalEntry = pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
+        try {
+            const activeJobId = String(localStorage.getItem('activeJobId') || '').trim();
+            if (activeJobId) {
+                window.isTriggering = true;
+                if (typeof window.startJobStatusPolling === 'function') {
+                    window.startJobStatusPolling(activeJobId);
+                }
+                try {
+                    if (typeof socket !== 'undefined') socket.emit('join', { room: activeJobId });
+                } catch (_) {}
+            }
+        } catch (_) {}
         if (typeof runOpenQueryIfPresent === 'function') {
             await runOpenQueryIfPresent();
         }
