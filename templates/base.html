@@ -118,7 +118,14 @@
             document.querySelector('.hamburger-menu').classList.toggle('open');
         }
         (function() {
-            var locale = localStorage.getItem('locale') || 'he';
+            var urlLocale = null;
+            try {
+                var params = new URLSearchParams(window.location.search || '');
+                var q = (params.get('lang') || '').toLowerCase();
+                if (q === 'he' || q === 'en') urlLocale = q;
+            } catch (e) {}
+            var locale = urlLocale || localStorage.getItem('locale') || 'he';
+            try { localStorage.setItem('locale', locale); } catch (e) {}
             document.documentElement.lang = locale === 'he' ? 'he' : 'en';
             document.documentElement.dir = locale === 'he' ? 'rtl' : 'ltr';
             var initials = document.getElementById('lang-initials');
@@ -145,7 +152,7 @@
             document.addEventListener('click', function() { closeLangMenu(); });
             if (wrap) wrap.addEventListener('click', function(e) { e.stopPropagation(); });
             document.addEventListener('DOMContentLoaded', function() {
-                var loc = localStorage.getItem('locale') || 'he';
+                var loc = (urlLocale || localStorage.getItem('locale') || 'he');
                 window.currentLocale = loc;
                 document.documentElement.lang = loc === 'he' ? 'he' : 'en';
                 document.documentElement.dir = loc === 'he' ? 'rtl' : 'ltr';

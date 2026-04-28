@@ -416,6 +416,13 @@ window.setLocale = async function(code) {
     if (!window.translations[code]) return;
     window.currentLocale = code;
     localStorage.setItem('locale', code);
+    try {
+        if (typeof window !== 'undefined' && window.location && window.history && typeof window.history.replaceState === 'function') {
+            const u = new URL(window.location.href);
+            u.searchParams.set('lang', code);
+            window.history.replaceState({}, document.title, u.pathname + u.search + u.hash);
+        }
+    } catch (_) {}
     document.documentElement.lang = code === 'he' ? 'he' : 'en';
     document.documentElement.dir = code === 'he' ? 'rtl' : 'ltr';
     if (typeof window.applyTranslations === 'function') window.applyTranslations();

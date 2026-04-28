@@ -4701,6 +4701,36 @@ def start_process():
         print(f"Failed to start process: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+@app.route('/api/upload_full_file', methods=['GET', 'POST', 'OPTIONS'])
+def upload_full_file_legacy():
+    """Legacy API compatibility endpoint.
+
+    Old clients may still call /api/upload_full_file. The upload flow was replaced by:
+      1) POST /api/sign-s3
+      2) PUT to presigned URL
+      3) POST /api/trigger_processing
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    payload = {
+        "ok": False,
+        "deprecated": True,
+        "message": "Endpoint '/api/upload_full_file' is deprecated. Use '/api/sign-s3' + '/api/trigger_processing'.",
+        "next": {
+            "sign_s3": "/api/sign-s3",
+            "trigger_processing": "/api/trigger_processing",
+        },
+    }
+
+    # Return 200 for direct browser hits/crawlers so this path no longer appears as a hard 404.
+    if request.method == 'GET':
+        return jsonify(payload), 200
+
+    # For API callers, keep an explicit deprecation status.
+    return jsonify(payload), 410
+
 # --- WEBSOCKET EVENT HANDLERS ---
 @socketio.on('connect')
 def handle_connect():
