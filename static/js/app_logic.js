@@ -1108,11 +1108,14 @@ function showStatus(message, isError = false, options = {}) {
     if (isError) {
         showGlobalAlert(str, { confirmText: isHebrewUi ? 'אישור' : 'OK' });
     } else {
-        _showToast(str, options.duration ?? 3000);
+        _showToast(str, options);
     }
 }
 
-function _showToast(message, duration = 3000) {
+function _showToast(message, options = {}) {
+    const duration = typeof options === 'number' ? options : (options.duration ?? 3000);
+    const position = (typeof options === 'object' && options.toastPosition) ? String(options.toastPosition) : 'bottom';
+    const anchorId = (typeof options === 'object' && options.toastAnchorId) ? String(options.toastAnchorId) : '';
     let toast = document.getElementById('qs-toast');
     if (!toast) {
         toast = document.createElement('div');
@@ -1132,6 +1135,29 @@ function _showToast(message, duration = 3000) {
     const long = String(message).length > 55;
     toast.style.whiteSpace = long ? 'normal' : 'nowrap';
     toast.style.maxWidth = long ? 'min(92vw, 520px)' : '92vw';
+    if (position === 'center') {
+        let cx = window.innerWidth / 2;
+        let cy = window.innerHeight / 2;
+        if (anchorId) {
+            const anchor = document.getElementById(anchorId);
+            if (anchor) {
+                const r = anchor.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) {
+                    cx = r.left + (r.width / 2);
+                    cy = r.top + (r.height / 2);
+                }
+            }
+        }
+        toast.style.left = `${Math.round(cx)}px`;
+        toast.style.top = `${Math.round(cy)}px`;
+        toast.style.bottom = 'auto';
+        toast.style.transform = 'translate(-50%, -50%)';
+    } else {
+        toast.style.top = 'auto';
+        toast.style.bottom = '28px';
+        toast.style.left = '50%';
+        toast.style.transform = 'translateX(-50%)';
+    }
     toast.style.opacity = '1';
     toast._hideTimer = setTimeout(() => { toast.style.opacity = '0'; }, duration);
 }
@@ -4205,7 +4231,7 @@ function dismissAuthModalAsGuest() {
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     if (typeof showStatus === 'function') {
         const msg = T('auth_skipped_hint') || 'You can keep working in this window. To upload, copy, export, or use your list — use Sign in in the top bar.';
-        showStatus(msg, false, { duration: 8000 });
+        showStatus(msg, false, { duration: 8000, toastPosition: 'center', toastAnchorId: 'transcript-window' });
     }
 }
 
