@@ -493,6 +493,11 @@ html, body {
         display: flex;
     }
 
+    /* Accuracy page is linked from blog/desktop; hiding here frees space so signed-in name + logout stay visible in the drawer. */
+    .nav-hide-on-mobile {
+        display: none !important;
+    }
+
     .nav-item {
         margin: 10px 0;
         padding: 15px;

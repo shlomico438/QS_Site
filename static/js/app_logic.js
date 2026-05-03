@@ -5770,9 +5770,37 @@ document.addEventListener('DOMContentLoaded', () => {
         fileInput.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
+    /** Safari / iOS often need an explicit supported mime and timesliced start() or blobs stay empty. */
+    function pickMedicalMediaRecorderOptions() {
+        try {
+            if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return {};
+            const candidates = [
+                'audio/mp4',
+                'audio/mp4;codecs=mp4a.40.2',
+                'audio/aac',
+                'audio/webm;codecs=opus',
+                'audio/webm',
+                'audio/ogg;codecs=opus'
+            ];
+            for (let i = 0; i < candidates.length; i++) {
+                const m = candidates[i];
+                if (MediaRecorder.isTypeSupported(m)) return { mimeType: m };
+            }
+        } catch (_) {}
+        return {};
+    }
+
+    function medicalBlobExtensionFromMime(mimeRaw) {
+        const mime = String(mimeRaw || '').toLowerCase();
+        if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac') || mime.includes('caf')) return 'm4a';
+        if (mime.includes('ogg')) return 'ogg';
+        return 'webm';
+    }
+
     async function startMedicalRecording() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const rec = new MediaRecorder(stream);
+        const recOpts = pickMedicalMediaRecorderOptions();
+        const rec = Object.keys(recOpts).length ? new MediaRecorder(stream, recOpts) : new MediaRecorder(stream);
         window._medicalRecorderChunks = [];
         rec.ondataavailable = (e) => {
             if (e && e.data && e.data.size > 0) window._medicalRecorderChunks.push(e.data);
@@ -5786,7 +5814,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 setMedicalRecordingVisualState('idle');
                 const shouldSubmit = !!window._medicalSubmitOnStop;
                 const mime = (rec.mimeType || 'audio/webm').toLowerCase();
-                const ext = mime.includes('ogg') ? 'ogg' : 'webm';
+                const ext = medicalBlobExtensionFromMime(mime);
                 const blob = new Blob(window._medicalRecorderChunks, { type: mime });
                 const file = new File([blob], `medical_recording_${Date.now()}.${ext}`, { type: mime });
                 if (shouldSubmit) {
@@ -5809,7 +5837,12 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         try {
             attachMedicalRecordingTimerSlot();
-            rec.start();
+            const sliceMs = typeof isMobileClient === 'function' && isMobileClient() ? 250 : 1000;
+            try {
+                rec.start(sliceMs);
+            } catch (startErr) {
+                try { rec.start(); } catch (_) { throw startErr; }
+            }
             window._medicalRecorder = rec;
             startMedicalWaveform(stream);
         } catch (e) {
@@ -5953,6 +5986,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function openFilePickerAfterDisclaimer() {
         resetScreenToInitial();
+        if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            try {
+                const wrap = document.getElementById('medical-recording-wrap');
+                if (wrap) setTimeout(() => { try { wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {} }, 80);
+            } catch (_) {}
+            return;
+        }
         if (fileInput) fileInput.click();
     }
 
