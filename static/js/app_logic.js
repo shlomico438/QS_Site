@@ -827,6 +827,128 @@ async function qsPostTriggerProcessingWithRetry(body, jobId) {
     return { triggerRes: lastRes, triggerData: lastData };
 }
 
+async function qsS3MultipartAbortQuiet(payload) {
+    try {
+        await fetch('/api/sign-s3-multipart-abort', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+    } catch (_) {}
+}
+
+/**
+ * S3 multipart upload (presigned PUT per part + server-side complete).
+ * Ensure the S3 bucket CORS rule exposes ETag for PUT (ExposeHeader: ETag).
+ */
+async function qsS3MultipartUploadFile(opts) {
+    const {
+        currentFile,
+        userId,
+        uploadId,
+        s3Key,
+        bucket,
+        partSizeBytes,
+        partCount,
+        uploadLabel,
+        progressBar,
+        mainBtn,
+        isMedical,
+    } = opts;
+
+    const fileSize = currentFile.size;
+    let uploadedSoFar = 0;
+
+    const updateProgress = () => {
+        let pct;
+        if (fileSize > 0) {
+            pct = Math.min(100, Math.round((uploadedSoFar / fileSize) * 100));
+        } else {
+            pct = 100;
+        }
+        if (progressBar) progressBar.style.width = pct + '%';
+        if (mainBtn) mainBtn.innerText = uploadLabel + ' ' + pct + '%';
+    };
+
+    const partMeta = [];
+    const BATCH = 24;
+    const PARALLEL = 4;
+
+    for (let startPn = 1; startPn <= partCount; startPn += BATCH) {
+        const batch = [];
+        for (let p = startPn; p < startPn + BATCH && p <= partCount; p++) batch.push(p);
+
+        const urlRes = await fetch('/api/sign-s3-multipart-part-urls', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userId,
+                isMedical,
+                bucket,
+                s3Key,
+                uploadId,
+                partNumbers: batch,
+            }),
+        });
+        const urlJson = await urlRes.json().catch(() => ({}));
+        if (!urlRes.ok || !urlJson.data || !Array.isArray(urlJson.data.parts)) {
+            throw new Error(urlJson.message || urlJson.error || 'Failed to presign upload parts');
+        }
+        const urlByPart = {};
+        urlJson.data.parts.forEach((row) => {
+            urlByPart[row.partNumber] = row.url;
+        });
+
+        const uploadOne = async (pn) => {
+            const start = (pn - 1) * partSizeBytes;
+            const end = Math.min(fileSize, pn * partSizeBytes);
+            const blob = currentFile.slice(start, end);
+            const url = urlByPart[pn];
+            if (!url) throw new Error('Missing presigned URL for part ' + pn);
+            const putRes = await fetch(url, { method: 'PUT', body: blob });
+            if (!putRes.ok) {
+                throw new Error('Part ' + pn + ' upload failed: HTTP ' + putRes.status);
+            }
+            const etag = putRes.headers.get('ETag') || putRes.headers.get('etag');
+            if (!etag) {
+                throw new Error(
+                    'Missing ETag for part ' + pn + '. Configure S3 CORS ExposeHeader: ETag for PUT.'
+                );
+            }
+            uploadedSoFar += blob.size;
+            updateProgress();
+            partMeta.push({ partNumber: pn, eTag: etag });
+        };
+
+        for (let i = 0; i < batch.length; i += PARALLEL) {
+            const sub = batch.slice(i, i + PARALLEL);
+            await Promise.all(sub.map((pn) => uploadOne(pn)));
+        }
+    }
+
+    uploadedSoFar = fileSize;
+    updateProgress();
+
+    partMeta.sort((a, b) => a.partNumber - b.partNumber);
+
+    const completeRes = await fetch('/api/sign-s3-multipart-complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            userId,
+            isMedical,
+            bucket,
+            s3Key,
+            uploadId,
+            parts: partMeta,
+        }),
+    });
+    const completeJson = await completeRes.json().catch(() => ({}));
+    if (!completeRes.ok || completeJson.status === 'error') {
+        throw new Error(completeJson.message || completeJson.error || 'Multipart complete failed');
+    }
+}
+
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
@@ -8617,8 +8739,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const { data: { user: uploadUser } } = await supabase.auth.getUser();
                 const userId = uploadUser ? uploadUser.id : null;
 
-                // 1. Get the Signed URL from Python (key will be under users/{userId}/ or users/anonymous/)
-                const signRes = await fetch('/api/sign-s3', {
+                // 1. Multipart upload init (presigned parts + server-side complete)
+                const signRes = await fetch('/api/sign-s3-multipart-init', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -8627,18 +8749,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         diarization: diarizationValue,
                         isMedical: isMedicalModeEnabled(),
                         userId: userId,
-                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
+                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
+                        fileSize: currentFile.size,
                     })
                 });
 
                 const result = await signRes.json();
 
-                
                 if (!result.data) {
-                    throw new Error(result.message || result.error || "Failed to get S3 signature from server.");
+                    throw new Error(result.message || result.error || "Failed to start multipart upload.");
                 }
 
-                const { url, s3Key, jobId, signedHeaders, bucket } = result.data;
+                const { uploadId, s3Key, jobId, bucket, partSizeBytes, partCount } = result.data;
 
                 // 2. 💾 PARK THE KEYS IMMEDIATELY + create job record (status: pending)
                 localStorage.setItem('lastS3Key', s3Key);
@@ -8654,7 +8776,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     socket.emit('join', { room: jobId });
                 }
 
-                // 4. Proceed with S3 Upload (XHR for progress tracking) + wake lock + visibility hint
+                // 4. Proceed with S3 Upload (multipart: parallel part PUTs) + wake lock + visibility hint
                 let uploadWakeLock = null;
                 let uploadPhase = 'signing_done';
                 let onVisibilityDuringUpload = null;
@@ -8683,233 +8805,219 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     uploadWakeLock = null;
                 };
 
-                const xhr = new XMLHttpRequest();
-                xhr.open('PUT', url, true);
-                xhr.setRequestHeader('Content-Type', currentFile.type);
-                if (signedHeaders && typeof signedHeaders === 'object') {
-                    Object.entries(signedHeaders).forEach(([headerName, headerValue]) => {
-                        const key = String(headerName || '').trim();
-                        const val = String(headerValue || '').trim();
-                        if (!key || !val) return;
-                        xhr.setRequestHeader(key, val);
-                    });
-                }
-                xhr.timeout = 0;
-
-                xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable && progressBar) {
-                        const pct = Math.min(100, Math.round((e.loaded / e.total) * 100));
-                        progressBar.style.width = pct + "%";
-                        if (mainBtn) mainBtn.innerText = uploadLabel + " " + pct + "%";
-                    }
-                };
-
-                xhr.onload = async () => {
-                    try {
-                        if (xhr.status === 200 || xhr.status === 201) {
-                        uploadPhase = 's3_done';
-                        if (progressBar) progressBar.style.width = "100%";
-                        if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
-                        qsUploadTrace('s3_put_complete', { jobId, bytes: currentFile && currentFile.size, status: xhr.status });
-                        console.log("✅ File uploaded to S3.");
-                        window.isTriggering = true;
-                        setDiarizationBusyState(true);
-                        window._triggerRetriedForJobId = null; // allow one auto-retry if trigger gets stuck
-                        const dbId = localStorage.getItem('lastJobDbId');
-                        if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
-                        // Phase split: upload progress UI first, then "waking AI" processing UI.
-                        hideProgressBar();
-                        startProcessingStateUI();
-                        if (statusTxt) statusTxt.style.display = 'none';
-
-                        try {
-                            uploadPhase = 'trigger_processing';
-                            // Always runs after S3 PUT: tells server upload is complete (upload_status for worker).
-                            console.log("Upload complete → /api/trigger_processing");
-                            const triggerPayload = {
-                                s3Key: s3Key,
-                                bucket: bucket,
-                                jobId: jobId,
-                                diarization: diarizationValue,
-                                isMedical: isMedicalModeEnabled(),
-                                language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
-                            };
-                            const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, jobId);
-                            if (!triggerRes.ok) {
-                                console.log("trigger nack", triggerRes.status, triggerData);
-                                console.log("❌ Triggering processing failed:", triggerRes.status, triggerData);
-                                const msg = triggerData.message || triggerData.error || `Server error (${triggerRes.status})`;
-                                if (typeof showStatus === 'function') showStatus(msg, true);
-                                const dbId2 = localStorage.getItem('lastJobDbId');
-                                if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
-                                window.isTriggering = false;
-                                setDiarizationBusyState(false);
-                                localStorage.removeItem('activeJobId');
-                                stopProcessingStateUI('upload_trigger_processing_http_not_ok');
-                                hideProgressBar();
-                                if (mainBtn) mainBtn.disabled = false;
-                                return;
-                            }
-
-                            // Option A: wait for RunPod trigger confirmation before showing "processing"
-                            if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {
-                                console.log("trigger ack (started, waiting for worker handshake)");
-                                const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                                const processingLabel = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
-                                hideProgressBar(); // from here on, progress is % in button only
-                                if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' 0%';
-                                if (statusTxt) {
-                                    statusTxt.innerText = '';
-                                    statusTxt.style.display = 'none';
-                                }
-                                const pollInterval = 4000;
-                                const maxTriggerWaitPolls = 240; // ~16 min at 4s; avoids infinite loop on 503 / empty body
-                                let waitPct = 0;
-                                let ts = { status: '' };
-                                let httpBadStreak = 0;
-                                // If socket delivers completion before /api/trigger_status shows "triggered", handleJobUpdate
-                                // sets _lastProcessedJobId — don't block here or restart fake progress on top of GPT.
-                                const jobAlreadyHandledBySocket = () => (jobId && window._lastProcessedJobId === jobId);
-                                if (jobAlreadyHandledBySocket()) {
-                                    console.log('[trigger] socket already handled job before handshake wait; skipping poll loop');
-                                } else {
-                                    for (let pollIx = 0; pollIx < maxTriggerWaitPolls; pollIx++) {
-                                        if (ts.status === 'triggered' || ts.status === 'failed') break;
-                                        if (jobAlreadyHandledBySocket()) {
-                                            console.log('[trigger] socket handled job during handshake wait; stopping poll loop');
-                                            break;
-                                        }
-                                        await new Promise(r => setTimeout(r, pollInterval));
-                                        if (jobAlreadyHandledBySocket()) break;
-                                        // Keep progressing slowly and cap at 95% while we wait.
-                                        if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
-                                        if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
-                                        try {
-                                            const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
-                                            if (!stRes.ok) {
-                                                httpBadStreak++;
-                                                const giveUp =
-                                                    httpBadStreak >= 12
-                                                    || (qsIsSevereServerPollError(stRes.status) && httpBadStreak >= 5);
-                                                if (giveUp) {
-                                                    ts = { status: 'failed', _serverUnavailable: true };
-                                                    break;
-                                                }
-                                                continue;
-                                            }
-                                            httpBadStreak = 0;
-                                            ts = await stRes.json();
-                                        } catch (_) {
-                                            httpBadStreak++;
-                                            if (httpBadStreak >= 12) {
-                                                ts = { status: 'failed', _serverUnavailable: true };
-                                                break;
-                                            }
-                                        }
-                                        if (ts.status === 'triggered' || ts.status === 'failed') break;
-                                    }
-                                }
-                                if (ts.status === 'failed' && ts._serverUnavailable) {
-                                    const dbId2 = localStorage.getItem('lastJobDbId');
-                                    window.isTriggering = false;
-                                    setDiarizationBusyState(false);
-                                    stopProcessingStateUI('trigger_handshake_server_unavailable');
-                                    hideProgressBar();
-                                    qsStopFakeProgress('trigger_handshake_server_unavailable');
-                                    const msg = isHebrewUi
-                                        ? 'השרת אינו זמין זמנית. רענן את הדף או נסה שוב בעוד רגע.'
-                                        : 'The server is temporarily unavailable. Refresh the page or try again in a moment.';
-                                    if (typeof showStatus === 'function') showStatus(msg, true);
-                                    if (mainBtn) mainBtn.disabled = false;
-                                    return;
-                                }
-                                if (ts.status === 'failed') {
-                                    console.log("trigger nack", ts.status);
-                                    console.log("❌ Trigger not confirmed:", ts.status);
-                                    const dbId2 = localStorage.getItem('lastJobDbId');
-                                    window.isTriggering = false;
-                                    setDiarizationBusyState(false);
-                                    stopProcessingStateUI('trigger_handshake_status_failed');
-                                    hideProgressBar();
-                                    const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
-                                    showTriggerErrorDialog(msg, {
-                                        onClose: () => {
-                                            localStorage.removeItem('activeJobId');
-                                            if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
-                                            if (mainBtn) mainBtn.disabled = false;
-                                        }
-                                    });
-                                    return;
-                                }
-                                if (jobAlreadyHandledBySocket()) {
-                                    console.log('[trigger] results already handled via socket; skipping trigger_status messaging');
-                                } else if (ts.status !== 'triggered') {
-                                    console.warn('[trigger] Handshake wait ended without triggered; continuing with job status polling');
-                                } else {
-                                    console.log("trigger ack (triggered)");
-                                    console.log("✅ RunPod trigger confirmed.");
-                                }
-                                const supersededBySocket = jobAlreadyHandledBySocket();
-                                if (!supersededBySocket && typeof startFakeProgress === 'function') {
-                                    startFakeProgress();
-                                }
-                            } else if (triggerRes.status === 202) {
-                                console.log("trigger nack", "unexpected status", triggerData.status);
-                            }
-                            // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
-                            if (jobId && typeof window.handleJobUpdate === 'function' && !(jobId && window._lastProcessedJobId === jobId)) {
-                                window.startJobStatusPolling(jobId);
-                            }
-                        } catch (err) {
-                            console.log("trigger nack", "exception", err && err.message);
-                            qsUploadTrace('trigger_processing_exception', { jobId, err: String((err && err.message) || err) });
-                            const dbId2 = localStorage.getItem('lastJobDbId');
-                            if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
-                            window.isTriggering = false;
-                            setDiarizationBusyState(false);
-                            localStorage.removeItem('activeJobId');
-                            stopProcessingStateUI('upload_after_s3_trigger_processing_exception');
-                            hideProgressBar();
-                            if (mainBtn) mainBtn.disabled = false;
-                            throw err;
-                        }
-                        } else {
-                        qsUploadTrace('s3_put_http_error', { jobId, status: xhr.status, statusText: xhr.statusText });
-                        console.error("S3 Upload Failed:", xhr.statusText);
-                        const dbId = localStorage.getItem('lastJobDbId');
-                        if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
-                        window.isTriggering = false;
-                        setDiarizationBusyState(false);
-                        localStorage.removeItem('activeJobId');
-                        stopProcessingStateUI('s3_put_xhr_non_200');
-                        hideProgressBar();
-                        if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
-                    }
-                    } finally {
-                        cleanupUploadMonitors();
-                    }
-                };
-
-                xhr.onerror = () => {
-                    qsUploadTrace('s3_put_xhr_network_error', { jobId });
-                    console.error("XHR Network Error during upload.");
-                    cleanupUploadMonitors();
-                    const dbId = localStorage.getItem('lastJobDbId');
-                    if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'failed');
-                    window.isTriggering = false;
-                    setDiarizationBusyState(false);
-                    localStorage.removeItem('activeJobId');
-                    stopProcessingStateUI('s3_put_xhr_onerror');
-                    hideProgressBar();
-                };
-
-                xhr.onabort = () => {
-                    qsUploadTrace('s3_put_aborted', { jobId });
-                    cleanupUploadMonitors();
+                const isMedicalUpload = isMedicalModeEnabled();
+                const multipartAbortPayload = {
+                    userId,
+                    uploadId,
+                    s3Key,
+                    bucket,
+                    isMedical: isMedicalUpload,
                 };
 
                 uploadPhase = 's3_put';
-                xhr.send(currentFile);
+                let multipartComplete = false;
+                try {
+                    await qsS3MultipartUploadFile({
+                        currentFile,
+                        userId,
+                        uploadId,
+                        s3Key,
+                        bucket,
+                        partSizeBytes,
+                        partCount,
+                        uploadLabel,
+                        progressBar,
+                        mainBtn,
+                        isMedical: isMedicalUpload,
+                    });
+                    multipartComplete = true;
+                } catch (upErr) {
+                    qsUploadTrace('s3_multipart_failed', { jobId, err: String((upErr && upErr.message) || upErr) });
+                    if (!multipartComplete && multipartAbortPayload && multipartAbortPayload.uploadId) {
+                        await qsS3MultipartAbortQuiet(multipartAbortPayload);
+                    }
+                    cleanupUploadMonitors();
+                    const dbIdFail = localStorage.getItem('lastJobDbId');
+                    if (typeof updateJobStatus === 'function' && dbIdFail) updateJobStatus(dbIdFail, 'failed');
+                    window.isTriggering = false;
+                    setDiarizationBusyState(false);
+                    localStorage.removeItem('activeJobId');
+                    stopProcessingStateUI('s3_multipart_upload_failed');
+                    hideProgressBar();
+                    if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
+                    if (typeof showStatus === 'function') {
+                        showStatus((upErr && upErr.message) || 'Upload failed.', true);
+                    }
+                    return;
+                }
+
+                uploadPhase = 's3_done';
+                if (progressBar) progressBar.style.width = "100%";
+                if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
+                qsUploadTrace('s3_multipart_complete', { jobId, bytes: currentFile && currentFile.size });
+                console.log("✅ File uploaded to S3 (multipart).");
+                window.isTriggering = true;
+                setDiarizationBusyState(true);
+                window._triggerRetriedForJobId = null; // allow one auto-retry if trigger gets stuck
+                const dbId = localStorage.getItem('lastJobDbId');
+                if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
+                // Phase split: upload progress UI first, then "waking AI" processing UI.
+                hideProgressBar();
+                startProcessingStateUI();
+                if (statusTxt) statusTxt.style.display = 'none';
+
+                try {
+                    uploadPhase = 'trigger_processing';
+                    // Always runs after S3 upload completes: tells server upload is complete (upload_status for worker).
+                    console.log("Upload complete → /api/trigger_processing");
+                    const triggerPayload = {
+                        s3Key: s3Key,
+                        bucket: bucket,
+                        jobId: jobId,
+                        diarization: diarizationValue,
+                        isMedical: isMedicalModeEnabled(),
+                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
+                    };
+                    const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, jobId);
+                    if (!triggerRes.ok) {
+                        console.log("trigger nack", triggerRes.status, triggerData);
+                        console.log("❌ Triggering processing failed:", triggerRes.status, triggerData);
+                        const msg = triggerData.message || triggerData.error || `Server error (${triggerRes.status})`;
+                        if (typeof showStatus === 'function') showStatus(msg, true);
+                        const dbId2 = localStorage.getItem('lastJobDbId');
+                        if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                        window.isTriggering = false;
+                        setDiarizationBusyState(false);
+                        localStorage.removeItem('activeJobId');
+                        stopProcessingStateUI('upload_trigger_processing_http_not_ok');
+                        hideProgressBar();
+                        if (mainBtn) mainBtn.disabled = false;
+                        return;
+                    }
+
+                    // Option A: wait for RunPod trigger confirmation before showing "processing"
+                    if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {
+                        console.log("trigger ack (started, waiting for worker handshake)");
+                        const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+                        const processingLabel = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
+                        hideProgressBar(); // from here on, progress is % in button only
+                        if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' 0%';
+                        if (statusTxt) {
+                            statusTxt.innerText = '';
+                            statusTxt.style.display = 'none';
+                        }
+                        const pollInterval = 4000;
+                        const maxTriggerWaitPolls = 240; // ~16 min at 4s; avoids infinite loop on 503 / empty body
+                        let waitPct = 0;
+                        let ts = { status: '' };
+                        let httpBadStreak = 0;
+                        // If socket delivers completion before /api/trigger_status shows "triggered", handleJobUpdate
+                        // sets _lastProcessedJobId — don't block here or restart fake progress on top of GPT.
+                        const jobAlreadyHandledBySocket = () => (jobId && window._lastProcessedJobId === jobId);
+                        if (jobAlreadyHandledBySocket()) {
+                            console.log('[trigger] socket already handled job before handshake wait; skipping poll loop');
+                        } else {
+                            for (let pollIx = 0; pollIx < maxTriggerWaitPolls; pollIx++) {
+                                if (ts.status === 'triggered' || ts.status === 'failed') break;
+                                if (jobAlreadyHandledBySocket()) {
+                                    console.log('[trigger] socket handled job during handshake wait; stopping poll loop');
+                                    break;
+                                }
+                                await new Promise(r => setTimeout(r, pollInterval));
+                                if (jobAlreadyHandledBySocket()) break;
+                                // Keep progressing slowly and cap at 95% while we wait.
+                                if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
+                                if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
+                                try {
+                                    const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
+                                    if (!stRes.ok) {
+                                        httpBadStreak++;
+                                        const giveUp =
+                                            httpBadStreak >= 12
+                                            || (qsIsSevereServerPollError(stRes.status) && httpBadStreak >= 5);
+                                        if (giveUp) {
+                                            ts = { status: 'failed', _serverUnavailable: true };
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    httpBadStreak = 0;
+                                    ts = await stRes.json();
+                                } catch (_) {
+                                    httpBadStreak++;
+                                    if (httpBadStreak >= 12) {
+                                        ts = { status: 'failed', _serverUnavailable: true };
+                                        break;
+                                    }
+                                }
+                                if (ts.status === 'triggered' || ts.status === 'failed') break;
+                            }
+                        }
+                        if (ts.status === 'failed' && ts._serverUnavailable) {
+                            const dbId2 = localStorage.getItem('lastJobDbId');
+                            window.isTriggering = false;
+                            setDiarizationBusyState(false);
+                            stopProcessingStateUI('trigger_handshake_server_unavailable');
+                            hideProgressBar();
+                            qsStopFakeProgress('trigger_handshake_server_unavailable');
+                            const msg = isHebrewUi
+                                ? 'השרת אינו זמין זמנית. רענן את הדף או נסה שוב בעוד רגע.'
+                                : 'The server is temporarily unavailable. Refresh the page or try again in a moment.';
+                            if (typeof showStatus === 'function') showStatus(msg, true);
+                            if (mainBtn) mainBtn.disabled = false;
+                            return;
+                        }
+                        if (ts.status === 'failed') {
+                            console.log("trigger nack", ts.status);
+                            console.log("❌ Trigger not confirmed:", ts.status);
+                            const dbId2 = localStorage.getItem('lastJobDbId');
+                            window.isTriggering = false;
+                            setDiarizationBusyState(false);
+                            stopProcessingStateUI('trigger_handshake_status_failed');
+                            hideProgressBar();
+                            const msg = isHebrewUi ? 'הפעלת העיבוד נכשלה.' : 'GPU trigger failed.';
+                            showTriggerErrorDialog(msg, {
+                                onClose: () => {
+                                    localStorage.removeItem('activeJobId');
+                                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                                    if (mainBtn) mainBtn.disabled = false;
+                                }
+                            });
+                            return;
+                        }
+                        if (jobAlreadyHandledBySocket()) {
+                            console.log('[trigger] results already handled via socket; skipping trigger_status messaging');
+                        } else if (ts.status !== 'triggered') {
+                            console.warn('[trigger] Handshake wait ended without triggered; continuing with job status polling');
+                        } else {
+                            console.log("trigger ack (triggered)");
+                            console.log("✅ RunPod trigger confirmed.");
+                        }
+                        const supersededBySocket = jobAlreadyHandledBySocket();
+                        if (!supersededBySocket && typeof startFakeProgress === 'function') {
+                            startFakeProgress();
+                        }
+                    } else if (triggerRes.status === 202) {
+                        console.log("trigger nack", "unexpected status", triggerData.status);
+                    }
+                    // Polling fallback: if socket misses callback (e.g. room encoding), poll check_status
+                    if (jobId && typeof window.handleJobUpdate === 'function' && !(jobId && window._lastProcessedJobId === jobId)) {
+                        window.startJobStatusPolling(jobId);
+                    }
+                } catch (err) {
+                    console.log("trigger nack", "exception", err && err.message);
+                    qsUploadTrace('trigger_processing_exception', { jobId, err: String((err && err.message) || err) });
+                    const dbId2 = localStorage.getItem('lastJobDbId');
+                    if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
+                    window.isTriggering = false;
+                    setDiarizationBusyState(false);
+                    localStorage.removeItem('activeJobId');
+                    stopProcessingStateUI('upload_after_s3_trigger_processing_exception');
+                    hideProgressBar();
+                    if (mainBtn) mainBtn.disabled = false;
+                }
+
+                cleanupUploadMonitors();
 
             }
             catch (err) {

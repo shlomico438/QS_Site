@@ -11,6 +11,7 @@ except ImportError:
 from flask import Flask, render_template, request, jsonify, redirect, send_from_directory, Response, stream_with_context
 from flask_socketio import SocketIO, join_room
 import json
+import math
 import requests  # Added for RunPod API calls
 import time
 import logging
@@ -1361,7 +1362,10 @@ def delete_account():
 @app.route('/api/mock-upload', methods=['PUT'])
 def mock_upload():
     print("SIMULATION: Fake file upload received!")
-    return "", 200
+    resp = app.make_response(("", 200))
+    # Multipart client reads ETag from each part PUT; expose a dummy tag in local simulation.
+    resp.headers['ETag'] = '"simulated-multipart-part"'
+    return resp
 
 @app.after_request
 def add_security_headers(resp):
@@ -3349,8 +3353,342 @@ def sign_s3():
             'isMedical': is_medical
         })
 
+
+def _multipart_part_count(file_size, part_bytes):
+    """Plan S3 multipart parts (fixed part size except last). Last part may be < 5 MiB; all prior parts are part_bytes."""
+    fs = max(0, int(file_size or 0))
+    pb = max(5 * 1024 * 1024, int(part_bytes))  # S3 minimum part size (except last)
+    if fs == 0:
+        return 1, pb
+    if fs <= pb:
+        return 1, pb
+    return max(1, math.ceil(fs / pb)), pb
+
+
+def _normalize_s3_part_etag(etag):
+    s = (etag or '').strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1]
+    return s
+
+
+def _assert_multipart_key_for_user(s3_key, user_id, is_medical):
+    safe_user = str(user_id or 'anonymous').strip() or 'anonymous'
+    prefix = _resolve_storage_profile(safe_user, is_medical=is_medical)['input_prefix'] + '/'
+    sk = str(s3_key or '')
+    if not sk.startswith(prefix):
+        raise ValueError('Invalid storage key for user')
+
+
+@app.route('/api/sign-s3-multipart-init', methods=['POST'])
+def sign_s3_multipart_init():
+    """Create S3 multipart upload; client uploads parts via presigned PUT URLs then calls complete."""
+    import os
+    import time
+    from threading import Thread
+
+    data = request.json or {}
+    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
+    is_medical = bool(data.get('isMedical'))
+    file_size = int(data.get('fileSize') or data.get('file_size') or 0)
+    try:
+        validated_kms_arn = _require_medical_kms_or_raise(is_medical)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e), "isMedical": is_medical}), 400
+
+    part_bytes_env = int(os.environ.get('S3_MULTIPART_PART_BYTES', str(8 * 1024 * 1024)))
+    part_count, part_bytes = _multipart_part_count(file_size, part_bytes_env)
+
+    if SIMULATION_MODE:
+        job_id = f"job_sim_{int(time.time())}"
+        user_prefix = f"users/{user_id}"
+        s3_key = f"{user_prefix}/simulation_audio"
+        is_diarization_requested = data.get('diarization', False)
+        Thread(target=simulate_completion, args=(job_id, is_diarization_requested)).start()
+        return jsonify({
+            'data': {
+                'uploadId': 'sim',
+                's3Key': s3_key,
+                'jobId': job_id,
+                'bucket': os.environ.get('S3_BUCKET') or 'quickscribe-v2-12345',
+                'partSizeBytes': part_bytes,
+                'partCount': part_count,
+                'isMedical': is_medical,
+                'simulation': True,
+            },
+            'isMedical': is_medical,
+        })
+
+    filename = data.get('filename')
+    file_type = data.get('filetype') or 'application/octet-stream'
+
+    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "eu-north-1")
+    storage_profile = _resolve_storage_profile(user_id, is_medical=is_medical)
+    bucket = storage_profile["bucket"]
+    kms_arn = validated_kms_arn
+
+    if not key_id or not secret:
+        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=key_id,
+        aws_secret_access_key=secret,
+        region_name=region
+    )
+
+    base_name, extension = os.path.splitext(filename or 'upload')
+    job_id = f"job_{int(time.time())}_{base_name}"
+    s3_key = f"{storage_profile['input_prefix']}/{job_id}{extension}"
+
+    create_params = {
+        'Bucket': bucket,
+        'Key': s3_key,
+        'ContentType': file_type,
+    }
+    if is_medical:
+        create_params['ServerSideEncryption'] = 'aws:kms'
+        create_params['SSEKMSKeyId'] = kms_arn
+
+    try:
+        cmur = s3_client.create_multipart_upload(**create_params)
+        upload_id = cmur['UploadId']
+    except ClientError as e:
+        logging.exception("create_multipart_upload failed")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    if not _runpod_skip_warmup():
+        _start_trigger_if_configured(
+            job_id=job_id,
+            s3_key=s3_key,
+            request=request,
+            task='transcribe',
+            language=data.get('language', 'he'),
+            diarization=data.get('diarization', False),
+            speaker_count=2,
+            is_medical=is_medical,
+            bucket=bucket,
+        )
+    else:
+        logging.info("RUNPOD_SKIP_WARMUP: skipping multipart-init RunPod trigger for %s", job_id)
+
+    return jsonify({
+        'data': {
+            'uploadId': upload_id,
+            's3Key': s3_key,
+            'jobId': job_id,
+            'bucket': bucket,
+            'partSizeBytes': part_bytes,
+            'partCount': part_count,
+            'isMedical': is_medical,
+            'simulation': False,
+        },
+        'isMedical': is_medical,
+    })
+
+
+@app.route('/api/sign-s3-multipart-part-urls', methods=['POST'])
+def sign_s3_multipart_part_urls():
+    """Return presigned PUT URLs for one or more part numbers (same UploadId)."""
+    data = request.json or {}
+    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
+    is_medical = bool(data.get('isMedical'))
+    bucket_in = (data.get('bucket') or '').strip()
+    s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
+    upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
+    part_numbers = data.get('partNumbers') or data.get('part_numbers') or []
+
+    try:
+        _assert_multipart_key_for_user(s3_key, user_id, is_medical)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=is_medical)
+    if bucket_in and bucket_in != prof['bucket']:
+        return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
+
+    if not isinstance(part_numbers, list) or not part_numbers:
+        return jsonify({"status": "error", "message": "partNumbers required"}), 400
+    if len(part_numbers) > 100:
+        return jsonify({"status": "error", "message": "Too many parts in one request"}), 400
+
+    if SIMULATION_MODE or upload_id == 'sim':
+        base = request.url_root.rstrip('/')
+        parts_out = []
+        for pn in part_numbers:
+            try:
+                pni = int(pn)
+            except (TypeError, ValueError):
+                continue
+            if pni < 1 or pni > 10000:
+                continue
+            parts_out.append({
+                'partNumber': pni,
+                'url': f"{base}/api/mock-upload",
+            })
+        return jsonify({'data': {'parts': parts_out}})
+
+    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "eu-north-1")
+    if not key_id or not secret:
+        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=key_id,
+        aws_secret_access_key=secret,
+        region_name=region
+    )
+
+    bucket = prof['bucket']
+    parts_out = []
+    for pn in part_numbers:
+        try:
+            pni = int(pn)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid part number"}), 400
+        if pni < 1 or pni > 10000:
+            return jsonify({"status": "error", "message": "Invalid part number"}), 400
+        try:
+            url = s3_client.generate_presigned_url(
+                'upload_part',
+                Params={
+                    'Bucket': bucket,
+                    'Key': s3_key,
+                    'UploadId': upload_id,
+                    'PartNumber': pni,
+                },
+                ExpiresIn=3600,
+                HttpMethod='PUT',
+            )
+        except ClientError as e:
+            logging.exception("presign upload_part failed")
+            return jsonify({"status": "error", "message": str(e)}), 500
+        parts_out.append({'partNumber': pni, 'url': url})
+
+    return jsonify({'data': {'parts': parts_out}})
+
+
+@app.route('/api/sign-s3-multipart-complete', methods=['POST'])
+def sign_s3_multipart_complete():
+    """Finalize multipart upload server-side (needs part ETags from client PUT responses)."""
+    data = request.json or {}
+    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
+    is_medical = bool(data.get('isMedical'))
+    bucket_in = (data.get('bucket') or '').strip()
+    s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
+    upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
+    parts_raw = data.get('parts') or []
+
+    try:
+        _assert_multipart_key_for_user(s3_key, user_id, is_medical)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=is_medical)
+    bucket = prof['bucket']
+    if bucket_in and bucket_in != bucket:
+        return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
+
+    if SIMULATION_MODE or upload_id == 'sim':
+        return jsonify({'status': 'ok', 'simulation': True})
+
+    if not isinstance(parts_raw, list) or not parts_raw:
+        return jsonify({"status": "error", "message": "parts required"}), 400
+
+    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "eu-north-1")
+    if not key_id or not secret:
+        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=key_id,
+        aws_secret_access_key=secret,
+        region_name=region
+    )
+
+    aws_parts = []
+    for p in parts_raw:
+        if not isinstance(p, dict):
+            continue
+        pn = p.get('partNumber') or p.get('PartNumber')
+        etag = p.get('eTag') or p.get('ETag')
+        try:
+            pni = int(pn)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid part Number"}), 400
+        ne = _normalize_s3_part_etag(etag)
+        if not ne:
+            return jsonify({"status": "error", "message": "Missing ETag for part %s" % pni}), 400
+        aws_parts.append({'PartNumber': pni, 'ETag': ne})
+
+    aws_parts.sort(key=lambda x: x['PartNumber'])
+
+    try:
+        s3_client.complete_multipart_upload(
+            Bucket=bucket,
+            Key=s3_key,
+            UploadId=upload_id,
+            MultipartUpload={'Parts': aws_parts},
+        )
+    except ClientError as e:
+        logging.exception("complete_multipart_upload failed")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/sign-s3-multipart-abort', methods=['POST'])
+def sign_s3_multipart_abort():
+    """Abort an in-progress multipart upload (cleanup after failures)."""
+    data = request.json or {}
+    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
+    is_medical = bool(data.get('isMedical'))
+    bucket_in = (data.get('bucket') or '').strip()
+    s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
+    upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
+
+    try:
+        _assert_multipart_key_for_user(s3_key, user_id, is_medical)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=is_medical)
+    bucket = prof['bucket']
+    if bucket_in and bucket_in != bucket:
+        return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
+
+    if SIMULATION_MODE or upload_id == 'sim':
+        return jsonify({'status': 'ok', 'simulation': True})
+
+    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    region = os.environ.get("AWS_REGION", "eu-north-1")
+    if not key_id or not secret:
+        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=key_id,
+        aws_secret_access_key=secret,
+        region_name=region
+    )
+
+    try:
+        s3_client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
+    except ClientError as e:
+        logging.warning("abort_multipart_upload: %s", e)
+
+    return jsonify({'status': 'ok'})
+
+
 def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None):
-    """Start RunPod trigger in background. Called from sign_s3 (before upload) so container warms during upload.
+    """Start RunPod trigger in background. Called from sign_s3 / multipart init (before upload) so container warms during upload.
     No-op if RunPod not configured or SIMULATION_MODE."""
     if SIMULATION_MODE:
         return
