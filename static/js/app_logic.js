@@ -5382,6 +5382,7 @@ function startProcessingStateUI() {
 /** Reset the main screen to initial state (as on first load) — e.g. when user clicks Upload to start a new file. */
 function resetScreenToInitial() {
     try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
+    try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
     window.isTriggering = false;
     qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
@@ -6118,7 +6119,10 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (_) {}
             return;
         }
-        if (fileInput) fileInput.click();
+        if (fileInput) {
+            try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
+            fileInput.click();
+        }
     }
 
     function syncMobileVideoSessionState() {
@@ -6200,7 +6204,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mainBtn) {
         mainBtn.addEventListener('click', async () => {
             if (window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON) {
-                if (fileInput) fileInput.click();
+                if (fileInput) {
+                    try { window.__QS_FILE_PICKER_PURPOSE = 'attach_local_media'; } catch (_) {}
+                    fileInput.click();
+                }
                 return;
             }
             if (window.mainBtnAction === 'transcribe_loaded_file') {
@@ -8575,7 +8582,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 // Debug/local JSON flow: attach local video/audio to an already-loaded transcript (no upload/transcribe).
                 // Do not trigger this for normal New Session uploads; stale transcript state can otherwise hijack iOS picker selections.
-                const allowLocalMediaAttach = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
+                const pickerPurpose = String(window.__QS_FILE_PICKER_PURPOSE || 'new_upload');
+                const allowLocalMediaAttach = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON && pickerPurpose === 'attach_local_media';
                 if (allowLocalMediaAttach && typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
                     let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
                     let isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
@@ -8660,10 +8668,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             showStatus('Local media attached (no upload).', false, { duration: 5000 });
                         }
                         fileInput.value = '';
+                        try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
                         return;
                     }
                 }
 
+                try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
                 let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
                 let isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
                 if (isMedicalModeEnabled()) {
