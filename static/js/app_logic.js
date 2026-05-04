@@ -5385,6 +5385,8 @@ function resetScreenToInitial() {
     window.isTriggering = false;
     qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
+    window.currentWords = null;
+    window.currentCaptions = null;
     window._medicalHasResult = false;
     window.currentFormattedDoc = null;
     window._qsDocPreferSegmentsAfterEdit = false;
@@ -6691,15 +6693,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // One-time doc formatting pass (clean transcript + summary), reused by exports.
-        // IMPORTANT: fire-and-forget, never await. Defer with setTimeout(0) so the main thread can paint after
-        // heavy translate merges before this long request (504s still log but UI is not stuck on the prior frame).
-        setTimeout(() => {
+        // Standard mode keeps this in the background so the transcript appears immediately.
+        // Medical mode awaits it so the spinner stays up until the doctor-facing summary is ready to render.
+        const runPostTranscriptionFormatting = async () => {
             const fullText = buildTranscriptTextForGptFormat();
-            if (!fullText) return;
+            if (!fullText) return false;
             const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
-            runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId)
-                .then(({ ok, fmt }) => {
-                    if (!ok || !fmt || typeof fmt !== 'object') return;
+            try {
+                const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId);
+                if (!ok || !fmt || typeof fmt !== 'object') return false;
                     const rawFmt = {
                         clean_transcript: String(fmt.clean_transcript || '').trim(),
                         overview: String(fmt.overview || '').trim(),
@@ -6754,11 +6756,31 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
                     } catch (_) {}
-                })
-                .catch((e) => {
-                    console.warn('[GPT] format_transcript_summary failed (background), export will fallback:', e);
-                });
-        }, 0);
+                return true;
+            } catch (e) {
+                console.warn('[GPT] format_transcript_summary failed, export will fallback:', e);
+                return false;
+            }
+        };
+
+        const awaitMedicalFormatting = (
+            typeof effectiveIsMedicalForFormatting === 'function'
+                ? effectiveIsMedicalForFormatting()
+                : isMedicalModeEnabled()
+        );
+        if (awaitMedicalFormatting) {
+            try {
+                const T = typeof window.t === 'function' ? window.t : (k) => k;
+                const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
+                if (mainBtn) mainBtn.innerText = processingLabel + ' — מייצר סיכום רפואי…';
+                const phaseElMedicalFmt = document.getElementById('processing-state-phase');
+                if (phaseElMedicalFmt) phaseElMedicalFmt.textContent = 'מייצר סיכום רפואי';
+            } catch (_) {}
+            await runPostTranscriptionFormatting();
+        } else {
+            // Defer with setTimeout(0) so the main thread can paint after heavy translate merges.
+            setTimeout(() => { void runPostTranscriptionFormatting(); }, 0);
+        }
 
         // Ensure global segments are set (already handled above); keep legacy flow happy.
         const finalStatus = 'processed';
@@ -8551,8 +8573,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     return;
                 }
 
-                // Debug: attach local video/audio when a transcript is already in memory (no upload/transcribe).
-                if (typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
+                // Debug/local JSON flow: attach local video/audio to an already-loaded transcript (no upload/transcribe).
+                // Do not trigger this for normal New Session uploads; stale transcript state can otherwise hijack iOS picker selections.
+                const allowLocalMediaAttach = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
+                if (allowLocalMediaAttach && typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
                     let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
                     let isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
                     if (isMedicalModeEnabled()) {
