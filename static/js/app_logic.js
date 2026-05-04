@@ -5624,6 +5624,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
                 if (typeof window.toggleSubtitleStyleDrawer === 'function') window.toggleSubtitleStyleDrawer(false);
             } catch (_) {}
+            // Existing transcript may still be regular word/caption HTML; repaint medical summary / clinical transcript.
+            try {
+                if (typeof window._qsRerenderTranscriptView === 'function') {
+                    window._qsRerenderTranscriptView();
+                }
+            } catch (_) {}
         } else {
             try {
                 const tw = document.getElementById('transcript-window');
