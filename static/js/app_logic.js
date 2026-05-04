@@ -6578,9 +6578,21 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        setTranscriptActionButtonsVisible(true);
-        window._medicalHasResult = true;
-        try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+        /** Medical: keep export/edit toolbar + result tabs hidden until GPT summary + transcript paint (spinner stays up). */
+        const medicalDeferToolbarUntilGptDone = (
+            typeof effectiveIsMedicalForFormatting === 'function'
+                ? effectiveIsMedicalForFormatting()
+                : isMedicalModeEnabled()
+        );
+        if (!medicalDeferToolbarUntilGptDone) {
+            setTranscriptActionButtonsVisible(true);
+            window._medicalHasResult = true;
+            try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+        } else {
+            window._medicalHasResult = false;
+            setTranscriptActionButtonsVisible(false);
+            try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+        }
 
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
@@ -6776,12 +6788,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        const awaitMedicalFormatting = (
-            typeof effectiveIsMedicalForFormatting === 'function'
-                ? effectiveIsMedicalForFormatting()
-                : isMedicalModeEnabled()
-        );
-        if (awaitMedicalFormatting) {
+        if (medicalDeferToolbarUntilGptDone) {
             try {
                 const T = typeof window.t === 'function' ? window.t : (k) => k;
                 const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
@@ -6933,6 +6940,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (_) {}
         window.isTriggering = false;
+        if (medicalDeferToolbarUntilGptDone) {
+            window._medicalHasResult = true;
+            setTranscriptActionButtonsVisible(true);
+            try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+        }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         stopProcessingStateUI('handle_job_update_success_pipeline_done');
     };
