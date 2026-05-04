@@ -2565,6 +2565,40 @@ html[dir="rtl"] .upload-status {
     }
 }
 
+/* iOS Safari: layout chrome + 100vh/100% often exceeds the *visible* viewport, so the page
+   gains a tiny bit of scroll and the transcript controls-bar sits just below the fold.
+   Clamp the shell to the small viewport height and tighten medical vertical spacing. */
+@media screen and (max-width: 768px) {
+    @supports (-webkit-touch-callout: none) {
+        html, body {
+            height: 100svh !important;
+            max-height: 100svh !important;
+        }
+        main.main-content {
+            flex: 1 1 auto !important;
+            min-height: 0 !important;
+            max-height: 100% !important;
+            overflow: hidden !important;
+        }
+    }
+
+    .main-app-container.medical-mode #transcript-window:not(.medical-wave-active) {
+        padding-top: 46px !important;
+    }
+    .main-app-container.medical-mode #audio-player-container {
+        margin-bottom: 10px !important;
+    }
+    #medical-session-header {
+        margin-bottom: 8px !important;
+    }
+    body.has-transcript-actions .main-app-container.medical-mode .transcription-wrapper {
+        margin-bottom: 6px !important;
+    }
+    .main-app-container.medical-mode #medical-result-tabs {
+        margin-bottom: 6px !important;
+    }
+}
+
 /* Android portrait tuning:
    On some Galaxy Chrome viewports, portrait video can consume too much vertical space.
    Clamp player height with dvh so transcript + CTA remain visible without page scrolling. */
