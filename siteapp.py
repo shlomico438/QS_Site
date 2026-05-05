@@ -954,6 +954,16 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
         Body=body,
         ContentType='application/json'
     )
+    # Legacy debug cleanup: remove sidecar pre-align artifact if it exists.
+    # Canonical transcript storage is a single key: <base>.json.
+    legacy_pre_align_key = base + '.pre_align.json'
+    try:
+        s3_client.delete_object(
+            Bucket=profile["bucket"],
+            Key=legacy_pre_align_key
+        )
+    except Exception as e:
+        logging.debug("_put_transcript_json_to_s3: could not delete legacy key=%s: %s", legacy_pre_align_key, e)
     return result_s3_key
 
 
@@ -2743,6 +2753,42 @@ def api_transcript_format_chunks_plan():
     return jsonify({"chunks": chunks, "count": len(chunks)}), 200
 
 
+def _should_bypass_medical_gpt_format(raw_text: str) -> bool:
+    """Guardrail for ultra-short / non-linguistic transcripts (e.g. '1 2 3')."""
+    s = str(raw_text or '').strip()
+    if not s:
+        return True
+    # Very short utterances are high-risk for hallucinated clinical narratives.
+    if len(s) <= 12:
+        return True
+    tokens = [t for t in re.split(r'\s+', s) if t]
+    if len(tokens) <= 3:
+        return True
+    # If there's no alphabetic language signal, do not run medical summarization.
+    if not re.search(r'[A-Za-z\u0590-\u05FF]', s):
+        return True
+    return False
+
+
+def _medical_minimal_format_payload(raw_text: str, target_lang: str = 'he') -> dict:
+    clean = _wrap_text_to_max_chars(str(raw_text or '').strip())
+    is_he = str(target_lang or 'he').strip().lower().startswith('he')
+    not_stated = 'לא צוין (תמלול קצר מאוד).' if is_he else 'Not stated (transcript too short).'
+    rec_tail = (
+        'יש לוודא את התוכן מול ההקלטה והרופא האחראי.'
+        if is_he else
+        'Verify this content against the recording and the responsible clinician.'
+    )
+    return {
+        "clean_transcript": clean,
+        "overview": clean,
+        "key_points": [clean] if clean else [],
+        "medical_chief_complaint": not_stated,
+        "medical_examination_transcript": not_stated,
+        "medical_patient_recommendations": rec_tail,
+    }
+
+
 @app.route('/api/format_transcript_summary', methods=['POST'])
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export.
@@ -2795,6 +2841,20 @@ def api_format_transcript_summary():
         raw = str(data.get('text') or '').strip()
         if not raw:
             return jsonify({"error": "No transcript text provided"}), 400
+        if is_medical and _should_bypass_medical_gpt_format(raw):
+            elapsed = time.time() - t0
+            _apply_format_timing(elapsed)
+            base = _medical_minimal_format_payload(raw, target_lang=target_lang)
+            return jsonify({
+                "clean_transcript": base.get("clean_transcript", ""),
+                "overview": base.get("overview", ""),
+                "key_points": base.get("key_points", []),
+                "medical_chief_complaint": base.get("medical_chief_complaint", ""),
+                "medical_examination_transcript": base.get("medical_examination_transcript", ""),
+                "medical_patient_recommendations": base.get("medical_patient_recommendations", ""),
+                "gpt_format_sec": round(float(elapsed), 3),
+                "format_guardrail": "medical_short_transcript_bypass",
+            }), 200
         full_clean = _wrap_text_to_max_chars(raw)
         summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000') or 18000)
         summ_input = full_clean
@@ -2837,6 +2897,13 @@ def api_format_transcript_summary():
     if not raw_text:
         return jsonify({"error": "No transcript text provided"}), 400
     try:
+        if is_medical and _should_bypass_medical_gpt_format(raw_text):
+            elapsed = time.time() - t0
+            _apply_format_timing(elapsed)
+            out = _medical_minimal_format_payload(raw_text, target_lang=target_lang)
+            out['gpt_format_sec'] = round(float(elapsed), 3)
+            out['format_guardrail'] = 'medical_short_transcript_bypass'
+            return jsonify(out), 200
         out = _format_transcript_and_summary_via_openai(
             raw_text, target_lang=target_lang, is_medical=is_medical
         )
