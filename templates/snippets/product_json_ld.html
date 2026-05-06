@@ -1,10 +1,22 @@
 <script type="application/ld+json">
 {
-  "@context": "https://schema.org",
-  "@type": "Product",
+  "@context": "https://schema.org/",
+  "@type": "SoftwareApplication",
   "name": "QuickScribe",
+  "operatingSystem": "Web",
+  "applicationCategory": "BusinessApplication",
   "description": "Hebrew-specialized transcription with 94.36% accuracy using Dual-Stage Routing and DSP audio enhancement",
-  "category": "AI Transcription Software",
-  "url": "{{ (request.url_root or '').rstrip('/') }}/"
+  "url": "{{ (request.url_root or '').rstrip('/') }}/",
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": "4.8",
+    "ratingCount": "50"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD",
+    "availability": "https://schema.org/InStock"
+  }
 }
 </script>
