@@ -1417,16 +1417,21 @@ input:checked + .slider:before { transform: translateX(16px); }
 /* --- DROPDOWN --- */
 .dropdown-menu {
     position: absolute;
-    top: 110%; right: 0;
+    top: auto;
+    right: 0;
+    bottom: calc(100% + 8px);
     background: white;
     border: 1px solid #ddd;
     border-radius: 8px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     display: none;
     flex-direction: column;
-    width: clamp(280px, 86vw, 380px);
+    width: clamp(320px, 86vw, 420px);
     min-width: 0;
     max-width: calc(100vw - 24px);
+    max-height: min(78vh, 640px);
+    overflow-y: auto;
+    overflow-x: hidden;
     z-index: 100;
 }
 
