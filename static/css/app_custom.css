@@ -1430,8 +1430,7 @@ input:checked + .slider:before { transform: translateX(16px); }
     min-width: 0;
     max-width: calc(100vw - 24px);
     max-height: min(78vh, 640px);
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden;
     z-index: 100;
 }
 
@@ -1549,6 +1548,9 @@ input:checked + .slider:before { transform: translateX(16px); }
     flex-direction: column;
     gap: 12px;
     position: relative;
+    max-height: min(calc(78vh - 16px), 624px);
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .export-panel-close-icon {

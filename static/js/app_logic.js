@@ -4546,20 +4546,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             mobileMenuBackdrop = null;
         };
         function positionDownloadMenuOpen() {
-            // Keep menu constrained inside the transcript wrapper rectangle.
-            const wrap = document.querySelector('.transcription-wrapper');
-            if (wrap && dMenu.parentElement !== wrap) {
-                wrap.appendChild(dMenu);
-            }
             const isMobile = window.matchMedia('(max-width: 768px)').matches;
-            dMenu.style.position = isMobile ? 'fixed' : 'absolute';
-            dMenu.style.zIndex = isMobile ? '9999' : '220';
+            if (dMenu.parentElement !== document.body) {
+                document.body.appendChild(dMenu);
+            }
+            dMenu.style.position = 'fixed';
+            dMenu.style.zIndex = isMobile ? '9999' : '10050';
             dMenu.style.pointerEvents = 'auto';
             function place() {
                 if (isMobile) {
-                    if (dMenu.parentElement !== document.body) {
-                        document.body.appendChild(dMenu);
-                    }
                     dMenu.classList.add('is-mobile-overlay');
                     const backdrop = ensureMobileMenuBackdrop();
                     if (backdrop) backdrop.classList.add('show');
@@ -4571,28 +4566,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 dMenu.classList.remove('is-mobile-overlay');
-                const host = document.querySelector('.transcription-wrapper') || downloadMenuParent;
-                if (!host) return;
-                const hostRect = host.getBoundingClientRect();
                 const btnRect = dBtn.getBoundingClientRect();
-                const pad = 8;
-                const maxW = Math.max(240, hostRect.width - (pad * 2));
+                const pad = 12;
+                const maxW = Math.max(320, Math.min(420, window.innerWidth - (pad * 2)));
+                const maxH = Math.max(260, window.innerHeight - (pad * 2));
+                dMenu.style.width = `${maxW}px`;
                 dMenu.style.maxWidth = `${maxW}px`;
-                const w = Math.min(dMenu.offsetWidth || 320, maxW);
+                dMenu.style.maxHeight = `${maxH}px`;
+                const card = dMenu.querySelector('.export-panel-card');
+                if (card) card.style.maxHeight = `${Math.max(240, maxH - 16)}px`;
+                const w = Math.min(dMenu.offsetWidth || maxW, maxW);
                 const h = dMenu.offsetHeight || 120;
-                const preferredLeft = (btnRect.right - hostRect.left) - w;
-                const maxLeft = Math.max(pad, hostRect.width - w - pad);
-                const left = Math.min(Math.max(pad, preferredLeft), maxLeft);
+                const preferredLeft = btnRect.right - w;
+                const left = Math.min(Math.max(pad, preferredLeft), Math.max(pad, window.innerWidth - w - pad));
 
-                // Prefer below the toolbar button; fallback above when needed.
-                const belowTop = (btnRect.bottom - hostRect.top) + 6;
-                const aboveTop = (btnRect.top - hostRect.top) - h - 6;
-                const maxTop = Math.max(pad, hostRect.height - h - pad);
-                let top = belowTop;
-                if ((belowTop + h) > (hostRect.height - pad)) {
-                    top = aboveTop >= pad ? aboveTop : maxTop;
-                }
-                top = Math.min(Math.max(pad, top), maxTop);
+                // Prefer above the toolbar; allow overlaying the video if that's where space exists.
+                const aboveTop = btnRect.top - h - 8;
+                const belowTop = btnRect.bottom + 8;
+                let top = aboveTop >= pad ? aboveTop : belowTop;
+                top = Math.min(Math.max(pad, top), Math.max(pad, window.innerHeight - h - pad));
 
                 dMenu.style.left = `${left}px`;
                 dMenu.style.top = `${top}px`;
@@ -4610,7 +4602,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             dMenu.style.right = '';
             dMenu.style.left = '';
             dMenu.style.bottom = '';
+            dMenu.style.width = '';
+            dMenu.style.maxHeight = '';
             dMenu.style.maxWidth = '';
+            const card = dMenu.querySelector('.export-panel-card');
+            if (card) card.style.maxHeight = '';
             dMenu.classList.remove('is-mobile-overlay');
             removeMobileMenuBackdrop();
             if (downloadMenuParent && dMenu.parentElement !== downloadMenuParent) {
@@ -4672,7 +4668,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             menu.style.right = '';
             menu.style.left = '';
             menu.style.bottom = '';
+            menu.style.width = '';
+            menu.style.maxHeight = '';
             menu.style.maxWidth = '';
+            const card = menu.querySelector('.export-panel-card');
+            if (card) card.style.maxHeight = '';
             menu.classList.remove('is-mobile-overlay');
             removeMobileMenuBackdrop();
             const parent = document.getElementById('btn-download')?.parentElement;
