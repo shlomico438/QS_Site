@@ -3225,11 +3225,24 @@ def gpu_callback():
             notify = _get_job_notification_info(job_id, user_id=user_id)
             to_email = (notify.get("user_email") or "").strip()
             open_job_id = (notify.get("job_id") or job_id)
+            is_medical_job = bool(
+                ('/raw-audio/' in str(input_s3_key or ''))
+                or ('/summaries/' in str(input_s3_key or ''))
+                or str(input_s3_key or '').startswith('medical/')
+            )
             if to_email and open_job_id:
                 from urllib.parse import quote
                 public_base = _public_base_url(request)
-                open_url = f"{public_base}/?open={quote(str(open_job_id), safe='')}"
-                sent_ok = _send_transcription_ready_email(to_email, notify.get("user_name"), open_url)
+                if is_medical_job:
+                    open_url = f"{public_base}/medical?open={quote(str(open_job_id), safe='')}"
+                else:
+                    open_url = f"{public_base}/?open={quote(str(open_job_id), safe='')}"
+                sent_ok = _send_transcription_ready_email(
+                    to_email,
+                    notify.get("user_name"),
+                    open_url,
+                    is_medical=is_medical_job
+                )
                 if sent_ok:
                     transcription_email_sent.add(job_id)
                 else:
@@ -4539,22 +4552,34 @@ def _get_job_notification_info(runpod_job_id, user_id=None):
     return {}
 
 
-def _send_transcription_ready_email(to_email, user_name, open_url):
+def _send_transcription_ready_email(to_email, user_name, open_url, is_medical=False):
     """Send transcription-complete email via Zoho SMTP."""
     if not to_email:
         return False
     display_name = str(user_name or '').strip() or 'שם המשתמש'
-    subject = "הוידאו שלך מוכן! 🎬 הכתוביות מחכות לך ב-QuickScribe"
-    body = (
-        f"היי {display_name},\n\n"
-        "חדשות טובות! מנועי ה-AI שלנו סיימו את העבודה. הוידאו שלך תומלל, והכתוביות מסונכרנות ומוכנות על גבי הסאונד.\n\n"
-        "זה הזמן להיכנס למערכת, לעבור ברפרוף על הטקסט כדי לוודא שהכל מושלם (בכל זאת, אנחנו עומדים על 94% דיוק 😉), "
-        "לעשות פינישים קטנים אם צריך – ולהוריד את הוידאו מוכן להפצה.\n\n"
-        f"👉 למעבר לוידאו שלך: {open_url}\n\n"
-        "אם יש לך שאלות או פידבק על התוצאה, אפשר פשוט להשיב למייל הזה, אני קורא הכל.\n\n"
-        "יצירה נעימה,\n"
-        "QuickScribe"
-    )
+    if is_medical:
+        subject = "סיכום המפגש מוכן לסקירה (זמין ל-72 שעות)"
+        body = (
+            f"שלום {display_name},\n\n"
+            "הקלטת המפגש האחרון עובדה בהצלחה. התמלול והסיכום הקליני זמינים כעת לסקירה ועריכה בקישור הבא:\n\n"
+            f"{open_url}\n\n"
+            "לתשומת לבך: מטעמי אבטחת מידע והגנה על פרטיות המטופל, ההקלטה והסיכום יימחקו לצמיתות מהשרת בעוד 72 שעות. "
+            "מומלץ לעבור על הטקסט ולהטמיעו ברשומה הרפואית בהקדם.\n\n"
+            "בברכה,\n"
+            "צוות QuickScribe Medical"
+        )
+    else:
+        subject = "הוידאו שלך מוכן! 🎬 הכתוביות מחכות לך ב-QuickScribe"
+        body = (
+            f"היי {display_name},\n\n"
+            "חדשות טובות! מנועי ה-AI שלנו סיימו את העבודה. הוידאו שלך תומלל, והכתוביות מסונכרנות ומוכנות על גבי הסאונד.\n\n"
+            "זה הזמן להיכנס למערכת, לעבור ברפרוף על הטקסט כדי לוודא שהכל מושלם (בכל זאת, אנחנו עומדים על 94% דיוק 😉), "
+            "לעשות פינישים קטנים אם צריך – ולהוריד את הוידאו מוכן להפצה.\n\n"
+            f"👉 למעבר לוידאו שלך: {open_url}\n\n"
+            "אם יש לך שאלות או פידבק על התוצאה, אפשר פשוט להשיב למייל הזה, אני קורא הכל.\n\n"
+            "יצירה נעימה,\n"
+            "QuickScribe"
+        )
     return _send_email_via_zoho(to_email, subject, body)
 
 
