@@ -1778,10 +1778,14 @@ input:checked + .slider:before { transform: translateX(16px); }
 
 .option-format-row {
     margin-top: 4px;
+    min-height: 26px; /* Reserve vertical slot so selecting a card doesn't push layout down */
+    display: flex;
+    align-items: center;
 }
 
 .option-card:not(.is-selected) .option-format-row {
-    display: none;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .export-format-choice:hover {
