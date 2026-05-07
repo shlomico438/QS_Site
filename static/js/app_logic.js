@@ -58,6 +58,7 @@ let isSignUpMode = true;
 const QS_MEDICAL_MODE_KEY = 'qs_medical_mode';
 /** Set when user has opened /medical (so OAuth can land on /#$ and we still restore HIPAA UI after sign-out). */
 const QS_MEDICAL_LANDING_KEY = 'qs_medical_landing';
+const QS_IOS_SAFARI_HINT_TS_KEY = 'qs_ios_safari_hint_ts';
 
 function _qsReadMedicalLanding() {
     try {
@@ -257,6 +258,47 @@ function restoreMedicalAuthSnapshotAfterSignIn() {
 
 function isMedicalModeEnabled() {
     return window.isMedicalMode === true;
+}
+
+function _isLikelyIOSInAppBrowser() {
+    const ua = String(navigator.userAgent || navigator.vendor || '').toLowerCase();
+    const isIOS = /iphone|ipad|ipod/.test(ua) || (/macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1);
+    if (!isIOS) return false;
+    const isKnownIOSBrowser = /safari/.test(ua) && !/crios|fxios|edgios|opios|opr\//.test(ua);
+    const isKnownInApp = /fban|fbav|instagram|line\/|micromessenger|gsa\//.test(ua);
+    return isKnownInApp || !isKnownIOSBrowser;
+}
+
+async function maybeShowIOSOpenInSafariHintAfterSignIn() {
+    if (!_isLikelyIOSInAppBrowser()) return;
+    const now = Date.now();
+    try {
+        const last = Number(localStorage.getItem(QS_IOS_SAFARI_HINT_TS_KEY) || 0);
+        // Show at most once every 12h per browser.
+        if (Number.isFinite(last) && last > 0 && (now - last) < (12 * 60 * 60 * 1000)) return;
+    } catch (_) {}
+    const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+    const msg = isHebrewUi
+        ? 'כדי שההתחברות תישמר גם אחרי סגירת הדפדפן באייפון, מומלץ לפתוח את QuickScribe ב-Safari (ולא בדפדפן פנימי של האפליקציה).'
+        : 'To keep sign-in after closing the browser on iPhone, open QuickScribe in Safari (not an in-app browser).';
+    const openSafariText = isHebrewUi ? 'פתח ב-Safari' : 'Open in Safari';
+    const stayText = isHebrewUi ? 'הישאר כאן' : 'Stay here';
+    let openSafari = false;
+    try {
+        openSafari = await showGlobalConfirm(msg, { confirmText: openSafariText, cancelText: stayText });
+    } catch (_) {
+        return;
+    } finally {
+        try { localStorage.setItem(QS_IOS_SAFARI_HINT_TS_KEY, String(now)); } catch (_) {}
+    }
+    if (!openSafari) return;
+    const target = String(window.location.href || '').split('#')[0];
+    try {
+        const schemeUrl = target.replace(/^https:\/\//i, 'x-safari-https://').replace(/^http:\/\//i, 'x-safari-http://');
+        window.location.href = schemeUrl;
+    } catch (_) {
+        try { window.open(target, '_blank'); } catch (__) {}
+    }
 }
 
 /** Medical / HIPAA pipeline stores recordings under raw-audio (e.g. audio-only WebM from MediaRecorder). */
@@ -600,6 +642,7 @@ supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session) {
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
+        try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
         if (window.location.hash && /access_token/.test(window.location.hash)) {
             // Keep the current in-memory transcript/video UI state.
             // Remove auth hash from URL without forcing a page reload.

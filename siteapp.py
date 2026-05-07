@@ -3328,6 +3328,105 @@ def simulate_completion(jid, run_diarization):
     print(f"🔮 SIMULATION COMPLETE: Room {jid} | Diarization Output: {run_diarization}")
 
 
+def _simulation_uses_sagemaker_async():
+    if not SIMULATION_MODE:
+        return False
+    return bool(
+        (os.environ.get('SAGEMAKER_SIM_ENDPOINT_NAME') or '').strip()
+        or (os.environ.get('SAGEMAKER_ENDPOINT_NAME') or '').strip()
+    )
+
+
+def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', diarization=False, is_medical=False, bucket=None, public_base=None):
+    """Simulation-only GPU submit path: SageMaker async invoke (fallback: local simulate_completion)."""
+    endpoint_name = (
+        (os.environ.get('SAGEMAKER_SIM_ENDPOINT_NAME') or '').strip()
+        or (os.environ.get('SAGEMAKER_ENDPOINT_NAME') or '').strip()
+    )
+    region = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+
+    if not endpoint_name:
+        logging.warning("SIMULATION_MODE: SAGEMAKER_*_ENDPOINT_NAME missing; using local simulate_completion")
+        simulate_completion(job_id, diarization)
+        return
+
+    try:
+        base = str(
+            (os.environ.get('SIMULATION_PUBLIC_BASE_URL') or '').strip()
+            or str(public_base or '').strip()
+        ).rstrip('/')
+        # Allow SIMULATION_PUBLIC_BASE_URL as either origin (https://host)
+        # or full callback URL (.../api/gpu_callback).
+        if base.endswith('/api/gpu_callback'):
+            base = base[: -len('/api/gpu_callback')].rstrip('/')
+        payload = {
+            "jobId": job_id,
+            "bucket": bucket,
+            "s3Key": s3_key,
+            "language": language,
+            "diarization": bool(diarization),
+            "callback_url": f"{base}/api/gpu_callback" if base else None,
+        }
+        payload_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=region,
+        )
+        request_bucket = str(bucket or (os.environ.get('S3_BUCKET') or '')).strip()
+        if not request_bucket:
+            raise RuntimeError('Missing S3 bucket for SageMaker async request payload')
+
+        request_key = (
+            f"users/{_extract_user_id_from_s3_key(s3_key) or 'anonymous'}"
+            f"/simulation-requests/{job_id}_{uuid.uuid4().hex}.json"
+        )
+        s3_client.put_object(
+            Bucket=request_bucket,
+            Key=request_key,
+            Body=payload_json,
+            ContentType='application/json',
+        )
+        input_location = f"s3://{request_bucket}/{request_key}"
+
+        smrt = boto3.client(
+            'sagemaker-runtime',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=region,
+        )
+        async_args = {
+            'EndpointName': endpoint_name,
+            'InputLocation': input_location,
+            'ContentType': 'application/json',
+            'Accept': 'application/json',
+            'InferenceId': f"qs-sim-{job_id}",
+        }
+        output_location = (os.environ.get('SAGEMAKER_SIM_ASYNC_OUTPUT_S3_URI') or '').strip()
+        if output_location:
+            async_args['OutputLocation'] = output_location
+        resp = smrt.invoke_endpoint_async(**async_args)
+        code = int((resp or {}).get('ResponseMetadata', {}).get('HTTPStatusCode') or 0)
+        output_uri = str((resp or {}).get('OutputLocation') or '').strip()
+        logging.info(
+            "SIMULATION_MODE: SageMaker async invoke accepted endpoint=%s job_id=%s status=%s input=%s output=%s",
+            endpoint_name,
+            job_id,
+            code,
+            input_location,
+            output_uri[:220],
+        )
+    except Exception as e:
+        strict = str(os.environ.get('SAGEMAKER_SIM_STRICT', 'true')).lower() in ('1', 'true', 'yes')
+        if strict:
+            logging.exception("SIMULATION_MODE: SageMaker async invoke failed (strict=true): %s", e)
+            return
+        logging.exception("SIMULATION_MODE: SageMaker async invoke failed; fallback to local simulate_completion: %s", e)
+        simulate_completion(job_id, diarization)
+
+
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
     import boto3
@@ -3344,13 +3443,18 @@ def sign_s3():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e), "isMedical": is_medical}), 400
 
-    if SIMULATION_MODE:
+    if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
         job_id = f"job_sim_{int(time.time())}"
         s3_key = f"{user_prefix}/simulation_audio"
 
         is_diarization_requested = data.get('diarization', False)
-
-        Thread(target=simulate_completion, args=(job_id, is_diarization_requested)).start()
+        sim_bucket = _resolve_storage_profile(user_id, is_medical=is_medical)["bucket"]
+        public_base = _public_base_url(request)
+        Thread(
+            target=_submit_simulation_job,
+            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base),
+            daemon=True,
+        ).start()
 
         return jsonify({
             'data': {
@@ -3479,12 +3583,18 @@ def sign_s3_multipart_init():
     part_bytes_env = int(os.environ.get('S3_MULTIPART_PART_BYTES', str(8 * 1024 * 1024)))
     part_count, part_bytes = _multipart_part_count(file_size, part_bytes_env)
 
-    if SIMULATION_MODE:
+    if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
         job_id = f"job_sim_{int(time.time())}"
         user_prefix = f"users/{user_id}"
         s3_key = f"{user_prefix}/simulation_audio"
         is_diarization_requested = data.get('diarization', False)
-        Thread(target=simulate_completion, args=(job_id, is_diarization_requested)).start()
+        sim_bucket = _resolve_storage_profile(user_id, is_medical=is_medical)["bucket"]
+        public_base = _public_base_url(request)
+        Thread(
+            target=_submit_simulation_job,
+            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base),
+            daemon=True,
+        ).start()
         return jsonify({
             'data': {
                 'uploadId': 'sim',
@@ -3580,21 +3690,9 @@ def sign_s3_multipart_part_urls():
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
     part_numbers = data.get('partNumbers') or data.get('part_numbers') or []
 
-    try:
-        _assert_multipart_key_for_user(s3_key, user_id, is_medical)
-    except ValueError as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-    prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=is_medical)
-    if bucket_in and bucket_in != prof['bucket']:
-        return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
-
-    if not isinstance(part_numbers, list) or not part_numbers:
-        return jsonify({"status": "error", "message": "partNumbers required"}), 400
-    if len(part_numbers) > 100:
-        return jsonify({"status": "error", "message": "Too many parts in one request"}), 400
-
-    if SIMULATION_MODE or upload_id == 'sim':
+    if (SIMULATION_MODE and not _simulation_uses_sagemaker_async()) or upload_id == 'sim':
+        if not isinstance(part_numbers, list) or not part_numbers:
+            return jsonify({"status": "error", "message": "partNumbers required"}), 400
         base = request.url_root.rstrip('/')
         parts_out = []
         for pn in part_numbers:
@@ -3609,6 +3707,20 @@ def sign_s3_multipart_part_urls():
                 'url': f"{base}/api/mock-upload",
             })
         return jsonify({'data': {'parts': parts_out}})
+
+    try:
+        _assert_multipart_key_for_user(s3_key, user_id, is_medical)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=is_medical)
+    if bucket_in and bucket_in != prof['bucket']:
+        return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
+
+    if not isinstance(part_numbers, list) or not part_numbers:
+        return jsonify({"status": "error", "message": "partNumbers required"}), 400
+    if len(part_numbers) > 100:
+        return jsonify({"status": "error", "message": "Too many parts in one request"}), 400
 
     key_id = os.environ.get("AWS_ACCESS_KEY_ID")
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
@@ -3663,6 +3775,9 @@ def sign_s3_multipart_complete():
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
     parts_raw = data.get('parts') or []
 
+    if (SIMULATION_MODE and not _simulation_uses_sagemaker_async()) or upload_id == 'sim':
+        return jsonify({'status': 'ok', 'simulation': True})
+
     try:
         _assert_multipart_key_for_user(s3_key, user_id, is_medical)
     except ValueError as e:
@@ -3672,9 +3787,6 @@ def sign_s3_multipart_complete():
     bucket = prof['bucket']
     if bucket_in and bucket_in != bucket:
         return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
-
-    if SIMULATION_MODE or upload_id == 'sim':
-        return jsonify({'status': 'ok', 'simulation': True})
 
     if not isinstance(parts_raw, list) or not parts_raw:
         return jsonify({"status": "error", "message": "parts required"}), 400
@@ -3733,6 +3845,9 @@ def sign_s3_multipart_abort():
     s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
 
+    if (SIMULATION_MODE and not _simulation_uses_sagemaker_async()) or upload_id == 'sim':
+        return jsonify({'status': 'ok', 'simulation': True})
+
     try:
         _assert_multipart_key_for_user(s3_key, user_id, is_medical)
     except ValueError as e:
@@ -3742,9 +3857,6 @@ def sign_s3_multipart_abort():
     bucket = prof['bucket']
     if bucket_in and bucket_in != bucket:
         return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
-
-    if SIMULATION_MODE or upload_id == 'sim':
-        return jsonify({'status': 'ok', 'simulation': True})
 
     key_id = os.environ.get("AWS_ACCESS_KEY_ID")
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
@@ -3966,7 +4078,7 @@ def trigger_processing():
         print(f"📩 Received Trigger Request: {data}")
 
         job_id = data.get('jobId')
-        if SIMULATION_MODE:
+        if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
             print("🔮 SIMULATION: Skipping RunPod Trigger")
             if job_id:
                 upload_complete[job_id] = True
@@ -3977,6 +4089,31 @@ def trigger_processing():
 
         if not s3_key or not job_id:
             return jsonify({"status": "error", "message": "s3Key and jobId required"}), 400
+
+        if SIMULATION_MODE and _simulation_uses_sagemaker_async():
+            task = data.get('task', 'transcribe')
+            language = data.get('language', 'he')
+            diarization = data.get('diarization', False)
+            upload_complete[job_id] = True
+            _mark_upload_complete(job_id)
+            pending_trigger[job_id] = "triggered"
+            _set_trigger_state(job_id, "triggered")
+            pending_job_info[job_id] = {
+                "input_s3_key": s3_key,
+                "bucket": target_bucket,
+                "is_medical": bool(is_medical),
+                "user_id": _extract_user_id_from_s3_key(s3_key),
+                "task": task,
+                "language": language,
+            }
+            public_base = _public_base_url(request)
+            t = threading.Thread(
+                target=_submit_simulation_job,
+                args=(job_id, s3_key, task, language, diarization, is_medical, target_bucket, public_base),
+                daemon=True,
+            )
+            t.start()
+            return jsonify({"status": "started", "job_id": job_id, "simulation": True, "engine": "sagemaker_async"}), 202
 
         # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
         upload_complete[job_id] = True
