@@ -5630,7 +5630,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.refreshMedicalTabs = updateMedicalTabUi;
     function syncRegularRecordUi() {
         if (!regularRecordBtn) return;
-        const canShow = !isMedicalModeEnabled() && isMobileClient() && !window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
+        const canShow = !isMedicalModeEnabled() && !window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
         regularRecordBtn.style.display = canShow ? 'inline-flex' : 'none';
         const rec = window._medicalRecorder;
         if (canShow && rec && (rec.state === 'recording' || rec.state === 'paused')) {
