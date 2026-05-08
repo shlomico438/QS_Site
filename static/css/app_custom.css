@@ -2066,6 +2066,21 @@ html[dir="ltr"] #main-btn::before {
     align-self: center;
     margin: 0 auto;
 }
+.regular-record-btn {
+    justify-self: center;
+    align-self: center;
+    border-radius: 12px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #0f172a;
+    padding: 10px 14px;
+    font-size: 0.88rem;
+    font-weight: 600;
+}
+.regular-record-btn:hover {
+    border-color: #94a3b8;
+    background: #f8fafc;
+}
 .mobile-new-session-btn {
     display: none;
     margin: 0 auto 8px auto;
@@ -2180,9 +2195,16 @@ html[dir="rtl"] .upload-status {
     /* Upload row: keep one row, compact — more space for transcript */
     .upload-controls-row {
         display: flex;
+        flex-wrap: wrap;
         justify-content: center;
-        gap: 0;
+        gap: 8px;
         margin-bottom: 8px;
+    }
+    .regular-record-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 170px;
     }
     .upload-control-left .control-label {
         font-size: 0.85rem;

@@ -2605,6 +2605,7 @@ async function initOpenInApp(jobId) {
     const hasTranscriptOrSummary = hasTranscriptForOpen || initOpenAppHasLoadedTranscriptPayload();
     setTranscriptActionButtonsVisible(!!hasTranscriptOrSummary);
     const mainBtn = document.getElementById('main-btn');
+    const regularRecordBtn = document.getElementById('regular-record-btn');
     if (mainBtn) {
         mainBtn.disabled = false;
         // "upload" mode → translated upload_and_process ("Start here" / התחל כאן), not transcribe — job already has output.
@@ -5581,6 +5582,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusTxt = document.getElementById('upload-status');
     const progressBar = document.getElementById('progress-bar');
     const mainBtn = document.getElementById('main-btn');
+    const regularRecordBtn = document.getElementById('regular-record-btn');
     const diarizationToggle = document.getElementById('diarization-toggle');
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
@@ -5594,6 +5596,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window._medicalRecorderPaused = false;
     window._medicalSubmitOnStop = false;
     window._medicalWave = window._medicalWave || null;
+    window._qsRegularRecordVisible = false;
     if (medicalRecordTimer) medicalRecordTimer.style.display = 'none';
 
     function updateMedicalTabUi() {
@@ -5625,6 +5628,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalTabSummary) medicalTabSummary.classList.toggle('is-active', isSummary);
     }
     window.refreshMedicalTabs = updateMedicalTabUi;
+    function syncRegularRecordUi() {
+        if (!regularRecordBtn) return;
+        const canShow = !isMedicalModeEnabled() && isMobileClient() && !window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
+        regularRecordBtn.style.display = canShow ? 'inline-flex' : 'none';
+        const rec = window._medicalRecorder;
+        if (canShow && rec && (rec.state === 'recording' || rec.state === 'paused')) {
+            regularRecordBtn.textContent = '⏸️ Recording...';
+        } else {
+            regularRecordBtn.textContent = '🎤 Record audio';
+        }
+    }
 
     window.applyMedicalModeUi = function() {
         const on = isMedicalModeEnabled();
@@ -5634,7 +5648,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const medicalSubtitle = document.getElementById('medical-session-subtitle');
         const seoHome = document.getElementById('seo-home-content');
         const downloadBtnLabel = document.querySelector('#btn-download .btn-download-label');
-        if (medicalRecordWrap) medicalRecordWrap.style.display = on ? '' : 'none';
+        if (medicalRecordWrap) {
+            const rec = window._medicalRecorder;
+            const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
+            const showRegularRecWrap = (!on && (window._qsRegularRecordVisible || recActive));
+            medicalRecordWrap.style.display = (on || showRegularRecWrap) ? '' : 'none';
+        }
         if (mainBtn) {
             const allowMediaAfterLocalJson = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
             if (on && !allowMediaAfterLocalJson) {
@@ -5697,6 +5716,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (_) {}
         updateMedicalTabUi();
+        syncRegularRecordUi();
     };
 
     function stopMedicalRecordingTimer() {
@@ -6005,8 +6025,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalRecordingAccumMs = 0;
                 window._medicalRecordingStartedAt = 0;
                 window._medicalSubmitOnStop = false;
+                if (!isMedicalModeEnabled()) window._qsRegularRecordVisible = false;
                 setMedicalTimerVisibility(false);
                 detachMedicalRecordingTimerSlot();
+                if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
             }
         };
         try {
@@ -6039,7 +6061,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function toggleMedicalRecording() {
-        if (!isMedicalModeEnabled()) return;
         const rec = window._medicalRecorder;
         if (rec && rec.state === 'recording') {
             try { rec.pause(); } catch (_) { return; }
@@ -6069,6 +6090,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (medicalRecordBtn) {
         medicalRecordBtn.addEventListener('click', () => { toggleMedicalRecording(); });
+    }
+    if (regularRecordBtn) {
+        regularRecordBtn.addEventListener('click', async () => {
+            if (isMedicalModeEnabled()) return;
+            window._qsRegularRecordVisible = true;
+            if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+            await toggleMedicalRecording();
+        });
     }
     if (medicalCancelBtn) {
         medicalCancelBtn.addEventListener('click', async () => {
