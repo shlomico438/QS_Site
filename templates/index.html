@@ -84,12 +84,14 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
                 <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
 
-                <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #e5e7eb; background: white; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 500; color: #374151; transition: background 0.2s;">
-                    <img src="https://www.google.com/favicon.ico" width="18" alt="Google">
+                <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
+                    <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;">
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="14" height="14" alt="Google">
+                    </span>
                     <span data-i18n="continue_google">Continue with Google</span>
                 </button>
 
-                <div style="display: flex; align-items: center; margin: 20px 0;">
+                <div style="display: flex; align-items: center; margin: 28px 0;">
                     <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
                     <span style="margin: 0 12px; color: #9ca3af; font-size: 0.75rem; font-weight: 600;" data-i18n="or_email">OR EMAIL</span>
                     <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
@@ -100,7 +102,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 </div>
                 <input type="email" id="auth-email" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:6px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
 
-                <button type="button" id="auth-submit-btn" style="width:100%; padding:14px; background:#1e3a8a; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1rem; transition: opacity 0.2s;" data-i18n="send_magic_link">Send me a link</button>
+                <button type="button" id="auth-submit-btn" style="width:100%; padding:14px; background:#ffffff; color:#1a2b4b; border:1px solid #1a2b4b; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1rem; transition: background 0.2s, color 0.2s;" data-i18n="send_magic_link">Send me a link</button>
                 <button type="button" id="auth-skip-for-now" data-i18n="auth_skip_later" style="width:100%; margin-top:12px; padding:10px; background:transparent; color:#6b7280; border:none; cursor:pointer; font-size:0.9rem; text-decoration:underline;">Skip for now</button>
 
                 <p style="margin-top:20px; font-size: 0.875rem; color: #4b5563;">
