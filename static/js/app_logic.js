@@ -9351,7 +9351,7 @@ function renderMedicalTranscriptMainView() {
         const paragraphs = clean.split(/\r?\n+/).map((l) => String(l || '').trim()).filter(Boolean);
         const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         transcriptWindow.innerHTML = paragraphs.map((p) => (
-            '<div class="paragraph-row qs-medical-formatted-transcript" style="display:block; margin-bottom:0.55em;">' +
+            '<div class="qs-medical-plain-paragraph qs-medical-formatted-transcript" style="display:block; margin-bottom:0.55em;">' +
             `<p style="margin:0; line-height:1.72; white-space:pre-wrap;" dir="${textDirection}">${esc(p)}</p></div>`
         )).join('');
         transcriptWindow.style.direction = textDirection;

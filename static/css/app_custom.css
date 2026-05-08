@@ -1382,6 +1382,22 @@ input:checked + .slider:before { transform: translateX(16px); }
     direction: rtl;
 }
 
+/* Medical full transcript should be plain paragraph text, not subtitle row layout. */
+.main-app-container.medical-mode #transcript-window .qs-medical-plain-paragraph {
+    display: block !important;
+    margin: 0 0 0.55em 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    direction: inherit;
+    text-align: inherit;
+}
+.main-app-container.medical-mode #transcript-window .qs-medical-plain-paragraph p {
+    margin: 0 !important;
+    line-height: 1.72 !important;
+    white-space: pre-wrap;
+}
+
 /* Active subtitle highlight (desktop + mobile) */
 .active-highlight {
     background-color: #f0f7ff !important;
