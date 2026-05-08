@@ -7405,6 +7405,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const editActions = document.getElementById('edit-actions');
         const isMedicalSummaryEdit =
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
+        const isMedicalTranscriptEdit =
+            isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript';
         if (isMedicalSummaryEdit) {
             const chiefEl = win ? (win.querySelector('[data-medical-section="chief"]') || win.querySelector('#medical-summary-chief')) : null;
             const examEl = win ? (win.querySelector('[data-medical-section="exam"]') || win.querySelector('#medical-summary-exam')) : null;
@@ -7452,6 +7454,29 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (editActions) editActions.style.display = 'none';
             window._qsForceLegacyEditMode = false;
             try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
+            return;
+        }
+        if (isMedicalTranscriptEdit) {
+            const lines = win
+                ? Array.from(win.querySelectorAll('.qs-medical-plain-paragraph p, p'))
+                    .map((el) => String(el.innerText || '').trim())
+                    .filter(Boolean)
+                : [];
+            const clean = String(lines.join('\n\n')).trim();
+            const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : {};
+            window.currentFormattedDoc = { ...prev, clean_transcript: clean };
+            win.contentEditable = 'false';
+            win.style.border = "1px solid #e2e8f0";
+            win.style.backgroundColor = "transparent";
+            win.classList.remove('transcript-editing', 'transcript-sync-mode');
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            _qsSetSyncModeButtonActive(false);
+            if (editActions) editActions.style.display = 'none';
+            window._qsForceLegacyEditMode = false;
+            try { renderMedicalTranscriptMainView(); } catch (_) {}
             return;
         }
         const timingOnly = !!window._qsTimingMode;
@@ -7781,6 +7806,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const editActions = document.getElementById('edit-actions');
         const isMedicalSummaryEdit =
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
+        const isMedicalTranscriptEdit =
+            isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript';
         if (isMedicalSummaryEdit) {
             if (window.transcriptBackup) {
                 win.innerHTML = window.transcriptBackup;
@@ -7795,6 +7822,22 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             _qsSetSyncModeButtonActive(false);
             if (editActions) editActions.style.display = 'none';
             window._qsForceLegacyEditMode = false;
+            return;
+        }
+        if (isMedicalTranscriptEdit) {
+            if (window.transcriptBackup) {
+                win.innerHTML = window.transcriptBackup;
+            }
+            win.contentEditable = 'false';
+            win.style.border = "1px solid #e2e8f0";
+            win.style.backgroundColor = "transparent";
+            win.classList.remove('transcript-editing', 'transcript-sync-mode');
+            window._qsTimingMode = false;
+            window._qsTimingModeBackup = null;
+            _qsSetSyncModeButtonActive(false);
+            if (editActions) editActions.style.display = 'none';
+            window._qsForceLegacyEditMode = false;
+            try { renderMedicalTranscriptMainView(); } catch (_) {}
             return;
         }
 
@@ -8244,7 +8287,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const editActions = document.getElementById('edit-actions');
         const isMedicalSummaryEdit =
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
-        const isEditable = (isMedicalSummaryEdit && win)
+        const isMedicalTranscriptEdit =
+            isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript';
+        const isEditable = ((isMedicalSummaryEdit || isMedicalTranscriptEdit) && win)
             ? win.classList.contains('transcript-editing')
             : (win.contentEditable === 'true');
 
@@ -8271,6 +8316,34 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             sel.addRange(range);
                         }
                         target.focus();
+                    }
+                });
+                return;
+            }
+            if (isMedicalTranscriptEdit) {
+                window._qsForceLegacyEditMode = false;
+                window.transcriptBackup = win.innerHTML;
+                win.contentEditable = 'true';
+                win.style.border = "2px solid #1e3a8a";
+                win.style.backgroundColor = "#fff";
+                win.classList.remove('transcript-sync-mode');
+                win.classList.add('transcript-editing');
+                window._qsTimingMode = false;
+                window._qsTimingModeBackup = null;
+                _qsSetSyncModeButtonActive(false);
+                if (editActions) editActions.style.display = 'flex';
+                requestAnimationFrame(() => {
+                    const firstP = win.querySelector('.qs-medical-plain-paragraph p, p');
+                    if (firstP) {
+                        const sel = window.getSelection();
+                        if (sel) {
+                            const range = document.createRange();
+                            range.selectNodeContents(firstP);
+                            range.collapse(false);
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                        }
+                        firstP.focus();
                     }
                 });
                 return;
@@ -8366,6 +8439,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
         if (!win) return;
+        if (isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript') return;
         const hasWord = Array.isArray(window.currentWords) && window.currentWords.length &&
             Array.isArray(window.currentCaptions) && window.currentCaptions.length;
         const hasSeg = Array.isArray(window.currentSegments) && window.currentSegments.length;
