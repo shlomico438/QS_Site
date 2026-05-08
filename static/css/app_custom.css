@@ -1093,6 +1093,13 @@ input:checked + .slider:before { transform: translateX(16px); }
   animation: none;
 }
 
+/* Regular mode recorder (mobile shortcut): match primary app purple instead of medical teal. */
+.main-app-container:not(.medical-mode) .medical-record-outer,
+.main-app-container:not(.medical-mode) .medical-record-outer.is-idle,
+.main-app-container:not(.medical-mode) .medical-record-outer.is-paused {
+  background: #4f46e5;
+}
+
 .medical-record-outer.is-recording {
   background: #BE123C;
   animation: medical-record-pulse 1.3s ease-in-out infinite;

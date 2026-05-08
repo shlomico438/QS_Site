@@ -6010,7 +6010,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const mime = (rec.mimeType || 'audio/webm').toLowerCase();
                 const ext = medicalBlobExtensionFromMime(mime);
                 const blob = new Blob(window._medicalRecorderChunks, { type: mime });
-                const file = new File([blob], `medical_recording_${Date.now()}.${ext}`, { type: mime });
+                const prefix = isMedicalModeEnabled() ? 'medical_recording' : 'transcript_record';
+                const file = new File([blob], `${prefix}_${Date.now()}.${ext}`, { type: mime });
                 if (shouldSubmit) {
                     await pushFileIntoPickerAndUpload(file);
                 }
