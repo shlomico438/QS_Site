@@ -118,6 +118,41 @@ def _runpod_skip_warmup():
     return v in ('1', 'true', 'yes', 'on')
 
 
+def _site_transcription_options_from_payload(data=None):
+    """Centralized transcript tuning from Site side (request + Site env).
+
+    This lets us tune GPU behavior from Site only, without editing GPU code/env directly.
+    Request JSON overrides env defaults when provided.
+    """
+    data = data or {}
+
+    def _pick(name, env_name, cast, default):
+        if name in data and data.get(name) is not None and str(data.get(name)).strip() != '':
+            try:
+                return cast(data.get(name))
+            except Exception:
+                return default
+        raw = os.environ.get(env_name)
+        if raw is None or str(raw).strip() == '':
+            return default
+        try:
+            return cast(raw)
+        except Exception:
+            return default
+
+    out = {
+        "use_vad": _pick("use_vad", "TRANSCRIBE_USE_VAD", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), True),
+        "vad_chunk_size": _pick("vad_chunk_size", "TRANSCRIBE_VAD_CHUNK_SIZE", float, 30.0),
+        "vad_onset": _pick("vad_onset", "TRANSCRIBE_VAD_ONSET", float, 0.5),
+        "vad_offset": _pick("vad_offset", "TRANSCRIBE_VAD_OFFSET", float, 0.363),
+        "batch_size": _pick("batch_size", "TRANSCRIBE_BATCH_SIZE", int, 16),
+        "skip_word_alignment": _pick("skip_word_alignment", "TRANSCRIBE_SKIP_WORD_ALIGNMENT", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
+        "save_pre_align_json": _pick("save_pre_align_json", "TRANSCRIBE_SAVE_PRE_ALIGN_JSON", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
+        "align_model_name": _pick("align_model_name", "TRANSCRIBE_ALIGN_MODEL_NAME", str, ""),
+    }
+    return out
+
+
 def _schedule_runpod_min_workers(min_workers: int):
     """Temporarily disabled: do not change RunPod endpoint workersMin."""
     print(f"[RunPod] workersMin autoscaling disabled; ignoring requested min={min_workers}.", flush=True)
@@ -3337,7 +3372,7 @@ def _simulation_uses_sagemaker_async():
     )
 
 
-def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', diarization=False, is_medical=False, bucket=None, public_base=None):
+def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', diarization=False, is_medical=False, bucket=None, public_base=None, transcription_options=None):
     """Simulation-only GPU submit path: SageMaker async invoke (fallback: local simulate_completion)."""
     endpoint_name = (
         (os.environ.get('SAGEMAKER_SIM_ENDPOINT_NAME') or '').strip()
@@ -3365,6 +3400,7 @@ def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', dia
             "s3Key": s3_key,
             "language": language,
             "diarization": bool(diarization),
+            "transcription_options": transcription_options or {},
             "callback_url": f"{base}/api/gpu_callback" if base else None,
         }
         payload_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
@@ -3435,6 +3471,7 @@ def sign_s3():
     from threading import Thread
 
     data = request.json or {}
+    transcription_options = _site_transcription_options_from_payload(data)
     user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
     is_medical = bool(data.get('isMedical'))
     user_prefix = f"users/{user_id}"
@@ -3452,7 +3489,7 @@ def sign_s3():
         public_base = _public_base_url(request)
         Thread(
             target=_submit_simulation_job,
-            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base),
+            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base, transcription_options),
             daemon=True,
         ).start()
 
@@ -3516,6 +3553,7 @@ def sign_s3():
                 speaker_count=2,
                 is_medical=is_medical,
                 bucket=bucket,
+                transcription_options=transcription_options,
             )
         else:
             logging.info("RUNPOD_SKIP_WARMUP: skipping sign-s3 RunPod trigger for %s", job_id)
@@ -3572,6 +3610,7 @@ def sign_s3_multipart_init():
     from threading import Thread
 
     data = request.json or {}
+    transcription_options = _site_transcription_options_from_payload(data)
     user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
     is_medical = bool(data.get('isMedical'))
     file_size = int(data.get('fileSize') or data.get('file_size') or 0)
@@ -3592,7 +3631,7 @@ def sign_s3_multipart_init():
         public_base = _public_base_url(request)
         Thread(
             target=_submit_simulation_job,
-            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base),
+            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base, transcription_options),
             daemon=True,
         ).start()
         return jsonify({
@@ -3660,6 +3699,7 @@ def sign_s3_multipart_init():
             speaker_count=2,
             is_medical=is_medical,
             bucket=bucket,
+            transcription_options=transcription_options,
         )
     else:
         logging.info("RUNPOD_SKIP_WARMUP: skipping multipart-init RunPod trigger for %s", job_id)
@@ -3879,7 +3919,7 @@ def sign_s3_multipart_abort():
     return jsonify({'status': 'ok'})
 
 
-def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None):
+def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None, transcription_options=None):
     """Start RunPod trigger in background. Called from sign_s3 / multipart init (before upload) so container warms during upload.
     No-op if RunPod not configured or SIMULATION_MODE."""
     if SIMULATION_MODE:
@@ -3900,6 +3940,7 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
             "jobId": job_id,
             "task": task,
             "language": language,
+            "transcription_options": transcription_options or {},
             "callback_url": callback_url,
             "start_callback_url": start_callback_url,
             "upload_status_url": upload_status_url,
@@ -3912,6 +3953,7 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
         "user_id": _extract_user_id_from_s3_key(s3_key),
         "task": task,
         "language": language,
+        "transcription_options": transcription_options or {},
     }
     pending_trigger[job_id] = "queued"
     t_queued = time.time()
@@ -4069,6 +4111,7 @@ def trigger_processing():
         data = request.json if request.is_json else {}
         if not data:
             data = {}
+        transcription_options = _site_transcription_options_from_payload(data)
         s3_key = data.get('s3Key')
         is_medical = bool(data.get('isMedical')) or ('/raw-audio/' in str(s3_key or ''))
         storage_profile = _resolve_storage_profile((data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key)), input_s3_key=s3_key, is_medical=is_medical)
@@ -4105,11 +4148,12 @@ def trigger_processing():
                 "user_id": _extract_user_id_from_s3_key(s3_key),
                 "task": task,
                 "language": language,
+                "transcription_options": transcription_options or {},
             }
             public_base = _public_base_url(request)
             t = threading.Thread(
                 target=_submit_simulation_job,
-                args=(job_id, s3_key, task, language, diarization, is_medical, target_bucket, public_base),
+                args=(job_id, s3_key, task, language, diarization, is_medical, target_bucket, public_base, transcription_options),
                 daemon=True,
             )
             t.start()
@@ -4165,6 +4209,7 @@ def trigger_processing():
                 "jobId": job_id,
                 "task": task,
                 "language": language,
+                "transcription_options": transcription_options,
                 "callback_url": callback_url,
                 "start_callback_url": start_callback_url,
                 "upload_status_url": upload_status_url,
@@ -4179,6 +4224,7 @@ def trigger_processing():
             "user_id": _extract_user_id_from_s3_key(s3_key),
             "task": task,
             "language": language,
+            "transcription_options": transcription_options or {},
         }
         t_queued = time.time()
         pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
@@ -4236,6 +4282,7 @@ def retry_trigger():
                 "jobId": job_id,
                 "task": task,
                 "language": language,
+                "transcription_options": info.get("transcription_options") or {},
                 "callback_url": callback_url,
                 "start_callback_url": start_callback_url,
                 "upload_status_url": upload_status_url,
