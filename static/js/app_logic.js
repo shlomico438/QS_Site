@@ -3,8 +3,95 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 const supabaseUrl = 'https://vojesnnvehecenjymrko.supabase.co'
 const supabaseAnonKey = 'sb_publishable_BhoKDe-_iL04tOVYCbbX0w_3TjKWaGG'
+const QS_SUPABASE_PROJECT_REF = (() => {
+    try { return new URL(supabaseUrl).hostname.split('.')[0] || 'vojesnnvehecenjymrko'; } catch (_) { return 'vojesnnvehecenjymrko'; }
+})();
+const QS_SUPABASE_AUTH_STORAGE_KEY = `sb-${QS_SUPABASE_PROJECT_REF}-auth-token`;
+const QS_SUPABASE_AUTH_COOKIE_PREFIX = 'qs_sb_auth_';
+const QS_SUPABASE_AUTH_COOKIE_CHUNK_SIZE = 2500;
+
+function qsAuthCookieName(key, suffix) {
+    return QS_SUPABASE_AUTH_COOKIE_PREFIX + encodeURIComponent(String(key || '')) + (suffix || '');
+}
+
+function qsReadCookie(name) {
+    if (typeof document === 'undefined') return null;
+    const prefix = String(name || '') + '=';
+    const parts = String(document.cookie || '').split(';');
+    for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith(prefix)) {
+            try { return decodeURIComponent(trimmed.slice(prefix.length)); } catch (_) { return trimmed.slice(prefix.length); }
+        }
+    }
+    return null;
+}
+
+function qsWriteCookie(name, value, maxAgeSeconds) {
+    if (typeof document === 'undefined') return;
+    const secure = (typeof window !== 'undefined' && window.location && window.location.protocol === 'https:') ? '; Secure' : '';
+    document.cookie = `${name}=${encodeURIComponent(String(value || ''))}; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Lax${secure}`;
+}
+
+function qsClearAuthCookieChunks(key) {
+    const metaName = qsAuthCookieName(key, '.chunks');
+    const count = Number(qsReadCookie(metaName) || 0);
+    const max = Number.isFinite(count) && count > 0 ? Math.min(count, 30) : 30;
+    for (let i = 0; i < max; i++) qsWriteCookie(qsAuthCookieName(key, `.${i}`), '', 0);
+    qsWriteCookie(metaName, '', 0);
+}
+
+function qsReadAuthCookieChunks(key) {
+    const count = Number(qsReadCookie(qsAuthCookieName(key, '.chunks')) || 0);
+    if (!Number.isFinite(count) || count <= 0 || count > 30) return null;
+    let value = '';
+    for (let i = 0; i < count; i++) {
+        const chunk = qsReadCookie(qsAuthCookieName(key, `.${i}`));
+        if (chunk == null) return null;
+        value += chunk;
+    }
+    return value || null;
+}
+
+function qsWriteAuthCookieChunks(key, value) {
+    const raw = String(value || '');
+    qsClearAuthCookieChunks(key);
+    if (!raw) return;
+    const count = Math.ceil(raw.length / QS_SUPABASE_AUTH_COOKIE_CHUNK_SIZE);
+    if (count > 30) return;
+    const maxAge = 60 * 60 * 24 * 365;
+    for (let i = 0; i < count; i++) {
+        qsWriteCookie(qsAuthCookieName(key, `.${i}`), raw.slice(i * QS_SUPABASE_AUTH_COOKIE_CHUNK_SIZE, (i + 1) * QS_SUPABASE_AUTH_COOKIE_CHUNK_SIZE), maxAge);
+    }
+    qsWriteCookie(qsAuthCookieName(key, '.chunks'), String(count), maxAge);
+}
+
+const qsSupabaseAuthStorage = {
+    getItem(key) {
+        try {
+            const value = localStorage.getItem(key);
+            if (value != null) return value;
+        } catch (_) {}
+        try { return qsReadAuthCookieChunks(key); } catch (_) { return null; }
+    },
+    setItem(key, value) {
+        try { localStorage.setItem(key, value); } catch (_) {}
+        try { qsWriteAuthCookieChunks(key, value); } catch (_) {}
+    },
+    removeItem(key) {
+        try { localStorage.removeItem(key); } catch (_) {}
+        try { qsClearAuthCookieChunks(key); } catch (_) {}
+    }
+};
 // Semicolon required: next line starts with `(` — without it, ASI parses `createClient(...)(() => { ... })`.
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+        storage: qsSupabaseAuthStorage
+    }
+});
 
 // Console gate:
 // - Default ON for localhost (dev), OFF for non-local hosts (production-like).
@@ -1127,11 +1214,54 @@ async function requireUserForCopyOrDownload() {
     return false;
 }
 
+function qsCurrentUrlLooksLikeAuthCallback() {
+    try {
+        const search = new URLSearchParams(window.location.search || '');
+        if (search.has('code') || search.has('error') || search.has('error_description')) return true;
+    } catch (_) {}
+    try {
+        const hash = String(window.location.hash || '');
+        return /(?:access_token|refresh_token|error_description)=/.test(hash);
+    } catch (_) {
+        return false;
+    }
+}
+
+function qsLikelyHasPersistedAuthSession() {
+    try {
+        const raw = qsSupabaseAuthStorage.getItem(QS_SUPABASE_AUTH_STORAGE_KEY);
+        if (!raw) return false;
+        const parsed = JSON.parse(raw);
+        return !!(parsed && (parsed.access_token || parsed.currentSession?.access_token || parsed.refresh_token || parsed.currentSession?.refresh_token));
+    } catch (_) {
+        return false;
+    }
+}
+
+async function qsGetAuthUserForUi(options = {}) {
+    const waitMs = Math.max(0, Number(options.waitMs || 0));
+    const shouldWait = waitMs > 0 && (qsCurrentUrlLooksLikeAuthCallback() || qsLikelyHasPersistedAuthSession());
+    const deadline = Date.now() + (shouldWait ? waitMs : 0);
+    do {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) return user;
+        } catch (_) {}
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session && session.user) return session.user;
+        } catch (_) {}
+        if (!shouldWait || Date.now() >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    } while (true);
+    return null;
+}
+
 async function maybeShowInitialRegistrationPrompt() {
     try {
         const modal = document.getElementById('auth-modal');
         if (!modal) return;
-        const { data: { user } } = await supabase.auth.getUser();
+        const user = await qsGetAuthUserForUi({ waitMs: 5000 });
         if (user) return;
         if (window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE === true) return;
         if (window.isTriggering === true) return;
@@ -1379,7 +1509,7 @@ async function setupNavbarAuth(userOverride) {
     const navBtn = document.getElementById('nav-auth-btn');
     if (!navBtn) return;
 
-    const user = userOverride != null ? userOverride : (await supabase.auth.getUser()).data?.user;
+    const user = userOverride != null ? userOverride : await qsGetAuthUserForUi({ waitMs: 1500 });
     try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
 
     const personalLink = document.getElementById('nav-personal-link');
@@ -5172,7 +5302,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 );
 
 async function updateUIForUser() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await qsGetAuthUserForUi({ waitMs: 1500 });
     const authBtn = document.getElementById('main-auth-trigger'); // The button that opens the modal
 
     if (user && authBtn) {
