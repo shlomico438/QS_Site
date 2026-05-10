@@ -160,11 +160,49 @@ def _schedule_runpod_min_workers(min_workers: int):
     print(f"[RunPod] workersMin autoscaling disabled; ignoring requested min={min_workers}.", flush=True)
     return
 
+
+def _s3_key_likely_video_container(s3_key):
+    """Filename extension hints muxed video (AAC-in-MP4 etc.); affects music threshold tuning."""
+    ext = pathlib.Path(str(s3_key or '')).suffix.lower()
+    return ext in (
+        '.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi', '.mpeg', '.mpg', '.wmv', '.flv',
+    )
+
+
+def _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr):
+    """Decode first `seconds` of audio to mono f32le PCM via ffmpeg; prefer explicit audio stream map."""
+    tail = ['-t', str(seconds), '-vn', '-ac', '1', '-ar', str(sr), '-f', 'f32le', '-']
+    probe = str(os.environ.get('AUDIO_PROFILE_FFPROBE_BYTES', str(8 * 1024 * 1024)) or str(8 * 1024 * 1024))
+    head = [
+        ffmpeg_path,
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-nostdin',
+        '-probesize', probe,
+        '-analyzeduration', probe,
+        '-i', src_url,
+    ]
+    # Explicit first audio stream fixes many MP4/MKV cases where defaults pick wrong track or probe too shallow.
+    attempts = [
+        head + ['-map', '0:a:0'] + tail,
+        head + tail,
+    ]
+    last = None
+    for cmd in attempts:
+        last = subprocess.run(cmd, capture_output=True, timeout=45)
+        if last.returncode == 0 and last.stdout:
+            return last, cmd
+    return last, attempts[-1]
+
+
 def _infer_audio_profile_from_s3(bucket, s3_key, seconds=10):
     """
     Detect likely "music" vs "speech" from the first seconds of media.
     Uses ffmpeg to decode mono float audio and measures short-window RMS variance:
     lower variance => more continuous sound (music-like), higher variance => speech-like.
+
+    Video containers (MP4/…) often use AAC + different stereo-downmix/loudness than bare MP3, which inflates
+    frame RMS variance; we peak-normalize the waveform and apply a slightly looser threshold on video-like keys.
     """
     try:
         if not bucket or not s3_key:
@@ -183,24 +221,13 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=10):
         )
         sr = 16000
         seconds = max(5, min(15, int(seconds or 10)))
-        cmd = [
-            ffmpeg_path,
-            '-hide_banner',
-            '-loglevel', 'error',
-            '-i', src_url,
-            '-t', str(seconds),
-            '-vn',
-            '-ac', '1',
-            '-ar', str(sr),
-            '-f', 'f32le',
-            '-'
-        ]
-        run = subprocess.run(cmd, capture_output=True, timeout=35)
+        run, cmd_used = _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr)
         if run.returncode != 0:
             return {
                 "profile": "unknown",
                 "reason": "ffmpeg_decode_failed",
-                "stderr": (run.stderr.decode('utf-8', errors='ignore')[-180:] if run.stderr else '')
+                "stderr": (run.stderr.decode('utf-8', errors='ignore')[-220:] if run.stderr else ''),
+                "ffmpeg_args_tail": ' '.join(cmd_used[-8:]) if cmd_used else '',
             }
         pcm = run.stdout or b''
         if len(pcm) < 4096:
@@ -211,6 +238,18 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=10):
         if not samples:
             return {"profile": "unknown", "reason": "no_samples"}
 
+        # Peak-normalize so MP3 vs AAC-in-video level differences don't dominate the metric.
+        peak = 0.0
+        for x in samples:
+            ax = abs(float(x))
+            if ax > peak:
+                peak = ax
+        if peak < 1e-10:
+            return {"profile": "unknown", "reason": "silent_or_near_silent"}
+        inv_peak = 1.0 / peak
+        for i in range(len(samples)):
+            samples[i] = float(samples[i]) * inv_peak
+
         frame = max(800, int(sr * 0.1))  # 100ms windows
         rms_vals = []
         for i in range(0, len(samples), frame):
@@ -219,20 +258,28 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=10):
                 continue
             s2 = 0.0
             for x in chunk:
-                s2 += float(x) * float(x)
+                fx = float(x)
+                s2 += fx * fx
             rms_vals.append(math.sqrt(s2 / len(chunk)))
         if len(rms_vals) < 4:
             return {"profile": "unknown", "reason": "not_enough_frames"}
 
         mean = sum(rms_vals) / len(rms_vals)
         var = sum((v - mean) * (v - mean) for v in rms_vals) / len(rms_vals)
-        thr = float(os.environ.get('AUDIO_PROFILE_MUSIC_RMS_VAR_THRESHOLD', '0.002') or 0.002)
+        thr_base = float(os.environ.get('AUDIO_PROFILE_MUSIC_RMS_VAR_THRESHOLD', '0.002') or 0.002)
+        video_mult = 1.0
+        if _s3_key_likely_video_container(s3_key):
+            video_mult = float(os.environ.get('AUDIO_PROFILE_VIDEO_MUSIC_THRESHOLD_MULT', '1.45') or 1.45)
+        thr = thr_base * video_mult
         profile = 'music' if var < thr else 'speech'
         return {
             "profile": profile,
             "energy_variance": var,
             "threshold": thr,
-            "frames": len(rms_vals)
+            "threshold_base": thr_base,
+            "video_threshold_mult": video_mult,
+            "container_video_like": _s3_key_likely_video_container(s3_key),
+            "frames": len(rms_vals),
         }
     except Exception as e:
         return {"profile": "unknown", "reason": f"exception:{e.__class__.__name__}"}
@@ -4224,13 +4271,36 @@ def trigger_processing():
                 s3_key,
                 seconds=int(os.environ.get('AUDIO_PROFILE_DETECT_SECONDS', '10') or 10)
             )
-            logging.info(
-                "audio-profile job_id=%s profile=%s var=%s reason=%s",
-                data.get('jobId'),
-                audio_profile_info.get('profile'),
-                audio_profile_info.get('energy_variance'),
-                audio_profile_info.get('reason'),
-            )
+            ap = audio_profile_info
+            prof = str(ap.get('profile') or '').strip().lower()
+            key_suffix = (s3_key[-80:] if isinstance(s3_key, str) and len(s3_key) > 80 else s3_key)
+            if prof == 'music':
+                logging.info(
+                    "Music detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s threshold=%s video_container=%s",
+                    data.get('jobId'),
+                    key_suffix,
+                    ap.get('energy_variance'),
+                    ap.get('threshold'),
+                    ap.get('container_video_like'),
+                )
+            elif prof == 'speech':
+                logging.info(
+                    "Speech detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s threshold=%s video_container=%s",
+                    data.get('jobId'),
+                    key_suffix,
+                    ap.get('energy_variance'),
+                    ap.get('threshold'),
+                    ap.get('container_video_like'),
+                )
+            else:
+                logging.info(
+                    "audio-profile inconclusive job_id=%s profile=%s energy_variance=%s reason=%s key_suffix=%s",
+                    data.get('jobId'),
+                    ap.get('profile'),
+                    ap.get('energy_variance'),
+                    ap.get('reason'),
+                    key_suffix,
+                )
         transcription_options = _apply_audio_profile_transcription_options(transcription_options, audio_profile_info)
         logging.info("trigger_processing request: job_id=%s has_s3_key=%s", data.get('jobId'), bool(data.get('s3Key')))
         print(f"📩 Received Trigger Request: {data}")

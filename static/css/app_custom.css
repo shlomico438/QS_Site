@@ -3235,12 +3235,14 @@ html[dir="rtl"] .upload-status {
     align-items: center;
     width: 100%;
     margin: 0;
-    gap: 0;
+    /* Pair upload + record as one centered group (margin:auto on #main-btn broke this) */
+    gap: 12px;
+    flex-wrap: nowrap;
     direction: ltr;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary {
-    margin: 0 auto !important;
+    margin: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -3248,6 +3250,11 @@ html[dir="rtl"] .upload-status {
     height: 50px;
     border-radius: 18px;
     padding: 10px 38px;
+    flex-shrink: 0;
+  }
+
+  .main-app-container > .upload-zone .upload-controls-row .regular-record-btn {
+    flex-shrink: 0;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary#main-btn::before {
