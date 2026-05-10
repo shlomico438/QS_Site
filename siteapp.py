@@ -33,6 +33,7 @@ import zipfile
 from io import BytesIO
 import smtplib
 import ssl
+import html as html_module
 from email.message import EmailMessage
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
@@ -4999,8 +5000,8 @@ def _build_ass(segments, style='tiktok', portrait=False, subtitle_color=None):
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 
-def _send_email_via_zoho(to_email, subject, body_text):
-    """Send a plain-text email through Zoho SMTP. Returns True on success."""
+def _send_email_via_zoho(to_email, subject, body_text, body_html=None):
+    """Send email through Zoho SMTP (plain text; optional HTML alternative). Returns True on success."""
     smtp_host = 'smtp.zoho.com'
     smtp_port = 465
     smtp_user = 'info@getquickscribe.com'
@@ -5014,7 +5015,9 @@ def _send_email_via_zoho(to_email, subject, body_text):
     msg['Subject'] = subject
     msg['From'] = f"{from_name} <{from_email}>"
     msg['To'] = to_email
-    msg.set_content(body_text or "")
+    msg.set_content(body_text or "", charset='utf-8')
+    if body_html:
+        msg.add_alternative(body_html, subtype='html', charset='utf-8')
 
     attempts = 3
     for attempt in range(1, attempts + 1):
@@ -5121,17 +5124,28 @@ def _send_transcription_ready_email(to_email, user_name, open_url, is_medical=Fa
             "צוות QuickScribe Medical"
         )
     else:
-        subject = "הוידאו שלך מוכן! 🎬 הכתוביות מחכות לך ב-QuickScribe"
+        subject = "הכתוביות לוידאו שלך מוכנות"
         body = (
-            f"היי {display_name},\n\n"
-            "חדשות טובות! מנועי ה-AI שלנו סיימו את העבודה. הוידאו שלך תומלל, והכתוביות מסונכרנות ומוכנות על גבי הסאונד.\n\n"
-            "זה הזמן להיכנס למערכת, לעבור ברפרוף על הטקסט כדי לוודא שהכל מושלם (בכל זאת, אנחנו עומדים על 94% דיוק 😉), "
-            "לעשות פינישים קטנים אם צריך – ולהוריד את הוידאו מוכן להפצה.\n\n"
-            f"👉 למעבר לוידאו שלך: {open_url}\n\n"
-            "אם יש לך שאלות או פידבק על התוצאה, אפשר פשוט להשיב למייל הזה, אני קורא הכל.\n\n"
+            "התימלול והכתוביות לוידאו שלך מוכנים כעת. אפשר לצפות בתוצאה, לבצע תיקונים אחרונים ולהוריד את הוידאו בקישור הבא:\n\n"
+            f"{open_url}\n\n"
+            "אנחנו עומדים על כ-94% דיוק, לכן כדאי לעבור על הטקסט ולוודא שהכל מושלם.\n\n"
+            "נשמח לעזור בכל שאלה במענה למייל זה.\n\n"
             "יצירה נעימה,\n"
             "QuickScribe"
         )
+        href = html_module.escape(open_url, quote=True)
+        body_html = (
+            '<div dir="rtl" style="text-align: right; font-family: Arial, Helvetica, sans-serif; '
+            'font-size: 15px; line-height: 1.6;">'
+            '<p>התימלול והכתוביות לוידאו שלך מוכנים כעת. אפשר לצפות בתוצאה, לבצע תיקונים אחרונים '
+            "ולהוריד את הוידאו בקישור הבא:</p>"
+            f'<p><a href="{href}">קישור</a></p>'
+            "<p>אנחנו עומדים על כ-94% דיוק, לכן כדאי לעבור על הטקסט ולוודא שהכל מושלם.</p>"
+            "<p>נשמח לעזור בכל שאלה במענה למייל זה.</p>"
+            "<p>יצירה נעימה,<br>QuickScribe</p>"
+            "</div>"
+        )
+        return _send_email_via_zoho(to_email, subject, body, body_html)
     return _send_email_via_zoho(to_email, subject, body)
 
 
