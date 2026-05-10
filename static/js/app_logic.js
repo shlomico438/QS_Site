@@ -5786,6 +5786,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.medicalActiveTab = window.medicalActiveTab || 'summary';
     window._medicalRecorder = null;
     window._medicalRecorderChunks = [];
+    window._medicalRecorderSegments = [];
     window._medicalRecorderTimer = null;
     window._medicalRecordingStartedAt = 0;
     window._medicalRecordingAccumMs = 0;
@@ -6193,6 +6194,92 @@ document.addEventListener('DOMContentLoaded', () => {
         return 'webm';
     }
 
+    function encodeAudioBufferToWavBlob(buffers) {
+        const valid = (buffers || []).filter(Boolean);
+        if (!valid.length) return null;
+        const targetRate = valid[0].sampleRate || 44100;
+        const channels = Math.max(1, Math.min(2, ...valid.map((b) => b.numberOfChannels || 1)));
+
+        function channelDataAtRate(buffer, ch) {
+            const src = buffer.getChannelData(Math.min(ch, buffer.numberOfChannels - 1));
+            if (buffer.sampleRate === targetRate) return src;
+            const ratio = targetRate / buffer.sampleRate;
+            const out = new Float32Array(Math.max(1, Math.round(src.length * ratio)));
+            for (let i = 0; i < out.length; i++) {
+                const pos = i / ratio;
+                const lo = Math.floor(pos);
+                const hi = Math.min(src.length - 1, lo + 1);
+                const frac = pos - lo;
+                out[i] = (src[lo] || 0) * (1 - frac) + (src[hi] || 0) * frac;
+            }
+            return out;
+        }
+
+        const rendered = valid.map((buffer) => {
+            const data = [];
+            for (let ch = 0; ch < channels; ch++) data.push(channelDataAtRate(buffer, ch));
+            return { data, length: data[0] ? data[0].length : 0 };
+        });
+        const totalFrames = rendered.reduce((sum, part) => sum + part.length, 0);
+        const bytesPerSample = 2;
+        const blockAlign = channels * bytesPerSample;
+        const dataBytes = totalFrames * blockAlign;
+        const out = new ArrayBuffer(44 + dataBytes);
+        const view = new DataView(out);
+        let off = 0;
+        const writeStr = (s) => { for (let i = 0; i < s.length; i++) view.setUint8(off++, s.charCodeAt(i)); };
+        writeStr('RIFF');
+        view.setUint32(off, 36 + dataBytes, true); off += 4;
+        writeStr('WAVE');
+        writeStr('fmt ');
+        view.setUint32(off, 16, true); off += 4;
+        view.setUint16(off, 1, true); off += 2;
+        view.setUint16(off, channels, true); off += 2;
+        view.setUint32(off, targetRate, true); off += 4;
+        view.setUint32(off, targetRate * blockAlign, true); off += 4;
+        view.setUint16(off, blockAlign, true); off += 2;
+        view.setUint16(off, 16, true); off += 2;
+        writeStr('data');
+        view.setUint32(off, dataBytes, true); off += 4;
+        for (const part of rendered) {
+            for (let i = 0; i < part.length; i++) {
+                for (let ch = 0; ch < channels; ch++) {
+                    const sample = Math.max(-1, Math.min(1, part.data[ch][i] || 0));
+                    view.setInt16(off, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+                    off += 2;
+                }
+            }
+        }
+        return new Blob([out], { type: 'audio/wav' });
+    }
+
+    async function buildMedicalRecordingFile(prefix, fallbackMime) {
+        const segments = (window._medicalRecorderSegments || []).filter((b) => b && b.size > 0);
+        if (segments.length <= 1) {
+            const only = segments[0] || new Blob(window._medicalRecorderChunks || [], { type: fallbackMime || 'audio/webm' });
+            const ext = medicalBlobExtensionFromMime(only.type || fallbackMime);
+            return new File([only], `${prefix}_${Date.now()}.${ext}`, { type: only.type || fallbackMime || 'audio/webm' });
+        }
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) throw new Error('AudioContext unavailable');
+            const ctx = new Ctx();
+            const buffers = [];
+            for (const segment of segments) {
+                const arr = await segment.arrayBuffer();
+                buffers.push(await ctx.decodeAudioData(arr.slice(0)));
+            }
+            try { await ctx.close(); } catch (_) {}
+            const wav = encodeAudioBufferToWavBlob(buffers);
+            if (wav) return new File([wav], `${prefix}_${Date.now()}.wav`, { type: 'audio/wav' });
+        } catch (e) {
+            console.warn('[medical] failed to stitch recording segments as wav; falling back to raw segments', e);
+        }
+        const mime = fallbackMime || (segments[0] && segments[0].type) || 'audio/webm';
+        const ext = medicalBlobExtensionFromMime(mime);
+        return new File(segments, `${prefix}_${Date.now()}.${ext}`, { type: mime });
+    }
+
     function finishMedicalRecorderResumeAfterOsInterrupt() {
         if (!window._medicalSystemRecordingInterrupted) return;
         const rec = window._medicalRecorder;
@@ -6280,7 +6367,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const recOpts = pickMedicalMediaRecorderOptions();
         const rec = Object.keys(recOpts).length ? new MediaRecorder(stream, recOpts) : new MediaRecorder(stream);
-        if (!preserveChunks) window._medicalRecorderChunks = [];
+        const localChunks = [];
+        if (!preserveChunks) {
+            window._medicalRecorderChunks = [];
+            window._medicalRecorderSegments = [];
+        }
         rec.addEventListener('pause', () => {
             if (window._medicalPauseUserIntent) {
                 window._medicalPauseUserIntent = false;
@@ -6306,9 +6397,17 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (_) {}
         });
         rec.ondataavailable = (e) => {
-            if (e && e.data && e.data.size > 0) window._medicalRecorderChunks.push(e.data);
+            if (e && e.data && e.data.size > 0) {
+                localChunks.push(e.data);
+                window._medicalRecorderChunks.push(e.data);
+            }
         };
         rec.onstop = async () => {
+            const mime = (rec.mimeType || (localChunks[0] && localChunks[0].type) || 'audio/webm').toLowerCase();
+            if (localChunks.length) {
+                const segmentBlob = new Blob(localChunks, { type: mime });
+                if (segmentBlob.size > 0) window._medicalRecorderSegments.push(segmentBlob);
+            }
             if (window._medicalRollingRestart && !window._medicalSubmitOnStop) {
                 try {
                     stopMedicalWaveform(true);
@@ -6326,12 +6425,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 stopMedicalRecordingTimer();
                 setMedicalRecordingVisualState('idle');
                 const shouldSubmit = !!window._medicalSubmitOnStop;
-                const mime = (rec.mimeType || 'audio/webm').toLowerCase();
-                const ext = medicalBlobExtensionFromMime(mime);
-                const blob = new Blob(window._medicalRecorderChunks, { type: mime });
                 const prefix = isMedicalModeEnabled() ? 'medical_recording' : 'transcript_record';
-                const file = new File([blob], `${prefix}_${Date.now()}.${ext}`, { type: mime });
                 if (shouldSubmit) {
+                    const file = await buildMedicalRecordingFile(prefix, mime);
                     await pushFileIntoPickerAndUpload(file);
                 }
             } catch (e) {
@@ -6341,6 +6437,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
                 window._medicalRecorder = null;
                 window._medicalRecorderChunks = [];
+                window._medicalRecorderSegments = [];
                 window._medicalRecorderPaused = false;
                 window._medicalSystemRecordingInterrupted = false;
                 window._medicalRecordingAccumMs = 0;
