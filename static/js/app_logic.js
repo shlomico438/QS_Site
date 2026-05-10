@@ -5795,6 +5795,8 @@ document.addEventListener('DOMContentLoaded', () => {
     window._medicalPauseUserIntent = false;
     /** True when the MediaRecorder was paused by the system (e.g. incoming phone call) so we can auto-resume when possible. */
     window._medicalSystemRecordingInterrupted = false;
+    window._medicalRollingRestart = false;
+    window._medicalRestartInProgress = false;
     window._medicalWave = window._medicalWave || null;
     window._qsRegularRecordVisible = false;
     if (medicalRecordTimer) medicalRecordTimer.style.display = 'none';
@@ -6225,24 +6227,29 @@ document.addEventListener('DOMContentLoaded', () => {
         try { rec.pause(); } catch (_) {}
     }
 
-    function tryResumeMedicalRecordingAfterOsInterrupt() {
+    async function restartMedicalRecorderAfterInterruption() {
+        if (window._medicalRestartInProgress) return;
         const rec = window._medicalRecorder;
         if (!rec || !window._medicalSystemRecordingInterrupted) return;
-        if (rec.state === 'paused') {
-            try {
-                rec.resume();
-            } catch (_) {
-                return;
-            }
-            if (rec.state === 'recording') {
-                finishMedicalRecorderResumeAfterOsInterrupt();
-            }
-            return;
+        window._medicalRestartInProgress = true;
+        window._medicalRollingRestart = true;
+        try {
+            try { if (typeof rec.requestData === 'function' && rec.state !== 'inactive') rec.requestData(); } catch (_) {}
+            try { if (rec.state !== 'inactive') rec.stop(); } catch (_) {}
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            await startMedicalRecording({ preserveChunks: true, resumeFromInterruption: true });
+        } catch (e) {
+            window._medicalRollingRestart = false;
+            if (typeof showStatus === 'function') showStatus(`Microphone resume failed: ${e.message || e}`, true);
+        } finally {
+            window._medicalRestartInProgress = false;
         }
-        if (rec.state === 'recording') {
-            // Some mobile browsers keep MediaRecorder in "recording" while the mic was interrupted.
-            finishMedicalRecorderResumeAfterOsInterrupt();
-        }
+    }
+
+    function tryResumeMedicalRecordingAfterOsInterrupt() {
+        // After a phone call many mobile browsers leave the old mic track alive but silent.
+        // Re-acquire a fresh stream instead of trusting MediaRecorder.resume().
+        void restartMedicalRecorderAfterInterruption();
     }
 
     if (!window._medicalOsInterruptListenersBound) {
@@ -6267,11 +6274,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    async function startMedicalRecording() {
+    async function startMedicalRecording(options = {}) {
+        const preserveChunks = !!(options && options.preserveChunks);
+        const resumeFromInterruption = !!(options && options.resumeFromInterruption);
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const recOpts = pickMedicalMediaRecorderOptions();
         const rec = Object.keys(recOpts).length ? new MediaRecorder(stream, recOpts) : new MediaRecorder(stream);
-        window._medicalRecorderChunks = [];
+        if (!preserveChunks) window._medicalRecorderChunks = [];
         rec.addEventListener('pause', () => {
             if (window._medicalPauseUserIntent) {
                 window._medicalPauseUserIntent = false;
@@ -6300,6 +6309,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e && e.data && e.data.size > 0) window._medicalRecorderChunks.push(e.data);
         };
         rec.onstop = async () => {
+            if (window._medicalRollingRestart && !window._medicalSubmitOnStop) {
+                try {
+                    stopMedicalWaveform(true);
+                    (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
+                    if (window._medicalRecorder === rec) window._medicalRecorder = null;
+                } finally {
+                    window._medicalRollingRestart = false;
+                }
+                return;
+            }
             try {
                 if (!window._medicalRecorderPaused) {
                     window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
@@ -6351,16 +6370,19 @@ document.addEventListener('DOMContentLoaded', () => {
             window._medicalRecorder = null;
             throw e;
         }
-        window._medicalRecordingAccumMs = 0;
+        if (!preserveChunks) window._medicalRecordingAccumMs = 0;
         window._medicalRecorderPaused = false;
         window._medicalSubmitOnStop = false;
         window._medicalSystemRecordingInterrupted = false;
         window._medicalRecordingStartedAt = Date.now();
         setMedicalTimerVisibility(true);
         renderMedicalRecordingTimer();
-        stopMedicalRecordingTimer();
-        window._medicalRecorderTimer = setInterval(renderMedicalRecordingTimer, 500);
+        if (!window._medicalRecorderTimer || !preserveChunks) {
+            stopMedicalRecordingTimer();
+            window._medicalRecorderTimer = setInterval(renderMedicalRecordingTimer, 500);
+        }
         setMedicalRecordingVisualState('recording');
+        if (resumeFromInterruption) finishMedicalRecorderResumeAfterOsInterrupt();
     }
 
     async function toggleMedicalRecording() {
