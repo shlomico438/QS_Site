@@ -2274,6 +2274,15 @@ html[dir="rtl"] .upload-status {
         min-height: 200px;
         touch-action: pan-y;
     }
+    /* Editing: allow horizontal caret/selection drags; pan-y-only fights iOS/Android text gestures */
+    #transcript-window.transcript-editing {
+        touch-action: auto;
+    }
+    #transcript-window.transcript-editing .caption-text[contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+        touch-action: auto;
+    }
     
     /* 4. Stack video wrapper vertically on mobile */
     #video-wrapper {

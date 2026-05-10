@@ -551,6 +551,13 @@ html, body {
         cursor: text;
     }
 
+    /* Word-caption edit: #transcript-window stays contenteditable=false; inner .caption-text is editable */
+    #transcript-window.transcript-editing [contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+        cursor: text;
+    }
+
     .toast-notification {
     position: fixed;
     bottom: 20px;

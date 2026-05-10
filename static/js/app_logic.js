@@ -11550,16 +11550,22 @@ function renderWordCaptionEditor() {
         if (onMobile && !input._qsTouchScrollReleaseBound) {
             input._qsTouchScrollReleaseBound = true;
             let startY = null;
+            let startX = null;
             input.addEventListener('touchstart', (ev) => {
                 const t = ev.touches && ev.touches[0];
                 startY = t ? t.clientY : null;
+                startX = t ? t.clientX : null;
             }, { passive: true });
             input.addEventListener('touchmove', (ev) => {
                 const t = ev.touches && ev.touches[0];
-                if (startY == null || !t) return;
-                if (Math.abs(t.clientY - startY) > 8) {
+                if (startY == null || startX == null || !t) return;
+                const dy = Math.abs(t.clientY - startY);
+                const dx = Math.abs(t.clientX - startX);
+                // Only blur on clear vertical scroll — caret drag / selection moves diagonally and must not dismiss the keyboard.
+                if (dy > 36 && dy > dx * 2.25) {
                     try { input.blur(); } catch (_) {}
                     startY = null;
+                    startX = null;
                 }
             }, { passive: true });
         }
