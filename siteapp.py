@@ -119,9 +119,9 @@ def _runpod_skip_warmup():
 
 
 def _site_transcription_options_from_payload(data=None):
-    """Centralized transcript tuning from Site side (request + Site env).
+    """Optional transcript tuning from Site (request + Site env).
 
-    This lets us tune GPU behavior from Site only, without editing GPU code/env directly.
+    VAD (use_vad, chunk/onset/offset) is configured on the RunPod worker only — not sent from Site.
     Request JSON overrides env defaults when provided.
     """
     data = data or {}
@@ -141,10 +141,6 @@ def _site_transcription_options_from_payload(data=None):
             return default
 
     out = {
-        "use_vad": _pick("use_vad", "TRANSCRIBE_USE_VAD", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), True),
-        "vad_chunk_size": _pick("vad_chunk_size", "TRANSCRIBE_VAD_CHUNK_SIZE", float, 30.0),
-        "vad_onset": _pick("vad_onset", "TRANSCRIBE_VAD_ONSET", float, 0.5),
-        "vad_offset": _pick("vad_offset", "TRANSCRIBE_VAD_OFFSET", float, 0.363),
         "batch_size": _pick("batch_size", "TRANSCRIBE_BATCH_SIZE", int, 16),
         "skip_word_alignment": _pick("skip_word_alignment", "TRANSCRIBE_SKIP_WORD_ALIGNMENT", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
         "save_pre_align_json": _pick("save_pre_align_json", "TRANSCRIBE_SAVE_PRE_ALIGN_JSON", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
@@ -1920,7 +1916,7 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
             "language": data.get('language', 'he'),
             "num_speakers": int(data.get('speakerCount', 2)),
             "diarization": data.get('diarization', False),
-            # Omit vad_onset, chunk_size, max_line_* etc. so the worker uses its defaults (speech).
+            # Legacy path: no transcription_options; worker uses RunPod-side defaults.
         }
     }
     max_retries = 3
