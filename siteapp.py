@@ -375,20 +375,45 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=20):
         if len(rms_vals) < 4:
             return {"profile": "unknown", "reason": "not_enough_frames"}
 
-        mean = sum(rms_vals) / len(rms_vals)
-        var = sum((v - mean) * (v - mean) for v in rms_vals) / len(rms_vals)
+        def _variance(vals):
+            if not vals:
+                return None
+            m = sum(vals) / len(vals)
+            return sum((v - m) * (v - m) for v in vals) / len(vals)
+
+        var = _variance(rms_vals)
         thr_base = float(os.environ.get('AUDIO_PROFILE_MUSIC_RMS_VAR_THRESHOLD', '0.002') or 0.002)
         video_mult = 1.0
         if _s3_key_likely_video_container(s3_key):
-            video_mult = float(os.environ.get('AUDIO_PROFILE_VIDEO_MUSIC_THRESHOLD_MULT', '1.45') or 1.45)
+            video_mult = float(os.environ.get('AUDIO_PROFILE_VIDEO_MUSIC_THRESHOLD_MULT', '2.5') or 2.5)
         thr = thr_base * video_mult
-        profile = 'music' if var < thr else 'speech'
+        skip_intro_sec = max(0.0, float(os.environ.get('AUDIO_PROFILE_SKIP_INTRO_SECONDS', '5') or 5))
+        post_intro_start = min(len(rms_vals), int(round(skip_intro_sec / 0.1)))
+        post_intro_vals = rms_vals[post_intro_start:] if post_intro_start < len(rms_vals) else []
+        post_intro_var = _variance(post_intro_vals) if len(post_intro_vals) >= 4 else None
+        tail_vals = rms_vals[len(rms_vals) // 2:]
+        tail_var = _variance(tail_vals) if len(tail_vals) >= 4 else None
+
+        profile = 'speech'
+        basis = 'full_sample'
+        if var is not None and var < thr:
+            profile = 'music'
+        elif post_intro_var is not None and post_intro_var < thr:
+            profile = 'music'
+            basis = 'post_intro'
+        elif tail_var is not None and tail_var < thr:
+            profile = 'music'
+            basis = 'tail_half'
         return {
             "profile": profile,
             "energy_variance": var,
+            "post_intro_energy_variance": post_intro_var,
+            "tail_energy_variance": tail_var,
             "threshold": thr,
             "threshold_base": thr_base,
             "video_threshold_mult": video_mult,
+            "skip_intro_seconds": skip_intro_sec,
+            "classification_basis": basis,
             "container_video_like": _s3_key_likely_video_container(s3_key),
             "frames": len(rms_vals),
         }
@@ -4387,20 +4412,26 @@ def trigger_processing():
             key_suffix = (s3_key[-80:] if isinstance(s3_key, str) and len(s3_key) > 80 else s3_key)
             if prof == 'music':
                 logging.info(
-                    "Music detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s threshold=%s video_container=%s",
+                    "Music detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s post_intro_var=%s tail_var=%s threshold=%s basis=%s video_container=%s",
                     data.get('jobId'),
                     key_suffix,
                     ap.get('energy_variance'),
+                    ap.get('post_intro_energy_variance'),
+                    ap.get('tail_energy_variance'),
                     ap.get('threshold'),
+                    ap.get('classification_basis'),
                     ap.get('container_video_like'),
                 )
             elif prof == 'speech':
                 logging.info(
-                    "Speech detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s threshold=%s video_container=%s",
+                    "Speech detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s post_intro_var=%s tail_var=%s threshold=%s basis=%s video_container=%s",
                     data.get('jobId'),
                     key_suffix,
                     ap.get('energy_variance'),
+                    ap.get('post_intro_energy_variance'),
+                    ap.get('tail_energy_variance'),
                     ap.get('threshold'),
+                    ap.get('classification_basis'),
                     ap.get('container_video_like'),
                 )
             else:
@@ -4417,6 +4448,10 @@ def trigger_processing():
             "audio_profile": audio_profile_info.get("profile"),
             "audio_profile_reason": audio_profile_info.get("reason"),
             "audio_profile_energy_variance": audio_profile_info.get("energy_variance"),
+            "audio_profile_post_intro_energy_variance": audio_profile_info.get("post_intro_energy_variance"),
+            "audio_profile_tail_energy_variance": audio_profile_info.get("tail_energy_variance"),
+            "audio_profile_threshold": audio_profile_info.get("threshold"),
+            "audio_profile_classification_basis": audio_profile_info.get("classification_basis"),
         }
         _fst = audio_profile_info.get("ffmpeg_stderr_tail") or audio_profile_info.get("stderr")
         if _fst:

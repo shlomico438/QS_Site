@@ -922,6 +922,10 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
         const ap = td.audio_profile;
         const reason = td.audio_profile_reason;
         const varEv = td.audio_profile_energy_variance;
+        const postIntroVar = td.audio_profile_post_intro_energy_variance;
+        const tailVar = td.audio_profile_tail_energy_variance;
+        const threshold = td.audio_profile_threshold;
+        const basis = td.audio_profile_classification_basis;
         const topts = td.transcription_options;
         const ffStderr = td.audio_profile_ffmpeg_stderr_tail || null;
         let headline = '[audio-profile] ';
@@ -935,6 +939,10 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
             transcription_options: topts,
             audio_profile_reason: reason || null,
             energy_variance: varEv != null ? varEv : null,
+            post_intro_energy_variance: postIntroVar != null ? postIntroVar : null,
+            tail_energy_variance: tailVar != null ? tailVar : null,
+            threshold: threshold != null ? threshold : null,
+            classification_basis: basis || null,
             ffmpeg_stderr_tail: ffStderr,
         };
         if (typeof console !== 'undefined' && typeof console.error === 'function') {
@@ -945,6 +953,10 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
             audio_profile: ap != null ? ap : 'missing',
             audio_profile_reason: reason || null,
             audio_profile_energy_variance: varEv != null ? varEv : null,
+            audio_profile_post_intro_energy_variance: postIntroVar != null ? postIntroVar : null,
+            audio_profile_tail_energy_variance: tailVar != null ? tailVar : null,
+            audio_profile_threshold: threshold != null ? threshold : null,
+            audio_profile_classification_basis: basis || null,
             audio_profile_ffmpeg_stderr_tail: ffStderr,
             transcription_options: topts,
         });
