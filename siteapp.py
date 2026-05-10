@@ -187,17 +187,18 @@ def _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr):
         head + ['-map', '0:a:0'] + tail,
         head + tail,
     ]
+    ff_timeout = max(55, int(seconds or 20) + 50)
     last = None
     for cmd in attempts:
-        last = subprocess.run(cmd, capture_output=True, timeout=45)
+        last = subprocess.run(cmd, capture_output=True, timeout=ff_timeout)
         if last.returncode == 0 and last.stdout:
             return last, cmd
     return last, attempts[-1]
 
 
-def _infer_audio_profile_from_s3(bucket, s3_key, seconds=10):
+def _infer_audio_profile_from_s3(bucket, s3_key, seconds=20):
     """
-    Detect likely "music" vs "speech" from the first seconds of media.
+    Detect likely "music" vs "speech" from the first seconds of media (default 20s via AUDIO_PROFILE_DETECT_SECONDS).
     Uses ffmpeg to decode mono float audio and measures short-window RMS variance:
     lower variance => more continuous sound (music-like), higher variance => speech-like.
 
@@ -220,7 +221,8 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=10):
             ExpiresIn=900
         )
         sr = 16000
-        seconds = max(5, min(15, int(seconds or 10)))
+        # Allow longer samples (e.g. speech intro then music); cap keeps ffmpeg/memory bounded.
+        seconds = max(5, min(45, int(seconds or 20)))
         run, cmd_used = _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr)
         if run.returncode != 0:
             return {
@@ -4269,7 +4271,7 @@ def trigger_processing():
             audio_profile_info = _infer_audio_profile_from_s3(
                 target_bucket,
                 s3_key,
-                seconds=int(os.environ.get('AUDIO_PROFILE_DETECT_SECONDS', '10') or 10)
+                seconds=int(os.environ.get('AUDIO_PROFILE_DETECT_SECONDS', '20') or 20)
             )
             ap = audio_profile_info
             prof = str(ap.get('profile') or '').strip().lower()
@@ -4302,6 +4304,11 @@ def trigger_processing():
                     key_suffix,
                 )
         transcription_options = _apply_audio_profile_transcription_options(transcription_options, audio_profile_info)
+        _audio_profile_api_fields = {
+            "audio_profile": audio_profile_info.get("profile"),
+            "audio_profile_reason": audio_profile_info.get("reason"),
+            "audio_profile_energy_variance": audio_profile_info.get("energy_variance"),
+        }
         logging.info("trigger_processing request: job_id=%s has_s3_key=%s", data.get('jobId'), bool(data.get('s3Key')))
         print(f"📩 Received Trigger Request: {data}")
 
@@ -4313,7 +4320,12 @@ def trigger_processing():
                 pending_trigger[job_id] = "triggered"
                 _set_trigger_state(job_id, "triggered")
                 _mark_upload_complete(job_id)
-            return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
+            return jsonify({
+                "status": "started",
+                "runpod_id": "sim_id_123",
+                "transcription_options": transcription_options,
+                **_audio_profile_api_fields,
+            }), 202
 
         if not s3_key or not job_id:
             return jsonify({"status": "error", "message": "s3Key and jobId required"}), 400
@@ -4347,8 +4359,8 @@ def trigger_processing():
                 "job_id": job_id,
                 "simulation": True,
                 "engine": "sagemaker_async",
-                "audio_profile": audio_profile_info.get("profile"),
                 "transcription_options": transcription_options,
+                **_audio_profile_api_fields,
             }), 202
 
         # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
@@ -4366,8 +4378,8 @@ def trigger_processing():
             return jsonify({
                 "status": "started",
                 "job_id": job_id,
-                "audio_profile": audio_profile_info.get("profile"),
                 "transcription_options": transcription_options,
+                **_audio_profile_api_fields,
             }), 202
 
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
@@ -4389,8 +4401,8 @@ def trigger_processing():
             return jsonify({
                 "status": "started",
                 "runpod_id": "sim_id_123",
-                "audio_profile": audio_profile_info.get("profile"),
                 "transcription_options": transcription_options,
+                **_audio_profile_api_fields,
             }), 202
 
         try:
@@ -4443,8 +4455,8 @@ def trigger_processing():
         return jsonify({
             "status": "started",
             "job_id": job_id,
-            "audio_profile": audio_profile_info.get("profile"),
             "transcription_options": transcription_options,
+            **_audio_profile_api_fields,
         }), 202
 
     except Exception as e:

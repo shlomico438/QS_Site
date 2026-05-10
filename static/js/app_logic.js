@@ -117,6 +117,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
         console.debug = () => {};
         console.warn = () => {};
     }
+    // console.error is intentionally left intact — used for upload/audio-profile diagnostics on prod hosts.
 })();
 
 // --- GLOBAL STATE ---
@@ -905,6 +906,43 @@ function qsUploadTrace(phase, detail) {
     } catch (_) {}
 }
 
+/** Same as qsUploadTrace but uses console.error — survives __QS_CONSOLE_ENABLED gate (log/info/debug/warn are no-oped on prod hosts). */
+function qsUploadTraceErr(phase, detail) {
+    try {
+        if (typeof console !== 'undefined' && typeof console.error === 'function') {
+            console.error('[qs-upload]', Object.assign({ phase, ts: new Date().toISOString() }, detail || {}));
+        }
+    } catch (_) {}
+}
+
+/** Server sends audio_profile + transcription_options on /api/trigger_processing — log clearly (browser has no server logging). */
+function qsLogAudioProfileFromTrigger(jobId, triggerData) {
+    try {
+        const td = triggerData || {};
+        const ap = td.audio_profile;
+        const reason = td.audio_profile_reason;
+        const varEv = td.audio_profile_energy_variance;
+        const topts = td.transcription_options;
+        let headline = '[audio-profile] ';
+        if (ap === 'music') headline += 'Music detected';
+        else if (ap === 'speech') headline += 'Speech detected';
+        else headline += `Classification: ${ap != null ? String(ap) : 'missing'}`;
+        if (reason) headline += ` (${reason})`;
+        // console.log is silenced on non-localhost (__QS_CONSOLE_ENABLED gate); console.error is not patched — stays visible.
+        const payload = { jobId, transcription_options: topts, audio_profile_reason: reason || null, energy_variance: varEv != null ? varEv : null };
+        if (typeof console !== 'undefined' && typeof console.error === 'function') {
+            console.error(headline, '| job:', jobId, '|', payload);
+        }
+        qsUploadTraceErr('audio_profile', {
+            jobId,
+            audio_profile: ap != null ? ap : 'missing',
+            audio_profile_reason: reason || null,
+            audio_profile_energy_variance: varEv != null ? varEv : null,
+            transcription_options: topts,
+        });
+    } catch (_) {}
+}
+
 async function qsAcquireUploadWakeLock() {
     try {
         if (typeof navigator !== 'undefined' && navigator.wakeLock && typeof navigator.wakeLock.request === 'function') {
@@ -940,7 +978,14 @@ async function qsPostTriggerProcessingWithRetry(body, jobId) {
             });
             lastData = await lastRes.json().catch(() => ({}));
             if (lastRes.ok) {
-                qsUploadTrace('trigger_processing_ok', { jobId, attempt, httpStatus: lastRes.status });
+                qsUploadTrace('trigger_processing_ok', {
+                    jobId,
+                    attempt,
+                    httpStatus: lastRes.status,
+                    audio_profile: lastData.audio_profile,
+                    transcription_options: lastData.transcription_options,
+                });
+                qsLogAudioProfileFromTrigger(jobId, lastData);
                 return { triggerRes: lastRes, triggerData: lastData };
             }
             const retryable = lastRes.status === 502 || lastRes.status === 503 || lastRes.status === 504 || lastRes.status === 429;
@@ -2262,6 +2307,7 @@ async function initPersonalPage() {
                     });
                     const out = await res.json().catch(() => ({}));
                     if (!res.ok) throw new Error(out.message || out.error || `HTTP ${res.status}`);
+                    qsLogAudioProfileFromTrigger(transcribeJobId, out);
                     window.location.href = '/?open=' + encodeURIComponent(file.file_id);
                 } catch (e) {
                     actionBtn.disabled = false;
@@ -6451,6 +6497,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                     const triggerData = await triggerRes.json().catch(() => ({}));
                     if (!triggerRes.ok) throw new Error(triggerData.message || triggerData.error || `HTTP ${triggerRes.status}`);
+                    qsLogAudioProfileFromTrigger(transcribeJobId, triggerData);
                     if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(transcribeJobId);
                 } catch (e) {
                     stopProcessingStateUI('transcribe_loaded_file_error');
