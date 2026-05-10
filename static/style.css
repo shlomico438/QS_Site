@@ -482,7 +482,10 @@ html, body {
 
         background: white;
         flex-direction: column;
-        align-items: center;
+        /* Stretch rows full width (align-items:center + % widths is flaky on some Android WebViews). */
+        align-items: stretch;
+        /* Desktop rule leaves gap:30px — in a column that blows vertical spacing apart on phones. */
+        gap: 0;
         padding: 10px 0;
         box-shadow: 0 4px 10px rgba(0,0,0,0.1);
         border-top: 1px solid #eee;
@@ -499,11 +502,39 @@ html, body {
     }
 
     .nav-item {
-        margin: 10px 0;
-        padding: 15px;
+        margin: 6px 0;
+        padding: 12px 16px;
         width: 100%;
+        box-sizing: border-box;
         text-align: center;
         border-bottom: 1px solid #f9f9f9;
+    }
+
+    /* Signed-in row: name | logout — use flex + gap instead of literal spaces (avoids huge RTL/justify gaps on Android). */
+    #nav-auth-btn.nav-item {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        row-gap: 6px;
+    }
+    #nav-auth-btn .nav-auth-divider {
+        margin: 0;
+        flex-shrink: 0;
+    }
+    #nav-auth-btn .nav-user-name {
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: break-word;
+        word-break: break-word;
+        color: inherit;
+    }
+    #nav-auth-btn .nav-logout {
+        flex-shrink: 0;
+        white-space: nowrap;
     }
     /* Prevent selecting the transcript text */
     #transcript-window {
