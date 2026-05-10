@@ -6204,15 +6204,43 @@ document.addEventListener('DOMContentLoaded', () => {
         if (stream) startMedicalWaveform(stream);
     }
 
+    function markMedicalRecorderInterrupted(reason) {
+        const rec = window._medicalRecorder;
+        if (!rec || rec.state === 'inactive') return;
+        window._medicalSystemRecordingInterrupted = true;
+        window._medicalPauseReason = reason || 'system';
+        if (!window._medicalRecorderPaused) {
+            window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+        }
+        window._medicalRecorderPaused = true;
+        setMedicalRecordingVisualState('paused');
+        renderMedicalRecordingTimer();
+        pauseMedicalWaveform();
+    }
+
+    function pauseMedicalRecordingForInterruption(reason) {
+        const rec = window._medicalRecorder;
+        if (!rec || rec.state !== 'recording') return;
+        markMedicalRecorderInterrupted(reason);
+        try { rec.pause(); } catch (_) {}
+    }
+
     function tryResumeMedicalRecordingAfterOsInterrupt() {
         const rec = window._medicalRecorder;
-        if (!rec || rec.state !== 'paused' || !window._medicalSystemRecordingInterrupted) return;
-        try {
-            rec.resume();
-        } catch (_) {
+        if (!rec || !window._medicalSystemRecordingInterrupted) return;
+        if (rec.state === 'paused') {
+            try {
+                rec.resume();
+            } catch (_) {
+                return;
+            }
+            if (rec.state === 'recording') {
+                finishMedicalRecorderResumeAfterOsInterrupt();
+            }
             return;
         }
         if (rec.state === 'recording') {
+            // Some mobile browsers keep MediaRecorder in "recording" while the mic was interrupted.
             finishMedicalRecorderResumeAfterOsInterrupt();
         }
     }
@@ -6223,7 +6251,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (document.visibilityState !== 'visible') return;
             setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 50);
         };
-        document.addEventListener('visibilitychange', onReturnToApp);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                try { pauseMedicalRecordingForInterruption('visibility_hidden'); } catch (_) {}
+                return;
+            }
+            onReturnToApp();
+        });
+        window.addEventListener('blur', () => {
+            try { pauseMedicalRecordingForInterruption('window_blur'); } catch (_) {}
+        });
         window.addEventListener('focus', onReturnToApp);
         window.addEventListener('pageshow', () => {
             setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
@@ -6240,18 +6277,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalPauseUserIntent = false;
                 return;
             }
-            window._medicalSystemRecordingInterrupted = true;
-            if (!window._medicalRecorderPaused) {
-                window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
-            }
-            window._medicalRecorderPaused = true;
-            setMedicalRecordingVisualState('paused');
-            renderMedicalRecordingTimer();
-            pauseMedicalWaveform();
+            markMedicalRecorderInterrupted('recorder_pause_event');
         });
         rec.addEventListener('resume', () => {
             if (!window._medicalSystemRecordingInterrupted) return;
             finishMedicalRecorderResumeAfterOsInterrupt();
+        });
+        (stream.getAudioTracks ? stream.getAudioTracks() : []).forEach((track) => {
+            try {
+                track.addEventListener('mute', () => {
+                    pauseMedicalRecordingForInterruption('track_mute');
+                });
+                track.addEventListener('unmute', () => {
+                    setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
+                });
+                track.addEventListener('ended', () => {
+                    markMedicalRecorderInterrupted('track_ended');
+                });
+            } catch (_) {}
         });
         rec.ondataavailable = (e) => {
             if (e && e.data && e.data.size > 0) window._medicalRecorderChunks.push(e.data);
