@@ -551,8 +551,21 @@ html, body {
         cursor: text;
     }
 
-    /* Word-caption edit: #transcript-window stays contenteditable=false; inner .caption-text is editable */
+    /* Word-caption edit: #transcript-window stays contenteditable=false; inner .caption-text is editable.
+       iOS Safari still honors the parent user-select:none unless edit mode resets the whole subtree. */
+    #transcript-window.transcript-editing {
+        -webkit-user-select: text;
+        user-select: text;
+        cursor: text;
+    }
     #transcript-window.transcript-editing [contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+        cursor: text;
+    }
+    #transcript-window.transcript-editing .caption-text,
+    #transcript-window.transcript-editing .word-token,
+    #transcript-window.transcript-editing .qs-token-input {
         -webkit-user-select: text;
         user-select: text;
         cursor: text;

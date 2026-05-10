@@ -2277,8 +2277,16 @@ html[dir="rtl"] .upload-status {
     /* Editing: allow horizontal caret/selection drags; pan-y-only fights iOS/Android text gestures */
     #transcript-window.transcript-editing {
         touch-action: auto;
+        -webkit-user-select: text;
+        user-select: text;
     }
     #transcript-window.transcript-editing .caption-text[contenteditable="true"] {
+        -webkit-user-select: text;
+        user-select: text;
+        touch-action: auto;
+    }
+    #transcript-window.transcript-editing .word-token,
+    #transcript-window.transcript-editing .qs-token-input {
         -webkit-user-select: text;
         user-select: text;
         touch-action: auto;

@@ -5791,6 +5791,10 @@ document.addEventListener('DOMContentLoaded', () => {
     window._medicalRecordingAccumMs = 0;
     window._medicalRecorderPaused = false;
     window._medicalSubmitOnStop = false;
+    /** True only while the user explicitly tapped pause — distinguishes OS/call interruption from manual pause. */
+    window._medicalPauseUserIntent = false;
+    /** True when the MediaRecorder was paused by the system (e.g. incoming phone call) so we can auto-resume when possible. */
+    window._medicalSystemRecordingInterrupted = false;
     window._medicalWave = window._medicalWave || null;
     window._qsRegularRecordVisible = false;
     if (medicalRecordTimer) medicalRecordTimer.style.display = 'none';
@@ -6187,11 +6191,68 @@ document.addEventListener('DOMContentLoaded', () => {
         return 'webm';
     }
 
+    function finishMedicalRecorderResumeAfterOsInterrupt() {
+        if (!window._medicalSystemRecordingInterrupted) return;
+        const rec = window._medicalRecorder;
+        if (!rec || rec.state !== 'recording') return;
+        window._medicalRecorderPaused = false;
+        window._medicalSystemRecordingInterrupted = false;
+        window._medicalRecordingStartedAt = Date.now();
+        setMedicalRecordingVisualState('recording');
+        renderMedicalRecordingTimer();
+        const stream = rec.stream;
+        if (stream) startMedicalWaveform(stream);
+    }
+
+    function tryResumeMedicalRecordingAfterOsInterrupt() {
+        const rec = window._medicalRecorder;
+        if (!rec || rec.state !== 'paused' || !window._medicalSystemRecordingInterrupted) return;
+        try {
+            rec.resume();
+        } catch (_) {
+            return;
+        }
+        if (rec.state === 'recording') {
+            finishMedicalRecorderResumeAfterOsInterrupt();
+        }
+    }
+
+    if (!window._medicalOsInterruptListenersBound) {
+        window._medicalOsInterruptListenersBound = true;
+        const onReturnToApp = () => {
+            if (document.visibilityState !== 'visible') return;
+            setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 50);
+        };
+        document.addEventListener('visibilitychange', onReturnToApp);
+        window.addEventListener('focus', onReturnToApp);
+        window.addEventListener('pageshow', () => {
+            setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
+        });
+    }
+
     async function startMedicalRecording() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const recOpts = pickMedicalMediaRecorderOptions();
         const rec = Object.keys(recOpts).length ? new MediaRecorder(stream, recOpts) : new MediaRecorder(stream);
         window._medicalRecorderChunks = [];
+        rec.addEventListener('pause', () => {
+            if (window._medicalPauseUserIntent) {
+                window._medicalPauseUserIntent = false;
+                return;
+            }
+            window._medicalSystemRecordingInterrupted = true;
+            if (!window._medicalRecorderPaused) {
+                window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+            }
+            window._medicalRecorderPaused = true;
+            setMedicalRecordingVisualState('paused');
+            renderMedicalRecordingTimer();
+            pauseMedicalWaveform();
+        });
+        rec.addEventListener('resume', () => {
+            if (!window._medicalSystemRecordingInterrupted) return;
+            finishMedicalRecorderResumeAfterOsInterrupt();
+        });
         rec.ondataavailable = (e) => {
             if (e && e.data && e.data.size > 0) window._medicalRecorderChunks.push(e.data);
         };
@@ -6219,6 +6280,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalRecorder = null;
                 window._medicalRecorderChunks = [];
                 window._medicalRecorderPaused = false;
+                window._medicalSystemRecordingInterrupted = false;
                 window._medicalRecordingAccumMs = 0;
                 window._medicalRecordingStartedAt = 0;
                 window._medicalSubmitOnStop = false;
@@ -6249,6 +6311,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window._medicalRecordingAccumMs = 0;
         window._medicalRecorderPaused = false;
         window._medicalSubmitOnStop = false;
+        window._medicalSystemRecordingInterrupted = false;
         window._medicalRecordingStartedAt = Date.now();
         setMedicalTimerVisibility(true);
         renderMedicalRecordingTimer();
@@ -6260,7 +6323,9 @@ document.addEventListener('DOMContentLoaded', () => {
     async function toggleMedicalRecording() {
         const rec = window._medicalRecorder;
         if (rec && rec.state === 'recording') {
-            try { rec.pause(); } catch (_) { return; }
+            window._medicalPauseUserIntent = true;
+            window._medicalSystemRecordingInterrupted = false;
+            try { rec.pause(); } catch (_) { window._medicalPauseUserIntent = false; return; }
             window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
             window._medicalRecorderPaused = true;
             setMedicalRecordingVisualState('paused');
@@ -6269,6 +6334,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         if (rec && rec.state === 'paused') {
+            window._medicalSystemRecordingInterrupted = false;
             try { rec.resume(); } catch (_) { return; }
             window._medicalRecordingStartedAt = Date.now();
             window._medicalRecorderPaused = false;
@@ -11513,6 +11579,8 @@ function renderWordCaptionEditor() {
         if (!Number.isFinite(wi) || !window.currentWords || !window.currentWords[wi]) return;
         if (tokenEl.classList.contains('editing')) return;
         const onMobile = typeof isMobileClient === 'function' ? isMobileClient() : false;
+        const isIOSMobile = /iphone|ipad|ipod/.test(String(navigator.userAgent || navigator.vendor || '').toLowerCase())
+            || (/macintosh/.test(String(navigator.userAgent || navigator.vendor || '').toLowerCase()) && (navigator.maxTouchPoints || 0) > 1);
         // Use an <input> for editing to avoid nested contenteditable RTL quirks (1-char bug).
         const currentVal = String(window.currentWords[wi].text || '');
         tokenEl.classList.add('editing');
@@ -11542,12 +11610,15 @@ function renderWordCaptionEditor() {
         if (onMobile) {
             input.style.width = Math.max(16, (Math.max(1, input.value.length) * 10)) + 'px';
             input.style.minWidth = '16px';
-            input.style.touchAction = 'pan-y';
+            // iOS uses horizontal/diagonal touch moves for the native caret handle; pan-y blocks that gesture.
+            input.style.touchAction = 'auto';
+            input.style.webkitUserSelect = 'text';
+            input.style.userSelect = 'text';
         }
 
         tokenEl.innerHTML = '';
         tokenEl.appendChild(input);
-        if (onMobile && !input._qsTouchScrollReleaseBound) {
+        if (onMobile && !isIOSMobile && !input._qsTouchScrollReleaseBound) {
             input._qsTouchScrollReleaseBound = true;
             let startY = null;
             let startX = null;
