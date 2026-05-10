@@ -12,6 +12,7 @@ from flask import Flask, render_template, request, jsonify, redirect, send_from_
 from flask_socketio import SocketIO, join_room
 import json
 import math
+from array import array
 import requests  # Added for RunPod API calls
 import time
 import logging
@@ -117,6 +118,11 @@ def _runpod_skip_warmup():
     v = (os.environ.get('RUNPOD_SKIP_WARMUP') or '').strip().lower()
     return v in ('1', 'true', 'yes', 'on')
 
+def _audio_profile_detection_enabled():
+    """Enable speech/music auto-profile and per-job transcription options from Site."""
+    v = (os.environ.get('TRANSCRIBE_AUTO_AUDIO_PROFILE') or 'true').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
 
 def _site_transcription_options_from_payload(data=None):
     """Optional transcript tuning from Site (request + Site env).
@@ -153,6 +159,101 @@ def _schedule_runpod_min_workers(min_workers: int):
     """Temporarily disabled: do not change RunPod endpoint workersMin."""
     print(f"[RunPod] workersMin autoscaling disabled; ignoring requested min={min_workers}.", flush=True)
     return
+
+def _infer_audio_profile_from_s3(bucket, s3_key, seconds=10):
+    """
+    Detect likely "music" vs "speech" from the first seconds of media.
+    Uses ffmpeg to decode mono float audio and measures short-window RMS variance:
+    lower variance => more continuous sound (music-like), higher variance => speech-like.
+    """
+    try:
+        if not bucket or not s3_key:
+            return {"profile": "unknown", "reason": "missing_bucket_or_key"}
+        ffmpeg_path = _resolve_ffmpeg()
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION')
+        )
+        src_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': s3_key},
+            ExpiresIn=900
+        )
+        sr = 16000
+        seconds = max(5, min(15, int(seconds or 10)))
+        cmd = [
+            ffmpeg_path,
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-i', src_url,
+            '-t', str(seconds),
+            '-vn',
+            '-ac', '1',
+            '-ar', str(sr),
+            '-f', 'f32le',
+            '-'
+        ]
+        run = subprocess.run(cmd, capture_output=True, timeout=35)
+        if run.returncode != 0:
+            return {
+                "profile": "unknown",
+                "reason": "ffmpeg_decode_failed",
+                "stderr": (run.stderr.decode('utf-8', errors='ignore')[-180:] if run.stderr else '')
+            }
+        pcm = run.stdout or b''
+        if len(pcm) < 4096:
+            return {"profile": "unknown", "reason": "audio_too_short"}
+
+        samples = array('f')
+        samples.frombytes(pcm[: (len(pcm) // 4) * 4])
+        if not samples:
+            return {"profile": "unknown", "reason": "no_samples"}
+
+        frame = max(800, int(sr * 0.1))  # 100ms windows
+        rms_vals = []
+        for i in range(0, len(samples), frame):
+            chunk = samples[i:i + frame]
+            if not chunk:
+                continue
+            s2 = 0.0
+            for x in chunk:
+                s2 += float(x) * float(x)
+            rms_vals.append(math.sqrt(s2 / len(chunk)))
+        if len(rms_vals) < 4:
+            return {"profile": "unknown", "reason": "not_enough_frames"}
+
+        mean = sum(rms_vals) / len(rms_vals)
+        var = sum((v - mean) * (v - mean) for v in rms_vals) / len(rms_vals)
+        thr = float(os.environ.get('AUDIO_PROFILE_MUSIC_RMS_VAR_THRESHOLD', '0.002') or 0.002)
+        profile = 'music' if var < thr else 'speech'
+        return {
+            "profile": profile,
+            "energy_variance": var,
+            "threshold": thr,
+            "frames": len(rms_vals)
+        }
+    except Exception as e:
+        return {"profile": "unknown", "reason": f"exception:{e.__class__.__name__}"}
+
+def _apply_audio_profile_transcription_options(base_options, audio_profile_info):
+    """
+    Merge profile-based options into outgoing transcription_options.
+    music => use_vad=False, no_speech_threshold=1.0
+    speech/default => use_vad=True, no_speech_threshold=0.6
+    """
+    out = dict(base_options or {})
+    profile = str((audio_profile_info or {}).get('profile') or '').strip().lower()
+    if profile == 'music':
+        out['use_vad'] = False
+        out['no_speech_threshold'] = 1.0
+        out['audio_profile'] = 'music'
+    else:
+        out['use_vad'] = True
+        out['no_speech_threshold'] = 0.6
+        out['audio_profile'] = 'speech'
+    return out
 
 
 def _public_base_url(req):
@@ -3537,8 +3638,10 @@ def sign_s3():
             ExpiresIn=3600
         )
 
-        # Trigger RunPod early (before upload) so container warms during upload — unless RUNPOD_SKIP_WARMUP.
-        if not _runpod_skip_warmup():
+        # Trigger RunPod early (before upload) so container warms during upload.
+        # When audio-profile detection is enabled, we must wait for upload completion to classify first.
+        skip_warmup_effective = _runpod_skip_warmup() or _audio_profile_detection_enabled()
+        if not skip_warmup_effective:
             _start_trigger_if_configured(
                 job_id=job_id,
                 s3_key=s3_key,
@@ -3552,7 +3655,7 @@ def sign_s3():
                 transcription_options=transcription_options,
             )
         else:
-            logging.info("RUNPOD_SKIP_WARMUP: skipping sign-s3 RunPod trigger for %s", job_id)
+            logging.info("Skipping sign-s3 warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled())
 
         return jsonify({
             'data': {
@@ -3684,7 +3787,8 @@ def sign_s3_multipart_init():
         logging.exception("create_multipart_upload failed")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    if not _runpod_skip_warmup():
+    skip_warmup_effective = _runpod_skip_warmup() or _audio_profile_detection_enabled()
+    if not skip_warmup_effective:
         _start_trigger_if_configured(
             job_id=job_id,
             s3_key=s3_key,
@@ -3698,7 +3802,7 @@ def sign_s3_multipart_init():
             transcription_options=transcription_options,
         )
     else:
-        logging.info("RUNPOD_SKIP_WARMUP: skipping multipart-init RunPod trigger for %s", job_id)
+        logging.info("Skipping multipart-init warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled())
 
     return jsonify({
         'data': {
@@ -4113,6 +4217,21 @@ def trigger_processing():
         storage_profile = _resolve_storage_profile((data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key)), input_s3_key=s3_key, is_medical=is_medical)
         target_bucket = str(data.get('bucket') or storage_profile.get('bucket') or '').strip() or None
         _require_medical_kms_or_raise(is_medical)
+        audio_profile_info = {"profile": "unknown", "reason": "disabled"}
+        if _audio_profile_detection_enabled() and s3_key and target_bucket:
+            audio_profile_info = _infer_audio_profile_from_s3(
+                target_bucket,
+                s3_key,
+                seconds=int(os.environ.get('AUDIO_PROFILE_DETECT_SECONDS', '10') or 10)
+            )
+            logging.info(
+                "audio-profile job_id=%s profile=%s var=%s reason=%s",
+                data.get('jobId'),
+                audio_profile_info.get('profile'),
+                audio_profile_info.get('energy_variance'),
+                audio_profile_info.get('reason'),
+            )
+        transcription_options = _apply_audio_profile_transcription_options(transcription_options, audio_profile_info)
         logging.info("trigger_processing request: job_id=%s has_s3_key=%s", data.get('jobId'), bool(data.get('s3Key')))
         print(f"📩 Received Trigger Request: {data}")
 
@@ -4153,7 +4272,14 @@ def trigger_processing():
                 daemon=True,
             )
             t.start()
-            return jsonify({"status": "started", "job_id": job_id, "simulation": True, "engine": "sagemaker_async"}), 202
+            return jsonify({
+                "status": "started",
+                "job_id": job_id,
+                "simulation": True,
+                "engine": "sagemaker_async",
+                "audio_profile": audio_profile_info.get("profile"),
+                "transcription_options": transcription_options,
+            }), 202
 
         # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
         upload_complete[job_id] = True
@@ -4167,7 +4293,12 @@ def trigger_processing():
         # Trigger already running; just confirm
         if job_id in pending_trigger and pending_trigger.get(job_id) not in ("failed", None):
             logging.info("trigger_processing: job_id=%s already queued/triggered, skipping second RunPod /run", job_id)
-            return jsonify({"status": "started", "job_id": job_id}), 202
+            return jsonify({
+                "status": "started",
+                "job_id": job_id,
+                "audio_profile": audio_profile_info.get("profile"),
+                "transcription_options": transcription_options,
+            }), 202
 
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
         api_key = os.environ.get('RUNPOD_API_KEY')
@@ -4185,7 +4316,12 @@ def trigger_processing():
                 t = threading.Thread(target=simulate_completion, args=(job_id, diarization))
                 t.daemon = True
                 t.start()
-            return jsonify({"status": "started", "runpod_id": "sim_id_123"}), 202
+            return jsonify({
+                "status": "started",
+                "runpod_id": "sim_id_123",
+                "audio_profile": audio_profile_info.get("profile"),
+                "transcription_options": transcription_options,
+            }), 202
 
         try:
             speaker_count = int(data.get('speakerCount', 2))
@@ -4234,7 +4370,12 @@ def trigger_processing():
         t.start()
 
         # Return "started" so first/cold run shows "Triggering processing..." not "Wait in line..."
-        return jsonify({"status": "started", "job_id": job_id}), 202
+        return jsonify({
+            "status": "started",
+            "job_id": job_id,
+            "audio_profile": audio_profile_info.get("profile"),
+            "transcription_options": transcription_options,
+        }), 202
 
     except Exception as e:
         print(f"❌ trigger_processing CRASHED: {str(e)}")
