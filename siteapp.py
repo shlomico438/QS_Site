@@ -169,8 +169,10 @@ def _s3_key_likely_video_container(s3_key):
     )
 
 
-def _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr):
-    """Decode first `seconds` of audio to mono f32le PCM via ffmpeg; prefer explicit audio stream map."""
+def _ffmpeg_audio_profile_pcm(ffmpeg_path, input_src, seconds, sr):
+    """Decode first `seconds` of audio to mono f32le PCM via ffmpeg.
+    `input_src` may be a local path or an HTTP(S) URL (presigned). Prefer local files — URL pulls often fail on
+    minimal ffmpeg builds or long Unicode URLs."""
     tail = ['-t', str(seconds), '-vn', '-ac', '1', '-ar', str(sr), '-f', 'f32le', '-']
     probe = str(os.environ.get('AUDIO_PROFILE_FFPROBE_BYTES', str(8 * 1024 * 1024)) or str(8 * 1024 * 1024))
     head = [
@@ -178,9 +180,10 @@ def _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr):
         '-hide_banner',
         '-loglevel', 'error',
         '-nostdin',
+        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
         '-probesize', probe,
         '-analyzeduration', probe,
-        '-i', src_url,
+        '-i', input_src,
     ]
     # Explicit first audio stream fixes many MP4/MKV cases where defaults pick wrong track or probe too shallow.
     attempts = [
@@ -215,23 +218,129 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=20):
             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=os.environ.get('AWS_REGION')
         )
-        src_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': bucket, 'Key': s3_key},
-            ExpiresIn=900
-        )
         sr = 16000
         # Allow longer samples (e.g. speech intro then music); cap keeps ffmpeg/memory bounded.
         seconds = max(5, min(45, int(seconds or 20)))
-        run, cmd_used = _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr)
-        if run.returncode != 0:
-            return {
-                "profile": "unknown",
-                "reason": "ffmpeg_decode_failed",
-                "stderr": (run.stderr.decode('utf-8', errors='ignore')[-220:] if run.stderr else ''),
-                "ffmpeg_args_tail": ' '.join(cmd_used[-8:]) if cmd_used else '',
-            }
-        pcm = run.stdout or b''
+
+        prefix_a = max(2 * 1024 * 1024, int(os.environ.get('AUDIO_PROFILE_S3_PREFIX_BYTES', str(48 * 1024 * 1024)) or (48 * 1024 * 1024)))
+        prefix_b = max(prefix_a, int(os.environ.get('AUDIO_PROFILE_S3_PREFIX_BYTES_RETRY', str(96 * 1024 * 1024)) or (96 * 1024 * 1024)))
+        prefix_attempts = []
+        for pb in (prefix_a, prefix_b):
+            if pb not in prefix_attempts:
+                prefix_attempts.append(pb)
+
+        suffix = pathlib.Path(str(s3_key)).suffix.lower() or '.bin'
+        pcm = b''
+        last_run = None
+        last_cmd = None
+
+        for prefix_bytes in prefix_attempts:
+            tmp_path = None
+            try:
+                rng = f"bytes=0-{prefix_bytes - 1}"
+                resp = s3_client.get_object(Bucket=bucket, Key=s3_key, Range=rng)
+                chunk = resp['Body'].read()
+                if len(chunk) < 4096:
+                    continue
+                fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                try:
+                    os.write(fd, chunk)
+                finally:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                    fd = None
+                run, cmd_used = _ffmpeg_audio_profile_pcm(ffmpeg_path, tmp_path, seconds, sr)
+                last_run, last_cmd = run, cmd_used
+                if run.returncode == 0 and run.stdout and len(run.stdout) >= 4096:
+                    pcm = run.stdout
+                    break
+            except ClientError as ce:
+                err_code = (ce.response.get('Error') or {}).get('Code')
+                # Rare: empty object or bad range — try full object once.
+                if err_code in ('416', 'InvalidRange'):
+                    try:
+                        resp = s3_client.get_object(Bucket=bucket, Key=s3_key)
+                        chunk = resp['Body'].read()
+                        if len(chunk) < 4096:
+                            continue
+                        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                        try:
+                            os.write(fd, chunk)
+                        finally:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        run, cmd_used = _ffmpeg_audio_profile_pcm(ffmpeg_path, tmp_path, seconds, sr)
+                        last_run, last_cmd = run, cmd_used
+                        if run.returncode == 0 and run.stdout and len(run.stdout) >= 4096:
+                            pcm = run.stdout
+                            break
+                    except Exception:
+                        continue
+                continue
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        # MP4 often has moov atom at end of file — prefix Range GET may be undecodable. Full GET when object is small enough.
+        if not pcm:
+            max_full = int(os.environ.get('AUDIO_PROFILE_S3_MAX_FULL_DOWNLOAD_BYTES', str(220 * 1024 * 1024)) or (220 * 1024 * 1024))
+            try:
+                ho = s3_client.head_object(Bucket=bucket, Key=s3_key)
+                content_len = int(ho.get('ContentLength') or 0)
+            except Exception:
+                content_len = 0
+            if content_len > 0 and content_len <= max_full:
+                tmp_path = None
+                try:
+                    resp = s3_client.get_object(Bucket=bucket, Key=s3_key)
+                    chunk = resp['Body'].read()
+                    if len(chunk) >= 4096:
+                        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                        try:
+                            os.write(fd, chunk)
+                        finally:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        run, cmd_used = _ffmpeg_audio_profile_pcm(ffmpeg_path, tmp_path, seconds, sr)
+                        last_run, last_cmd = run, cmd_used
+                        if run.returncode == 0 and run.stdout and len(run.stdout) >= 4096:
+                            pcm = run.stdout
+                finally:
+                    if tmp_path:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+
+        # Fallback: presigned URL (may still fail on stripped ffmpeg TLS — kept for non-file edge cases).
+        if not pcm:
+            src_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket, 'Key': s3_key},
+                ExpiresIn=900,
+            )
+            run, cmd_used = _ffmpeg_audio_profile_pcm(ffmpeg_path, src_url, seconds, sr)
+            last_run, last_cmd = run, cmd_used
+            if run.returncode != 0 or not run.stdout or len(run.stdout) < 4096:
+                stderr_txt = (last_run.stderr.decode('utf-8', errors='ignore') if last_run and last_run.stderr else '')
+                return {
+                    "profile": "unknown",
+                    "reason": "ffmpeg_decode_failed",
+                    "stderr": stderr_txt[-400:],
+                    "ffmpeg_stderr_tail": stderr_txt[-400:],
+                    "ffmpeg_args_tail": ' '.join(cmd_used[-10:]) if cmd_used else '',
+                    "decode_attempt": "s3_prefix_full_then_url",
+                }
+            pcm = run.stdout or b''
         if len(pcm) < 4096:
             return {"profile": "unknown", "reason": "audio_too_short"}
 
@@ -4309,6 +4418,11 @@ def trigger_processing():
             "audio_profile_reason": audio_profile_info.get("reason"),
             "audio_profile_energy_variance": audio_profile_info.get("energy_variance"),
         }
+        _fst = audio_profile_info.get("ffmpeg_stderr_tail") or audio_profile_info.get("stderr")
+        if _fst:
+            _as = str(_fst).strip()
+            if _as:
+                _audio_profile_api_fields["audio_profile_ffmpeg_stderr_tail"] = _as[-500:]
         logging.info("trigger_processing request: job_id=%s has_s3_key=%s", data.get('jobId'), bool(data.get('s3Key')))
         print(f"📩 Received Trigger Request: {data}")
 

@@ -923,13 +923,20 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
         const reason = td.audio_profile_reason;
         const varEv = td.audio_profile_energy_variance;
         const topts = td.transcription_options;
+        const ffStderr = td.audio_profile_ffmpeg_stderr_tail || null;
         let headline = '[audio-profile] ';
         if (ap === 'music') headline += 'Music detected';
         else if (ap === 'speech') headline += 'Speech detected';
         else headline += `Classification: ${ap != null ? String(ap) : 'missing'}`;
         if (reason) headline += ` (${reason})`;
         // console.log is silenced on non-localhost (__QS_CONSOLE_ENABLED gate); console.error is not patched — stays visible.
-        const payload = { jobId, transcription_options: topts, audio_profile_reason: reason || null, energy_variance: varEv != null ? varEv : null };
+        const payload = {
+            jobId,
+            transcription_options: topts,
+            audio_profile_reason: reason || null,
+            energy_variance: varEv != null ? varEv : null,
+            ffmpeg_stderr_tail: ffStderr,
+        };
         if (typeof console !== 'undefined' && typeof console.error === 'function') {
             console.error(headline, '| job:', jobId, '|', payload);
         }
@@ -938,6 +945,7 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
             audio_profile: ap != null ? ap : 'missing',
             audio_profile_reason: reason || null,
             audio_profile_energy_variance: varEv != null ? varEv : null,
+            audio_profile_ffmpeg_stderr_tail: ffStderr,
             transcription_options: topts,
         });
     } catch (_) {}
