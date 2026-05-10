@@ -5798,6 +5798,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window._medicalSystemRecordingInterrupted = false;
     window._medicalRollingRestart = false;
     window._medicalRestartInProgress = false;
+    window._medicalResumeRetryTimer = null;
     window._medicalWave = window._medicalWave || null;
     window._qsRegularRecordVisible = false;
     if (medicalRecordTimer) medicalRecordTimer.style.display = 'none';
@@ -6286,11 +6287,30 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!rec || rec.state !== 'recording') return;
         window._medicalRecorderPaused = false;
         window._medicalSystemRecordingInterrupted = false;
+        stopMedicalResumeRetryLoop();
         window._medicalRecordingStartedAt = Date.now();
         setMedicalRecordingVisualState('recording');
         renderMedicalRecordingTimer();
         const stream = rec.stream;
         if (stream) startMedicalWaveform(stream);
+    }
+
+    function startMedicalResumeRetryLoop() {
+        if (window._medicalResumeRetryTimer) return;
+        window._medicalResumeRetryTimer = setInterval(() => {
+            if (!window._medicalSystemRecordingInterrupted) {
+                stopMedicalResumeRetryLoop();
+                return;
+            }
+            if (document.visibilityState && document.visibilityState !== 'visible') return;
+            try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {}
+        }, 900);
+    }
+
+    function stopMedicalResumeRetryLoop() {
+        if (!window._medicalResumeRetryTimer) return;
+        clearInterval(window._medicalResumeRetryTimer);
+        window._medicalResumeRetryTimer = null;
     }
 
     function markMedicalRecorderInterrupted(reason) {
@@ -6305,6 +6325,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setMedicalRecordingVisualState('paused');
         renderMedicalRecordingTimer();
         pauseMedicalWaveform();
+        startMedicalResumeRetryLoop();
     }
 
     function pauseMedicalRecordingForInterruption(reason) {
@@ -6317,17 +6338,21 @@ document.addEventListener('DOMContentLoaded', () => {
     async function restartMedicalRecorderAfterInterruption() {
         if (window._medicalRestartInProgress) return;
         const rec = window._medicalRecorder;
-        if (!rec || !window._medicalSystemRecordingInterrupted) return;
+        if (!window._medicalSystemRecordingInterrupted) return;
         window._medicalRestartInProgress = true;
-        window._medicalRollingRestart = true;
+        window._medicalRollingRestart = !!rec;
         try {
-            try { if (typeof rec.requestData === 'function' && rec.state !== 'inactive') rec.requestData(); } catch (_) {}
-            try { if (rec.state !== 'inactive') rec.stop(); } catch (_) {}
-            await new Promise((resolve) => setTimeout(resolve, 250));
+            if (rec) {
+                try { if (typeof rec.requestData === 'function' && rec.state !== 'inactive') rec.requestData(); } catch (_) {}
+                try { if (rec.state !== 'inactive') rec.stop(); } catch (_) {}
+                await new Promise((resolve) => setTimeout(resolve, 250));
+            }
             await startMedicalRecording({ preserveChunks: true, resumeFromInterruption: true });
         } catch (e) {
             window._medicalRollingRestart = false;
-            if (typeof showStatus === 'function') showStatus(`Microphone resume failed: ${e.message || e}`, true);
+            window._medicalSystemRecordingInterrupted = true;
+            window._medicalRecorderPaused = true;
+            startMedicalResumeRetryLoop();
         } finally {
             window._medicalRestartInProgress = false;
         }
@@ -6365,6 +6390,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const preserveChunks = !!(options && options.preserveChunks);
         const resumeFromInterruption = !!(options && options.resumeFromInterruption);
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (resumeFromInterruption) {
+            // iOS can hand back a stream while the phone call still owns the mic. Do not accept muted/ended tracks.
+            await new Promise((resolve) => setTimeout(resolve, 220));
+            const tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+            const hasUsableTrack = tracks.some((t) => t && t.readyState === 'live' && t.muted !== true && t.enabled !== false);
+            if (!hasUsableTrack) {
+                (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
+                throw new Error('microphone_not_ready_after_call');
+            }
+        }
         const recOpts = pickMedicalMediaRecorderOptions();
         const rec = Object.keys(recOpts).length ? new MediaRecorder(stream, recOpts) : new MediaRecorder(stream);
         const localChunks = [];
@@ -6440,6 +6475,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalRecorderSegments = [];
                 window._medicalRecorderPaused = false;
                 window._medicalSystemRecordingInterrupted = false;
+                stopMedicalResumeRetryLoop();
                 window._medicalRecordingAccumMs = 0;
                 window._medicalRecordingStartedAt = 0;
                 window._medicalSubmitOnStop = false;
@@ -6479,7 +6515,7 @@ document.addEventListener('DOMContentLoaded', () => {
             window._medicalRecorderTimer = setInterval(renderMedicalRecordingTimer, 500);
         }
         setMedicalRecordingVisualState('recording');
-        if (resumeFromInterruption) finishMedicalRecorderResumeAfterOsInterrupt();
+        if (resumeFromInterruption) stopMedicalResumeRetryLoop();
     }
 
     async function toggleMedicalRecording() {
@@ -6487,6 +6523,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (rec && rec.state === 'recording') {
             window._medicalPauseUserIntent = true;
             window._medicalSystemRecordingInterrupted = false;
+            stopMedicalResumeRetryLoop();
             try { rec.pause(); } catch (_) { window._medicalPauseUserIntent = false; return; }
             window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
             window._medicalRecorderPaused = true;
@@ -6497,6 +6534,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (rec && rec.state === 'paused') {
             window._medicalSystemRecordingInterrupted = false;
+            stopMedicalResumeRetryLoop();
             try { rec.resume(); } catch (_) { return; }
             window._medicalRecordingStartedAt = Date.now();
             window._medicalRecorderPaused = false;
