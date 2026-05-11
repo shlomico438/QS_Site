@@ -131,6 +131,12 @@ def _force_disable_vad_enabled():
     return v in ('1', 'true', 'yes', 'on')
 
 
+def _force_enable_vad_enabled():
+    """Temporary switch: force RunPod transcription to run with VAD, overriding audio-profile music detection."""
+    v = (os.environ.get('TRANSCRIBE_FORCE_ENABLE_VAD') or '').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
 def _site_transcription_options_from_payload(data=None):
     """Optional transcript tuning from Site (request + Site env).
 
@@ -160,10 +166,20 @@ def _site_transcription_options_from_payload(data=None):
         "save_pre_align_json": _pick("save_pre_align_json", "TRANSCRIBE_SAVE_PRE_ALIGN_JSON", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
         "align_model_name": _pick("align_model_name", "TRANSCRIBE_ALIGN_MODEL_NAME", str, ""),
     }
-    if _force_disable_vad_enabled():
+    force_disable = _force_disable_vad_enabled()
+    force_enable = _force_enable_vad_enabled()
+    out["vad_force_disable_env_active"] = force_disable
+    out["vad_force_enable_env_active"] = force_enable
+    if force_disable:
         out["use_vad"] = False
         out["no_speech_threshold"] = 1.0
         out["vad_disabled_by_site_env"] = True
+        out["vad_options_source"] = "site_env_force_disable"
+    elif force_enable:
+        out["use_vad"] = True
+        out["no_speech_threshold"] = 0.6
+        out["vad_enabled_by_site_env"] = True
+        out["vad_options_source"] = "site_env_force_enable"
     return out
 
 
@@ -440,20 +456,41 @@ def _apply_audio_profile_transcription_options(base_options, audio_profile_info)
     """
     out = dict(base_options or {})
     profile = str((audio_profile_info or {}).get('profile') or '').strip().lower()
-    if _force_disable_vad_enabled():
+    # Clear stale force markers from any earlier payload before making the final decision.
+    for k in (
+        'vad_disabled_by_site_env',
+        'vad_enabled_by_site_env',
+        'vad_options_source',
+    ):
+        out.pop(k, None)
+    force_disable = _force_disable_vad_enabled()
+    force_enable = _force_enable_vad_enabled()
+    out['vad_force_disable_env_active'] = force_disable
+    out['vad_force_enable_env_active'] = force_enable
+    if force_disable:
         out['use_vad'] = False
         out['no_speech_threshold'] = 1.0
         out['audio_profile'] = profile or 'vad_disabled'
         out['vad_disabled_by_site_env'] = True
+        out['vad_options_source'] = 'site_env_force_disable'
+        return out
+    if force_enable:
+        out['use_vad'] = True
+        out['no_speech_threshold'] = 0.6
+        out['audio_profile'] = profile or 'vad_enabled'
+        out['vad_enabled_by_site_env'] = True
+        out['vad_options_source'] = 'site_env_force_enable'
         return out
     if profile == 'music':
         out['use_vad'] = False
         out['no_speech_threshold'] = 1.0
         out['audio_profile'] = 'music'
+        out['vad_options_source'] = 'audio_profile_music'
     else:
         out['use_vad'] = True
         out['no_speech_threshold'] = 0.6
         out['audio_profile'] = 'speech'
+        out['vad_options_source'] = 'audio_profile_speech_or_default'
     return out
 
 
