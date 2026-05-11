@@ -1066,6 +1066,39 @@ input:checked + .slider:before { transform: translateX(16px); }
   margin-top: 8px;
 }
 
+.medical-json-drop-zone {
+  max-width: 520px;
+  margin: 10px auto 12px;
+  padding: 12px 16px;
+  border: 1.5px dashed #94a3b8;
+  border-radius: 14px;
+  background: #f8fafc;
+  color: #0f172a;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.medical-json-drop-zone.is-drag-over,
+.medical-json-drop-zone:focus-visible {
+  border-color: #0d9488;
+  background: #ecfdf5;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.14);
+  outline: none;
+}
+
+.medical-json-drop-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin-bottom: 3px;
+}
+
+.medical-json-drop-subtitle {
+  font-size: 0.8rem;
+  color: #64748b;
+  line-height: 1.45;
+}
+
 .medical-circle-btn {
   border: none;
   background: transparent;

@@ -5810,6 +5810,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
     const fileInput = document.getElementById('fileInput');
     const medicalRecordWrap = document.getElementById('medical-recording-wrap');
+    const medicalJsonDropZone = document.getElementById('medical-json-drop-zone');
     const medicalRecordBtn = document.getElementById('medical-record-btn');
     const medicalRecordOuter = medicalRecordBtn ? medicalRecordBtn.querySelector('.medical-record-outer') : null;
     const medicalRecordShape = document.getElementById('medical-record-shape');
@@ -5899,6 +5900,128 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function loadTranscriptJsonFile(file, options = {}) {
+        if (!file) return false;
+        const text = await file.text();
+        const tr = JSON.parse(text || '{}');
+        const words = Array.isArray(tr.words) ? tr.words : null;
+        const captions = Array.isArray(tr.captions) ? tr.captions : null;
+        const segments = Array.isArray(tr.segments) ? tr.segments : [];
+        const trFmt = pickFormattedFromObject(tr);
+        window.currentFormattedDoc = trFmt || null;
+        window._qsDocPreferSegmentsAfterEdit = false;
+
+        if (words && captions && words.length > 0 && captions.length > 0) {
+            window.currentWords = words;
+            window.currentCaptions = captions;
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+        } else if (segments.length > 0) {
+            const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
+            if (model) {
+                window.currentWords = model.words;
+                window.currentCaptions = model.captions;
+                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            } else {
+                window.currentWords = null;
+                window.currentCaptions = null;
+                window.currentSegments = segments;
+            }
+        } else if (trFmt) {
+            window.currentWords = null;
+            window.currentCaptions = null;
+            window.currentSegments = [];
+        } else {
+            throw new Error('JSON must include segments[], words[]+captions[], or formatted medical fields');
+        }
+
+        window.uploadWasVideo = false;
+        window.originalFileName = String(file.name || '').replace(/\.json$/i, '') || 'transcript';
+        if (isMedicalModeEnabled()) {
+            window._medicalHasResult = true;
+            window.medicalActiveTab = trFmt ? 'summary' : 'transcript';
+            try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
+            setTranscriptActionButtonsVisible(true);
+            if (typeof renderTranscriptFromCues === 'function') {
+                renderTranscriptFromCues(window.currentSegments || []);
+            } else if (typeof window.render === 'function') {
+                window.render();
+            }
+            updateMedicalTabUi();
+        } else {
+            try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = true; } catch (_) {}
+            // Keep export / format toolbar hidden until local video or audio is attached.
+            setTranscriptActionButtonsVisible(false);
+            const transcriptWindow = document.getElementById('transcript-window');
+            if (transcriptWindow) {
+                if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
+                    renderWordCaptionEditor();
+                } else if (typeof window.render === 'function') {
+                    window.render();
+                }
+            }
+        }
+        syncSpeakerControls();
+        if (mainBtn) mainBtn.disabled = false;
+        setDiarizationBusyState(false);
+        hideProgressBar();
+        if (typeof showStatus === 'function') showStatus('JSON transcript loaded locally.', false, { duration: 5000 });
+        if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
+        if (typeof window.applyMedicalModeUi === 'function') {
+            try { window.applyMedicalModeUi(); } catch (_) {}
+        }
+        if (!isMedicalModeEnabled() && !(options && options.skipScroll)) {
+            try {
+                document.querySelector('.upload-zone .upload-controls-row')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } catch (_) {}
+        }
+        return true;
+    }
+
+    function medicalJsonDropFileFromEvent(e) {
+        const files = e && e.dataTransfer && e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+        return files.find((f) => ((f.type && f.type.includes('json')) || /\.json$/i.test(f.name || ''))) || files[0] || null;
+    }
+
+    if (medicalJsonDropZone) {
+        ['dragenter', 'dragover'].forEach((evtName) => {
+            medicalJsonDropZone.addEventListener(evtName, (e) => {
+                if (!isMedicalModeEnabled()) return;
+                e.preventDefault();
+                e.stopPropagation();
+                medicalJsonDropZone.classList.add('is-drag-over');
+            });
+        });
+        ['dragleave', 'drop'].forEach((evtName) => {
+            medicalJsonDropZone.addEventListener(evtName, (e) => {
+                medicalJsonDropZone.classList.remove('is-drag-over');
+                if (evtName !== 'drop') return;
+                if (!isMedicalModeEnabled()) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const file = medicalJsonDropFileFromEvent(e);
+                if (!file) return;
+                if (!((file.type && file.type.includes('json')) || /\.json$/i.test(file.name || ''))) {
+                    if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript file.', true);
+                    return;
+                }
+                loadTranscriptJsonFile(file, { source: 'medical_drop', skipScroll: true }).catch((err) => {
+                    console.warn('Medical JSON transcript load failed', err);
+                    if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${err.message || err}`, true);
+                });
+            });
+        });
+        medicalJsonDropZone.addEventListener('click', () => {
+            if (!isMedicalModeEnabled() || !fileInput) return;
+            try { window.__QS_FILE_PICKER_PURPOSE = 'medical_json'; } catch (_) {}
+            fileInput.click();
+        });
+        medicalJsonDropZone.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            medicalJsonDropZone.click();
+        });
+    }
+
     window.applyMedicalModeUi = function() {
         const on = isMedicalModeEnabled();
         const mainAppContainer = document.getElementById('main-app-container');
@@ -5912,6 +6035,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
             const showRegularRecWrap = (!on && (window._qsRegularRecordVisible || recActive));
             medicalRecordWrap.style.display = (on || showRegularRecWrap) ? '' : 'none';
+        }
+        if (medicalJsonDropZone) {
+            const rec = window._medicalRecorder;
+            const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
+            const hasLoadedMedicalPayload = typeof initOpenAppHasLoadedTranscriptPayload === 'function'
+                ? initOpenAppHasLoadedTranscriptPayload()
+                : false;
+            medicalJsonDropZone.style.display = (on && !recActive && !hasLoadedMedicalPayload) ? '' : 'none';
         }
         if (mainBtn) {
             const allowMediaAfterLocalJson = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
@@ -5940,7 +6071,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalTitle) medicalTitle.textContent = 'סשן הקלטה רפואי מאובטח';
         if (medicalSubtitle) medicalSubtitle.textContent = 'תמלול קליני בתקן HIPAA פעיל';
         if (on) {
-            window.medicalActiveTab = 'summary';
+            const hasLoadedPayload = typeof initOpenAppHasLoadedTranscriptPayload === 'function'
+                ? initOpenAppHasLoadedTranscriptPayload()
+                : false;
+            if (!hasLoadedPayload) window.medicalActiveTab = 'summary';
             try {
                 if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
                 if (typeof window.toggleSubtitleStyleDrawer === 'function') window.toggleSubtitleStyleDrawer(false);
@@ -9203,64 +9337,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const isTranscriptJson = (file.type && file.type.includes('json')) || /\.json$/i.test(file.name);
                 if (isTranscriptJson) {
                     try {
-                        const text = await file.text();
-                        const tr = JSON.parse(text || '{}');
-                        const words = Array.isArray(tr.words) ? tr.words : null;
-                        const captions = Array.isArray(tr.captions) ? tr.captions : null;
-                        const segments = Array.isArray(tr.segments) ? tr.segments : [];
-                        const trFmt = pickFormattedFromObject(tr);
-                        window.currentFormattedDoc = trFmt || null;
-                        window._qsDocPreferSegmentsAfterEdit = false;
-
-                        if (words && captions && words.length > 0 && captions.length > 0) {
-                            window.currentWords = words;
-                            window.currentCaptions = captions;
-                            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                        } else if (segments.length > 0) {
-                            const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
-                            if (model) {
-                                window.currentWords = model.words;
-                                window.currentCaptions = model.captions;
-                                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                            } else {
-                                window.currentWords = null;
-                                window.currentCaptions = null;
-                                window.currentSegments = segments;
-                            }
-                        } else {
-                            throw new Error('JSON must include segments[] or words[]+captions[]');
-                        }
-
-                        window.uploadWasVideo = false;
-                        window.originalFileName = file.name.replace(/\.json$/i, '') || 'transcript';
-                        try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = true; } catch (_) {}
-                        // Keep export / format toolbar hidden until local video or audio is attached (avoids jumping to export in medical: one-tap download).
-                        setTranscriptActionButtonsVisible(false);
-                        syncSpeakerControls();
-                        const transcriptWindow = document.getElementById('transcript-window');
-                        if (transcriptWindow) {
-                            if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
-                                renderWordCaptionEditor();
-                            } else if (typeof window.render === 'function') {
-                                window.render();
-                            }
-                        }
-                        if (mainBtn) {
-                            mainBtn.disabled = false;
-                        }
-                        setDiarizationBusyState(false);
-                        hideProgressBar();
-                        if (typeof showStatus === 'function') showStatus('JSON transcript loaded locally.', false, { duration: 5000 });
-                        if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
-                        if (typeof window.applyMedicalModeUi === 'function') {
-                            try { window.applyMedicalModeUi(); } catch (_) {}
-                        }
-                        try {
-                            document.querySelector('.upload-zone .upload-controls-row')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                        } catch (_) {}
+                        await loadTranscriptJsonFile(file, { source: 'picker' });
                     } catch (e) {
                         console.warn('JSON transcript load failed', e);
                         if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${e.message || e}`, true);
+                    } finally {
+                        try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
                     }
                     fileInput.value = '';
                     return;
