@@ -125,6 +125,12 @@ def _audio_profile_detection_enabled():
     return v in ('1', 'true', 'yes', 'on')
 
 
+def _force_disable_vad_enabled():
+    """Temporary switch: force RunPod transcription to run without VAD."""
+    v = (os.environ.get('TRANSCRIBE_FORCE_DISABLE_VAD') or '').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
 def _site_transcription_options_from_payload(data=None):
     """Optional transcript tuning from Site (request + Site env).
 
@@ -429,6 +435,12 @@ def _apply_audio_profile_transcription_options(base_options, audio_profile_info)
     """
     out = dict(base_options or {})
     profile = str((audio_profile_info or {}).get('profile') or '').strip().lower()
+    if _force_disable_vad_enabled():
+        out['use_vad'] = False
+        out['no_speech_threshold'] = 1.0
+        out['audio_profile'] = profile or 'vad_disabled'
+        out['vad_disabled_by_site_env'] = True
+        return out
     if profile == 'music':
         out['use_vad'] = False
         out['no_speech_threshold'] = 1.0
