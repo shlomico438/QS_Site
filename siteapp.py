@@ -134,7 +134,8 @@ def _force_disable_vad_enabled():
 def _site_transcription_options_from_payload(data=None):
     """Optional transcript tuning from Site (request + Site env).
 
-    VAD (use_vad, chunk/onset/offset) is configured on the RunPod worker only — not sent from Site.
+    VAD is normally configured by the audio-profile merge below. TRANSCRIBE_FORCE_DISABLE_VAD
+    is intentionally applied here too so warmup/early RunPod submissions cannot fall back to worker defaults.
     Request JSON overrides env defaults when provided.
     """
     data = data or {}
@@ -159,6 +160,10 @@ def _site_transcription_options_from_payload(data=None):
         "save_pre_align_json": _pick("save_pre_align_json", "TRANSCRIBE_SAVE_PRE_ALIGN_JSON", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
         "align_model_name": _pick("align_model_name", "TRANSCRIBE_ALIGN_MODEL_NAME", str, ""),
     }
+    if _force_disable_vad_enabled():
+        out["use_vad"] = False
+        out["no_speech_threshold"] = 1.0
+        out["vad_disabled_by_site_env"] = True
     return out
 
 
