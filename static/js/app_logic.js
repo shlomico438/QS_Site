@@ -5810,7 +5810,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
     const fileInput = document.getElementById('fileInput');
     const medicalRecordWrap = document.getElementById('medical-recording-wrap');
-    const medicalJsonDropZone = document.getElementById('medical-json-drop-zone');
+    const medicalJsonDropTarget = document.getElementById('medical-session-header');
     const medicalRecordBtn = document.getElementById('medical-record-btn');
     const medicalRecordOuter = medicalRecordBtn ? medicalRecordBtn.querySelector('.medical-record-outer') : null;
     const medicalRecordShape = document.getElementById('medical-record-shape');
@@ -5982,18 +5982,16 @@ document.addEventListener('DOMContentLoaded', () => {
         return files.find((f) => ((f.type && f.type.includes('json')) || /\.json$/i.test(f.name || ''))) || files[0] || null;
     }
 
-    if (medicalJsonDropZone) {
+    if (medicalJsonDropTarget) {
         ['dragenter', 'dragover'].forEach((evtName) => {
-            medicalJsonDropZone.addEventListener(evtName, (e) => {
+            medicalJsonDropTarget.addEventListener(evtName, (e) => {
                 if (!isMedicalModeEnabled()) return;
                 e.preventDefault();
                 e.stopPropagation();
-                medicalJsonDropZone.classList.add('is-drag-over');
             });
         });
         ['dragleave', 'drop'].forEach((evtName) => {
-            medicalJsonDropZone.addEventListener(evtName, (e) => {
-                medicalJsonDropZone.classList.remove('is-drag-over');
+            medicalJsonDropTarget.addEventListener(evtName, (e) => {
                 if (evtName !== 'drop') return;
                 if (!isMedicalModeEnabled()) return;
                 e.preventDefault();
@@ -6010,16 +6008,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
         });
-        medicalJsonDropZone.addEventListener('click', () => {
-            if (!isMedicalModeEnabled() || !fileInput) return;
-            try { window.__QS_FILE_PICKER_PURPOSE = 'medical_json'; } catch (_) {}
-            fileInput.click();
-        });
-        medicalJsonDropZone.addEventListener('keydown', (e) => {
-            if (e.key !== 'Enter' && e.key !== ' ') return;
-            e.preventDefault();
-            medicalJsonDropZone.click();
-        });
     }
 
     window.applyMedicalModeUi = function() {
@@ -6035,14 +6023,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
             const showRegularRecWrap = (!on && (window._qsRegularRecordVisible || recActive));
             medicalRecordWrap.style.display = (on || showRegularRecWrap) ? '' : 'none';
-        }
-        if (medicalJsonDropZone) {
-            const rec = window._medicalRecorder;
-            const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
-            const hasLoadedMedicalPayload = typeof initOpenAppHasLoadedTranscriptPayload === 'function'
-                ? initOpenAppHasLoadedTranscriptPayload()
-                : false;
-            medicalJsonDropZone.style.display = (on && !recActive && !hasLoadedMedicalPayload) ? '' : 'none';
         }
         if (mainBtn) {
             const allowMediaAfterLocalJson = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
