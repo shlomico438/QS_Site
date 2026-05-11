@@ -6097,7 +6097,8 @@ document.addEventListener('DOMContentLoaded', () => {
         return canvas;
     }
 
-    function startMedicalWaveform(stream) {
+    function startMedicalWaveform(stream, options = {}) {
+        const preserveExistingWave = !!(options && options.preserveExistingWave);
         const existing = window._medicalWave;
         if (existing && existing.canvas && existing.ctx && existing.analyser && existing.dataArray && existing.audioCtx) {
             pauseMedicalWaveform();
@@ -6117,8 +6118,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
             const ctx = canvas.getContext('2d');
             if (!ctx) return;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            if (!preserveExistingWave) {
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
 
             window._medicalWave = {
                 canvas, ctx, audioCtx, analyser, dataArray, sourceNode,
@@ -6494,7 +6497,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 try { rec.start(); } catch (_) { throw startErr; }
             }
             window._medicalRecorder = rec;
-            startMedicalWaveform(stream);
+            startMedicalWaveform(stream, { preserveExistingWave: resumeFromInterruption });
         } catch (e) {
             detachMedicalRecordingTimerSlot();
             setMedicalTimerVisibility(false);
