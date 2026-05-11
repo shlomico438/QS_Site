@@ -94,6 +94,76 @@ _GPT_MEDICAL_WRITTEN_STYLE_NOTE = (
 )
 
 
+def _env_prompt_override(name):
+    """Read a long prompt from env; supports either real newlines or escaped \\n from deployment UIs."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n").strip()
+
+
+def _render_medical_task2_prompt_override(output_lang_label, lang_hint):
+    """Optional Koyeb/runtime override for medical Task 2 only.
+
+    Supported placeholders:
+      {output_lang_label}, {{output_lang_label}}, {lang_hint}, {{lang_hint}}
+    """
+    text = _env_prompt_override("MEDICAL_TASK2_PROMPT_OVERRIDE")
+    if not text:
+        return ""
+    rendered = text
+    for token in ("{output_lang_label}", "{{output_lang_label}}"):
+        rendered = rendered.replace(token, str(output_lang_label or ""))
+    for token in ("{lang_hint}", "{{lang_hint}}"):
+        rendered = rendered.replace(token, str(lang_hint or ""))
+    if not rendered.endswith("\n"):
+        rendered += "\n"
+    logging.info("medical Task 2 prompt source=env MEDICAL_TASK2_PROMPT_OVERRIDE chars=%s", len(rendered))
+    return rendered
+
+
+def _default_medical_task2_prompt_single_shot():
+    return (
+        "Task 2 – Clinical summary (documentation support only; not a substitute for judgment or the chart).\n"
+        f"{_GPT_MEDICAL_WRITTEN_STYLE_NOTE}"
+        "chief_complaint — \"תלונה עיקרית\": chart-style narrative (reason for visit, patient-reported concerns, context)—"
+        "third person / המטופל, not direct address to the patient. "
+        "Summary of the visit without the physical examination section, not a verbatim transcript. If unclear, say so.\n\n"
+        "examination_transcript — \"בדיקה\": examination narrative, findings, and related decisions—in substance "
+        "and sequence—written for the protocol: neutral / passive / third person, not clinician→patient second person "
+        "(e.g. \"נשלח למיון\" not \"אני שלחתי אותך למיון\"). "
+        "Light edits only: grammar, punctuation, professional tone, without changing meaning, dropping stated detail, "
+        "or inventing content. "
+        "If nothing appears in the transcript for this section, use an explicit not-stated phrase in the output language.\n\n"
+        "patient_recommendations — \"המלצות למטופל\": recommendations for the patient (home care, follow-up, medications, return precautions, red flags only if stated). "
+        "End this field with one short line that the text must be verified against the recording and the responsible clinician.\n\n"
+    )
+
+
+def _default_medical_task2_prompt_summary_only():
+    return (
+        f"{_GPT_MEDICAL_WRITTEN_STYLE_NOTE}"
+        "chief_complaint — \"תלונה עיקרית\": concise chart-style narrative (reason for visit, patient-reported "
+        "concerns, context)—third person / המטופל where natural, not bedside \"אתה מתלונן\". "
+        "Not the physical examination block. If unclear, say so.\n\n"
+        "examination_transcript — \"בדיקה\": capture examination narrative, findings, and exam-related decisions "
+        "in substance and sequence, but phrase them as chart/protocol documentation—not as bedside address to the patient "
+        "(depersonalize: no \"אני שלחתי אותך\"; use e.g. \"נשלח למיון\" / \"הופנה למיון\"). "
+        "Light edits only: grammar, punctuation, professional clinical tone, without altering meaning, omitting "
+        "stated detail, or inventing content. "
+        "If nothing was said or not in the transcript, write an explicit not-stated phrase "
+        "in the output language.\n\n"
+        "patient_recommendations — \"המלצות למטופל\": recommendations, home care, follow-up, medications for the "
+        "patient, return precautions, red flags only if stated in the transcript. If none, not-stated in the "
+        "output language.\n\n"
+        "End patient_recommendations with one short line that the text must be verified against the recording "
+        "and the responsible clinician.\n\n"
+    )
+
+
 def _safe_rsid(value, fallback):
     s = str(value or '').strip().upper()
     return s if re.fullmatch(r'[0-9A-F]{8}', s) else fallback
@@ -2733,22 +2803,7 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
         user_prompt = (
             "From this clinical encounter transcript, produce three sections in the output language "
             f"({output_lang_label}). Documentation support only; not a substitute for judgment or the chart.\n\n"
-            f"{_GPT_MEDICAL_WRITTEN_STYLE_NOTE}"
-            "chief_complaint — \"תלונה עיקרית\": concise chart-style narrative (reason for visit, patient-reported "
-            "concerns, context)—third person / המטופל where natural, not bedside \"אתה מתלונן\". "
-            "Not the physical examination block. If unclear, say so.\n\n"
-            "examination_transcript — \"בדיקה\": capture examination narrative, findings, and exam-related decisions "
-            "in substance and sequence, but phrase them as chart/protocol documentation—not as bedside address to the patient "
-            "(depersonalize: no \"אני שלחתי אותך\"; use e.g. \"נשלח למיון\" / \"הופנה למיון\"). "
-            "Light edits only: grammar, punctuation, professional clinical tone, without altering meaning, omitting "
-            "stated detail, or inventing content. "
-            "If nothing was said or not in the transcript, write an explicit not-stated phrase "
-            "in the output language.\n\n"
-            "patient_recommendations — \"המלצות למטופל\": recommendations, home care, follow-up, medications for the "
-            "patient, return precautions, red flags only if stated in the transcript. If none, not-stated in the "
-            "output language.\n\n"
-            "End patient_recommendations with one short line that the text must be verified against the recording "
-            "and the responsible clinician.\n\n"
+            f"{_render_medical_task2_prompt_override(output_lang_label, lang_hint) or _default_medical_task2_prompt_summary_only()}"
             f"Transcript:\n\n{transcript_excerpt}"
         )
     else:
@@ -2792,21 +2847,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "Do not include markdown fences. Keep original language and directionality for clean_transcript. "
             "clean_transcript must read as spoken encounter dialogue; chart/protocol style applies only to the three summary fields. "
         )
-        task2 = (
-            "Task 2 – Clinical summary (documentation support only; not a substitute for judgment or the chart).\n"
-            f"{_GPT_MEDICAL_WRITTEN_STYLE_NOTE}"
-            "chief_complaint — \"תלונה עיקרית\": chart-style narrative (reason for visit, patient-reported concerns, context)—"
-            "third person / המטופל, not direct address to the patient. "
-            "Summary of the visit without the physical examination section, not a verbatim transcript. If unclear, say so.\n\n"
-            "examination_transcript — \"בדיקה\": examination narrative, findings, and related decisions—in substance "
-            "and sequence—written for the protocol: neutral / passive / third person, not clinician→patient second person "
-            "(e.g. \"נשלח למיון\" not \"אני שלחתי אותך למיון\"). "
-            "Light edits only: grammar, punctuation, professional tone, without changing meaning, dropping stated detail, "
-            "or inventing content. "
-            "If nothing appears in the transcript for this section, use an explicit not-stated phrase in the output language.\n\n"
-            "patient_recommendations — \"המלצות למטופל\": recommendations for the patient (home care, follow-up, medications, return precautions, red flags only if stated). "
-            "End this field with one short line that the text must be verified against the recording and the responsible clinician.\n\n"
-        )
+        task2 = _render_medical_task2_prompt_override(output_lang_label, lang_hint) or _default_medical_task2_prompt_single_shot()
         json_tail = (
             "Return as JSON fields only: clean_transcript, chief_complaint, examination_transcript, patient_recommendations.\n"
         )
