@@ -3695,10 +3695,44 @@ function setPostExportFeedbackStars(n) {
     } catch (_) {}
 }
 
+function _qsFeedbackUserKey(user) {
+    if (!user) return '';
+    const email = String(user.email || (user.user_metadata && user.user_metadata.email) || '').trim().toLowerCase();
+    return String(user.id || email || '').trim();
+}
+
+function _qsFeedbackSubmittedStorageKey(user) {
+    const key = _qsFeedbackUserKey(user);
+    return key ? `qs_pefb_submitted_${key}` : '';
+}
+
+function hasUserSubmittedPostExportFeedback(user) {
+    if (!user) return false;
+    const meta = user.user_metadata || {};
+    if (meta.qs_post_export_feedback_submitted_at || meta.qs_feedback_submitted_at) return true;
+    const storageKey = _qsFeedbackSubmittedStorageKey(user);
+    if (!storageKey) return false;
+    try { return String(localStorage.getItem(storageKey) || '') === '1'; } catch (_) { return false; }
+}
+
+async function markUserSubmittedPostExportFeedback(user) {
+    if (!user) return;
+    const storageKey = _qsFeedbackSubmittedStorageKey(user);
+    try { if (storageKey) localStorage.setItem(storageKey, '1'); } catch (_) {}
+    try {
+        if (supabase && supabase.auth && typeof supabase.auth.updateUser === 'function') {
+            await supabase.auth.updateUser({
+                data: { qs_post_export_feedback_submitted_at: new Date().toISOString() }
+            });
+        }
+    } catch (_) {}
+}
+
 /**
- * After a file is delivered to the user, optionally show feedback for signed-in users (once per session).
+ * After a file is delivered to the user, optionally show feedback for signed-in users.
+ * A real submitted response suppresses future prompts for that account.
  */
-function maybeQueuePostExportFeedbackPrompt(safeFilename) {
+function maybeQueuePostExportFeedbackPrompt(safeFilename, kind) {
     const name = String(safeFilename || '').toLowerCase();
     if (!name || name === 'download.bin') return;
     if (!/\.(srt|vtt|txt|docx?|mp4|mov|webm|m4a|mp3|zip)$/i.test(name)) {
@@ -3713,23 +3747,26 @@ function maybeQueuePostExportFeedbackPrompt(safeFilename) {
         }
     } catch (_) {}
     setTimeout(() => {
-        try { void maybeShowPostExportFeedbackModal('export'); } catch (_) {}
+        try { void maybeShowPostExportFeedbackModal(kind || 'export'); } catch (_) {}
     }, 500);
 }
 
-/** @param {'export'|'medical_copy'} kind */
+/** @param {'export'|'medical_copy'|'medical_download'} kind */
 async function maybeShowPostExportFeedbackModal(kind) {
     if (String(sessionStorage.getItem('qs_pefb_shown') || '') === '1') return;
     const hp = document.getElementById('post-exp-fb-website');
     if (hp && String(hp.value || '').trim()) return;
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+    if (hasUserSubmittedPostExportFeedback(user)) return;
     const m = document.getElementById('post-export-feedback-modal');
     if (!m) return;
     if (m.style.display === 'flex') return;
     try { sessionStorage.setItem('qs_pefb_shown', '1'); } catch (_) {}
     try {
-        window._qsFeedbackModalSource = kind === 'medical_copy' ? 'medical_copy' : 'post_export';
+        window._qsFeedbackModalSource = kind === 'medical_copy'
+            ? 'medical_copy'
+            : (kind === 'medical_download' ? 'medical_download' : 'post_export');
     } catch (_) {}
     m.style.display = 'flex';
     m.setAttribute('aria-hidden', 'false');
@@ -3753,9 +3790,10 @@ function closePostExportFeedbackModal() {
 async function deliverBlobToUser(blob, filename, mimeType) {
     const safeName = String(filename || 'download.bin');
     const fileType = String(mimeType || blob?.type || 'application/octet-stream');
+    const feedbackKind = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) ? 'medical_download' : 'export';
     if (isMobileClient() && window._qsMobileBatchShareMode) {
         _queueMobileBatchFile(blob, safeName, fileType);
-        try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
+        try { maybeQueuePostExportFeedbackPrompt(safeName, feedbackKind); } catch (_) {}
         return true;
     }
     if (isMobileClient() && navigator.share && typeof File !== 'undefined') {
@@ -3764,7 +3802,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
             const canShare = typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] });
             if (canShare) {
                 await navigator.share({ files: [file] });
-                try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
+                try { maybeQueuePostExportFeedbackPrompt(safeName, feedbackKind); } catch (_) {}
                 return true;
             }
         } catch (_) {}
@@ -3775,7 +3813,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
     }
     if (typeof saveAs !== 'undefined') {
         saveAs(blob, safeName);
-        try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
+        try { maybeQueuePostExportFeedbackPrompt(safeName, feedbackKind); } catch (_) {}
         return true;
     }
     const url = URL.createObjectURL(blob);
@@ -3784,7 +3822,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
     a.download = safeName;
     a.click();
     URL.revokeObjectURL(url);
-    try { maybeQueuePostExportFeedbackPrompt(safeName); } catch (_) {}
+    try { maybeQueuePostExportFeedbackPrompt(safeName, feedbackKind); } catch (_) {}
     return true;
 }
 
@@ -4430,6 +4468,12 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 if (!fallbackOk) {
                     throw new Error('Unable to download TXT on this device. Please allow file sharing/download prompts.');
                 }
+                try {
+                    maybeQueuePostExportFeedbackPrompt(
+                        name,
+                        (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) ? 'medical_download' : 'export'
+                    );
+                } catch (_) {}
             }
         };
 
@@ -4485,6 +4529,12 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 if (!fallbackOk) {
                     throw new Error(`Unable to download ${kind} DOCX on this device. Please allow file sharing/download prompts.`);
                 }
+                try {
+                    maybeQueuePostExportFeedbackPrompt(
+                        dlName,
+                        (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) ? 'medical_download' : 'export'
+                    );
+                } catch (_) {}
             }
         };
         const _exportKindTxt = async (kind) => {
@@ -4657,8 +4707,9 @@ if (postExpFbSubmit) {
             closePostExportFeedbackModal();
             return;
         }
+        let feedbackStored = false;
         try {
-            await fetch('/api/registration-feedback', {
+            const res = await fetch('/api/registration-feedback', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -4671,7 +4722,11 @@ if (postExpFbSubmit) {
                     website: websiteEl ? websiteEl.value : ''
                 })
             });
+            feedbackStored = !!(res && res.ok);
         } catch (_) {}
+        if (feedbackStored) {
+            await markUserSubmittedPostExportFeedback(user);
+        }
         const T = typeof window.t === 'function' ? window.t : (k) => k;
         if (typeof showStatus === 'function') {
             showStatus(T('post_export_feedback_thanks') || 'Thank you for the feedback.', false, { duration: 3500 });
