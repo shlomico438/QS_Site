@@ -3944,8 +3944,9 @@ def sign_s3():
         )
 
         # Trigger RunPod early (before upload) so container warms during upload.
-        # When audio-profile detection is enabled, we must wait for upload completion to classify first.
-        skip_warmup_effective = _runpod_skip_warmup() or _audio_profile_detection_enabled()
+        # Regular mode waits for upload completion when audio-profile detection must classify first.
+        # Medical skips music/speech profiling, so it can still warm safely.
+        skip_warmup_effective = _runpod_skip_warmup() or (_audio_profile_detection_enabled() and not is_medical)
         if not skip_warmup_effective:
             _start_trigger_if_configured(
                 job_id=job_id,
@@ -3960,7 +3961,7 @@ def sign_s3():
                 transcription_options=transcription_options,
             )
         else:
-            logging.info("Skipping sign-s3 warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled())
+            logging.info("Skipping sign-s3 warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled(), is_medical)
 
         return jsonify({
             'data': {
@@ -4094,7 +4095,9 @@ def sign_s3_multipart_init():
         logging.exception("create_multipart_upload failed")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    skip_warmup_effective = _runpod_skip_warmup() or _audio_profile_detection_enabled()
+    # Regular mode waits for upload completion when audio-profile detection must classify first.
+    # Medical skips music/speech profiling, so it can still warm safely.
+    skip_warmup_effective = _runpod_skip_warmup() or (_audio_profile_detection_enabled() and not is_medical)
     if not skip_warmup_effective:
         _start_trigger_if_configured(
             job_id=job_id,
@@ -4109,7 +4112,7 @@ def sign_s3_multipart_init():
             transcription_options=transcription_options,
         )
     else:
-        logging.info("Skipping multipart-init warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled())
+        logging.info("Skipping multipart-init warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled(), is_medical)
 
     return jsonify({
         'data': {

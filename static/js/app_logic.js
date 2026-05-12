@@ -10059,6 +10059,13 @@ function renderMedicalTranscriptMainView() {
     if (!transcriptWindow) return;
     if (!isMedicalModeEnabled()) return;
     if (String(window.medicalActiveTab || 'summary') !== 'transcript') return;
+    const timedCues = Array.isArray(window.currentSegments)
+        ? window.currentSegments.filter((c) => Number.isFinite(_asTranscriptTime(c && c.start)) && String((c && (c.translated_text || c.text)) || '').trim())
+        : [];
+    if (timedCues.length > 0) {
+        renderTranscriptFromCues(window.currentSegments || []);
+        return;
+    }
     const preferSeg = !!window._qsDocPreferSegmentsAfterEdit;
     let clean = '';
     if (!preferSeg) {
@@ -10186,9 +10193,9 @@ function renderTranscriptFromCues(cues) {
         const startSec = _asTranscriptTime(c.start);
         const jumpAttr = Number.isFinite(startSec) ? ` onclick="window.jumpTo(${startSec})"` : '';
         return `
-        <div class="paragraph-row" id="seg-${Math.floor(Number(startSec) || c.start || 0)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign}; cursor: pointer;">
+        <div class="paragraph-row" id="seg-${Math.floor(Number(startSec) || c.start || 0)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign}; cursor: pointer;"${jumpAttr}>
             <div style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.05;">[${formatTime(c.start)}]</div>
-            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;"${jumpAttr}>${safe}</p>
+            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;">${safe}</p>
         </div>`;
     }).join('');
 
