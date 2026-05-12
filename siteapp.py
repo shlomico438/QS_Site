@@ -2430,8 +2430,8 @@ def debug_job(job_id):
 def _translate_segments_via_python_openai(segments, target_lang='he'):
     """Fallback path when Node.js is unavailable: call OpenAI directly from Python."""
     api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
-    # gpt-4o-mini is much cheaper than gpt-4o; set GPT_MODEL=gpt-4o for highest quality
-    model = (os.environ.get('GPT_MODEL') or 'gpt-4o-mini').strip()
+    # GPT_MODEL can override this; gpt-4.1-mini is the default quality/cost balance.
+    model = (os.environ.get('GPT_MODEL') or 'gpt-4.1-mini').strip()
     fallback_model = (os.environ.get('GPT_FALLBACK_MODEL') or 'gpt-4o').strip()
     chunk_size = int(os.environ.get('GPT_CHUNK_SIZE', '30') or 30)
     timeout_sec = int(os.environ.get('GPT_TIMEOUT_SEC', '90') or 90)
@@ -2607,7 +2607,7 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
     api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
     if not api_key:
         raise RuntimeError("GPT_API_KEY missing")
-    model = (os.environ.get('GPT_MODEL') or 'gpt-4o-mini').strip()
+    model = (os.environ.get('GPT_MODEL') or 'gpt-4.1-mini').strip()
     payload = {
         "model": model,
         "temperature": 0.2,

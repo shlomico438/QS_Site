@@ -25,8 +25,8 @@ function getApiKey() {
 }
 
 function getModel() {
-  // gpt-4o-mini is cheaper; set GPT_MODEL=gpt-4o for highest quality.
-  return (process.env.GPT_MODEL || 'gpt-4o-mini').trim();
+  // GPT_MODEL can override this; gpt-4.1-mini is the default quality/cost balance.
+  return (process.env.GPT_MODEL || 'gpt-4.1-mini').trim();
 }
 
 function getFallbackModel(primaryModel) {
