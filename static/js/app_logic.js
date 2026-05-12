@@ -6003,7 +6003,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function medicalJsonDropFileFromEvent(e) {
         const files = e && e.dataTransfer && e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
-        return files.find((f) => ((f.type && f.type.includes('json')) || /\.json$/i.test(f.name || ''))) || files[0] || null;
+        return files.find(isTranscriptJsonFile) || files.find(isMedicalAudioFile) || files[0] || null;
+    }
+
+    function isTranscriptJsonFile(file) {
+        return !!(
+            file &&
+            ((file.type && file.type.includes('json')) || /\.json$/i.test(file.name || ''))
+        );
+    }
+
+    function isMedicalAudioFile(file) {
+        return !!(
+            file &&
+            (
+                (file.type && file.type.startsWith('audio/')) ||
+                /\.(wav|m4a|mp3|aac|ogg|flac|weba|webm)$/i.test(file.name || '')
+            )
+        );
     }
 
     function medicalJsonDragHasFile(e) {
@@ -6022,16 +6039,37 @@ document.addEventListener('DOMContentLoaded', () => {
         if (evtName !== 'drop') return;
         if (e._qsMedicalJsonDropHandled) return;
         e._qsMedicalJsonDropHandled = true;
-        const file = medicalJsonDropFileFromEvent(e);
-        if (!file) return;
-        if (!((file.type && file.type.includes('json')) || /\.json$/i.test(file.name || ''))) {
-            if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript file.', true);
+        if (window.isTriggering) {
+            if (typeof showStatus === 'function') showStatus('A transcription is already running.', true);
             return;
         }
-        loadTranscriptJsonFile(file, { source: 'medical_drop', skipScroll: true }).catch((err) => {
-            console.warn('Medical JSON transcript load failed', err);
-            if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${err.message || err}`, true);
-        });
+        const file = medicalJsonDropFileFromEvent(e);
+        if (!file) return;
+        if (isTranscriptJsonFile(file)) {
+            loadTranscriptJsonFile(file, { source: 'medical_drop', skipScroll: true }).catch((err) => {
+                console.warn('Medical JSON transcript load failed', err);
+                if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${err.message || err}`, true);
+            });
+            return;
+        }
+        if (isMedicalAudioFile(file)) {
+            const rec = window._medicalRecorder;
+            if (rec && rec.state && rec.state !== 'inactive') {
+                if (typeof showStatus === 'function') showStatus('Finish or cancel the current recording before uploading audio.', true);
+                return;
+            }
+            try {
+                resetScreenToInitial();
+                if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+                window.__QS_FILE_PICKER_PURPOSE = 'new_upload';
+            } catch (_) {}
+            pushFileIntoPickerAndUpload(file).catch((err) => {
+                console.warn('Medical audio upload failed', err);
+                if (typeof showStatus === 'function') showStatus(`Failed to upload audio: ${err.message || err}`, true);
+            });
+            return;
+        }
+        if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript or WAV/audio file.', true);
     }
 
     ['dragenter', 'dragover', 'drop'].forEach((evtName) => {
