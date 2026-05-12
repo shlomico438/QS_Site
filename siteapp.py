@@ -564,6 +564,30 @@ def _apply_audio_profile_transcription_options(base_options, audio_profile_info)
     return out
 
 
+def _apply_medical_audio_transcription_options(base_options):
+    """Medical uploads are speech audio only; skip music/speech profiling but keep env force switches."""
+    out = dict(base_options or {})
+    force_disable = _force_disable_vad_enabled()
+    force_enable = _force_enable_vad_enabled()
+    out['vad_force_disable_env_active'] = force_disable
+    out['vad_force_enable_env_active'] = force_enable
+    if force_disable:
+        out['use_vad'] = False
+        out['no_speech_threshold'] = 1.0
+        out['vad_disabled_by_site_env'] = True
+        out['vad_options_source'] = 'site_env_force_disable'
+    elif force_enable:
+        out['use_vad'] = True
+        out['no_speech_threshold'] = 0.6
+        out['vad_enabled_by_site_env'] = True
+        out['vad_options_source'] = 'site_env_force_enable'
+    else:
+        out['use_vad'] = True
+        out['no_speech_threshold'] = 0.6
+        out['vad_options_source'] = 'medical_audio_default'
+    return out
+
+
 def _public_base_url(req):
     """Best-effort public base URL for third-party callbacks (RunPod -> site)."""
     explicit = (os.environ.get('PUBLIC_BASE_URL') or '').strip().rstrip('/')
@@ -3850,6 +3874,8 @@ def sign_s3():
     transcription_options = _site_transcription_options_from_payload(data)
     user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
     is_medical = bool(data.get('isMedical'))
+    if is_medical:
+        transcription_options = _apply_medical_audio_transcription_options(transcription_options)
     user_prefix = f"users/{user_id}"
     try:
         validated_kms_arn = _require_medical_kms_or_raise(is_medical)
@@ -3991,6 +4017,8 @@ def sign_s3_multipart_init():
     transcription_options = _site_transcription_options_from_payload(data)
     user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
     is_medical = bool(data.get('isMedical'))
+    if is_medical:
+        transcription_options = _apply_medical_audio_transcription_options(transcription_options)
     file_size = int(data.get('fileSize') or data.get('file_size') or 0)
     try:
         validated_kms_arn = _require_medical_kms_or_raise(is_medical)
@@ -4497,7 +4525,15 @@ def trigger_processing():
         target_bucket = str(data.get('bucket') or storage_profile.get('bucket') or '').strip() or None
         _require_medical_kms_or_raise(is_medical)
         audio_profile_info = {"profile": "unknown", "reason": "disabled"}
-        if _audio_profile_detection_enabled() and s3_key and target_bucket:
+        audio_profile_skipped_reason = None
+        if is_medical:
+            audio_profile_info = {"profile": "skipped", "reason": "medical_audio_only"}
+            audio_profile_skipped_reason = "medical_mode"
+            logging.info(
+                "Skipping audio-profile music/speech detection for medical job_id=%s",
+                data.get('jobId'),
+            )
+        elif _audio_profile_detection_enabled() and s3_key and target_bucket:
             audio_profile_info = _infer_audio_profile_from_s3(
                 target_bucket,
                 s3_key,
@@ -4539,7 +4575,10 @@ def trigger_processing():
                     ap.get('reason'),
                     key_suffix,
                 )
-        transcription_options = _apply_audio_profile_transcription_options(transcription_options, audio_profile_info)
+        if is_medical:
+            transcription_options = _apply_medical_audio_transcription_options(transcription_options)
+        else:
+            transcription_options = _apply_audio_profile_transcription_options(transcription_options, audio_profile_info)
         _audio_profile_api_fields = {
             "audio_profile": audio_profile_info.get("profile"),
             "audio_profile_reason": audio_profile_info.get("reason"),
@@ -4549,6 +4588,8 @@ def trigger_processing():
             "audio_profile_threshold": audio_profile_info.get("threshold"),
             "audio_profile_classification_basis": audio_profile_info.get("classification_basis"),
         }
+        if audio_profile_skipped_reason:
+            _audio_profile_api_fields["audio_profile_skipped_reason"] = audio_profile_skipped_reason
         _fst = audio_profile_info.get("ffmpeg_stderr_tail") or audio_profile_info.get("stderr")
         if _fst:
             _as = str(_fst).strip()

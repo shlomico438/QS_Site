@@ -919,6 +919,7 @@ function qsUploadTraceErr(phase, detail) {
 function qsLogAudioProfileFromTrigger(jobId, triggerData) {
     try {
         const td = triggerData || {};
+        if (td.audio_profile_skipped_reason === 'medical_mode') return;
         const ap = td.audio_profile;
         const reason = td.audio_profile_reason;
         const varEv = td.audio_profile_energy_variance;
