@@ -3235,10 +3235,15 @@ async function hydrateFormattedFromSavedTranscript() {
  */
 /** Join cue texts for GPT format pass: spaces, not newlines, so the model does not lock in ~27-char “subtitle” lines. */
 function buildTranscriptTextForGptFormat() {
-    return (window.currentSegments || [])
+    const fromSegments = (window.currentSegments || [])
         .map((s) => String((s && s.text) || '').trim())
         .filter(Boolean)
         .join(' ');
+    if (fromSegments.trim()) return fromSegments;
+    const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : null;
+    return String((fmt && fmt.clean_transcript) || '').trim();
 }
 
 /** Paragraph-style transcript body for DOCX/TXT and doc mode (ignore subtitle cue line breaks). */
@@ -5810,7 +5815,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
     const fileInput = document.getElementById('fileInput');
     const medicalRecordWrap = document.getElementById('medical-recording-wrap');
-    const medicalJsonDropTarget = document.getElementById('medical-session-header');
     const medicalRecordBtn = document.getElementById('medical-record-btn');
     const medicalRecordOuter = medicalRecordBtn ? medicalRecordBtn.querySelector('.medical-record-outer') : null;
     const medicalRecordShape = document.getElementById('medical-record-shape');
@@ -5964,10 +5968,20 @@ document.addEventListener('DOMContentLoaded', () => {
         if (mainBtn) mainBtn.disabled = false;
         setDiarizationBusyState(false);
         hideProgressBar();
-        if (typeof showStatus === 'function') showStatus('JSON transcript loaded locally.', false, { duration: 5000 });
         if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
         if (typeof window.applyMedicalModeUi === 'function') {
             try { window.applyMedicalModeUi(); } catch (_) {}
+        }
+        const hasTranscriptForMedicalSummary = String(buildTranscriptTextForGptFormat() || '').trim();
+        const shouldGenerateMissingMedicalSummary = (
+            isMedicalModeEnabled() &&
+            !medicalFormattedDocHasSummary(window.currentFormattedDoc) &&
+            !!hasTranscriptForMedicalSummary
+        );
+        if (shouldGenerateMissingMedicalSummary && typeof ensureFormattedViaApiForExport === 'function') {
+            await ensureFormattedViaApiForExport();
+        } else if (typeof showStatus === 'function') {
+            showStatus('JSON transcript loaded locally.', false, { duration: 5000 });
         }
         if (!isMedicalModeEnabled() && !(options && options.skipScroll)) {
             try {
@@ -5977,38 +5991,52 @@ document.addEventListener('DOMContentLoaded', () => {
         return true;
     }
 
+    function medicalFormattedDocHasSummary(fmt) {
+        if (!fmt || typeof fmt !== 'object') return false;
+        if (String(fmt.medical_chief_complaint || '').trim()) return true;
+        if (String(fmt.medical_examination_transcript || '').trim()) return true;
+        if (String(fmt.medical_patient_recommendations || '').trim()) return true;
+        if (String(fmt.overview || '').trim()) return true;
+        const points = fmt.key_points;
+        return Array.isArray(points) && points.some((p) => String(p || '').trim());
+    }
+
     function medicalJsonDropFileFromEvent(e) {
         const files = e && e.dataTransfer && e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
         return files.find((f) => ((f.type && f.type.includes('json')) || /\.json$/i.test(f.name || ''))) || files[0] || null;
     }
 
-    if (medicalJsonDropTarget) {
-        ['dragenter', 'dragover'].forEach((evtName) => {
-            medicalJsonDropTarget.addEventListener(evtName, (e) => {
-                if (!isMedicalModeEnabled()) return;
-                e.preventDefault();
-                e.stopPropagation();
-            });
-        });
-        ['dragleave', 'drop'].forEach((evtName) => {
-            medicalJsonDropTarget.addEventListener(evtName, (e) => {
-                if (evtName !== 'drop') return;
-                if (!isMedicalModeEnabled()) return;
-                e.preventDefault();
-                e.stopPropagation();
-                const file = medicalJsonDropFileFromEvent(e);
-                if (!file) return;
-                if (!((file.type && file.type.includes('json')) || /\.json$/i.test(file.name || ''))) {
-                    if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript file.', true);
-                    return;
-                }
-                loadTranscriptJsonFile(file, { source: 'medical_drop', skipScroll: true }).catch((err) => {
-                    console.warn('Medical JSON transcript load failed', err);
-                    if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${err.message || err}`, true);
-                });
-            });
+    function medicalJsonDragHasFile(e) {
+        const dt = e && e.dataTransfer;
+        if (!dt) return false;
+        if (dt.files && dt.files.length > 0) return true;
+        const types = dt.types ? Array.from(dt.types) : [];
+        return types.some((t) => String(t || '').toLowerCase() === 'files');
+    }
+
+    function handleMedicalJsonDropEvent(e, evtName) {
+        if (!isMedicalModeEnabled() || !medicalJsonDragHasFile(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+        if (evtName !== 'drop') return;
+        if (e._qsMedicalJsonDropHandled) return;
+        e._qsMedicalJsonDropHandled = true;
+        const file = medicalJsonDropFileFromEvent(e);
+        if (!file) return;
+        if (!((file.type && file.type.includes('json')) || /\.json$/i.test(file.name || ''))) {
+            if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript file.', true);
+            return;
+        }
+        loadTranscriptJsonFile(file, { source: 'medical_drop', skipScroll: true }).catch((err) => {
+            console.warn('Medical JSON transcript load failed', err);
+            if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${err.message || err}`, true);
         });
     }
+
+    ['dragenter', 'dragover', 'drop'].forEach((evtName) => {
+        document.addEventListener(evtName, (e) => handleMedicalJsonDropEvent(e, evtName), true);
+    });
 
     window.applyMedicalModeUi = function() {
         const on = isMedicalModeEnabled();
