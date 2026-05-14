@@ -1724,6 +1724,9 @@ async function loadUserMenuProfile(user) {
     const cancelBtn = document.getElementById('user-menu-cancel');
     const closeBtn = document.getElementById('user-menu-close');
     const medicalModeInput = document.getElementById('user-menu-medical-mode');
+    const medicalTrainingInput = document.getElementById('user-menu-medical-training-mode');
+    const medicalTrainingResetBtn = document.getElementById('user-menu-medical-training-reset');
+    const medicalTrainingStatus = document.getElementById('user-menu-medical-training-status');
     if (!nameInput || !emailInput) return;
 
     const { displayName, email } = getAuthUserDisplayInfo(user);
@@ -1742,6 +1745,43 @@ async function loadUserMenuProfile(user) {
                     ? 'Medical mode enabled. Local data was cleared.'
                     : 'Medical mode disabled.';
                 messageEl.style.color = '#059669';
+            }
+        };
+    }
+    if (medicalTrainingInput) {
+        medicalTrainingInput.checked = isMedicalTrainingModeEnabled();
+        medicalTrainingInput.onchange = async () => {
+            const enabled = !!medicalTrainingInput.checked;
+            if (!enabled) {
+                setMedicalTrainingModeEnabled(false);
+                if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'מצב אימון כבוי.';
+                try {
+                    if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
+                } catch (_) {}
+                return;
+            }
+            try {
+                await activateMedicalTrainingFlow();
+            } catch (_) {
+                medicalTrainingInput.checked = false;
+            }
+        };
+    }
+    if (medicalTrainingResetBtn) {
+        medicalTrainingResetBtn.onclick = async () => {
+            if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'מאפס אימון...';
+            try {
+                await medicalTrainingApi('/api/medical_training/reset', {});
+                setMedicalTrainingModeEnabled(false);
+                window._medicalTrainingCandidatePrompt = '';
+                window._medicalTrainingCandidatePreview = null;
+                window._medicalTrainingLearnedRules = [];
+                window._medicalTrainingDoctorDraft = '';
+                if (medicalTrainingInput) medicalTrainingInput.checked = false;
+                if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'האימון אופס והפרומפט האישי הושבת.';
+                if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
+            } catch (e) {
+                if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'איפוס נכשל: ' + String((e && e.message) || e).slice(0, 160);
             }
         };
     }
@@ -3345,11 +3385,222 @@ const QS_FORMAT_MULTI_REQUEST_CHARS = 4000;
 /**
  * @returns {Promise<{ ok: boolean, res: Response, fmt: Record<string, unknown> }>}
  */
+async function qsCurrentUserId() {
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        return user && user.id ? String(user.id) : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+const QS_MEDICAL_TRAINING_MODE_KEY = 'qs_medical_training_mode';
+
+function isMedicalTrainingModeEnabled() {
+    try { return localStorage.getItem(QS_MEDICAL_TRAINING_MODE_KEY) === '1'; } catch (_) { return false; }
+}
+
+function setMedicalTrainingModeEnabled(on) {
+    try {
+        if (on) localStorage.setItem(QS_MEDICAL_TRAINING_MODE_KEY, '1');
+        else localStorage.removeItem(QS_MEDICAL_TRAINING_MODE_KEY);
+    } catch (_) {}
+    window._medicalTrainingMode = !!on;
+}
+
+function medicalTrainingSummaryText(fmt) {
+    const f = (fmt && typeof fmt === 'object') ? fmt : {};
+    const parts = [];
+    const chief = String(f.medical_chief_complaint || '').trim();
+    const exam = String(f.medical_examination_transcript || '').trim();
+    const rec = String(f.medical_patient_recommendations || '').trim();
+    if (chief || exam || rec) {
+        parts.push(`תלונה עיקרית:\n${chief}`);
+        parts.push(`בדיקה:\n${exam}`);
+        parts.push(`המלצות למטופל:\n${rec}`);
+        return parts.join('\n\n').trim();
+    }
+    const overview = String(f.overview || '').trim();
+    if (overview) parts.push(overview);
+    if (Array.isArray(f.key_points) && f.key_points.length) {
+        parts.push(f.key_points.map((p) => `- ${String(p || '').trim()}`).filter(Boolean).join('\n'));
+    }
+    return parts.filter(Boolean).join('\n\n').trim();
+}
+
+async function medicalTrainingApi(path, payload) {
+    const userId = await qsCurrentUserId();
+    if (!userId) throw new Error('יש להתחבר כדי לאמן פרומפט אישי.');
+    const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, ...(payload || {}) })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || (data && data.error)) {
+        throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    return data;
+}
+
+/** Shared by account-menu toggle and summary CTA (e.g. after drag-drop JSON/WAV). */
+async function activateMedicalTrainingFlow() {
+    const medicalTrainingStatus = document.getElementById('user-menu-medical-training-status');
+    const medicalTrainingInput = document.getElementById('user-menu-medical-training-mode');
+    const medicalModeInput = document.getElementById('user-menu-medical-mode');
+    if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'מפעיל מצב אימון...';
+    setMedicalTrainingModeEnabled(true);
+    try {
+        await medicalTrainingApi('/api/medical_training/start', {});
+        if (!isMedicalModeEnabled()) {
+            if (medicalModeInput) medicalModeInput.checked = true;
+            setMedicalMode(true, { bypassMedicalUrlLock: true });
+        }
+        if (medicalTrainingInput) medicalTrainingInput.checked = true;
+        if (medicalTrainingStatus) {
+            medicalTrainingStatus.textContent = 'מצב אימון פעיל — אזור האימון מוצג מתחת לסיכום הרפואי.';
+        }
+        if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
+    } catch (e) {
+        setMedicalTrainingModeEnabled(false);
+        if (medicalTrainingInput) medicalTrainingInput.checked = false;
+        if (medicalTrainingStatus) medicalTrainingStatus.textContent = String((e && e.message) || e);
+        throw e;
+    }
+}
+
+/** When training mode is off, offer one-click enable on the medical summary pane (visible after drag-drop, upload, etc.). */
+function renderMedicalTrainingOnboardingCta(container) {
+    if (!container || !isMedicalModeEnabled() || isMedicalTrainingModeEnabled()) return;
+    const transcript = String(buildTranscriptTextForGptFormat() || '').trim();
+    const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+    const aiSummary = medicalTrainingSummaryText(fmt);
+    if (!transcript || !aiSummary) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'medical-training-enable-cta';
+    wrap.style.cssText = 'direction:rtl;text-align:right;margin-top:14px;padding:12px;border:1px dashed #5eead4;border-radius:10px;background:#ecfdf5;';
+    wrap.innerHTML = `
+        <div style="font-size:0.9rem;color:#0f766e;margin-bottom:6px;font-weight:700;">התאמת סגנון סיכום (אימון פרומפט)</div>
+        <div style="font-size:0.85rem;color:#115e59;margin-bottom:10px;line-height:1.55;">ניתן ללמד העדפות סגנון ומבנה מהסיכום שלכם. לחצו להפעלת מצב האימון — אותו מצב כמו בתפריט החשבון.</div>
+        <button type="button" id="medical-training-enable-cta-btn" style="padding:8px 14px;border:none;border-radius:8px;background:#0f766e;color:#fff;font-weight:700;cursor:pointer;">הפעל מצב אימון</button>
+        <div id="medical-training-enable-cta-msg" style="margin-top:8px;font-size:0.85rem;color:#b91c1c;"></div>
+    `;
+    container.appendChild(wrap);
+    const btn = wrap.querySelector('#medical-training-enable-cta-btn');
+    const msg = wrap.querySelector('#medical-training-enable-cta-msg');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        if (msg) msg.textContent = '';
+        try {
+            const userId = await qsCurrentUserId();
+            if (!userId) {
+                if (msg) msg.textContent = 'יש להתחבר כדי להפעיל אימון.';
+                btn.disabled = false;
+                return;
+            }
+            await activateMedicalTrainingFlow();
+        } catch (e) {
+            if (msg) msg.textContent = String((e && e.message) || e || 'ההפעלה נכשלה').slice(0, 200);
+            btn.disabled = false;
+        }
+    });
+}
+
+function renderMedicalTrainingPanel(container) {
+    if (!container || !isMedicalModeEnabled() || !isMedicalTrainingModeEnabled()) return;
+    const transcript = String(buildTranscriptTextForGptFormat() || '').trim();
+    const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+    const aiSummary = medicalTrainingSummaryText(fmt);
+    if (!transcript || !aiSummary) return;
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const preview = window._medicalTrainingCandidatePreview;
+    const previewText = preview ? medicalTrainingSummaryText(preview) : '';
+    const rules = Array.isArray(window._medicalTrainingLearnedRules) && window._medicalTrainingLearnedRules.length
+        ? `<ul style="margin:6px 0 0; padding-inline-start:20px;">${window._medicalTrainingLearnedRules.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>`
+        : '';
+    const panel = document.createElement('div');
+    panel.id = 'medical-training-panel';
+    panel.style.cssText = 'direction:rtl;text-align:right;margin-top:18px;padding:14px;border:1px solid #99f6e4;border-radius:12px;background:#f0fdfa;line-height:1.6;';
+    panel.innerHTML = `
+        <div style="font-weight:800;color:#0f766e;margin-bottom:6px;">מצב אימון: התאמת סיכום לרופא</div>
+        <div style="font-size:0.88rem;color:#0f766e;margin-bottom:10px;">ערכו/הדביקו את הסיכום הרצוי. המערכת תלמד העדפות סגנון ומבנה בלבד, לא עובדות קליניות.</div>
+        <label for="medical-training-doctor-summary" style="font-weight:700;display:block;margin-bottom:4px;">הסיכום הרצוי של הרופא</label>
+        <textarea id="medical-training-doctor-summary" rows="8" style="width:100%;box-sizing:border-box;border:1px solid #99f6e4;border-radius:10px;padding:10px;resize:vertical;direction:rtl;text-align:right;font:inherit;">${esc(window._medicalTrainingDoctorDraft || aiSummary)}</textarea>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+            <button type="button" id="medical-training-learn-btn" style="padding:10px 14px;border:none;border-radius:10px;background:#0f766e;color:white;font-weight:700;cursor:pointer;">למד מהסיכום הזה</button>
+            <button type="button" id="medical-training-approve-btn" style="padding:10px 14px;border:1px solid #0f766e;border-radius:10px;background:white;color:#0f766e;font-weight:700;cursor:pointer;" ${window._medicalTrainingCandidatePrompt ? '' : 'disabled'}>אשר פרומפט לרופא</button>
+        </div>
+        <div id="medical-training-message" style="margin-top:8px;font-size:0.88rem;color:#0f766e;">${esc(window._medicalTrainingMessage || '')}</div>
+        ${rules ? `<div style="margin-top:10px;"><strong>כללים שנלמדו:</strong>${rules}</div>` : ''}
+        ${previewText ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid #99f6e4;"><strong>תצוגה מקדימה עם מודל הייצור:</strong><div style="white-space:pre-wrap;margin-top:6px;">${esc(previewText)}</div></div>` : ''}
+    `;
+    container.appendChild(panel);
+    const textarea = panel.querySelector('#medical-training-doctor-summary');
+    const message = panel.querySelector('#medical-training-message');
+    const learnBtn = panel.querySelector('#medical-training-learn-btn');
+    const approveBtn = panel.querySelector('#medical-training-approve-btn');
+    if (textarea) {
+        textarea.addEventListener('input', () => { window._medicalTrainingDoctorDraft = textarea.value; });
+    }
+    if (learnBtn) {
+        learnBtn.onclick = async () => {
+            try {
+                learnBtn.disabled = true;
+                if (message) message.textContent = 'לומד העדפות ומייצר פרומפט מועמד...';
+                const doctorSummary = String(textarea ? textarea.value : '').trim();
+                const learned = await medicalTrainingApi('/api/medical_training/learn', {
+                    transcript,
+                    ai_summary: fmt,
+                    doctor_summary: doctorSummary,
+                    candidate_prompt: window._medicalTrainingCandidatePrompt || ''
+                });
+                window._medicalTrainingCandidatePrompt = learned.candidate_prompt || '';
+                window._medicalTrainingLastExampleId = learned.example_id || '';
+                window._medicalTrainingLearnedRules = Array.isArray(learned.learned_rules) ? learned.learned_rules : [];
+                window._medicalTrainingMessage = learned.rationale || 'נוצר פרומפט מועמד. מריץ תצוגה מקדימה...';
+                const previewRes = await medicalTrainingApi('/api/medical_training/preview', {
+                    transcript,
+                    candidate_prompt: window._medicalTrainingCandidatePrompt,
+                    target_lang: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he'
+                });
+                window._medicalTrainingCandidatePreview = previewRes.formatted || null;
+                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם היא מתאימה, אשרו את הפרומפט.';
+                if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
+            } catch (e) {
+                if (message) message.textContent = 'האימון נכשל: ' + String((e && e.message) || e).slice(0, 220);
+            } finally {
+                learnBtn.disabled = false;
+            }
+        };
+    }
+    if (approveBtn) {
+        approveBtn.onclick = async () => {
+            try {
+                approveBtn.disabled = true;
+                if (message) message.textContent = 'שומר פרומפט פעיל לרופא...';
+                const approved = await medicalTrainingApi('/api/medical_training/approve', {
+                    candidate_prompt: window._medicalTrainingCandidatePrompt || '',
+                    example_id: window._medicalTrainingLastExampleId || ''
+                });
+                window._medicalTrainingMessage = `נשמר פרומפט פעיל, גרסה ${approved?.profile?.version || ''}.`;
+                if (message) message.textContent = window._medicalTrainingMessage;
+            } catch (e) {
+                if (message) message.textContent = 'שמירת הפרומפט נכשלה: ' + String((e && e.message) || e).slice(0, 220);
+            } finally {
+                approveBtn.disabled = false;
+            }
+        };
+    }
+}
+
 async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
     const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
+    const userId = await qsCurrentUserId();
     const base = () => ({
         target_lang: targetLang,
         jobId: jobId || undefined,
+        userId: userId || undefined,
         isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
         ...(hint ? { input_s3_key: hint } : {}),
     });
@@ -7693,14 +7944,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     })();
                     try {
                         if (isMedicalModeEnabled()) {
-                            const medTab = String(window.medicalActiveTab || 'summary');
-                            if (medTab === 'summary') {
-                                if (typeof renderTranscriptFromCues === 'function') {
-                                    renderTranscriptFromCues(window.currentSegments || []);
-                                }
-                            } else if (typeof renderMedicalTranscriptMainView === 'function') {
-                                renderMedicalTranscriptMainView();
-                            } else if (typeof renderTranscriptFromCues === 'function') {
+                            window.medicalActiveTab = 'summary';
+                            if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+                            if (typeof renderTranscriptFromCues === 'function') {
                                 renderTranscriptFromCues(window.currentSegments || []);
                             }
                         }
@@ -10309,6 +10555,8 @@ function renderTranscriptFromCues(cues) {
             </div>
         `;
         }
+        try { renderMedicalTrainingPanel(container); } catch (e) { console.warn('[medical training] render failed', e); }
+        try { renderMedicalTrainingOnboardingCta(container); } catch (e) { console.warn('[medical training] onboarding cta failed', e); }
         container.contentEditable = 'false';
         return;
     }

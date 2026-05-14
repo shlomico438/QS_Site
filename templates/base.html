@@ -71,6 +71,14 @@
                     <span>מצב רפואי (HIPAA)</span>
                 </label>
             </div>
+            <div class="user-menu-profile-medical-training" style="margin-bottom:12px; padding:10px; border:1px solid #d1fae5; border-radius:10px; background:#f0fdfa;">
+                <label for="user-menu-medical-training-mode" style="display:flex; align-items:center; gap:8px; font-weight:600; color:#0f766e;">
+                    <input type="checkbox" id="user-menu-medical-training-mode">
+                    <span>מצב אימון סיכום רפואי</span>
+                </label>
+                <button type="button" id="user-menu-medical-training-reset" style="margin-top:8px; width:100%; padding:8px; border:1px solid #99f6e4; background:#ffffff; color:#0f766e; border-radius:8px; cursor:pointer; font-weight:600;">אפס / השבת אימון</button>
+                <div id="user-menu-medical-training-status" style="margin-top:6px; font-size:0.8rem; color:#0f766e;"></div>
+            </div>
             <label class="user-menu-profile-label" for="user-menu-name" data-i18n="display_name">Display name</label>
             <input type="text" id="user-menu-name" class="user-menu-profile-input" placeholder="" autocomplete="name">
             <label class="user-menu-profile-label" for="user-menu-email" data-i18n="email">Email</label>
