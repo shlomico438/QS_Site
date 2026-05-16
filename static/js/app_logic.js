@@ -1005,9 +1005,14 @@ async function qsPostTriggerProcessingWithRetry(body, jobId) {
                     jobId,
                     attempt,
                     httpStatus: lastRes.status,
+                    engine: lastData.engine,
+                    endpoint: lastData.endpoint,
                     audio_profile: lastData.audio_profile,
                     transcription_options: lastData.transcription_options,
                 });
+                if (lastData.engine) {
+                    console.info('[medical transcription] trigger_processing engine:', lastData.engine, lastData.endpoint || '');
+                }
                 qsLogAudioProfileFromTrigger(jobId, lastData);
                 return { triggerRes: lastRes, triggerData: lastData };
             }
@@ -3519,6 +3524,32 @@ async function medicalTrainingApi(path, payload) {
     return data;
 }
 
+/** Learn step can exceed reverse-proxy timeout; server returns 202 + poll until done. */
+async function medicalTrainingLearn(payload) {
+    const start = await medicalTrainingApi('/api/medical_training/learn', { ...(payload || {}), async: true });
+    const learnJobId = start && start.learn_job_id;
+    if (!learnJobId) {
+        return start;
+    }
+    const pollMs = 2500;
+    const maxPolls = 180;
+    for (let i = 0; i < maxPolls; i++) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        const stRes = await fetch(`/api/medical_training/learn_status?learn_job_id=${encodeURIComponent(learnJobId)}`);
+        const st = await stRes.json().catch(() => ({}));
+        if (st.status === 'done' && st.ok !== false) {
+            return st;
+        }
+        if (st.status === 'error') {
+            throw new Error(st.error || 'האימון נכשל');
+        }
+        if (!stRes.ok && stRes.status !== 200) {
+            throw new Error(st.error || `HTTP ${stRes.status}`);
+        }
+    }
+    throw new Error('האימון לוקח יותר מדי זמן — נסה שוב');
+}
+
 /** Shared by account-menu toggle and summary CTA (e.g. after drag-drop JSON/WAV). */
 async function activateMedicalTrainingFlow() {
     const medicalTrainingStatus = document.getElementById('user-menu-medical-training-status');
@@ -3710,7 +3741,7 @@ function renderMedicalTrainingPanel(container) {
                 window._medicalTrainingApprovedCandidatePrompt = '';
                 if (message) message.textContent = 'מנתח סגנון ומגבש מודל סיכום מותאם...';
                 if (typeof window.showClinicalTrainingModal === 'function') window.showClinicalTrainingModal();
-                const learned = await medicalTrainingApi('/api/medical_training/learn', {
+                const learned = await medicalTrainingLearn({
                     transcript,
                     ai_summary: fmt,
                     doctor_summary: doctorSummary,
@@ -10435,7 +10466,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             console.warn('[trigger] Handshake wait ended without triggered; continuing with job status polling');
                         } else {
                             console.log("trigger ack (triggered)");
-                            console.log("✅ RunPod trigger confirmed.");
+                            const trigEngine = (triggerData && triggerData.engine) || 'runpod';
+                            if (trigEngine === 'sagemaker_async') {
+                                console.log("✅ SageMaker transcription started.", triggerData.endpoint || '');
+                            } else {
+                                console.log("✅ RunPod trigger confirmed.");
+                            }
                         }
                         const supersededBySocket = jobAlreadyHandledBySocket();
                         if (!supersededBySocket && typeof startFakeProgress === 'function') {
