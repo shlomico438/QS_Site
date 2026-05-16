@@ -49,6 +49,39 @@ TRANSLATE_SCRIPT = APP_ROOT / 'scripts' / 'translate.js'
 S3_BUCKET = os.environ.get("S3_BUCKET")
 MEDICAL_S3_BUCKET = os.environ.get("MEDICAL_S3_BUCKET") or "quickscribe-hippa-backet"
 
+# Medical training practice flow (learn + preview); production jobs still use GPT_MODEL.
+_DEFAULT_DOCTOR_PROMPT_OPTIMIZER_MODEL = "gpt-5.5"
+_DEFAULT_DOCTOR_PROMPT_PREVIEW_MODEL = "gpt-5.5"
+
+
+def _doctor_prompt_optimizer_model():
+    return str(
+        os.environ.get('DOCTOR_PROMPT_OPTIMIZER_MODEL') or _DEFAULT_DOCTOR_PROMPT_OPTIMIZER_MODEL
+    ).strip()
+
+
+def _doctor_prompt_preview_model():
+    return str(
+        os.environ.get('DOCTOR_PROMPT_PREVIEW_MODEL') or _DEFAULT_DOCTOR_PROMPT_PREVIEW_MODEL
+    ).strip()
+
+
+def _doctor_prompt_training_config():
+    """Resolved training models + hints (for debugging .env without secrets)."""
+    return {
+        "optimizer_model": _doctor_prompt_optimizer_model(),
+        "preview_model": _doctor_prompt_preview_model(),
+        "production_gpt_model": (os.environ.get('GPT_MODEL') or 'gpt-4.1-mini').strip(),
+        "optimizer_transcript_chars": int(os.environ.get('DOCTOR_PROMPT_TRAINING_TRANSCRIPT_CHARS', '16000') or 16000),
+        "format_max_single_chars": int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '6500') or 6500),
+        "format_parallel": max(1, min(8, int(os.environ.get('FORMAT_TRANSCRIPT_PARALLEL', '2') or 2))),
+        "simulation_mode": SIMULATION_MODE,
+        "medical_transcription_engine": (
+            "sagemaker" if _medical_uses_sagemaker_transcription() else "runpod"
+        ),
+        "sagemaker_medical_endpoint": _sagemaker_medical_endpoint_name(),
+    }
+
 # GPT clean transcript + optional TXT re-flow: max characters per wrapped line (TRANSCRIPT_LINE_MAX_CHARS, default 200).
 # Paragraph breaks in stored text are \\n\\n; single \\n is line wrap within a paragraph (preview splits on any newline).
 TRANSCRIPT_LINE_MAX_CHARS = int(os.environ.get("TRANSCRIPT_LINE_MAX_CHARS", "200"))
@@ -192,7 +225,7 @@ def _default_medical_task2_prompt_single_shot():
         "chief_complaint — \"תלונה עיקרית\": chart-style narrative (reason for visit, patient-reported concerns, context)—"
         "third person / המטופל, not direct address to the patient. "
         "Summary of the visit without the physical examination section, not a verbatim transcript. If unclear, say so.\n\n"
-        "examination_transcript — \"בדיקה\": examination narrative, findings, and related decisions—in substance "
+        "examination_transcript — \"ממצאים\": examination narrative, findings, and related decisions—in substance "
         "and sequence—written for the protocol: neutral / passive / third person, not clinician→patient second person "
         "(e.g. \"נשלח למיון\" not \"אני שלחתי אותך למיון\"). "
         "Light edits only: grammar, punctuation, professional tone, without changing meaning, dropping stated detail, "
@@ -209,7 +242,7 @@ def _default_medical_task2_prompt_summary_only():
         "chief_complaint — \"תלונה עיקרית\": concise chart-style narrative (reason for visit, patient-reported "
         "concerns, context)—third person / המטופל where natural, not bedside \"אתה מתלונן\". "
         "Not the physical examination block. If unclear, say so.\n\n"
-        "examination_transcript — \"בדיקה\": capture examination narrative, findings, and exam-related decisions "
+        "examination_transcript — \"ממצאים\": capture examination narrative, findings, and exam-related decisions "
         "in substance and sequence, but phrase them as chart/protocol documentation—not as bedside address to the patient "
         "(depersonalize: no \"אני שלחתי אותך\"; use e.g. \"נשלח למיון\" / \"הופנה למיון\"). "
         "Light edits only: grammar, punctuation, professional clinical tone, without altering meaning, omitting "
@@ -2659,13 +2692,14 @@ def _translate_segments_via_python_openai(segments, target_lang='he'):
         def _request_with_model(model_name):
             payload = {
                 "model": model_name,
-                "temperature": 0,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
             }
+            if _openai_model_supports_custom_temperature(model_name):
+                payload["temperature"] = 0
             resp = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
@@ -2783,6 +2817,16 @@ def _split_text_for_format_chunks(text, max_chunk_chars):
     return chunks
 
 
+def _openai_model_supports_custom_temperature(model: str) -> bool:
+    """GPT-5+ and some reasoning models reject temperature != default; omit the param for those."""
+    m = (model or "").strip().lower()
+    if m.startswith("gpt-5"):
+        return False
+    if re.match(r"^o[0-9]", m):
+        return False
+    return True
+
+
 def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=0, model_name=None, temperature=0.2):
     """POST chat completions; return parsed JSON object from message content.
 
@@ -2795,13 +2839,14 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
     model = (model_name or os.environ.get('GPT_MODEL') or 'gpt-4.1-mini').strip()
     payload = {
         "model": model,
-        "temperature": temperature,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
     }
+    if _openai_model_supports_custom_temperature(model):
+        payload["temperature"] = temperature
     read_t = max(60, int(timeout_sec))
     connect_t = min(30, max(10, read_t // 8))
     timeout_tuple = (connect_t, read_t)
@@ -2880,6 +2925,54 @@ def _strip_leading_exam_trace_legacy_prefix(exam_text):
     return t
 
 
+_MEDICAL_SECTION_HEADER_LABELS = {
+    "chief": ("תלונה עיקרית", "תלונה", "תלונות"),
+    "exam": ("ממצאים", "בדיקה"),
+    "rec": ("המלצות למטופל", "המלצות"),
+}
+
+
+def _strip_leading_medical_section_header(text, section_key=None):
+    """Remove embedded Hebrew section titles the model sometimes puts in JSON field values.
+
+    Handles:
+    - "ממצאים:\\ncontent"        (colon + newline)
+    - "ממצאים:"                  (colon, content on same line)
+    - "ממצאים\\ncontent"         (NO colon — label on its own line)
+    - "**ממצאים:**\\ncontent"    (bold markers)
+    - Label alone without colon, filling entire first line
+    Strips repeatedly (up to 6 passes) for stacked headers.
+    """
+    all_labels = [
+        label
+        for labels in _MEDICAL_SECTION_HEADER_LABELS.values()
+        for label in labels
+    ]
+    pattern_with_colon = re.compile(
+        r'^\*{0,2}(' + '|'.join(re.escape(l) for l in all_labels) + r')\*{0,2}\s*:\s*',
+        re.UNICODE,
+    )
+    pattern_line_only = re.compile(
+        r'^\*{0,2}(' + '|'.join(re.escape(l) for l in all_labels) + r')\*{0,2}\s*$',
+        re.UNICODE,
+    )
+    t = str(text or "").strip()
+    if not t:
+        return t
+    for _ in range(6):
+        m = pattern_with_colon.match(t)
+        if m:
+            t = t[m.end():].strip()
+            continue
+        # Check if the first line is only a label (no colon)
+        first_line = t.split('\n')[0].strip()
+        if first_line and pattern_line_only.match(first_line):
+            t = t[len(first_line):].strip()
+            continue
+        break
+    return t
+
+
 def _medical_summary_from_parsed(parsed, want_hebrew):
     """Map OpenAI three-part clinical JSON (+ legacy overview/key_points) to stored formatted fields."""
     chief = str((parsed or {}).get("chief_complaint") or "").strip()
@@ -2902,6 +2995,9 @@ def _medical_summary_from_parsed(parsed, want_hebrew):
     chief_t, kp_t = _maybe_translate_summary_to_hebrew(chief, kp_for_tr, want_hebrew)
     exam_t = kp_t[0] if len(kp_t) >= 1 else exam
     rec_t = kp_t[1] if len(kp_t) >= 2 else rec
+    chief_t = _strip_leading_medical_section_header(chief_t, "chief")
+    rec_t = _strip_leading_medical_section_header(rec_t, "rec")
+    exam_t = _strip_leading_medical_section_header(exam_t, "exam")
     chief_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(chief_t))
     rec_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(rec_t))
     exam_t = _strip_leading_exam_trace_legacy_prefix(exam_t)
@@ -2949,7 +3045,7 @@ def _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew):
     return overview, key_points
 
 
-def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, read_retries=0):
+def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, read_retries=0, gpt_model=None):
     """Format one transcript fragment into clean_transcript (same rules as full-job format)."""
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
@@ -2965,12 +3061,14 @@ def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, 
         f"Output language: {output_lang_label}\n\n"
         f"Fragment:\n\n{chunk_text}"
     )
-    parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
+    parsed = _openai_chat_json_completion(
+        system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
+    )
     clean = str((parsed or {}).get("clean_transcript") or "").strip()
     return _wrap_text_to_max_chars(clean)
 
 
-def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, user_id=None, medical_task2_prompt_override=None):
+def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
     """Produce overview + key_points from (possibly truncated) transcript text."""
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
@@ -2983,6 +3081,9 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
             "fairly implied. Use tentative language and explicit uncertainty when information is missing. "
             "Return ONLY valid JSON with exactly these string keys: "
             "{\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
+            "CRITICAL: Do NOT include any section title or label (such as 'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+            "or any English equivalent) inside the JSON string values. "
+            "The field name is already the section label — start each value directly with the clinical content. "
             "No markdown fences."
         )
         user_prompt = (
@@ -3005,7 +3106,9 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
             f"Output language must be {output_lang_label}.\n\n"
             f"Transcript:\n\n{transcript_excerpt}"
         )
-    parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
+    parsed = _openai_chat_json_completion(
+        system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
+    )
     if is_medical:
         return _medical_summary_from_parsed(parsed, want_hebrew)
     overview = str((parsed or {}).get("overview") or "").strip()
@@ -3017,7 +3120,7 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
     return {"overview": overview, "key_points": key_points}
 
 
-def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None):
+def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
     """One OpenAI call: full transcript + summary (only for moderately sized input)."""
     timeout_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
     read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
@@ -3031,6 +3134,9 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "{\"clean_transcript\":string,\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
             "Do not include markdown fences. Keep original language and directionality for clean_transcript. "
             "clean_transcript must read as spoken encounter dialogue; chart/protocol style applies only to the three summary fields. "
+            "CRITICAL: Do NOT include any section title or label (such as 'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+            "or any English equivalent) inside the JSON string values. "
+            "Start each summary field value directly with the clinical content, without any heading prefix."
         )
         task2 = _resolve_medical_task2_prompt(output_lang_label, lang_hint, user_id=user_id, prompt_override=medical_task2_prompt_override, single_shot=True)
         json_tail = (
@@ -3063,7 +3169,9 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         "Transcript:\n\n"
         f"{transcript_text}"
     )
-    parsed = _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=read_retries)
+    parsed = _openai_chat_json_completion(
+        system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
+    )
     clean_transcript = _wrap_text_to_max_chars(str((parsed or {}).get("clean_transcript") or "").strip())
     if is_medical:
         summary_block = _medical_summary_from_parsed(parsed, want_hebrew)
@@ -3088,7 +3196,7 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
     }
 
 
-def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None):
+def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
     """Generate clean transcript paragraphs + summary. Uses chunked calls when input is very long."""
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
@@ -3103,7 +3211,12 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
 
     if len(transcript_text) <= max_single:
         return _format_transcript_and_summary_single_shot(
-            transcript_text, target_lang=target_lang, is_medical=is_medical, user_id=user_id, medical_task2_prompt_override=medical_task2_prompt_override
+            transcript_text,
+            target_lang=target_lang,
+            is_medical=is_medical,
+            user_id=user_id,
+            medical_task2_prompt_override=medical_task2_prompt_override,
+            gpt_model=gpt_model,
         )
 
     logging.info(
@@ -3126,7 +3239,9 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
             len(parts),
             len(part),
         )
-        return idx, _format_transcript_clean_chunk_openai(part, target_lang, format_read_sec, read_retries)
+        return idx, _format_transcript_clean_chunk_openai(
+            part, target_lang, format_read_sec, read_retries, gpt_model=gpt_model
+        )
 
     if parallel <= 1 or len(parts) == 1:
         for i, part in enumerate(parts):
@@ -3153,7 +3268,14 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
             + clean_merged[-(summary_in_max // 2) :]
         )
     summary = _format_summary_only_openai(
-        summ_input, target_lang, format_read_sec, read_retries, is_medical=is_medical, user_id=user_id, medical_task2_prompt_override=medical_task2_prompt_override
+        summ_input,
+        target_lang,
+        format_read_sec,
+        read_retries,
+        is_medical=is_medical,
+        user_id=user_id,
+        medical_task2_prompt_override=medical_task2_prompt_override,
+        gpt_model=gpt_model,
     )
     out = {
         "clean_transcript": clean_merged,
@@ -3512,6 +3634,12 @@ def api_format_transcript_summary():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/medical_training/config', methods=['GET'])
+def api_medical_training_config():
+    """Which models/env the running server uses for doctor training (restart required after .env change)."""
+    return jsonify({"ok": True, **_doctor_prompt_training_config()}), 200
+
+
 @app.route('/api/medical_training/start', methods=['POST'])
 def api_medical_training_start():
     try:
@@ -3523,8 +3651,8 @@ def api_medical_training_start():
         if not profile:
             profile = _doctor_prompt_upsert_profile(user_id, {
                 "status": "training",
-                "optimizer_model": os.environ.get('DOCTOR_PROMPT_OPTIMIZER_MODEL', 'gpt-4.1'),
-                "preview_model": os.environ.get('GPT_MODEL', 'gpt-4.1-mini'),
+                "optimizer_model": _doctor_prompt_optimizer_model(),
+                "preview_model": _doctor_prompt_preview_model(),
             })
         elif str(profile.get('status') or '') == 'disabled':
             profile = _doctor_prompt_upsert_profile(user_id, {"status": "training"})
@@ -3551,9 +3679,14 @@ def api_medical_training_learn():
 
         profile = _doctor_prompt_get_profile(user_id) or {}
         current_prompt = _doctor_prompt_current_base(user_id, data.get('candidate_prompt') or data.get('candidatePrompt'))
-        optimizer_model = str(os.environ.get('DOCTOR_PROMPT_OPTIMIZER_MODEL') or 'gpt-4.1').strip()
+        optimizer_model = _doctor_prompt_optimizer_model()
+        preview_model = _doctor_prompt_preview_model()
         timeout_sec = int(os.environ.get('DOCTOR_PROMPT_OPTIMIZER_TIMEOUT_SEC', '180') or 180)
         transcript_excerpt = transcript[: int(os.environ.get('DOCTOR_PROMPT_TRAINING_TRANSCRIPT_CHARS', '16000') or 16000)]
+        logging.info(
+            "medical_training learn user_id=%s optimizer_model=%s preview_model=%s transcript_chars=%s",
+            user_id[:12], optimizer_model, preview_model, len(transcript_excerpt),
+        )
         system_prompt = (
             "You are a prompt engineer for a clinical documentation assistant. "
             "Return ONLY valid JSON with keys: candidate_prompt (string), rationale (string), learned_rules (array of strings). "
@@ -3588,7 +3721,7 @@ def api_medical_training_learn():
             "status": "training",
             "candidate_prompt": candidate_prompt,
             "optimizer_model": optimizer_model,
-            "preview_model": os.environ.get('GPT_MODEL', 'gpt-4.1-mini'),
+            "preview_model": preview_model,
             "examples_count": old_count + 1,
         })
         example = _doctor_prompt_insert_example(user_id, {
@@ -3599,11 +3732,13 @@ def api_medical_training_learn():
             "doctor_summary": doctor_summary,
             "candidate_prompt": candidate_prompt,
             "optimizer_model": optimizer_model,
-            "preview_model": os.environ.get('GPT_MODEL', 'gpt-4.1-mini'),
+            "preview_model": preview_model,
         })
         return jsonify({
             "ok": True,
             "candidate_prompt": candidate_prompt,
+            "optimizer_model": optimizer_model,
+            "preview_model": preview_model,
             "rationale": str((learned or {}).get('rationale') or ''),
             "learned_rules": (learned or {}).get('learned_rules') if isinstance((learned or {}).get('learned_rules'), list) else [],
             "profile": _doctor_prompt_public_profile(updated_profile),
@@ -3628,14 +3763,23 @@ def api_medical_training_preview():
             return jsonify({"error": "transcript required"}), 400
         if not candidate_prompt:
             candidate_prompt = _doctor_prompt_current_base(user_id)
+        preview_model = _doctor_prompt_preview_model()
+        logging.info(
+            "medical_training preview user_id=%s preview_model=%s transcript_chars=%s chunked=%s",
+            user_id[:12],
+            preview_model,
+            len(transcript),
+            len(transcript) > int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '6500') or 6500),
+        )
         out = _format_transcript_and_summary_via_openai(
             transcript,
             target_lang=target_lang,
             is_medical=True,
             user_id=user_id,
             medical_task2_prompt_override=candidate_prompt,
+            gpt_model=preview_model,
         )
-        return jsonify({"ok": True, "formatted": out, "preview_model": os.environ.get('GPT_MODEL', 'gpt-4.1-mini')}), 200
+        return jsonify({"ok": True, "formatted": out, "preview_model": preview_model}), 200
     except Exception as e:
         logging.exception("medical_training_preview failed")
         return jsonify({"error": str(e)}), 500
@@ -3659,7 +3803,7 @@ def api_medical_training_approve():
             "candidate_prompt": candidate_prompt,
             "version": version,
             "approved_at": datetime.utcnow().isoformat() + "Z",
-            "preview_model": os.environ.get('GPT_MODEL', 'gpt-4.1-mini'),
+            "preview_model": _doctor_prompt_preview_model(),
         })
         example_id = str(data.get('example_id') or data.get('exampleId') or '').strip()
         if example_id:
@@ -3849,7 +3993,7 @@ def api_export_docx():
                 lines.append('תלונה עיקרית:')
                 lines.append(mc or 'לא צוין.')
                 lines.append('')
-                lines.append('בדיקה:')
+                lines.append('ממצאים:')
                 lines.append(me or 'לא צוין.')
                 lines.append('')
                 lines.append('המלצות למטופל:')
@@ -4113,45 +4257,95 @@ def simulate_completion(jid, run_diarization):
     print(f"🔮 SIMULATION COMPLETE: Room {jid} | Diarization Output: {run_diarization}")
 
 
+def _sagemaker_sim_endpoint_name():
+    return (
+        (os.environ.get('SAGEMAKER_SIM_ENDPOINT_NAME') or '').strip()
+        or (os.environ.get('SAGEMAKER_ENDPOINT_NAME') or '').strip()
+    )
+
+
+def _sagemaker_medical_endpoint_name():
+    return (
+        (os.environ.get('SAGEMAKER_MEDICAL_ENDPOINT_NAME') or '').strip()
+        or (os.environ.get('SAGEMAKER_ENDPOINT_NAME') or '').strip()
+    )
+
+
 def _simulation_uses_sagemaker_async():
     if not SIMULATION_MODE:
         return False
-    return bool(
-        (os.environ.get('SAGEMAKER_SIM_ENDPOINT_NAME') or '').strip()
-        or (os.environ.get('SAGEMAKER_ENDPOINT_NAME') or '').strip()
-    )
+    return bool(_sagemaker_sim_endpoint_name())
 
 
-def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', diarization=False, is_medical=False, bucket=None, public_base=None, transcription_options=None):
-    """Simulation-only GPU submit path: SageMaker async invoke (fallback: local simulate_completion)."""
-    endpoint_name = (
-        (os.environ.get('SAGEMAKER_SIM_ENDPOINT_NAME') or '').strip()
-        or (os.environ.get('SAGEMAKER_ENDPOINT_NAME') or '').strip()
-    )
-    region = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+def _medical_uses_sagemaker_transcription():
+    """Medical jobs use SageMaker async instead of RunPod when configured."""
+    if not _sagemaker_medical_endpoint_name():
+        return False
+    if SIMULATION_MODE:
+        return _simulation_uses_sagemaker_async()
+    engine = str(os.environ.get('MEDICAL_TRANSCRIPTION_ENGINE') or '').strip().lower()
+    if engine == 'sagemaker':
+        return True
+    return str(os.environ.get('MEDICAL_USE_SAGEMAKER', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 
-    if not endpoint_name:
-        logging.warning("SIMULATION_MODE: SAGEMAKER_*_ENDPOINT_NAME missing; using local simulate_completion")
-        simulate_completion(job_id, diarization)
-        return
 
-    try:
+def _sagemaker_callback_base(public_base=None):
+    if SIMULATION_MODE:
         base = str(
             (os.environ.get('SIMULATION_PUBLIC_BASE_URL') or '').strip()
             or str(public_base or '').strip()
         ).rstrip('/')
-        # Allow SIMULATION_PUBLIC_BASE_URL as either origin (https://host)
-        # or full callback URL (.../api/gpu_callback).
-        if base.endswith('/api/gpu_callback'):
-            base = base[: -len('/api/gpu_callback')].rstrip('/')
+    else:
+        base = str(
+            (os.environ.get('PUBLIC_BASE_URL') or '').strip()
+            or str(public_base or '').strip()
+        ).rstrip('/')
+    if base.endswith('/api/gpu_callback'):
+        base = base[: -len('/api/gpu_callback')].rstrip('/')
+    return base
+
+
+def _submit_sagemaker_async_job(
+    job_id,
+    s3_key,
+    task='transcribe',
+    language='he',
+    diarization=False,
+    is_medical=False,
+    bucket=None,
+    public_base=None,
+    transcription_options=None,
+    *,
+    for_simulation=False,
+):
+    """Submit async SageMaker inference (simulation or production medical)."""
+    endpoint_name = _sagemaker_sim_endpoint_name() if for_simulation else _sagemaker_medical_endpoint_name()
+    region = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+    request_subfolder = 'simulation-requests' if for_simulation else 'medical-transcription-requests'
+    inference_prefix = 'qs-sim' if for_simulation else 'qs-med'
+
+    if not endpoint_name:
+        if for_simulation:
+            logging.warning("SIMULATION_MODE: SAGEMAKER_*_ENDPOINT_NAME missing; using local simulate_completion")
+            simulate_completion(job_id, diarization)
+        else:
+            logging.error("SageMaker medical endpoint missing (SAGEMAKER_MEDICAL_ENDPOINT_NAME)")
+        return False
+
+    try:
+        base = _sagemaker_callback_base(public_base)
         payload = {
             "jobId": job_id,
             "bucket": bucket,
             "s3Key": s3_key,
+            "isMedical": bool(is_medical),
+            "task": task,
             "language": language,
             "diarization": bool(diarization),
             "transcription_options": transcription_options or {},
             "callback_url": f"{base}/api/gpu_callback" if base else None,
+            "start_callback_url": f"{base}/api/gpu_started" if base else None,
+            "upload_status_url": f"{base}/api/upload_status?job_id={job_id}" if base else None,
         }
         payload_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
 
@@ -4167,14 +4361,19 @@ def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', dia
 
         request_key = (
             f"users/{_extract_user_id_from_s3_key(s3_key) or 'anonymous'}"
-            f"/simulation-requests/{job_id}_{uuid.uuid4().hex}.json"
+            f"/{request_subfolder}/{job_id}_{uuid.uuid4().hex}.json"
         )
-        s3_client.put_object(
-            Bucket=request_bucket,
-            Key=request_key,
-            Body=payload_json,
-            ContentType='application/json',
-        )
+        put_kwargs = {
+            'Bucket': request_bucket,
+            'Key': request_key,
+            'Body': payload_json,
+            'ContentType': 'application/json',
+        }
+        kms_arn = _kms_key_arn() if is_medical and not for_simulation else ''
+        if kms_arn and request_bucket == MEDICAL_S3_BUCKET:
+            put_kwargs['ServerSideEncryption'] = 'aws:kms'
+            put_kwargs['SSEKMSKeyId'] = kms_arn
+        s3_client.put_object(**put_kwargs)
         input_location = f"s3://{request_bucket}/{request_key}"
 
         smrt = boto3.client(
@@ -4188,29 +4387,61 @@ def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', dia
             'InputLocation': input_location,
             'ContentType': 'application/json',
             'Accept': 'application/json',
-            'InferenceId': f"qs-sim-{job_id}",
+            'InferenceId': f"{inference_prefix}-{job_id}",
         }
-        output_location = (os.environ.get('SAGEMAKER_SIM_ASYNC_OUTPUT_S3_URI') or '').strip()
+        if for_simulation:
+            output_location = (os.environ.get('SAGEMAKER_SIM_ASYNC_OUTPUT_S3_URI') or '').strip()
+        else:
+            output_location = (
+                (os.environ.get('SAGEMAKER_MEDICAL_ASYNC_OUTPUT_S3_URI') or '').strip()
+                or (os.environ.get('SAGEMAKER_ASYNC_OUTPUT_S3_URI') or '').strip()
+            )
         if output_location:
             async_args['OutputLocation'] = output_location
         resp = smrt.invoke_endpoint_async(**async_args)
         code = int((resp or {}).get('ResponseMetadata', {}).get('HTTPStatusCode') or 0)
         output_uri = str((resp or {}).get('OutputLocation') or '').strip()
         logging.info(
-            "SIMULATION_MODE: SageMaker async invoke accepted endpoint=%s job_id=%s status=%s input=%s output=%s",
+            "SageMaker async invoke accepted endpoint=%s job_id=%s medical=%s sim=%s status=%s input=%s output=%s",
             endpoint_name,
             job_id,
+            bool(is_medical),
+            for_simulation,
             code,
             input_location,
             output_uri[:220],
         )
+        return True
     except Exception as e:
-        strict = str(os.environ.get('SAGEMAKER_SIM_STRICT', 'true')).lower() in ('1', 'true', 'yes')
-        if strict:
-            logging.exception("SIMULATION_MODE: SageMaker async invoke failed (strict=true): %s", e)
-            return
-        logging.exception("SIMULATION_MODE: SageMaker async invoke failed; fallback to local simulate_completion: %s", e)
-        simulate_completion(job_id, diarization)
+        if for_simulation:
+            strict = str(os.environ.get('SAGEMAKER_SIM_STRICT', 'true')).lower() in ('1', 'true', 'yes')
+            if strict:
+                logging.exception("SIMULATION_MODE: SageMaker async invoke failed (strict=true): %s", e)
+                return False
+            logging.exception("SIMULATION_MODE: SageMaker async invoke failed; fallback to local simulate_completion: %s", e)
+            simulate_completion(job_id, diarization)
+        else:
+            strict = str(os.environ.get('SAGEMAKER_MEDICAL_STRICT', 'true')).lower() in ('1', 'true', 'yes')
+            logging.exception("SageMaker medical async invoke failed: %s", e)
+            if not strict:
+                simulate_completion(job_id, diarization)
+        return False
+
+
+def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', diarization=False, is_medical=False, bucket=None, public_base=None, transcription_options=None):
+    """Simulation GPU path: SageMaker async invoke (fallback: local simulate_completion)."""
+    _submit_sagemaker_async_job(
+        job_id,
+        s3_key,
+        task=task,
+        language=language,
+        diarization=diarization,
+        is_medical=is_medical,
+        bucket=bucket,
+        public_base=public_base,
+        transcription_options=transcription_options,
+        for_simulation=True,
+    )
 
 
 @app.route('/api/sign-s3', methods=['POST'])
@@ -4294,9 +4525,12 @@ def sign_s3():
         )
 
         # Trigger RunPod early (before upload) so container warms during upload.
-        # Regular mode waits for upload completion when audio-profile detection must classify first.
-        # Medical skips music/speech profiling, so it can still warm safely.
-        skip_warmup_effective = _runpod_skip_warmup() or (_audio_profile_detection_enabled() and not is_medical)
+        # Skip when medical uses SageMaker, RUNPOD_SKIP_WARMUP, or audio-profile must run first (regular only).
+        skip_warmup_effective = (
+            _runpod_skip_warmup()
+            or (_audio_profile_detection_enabled() and not is_medical)
+            or (is_medical and _medical_uses_sagemaker_transcription())
+        )
         if not skip_warmup_effective:
             _start_trigger_if_configured(
                 job_id=job_id,
@@ -4311,7 +4545,14 @@ def sign_s3():
                 transcription_options=transcription_options,
             )
         else:
-            logging.info("Skipping sign-s3 warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled(), is_medical)
+            logging.info(
+                "Skipping sign-s3 warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s, medical_sagemaker=%s)",
+                job_id,
+                _runpod_skip_warmup(),
+                _audio_profile_detection_enabled(),
+                is_medical,
+                _medical_uses_sagemaker_transcription(),
+            )
 
         return jsonify({
             'data': {
@@ -4445,9 +4686,11 @@ def sign_s3_multipart_init():
         logging.exception("create_multipart_upload failed")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    # Regular mode waits for upload completion when audio-profile detection must classify first.
-    # Medical skips music/speech profiling, so it can still warm safely.
-    skip_warmup_effective = _runpod_skip_warmup() or (_audio_profile_detection_enabled() and not is_medical)
+    skip_warmup_effective = (
+        _runpod_skip_warmup()
+        or (_audio_profile_detection_enabled() and not is_medical)
+        or (is_medical and _medical_uses_sagemaker_transcription())
+    )
     if not skip_warmup_effective:
         _start_trigger_if_configured(
             job_id=job_id,
@@ -4462,7 +4705,14 @@ def sign_s3_multipart_init():
             transcription_options=transcription_options,
         )
     else:
-        logging.info("Skipping multipart-init warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s)", job_id, _runpod_skip_warmup(), _audio_profile_detection_enabled(), is_medical)
+        logging.info(
+            "Skipping multipart-init warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s, medical_sagemaker=%s)",
+            job_id,
+            _runpod_skip_warmup(),
+            _audio_profile_detection_enabled(),
+            is_medical,
+            _medical_uses_sagemaker_transcription(),
+        )
 
     return jsonify({
         'data': {
@@ -4681,8 +4931,10 @@ def sign_s3_multipart_abort():
 
 def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None, transcription_options=None):
     """Start RunPod trigger in background. Called from sign_s3 / multipart init (before upload) so container warms during upload.
-    No-op if RunPod not configured or SIMULATION_MODE."""
+    No-op if RunPod not configured, SIMULATION_MODE, or medical uses SageMaker."""
     if SIMULATION_MODE:
+        return
+    if is_medical and _medical_uses_sagemaker_transcription():
         return
     endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
     api_key = os.environ.get('RUNPOD_API_KEY')
@@ -5002,6 +5254,51 @@ def trigger_processing():
                 **_audio_profile_api_fields,
             }), 202
 
+        if is_medical and _medical_uses_sagemaker_transcription():
+            task = data.get('task', 'transcribe')
+            language = data.get('language', 'he')
+            diarization = data.get('diarization', False)
+            upload_complete[job_id] = True
+            _mark_upload_complete(job_id)
+            pending_trigger[job_id] = "triggered"
+            _set_trigger_state(job_id, "triggered")
+            pending_job_info[job_id] = {
+                "input_s3_key": s3_key,
+                "bucket": target_bucket,
+                "is_medical": True,
+                "user_id": _extract_user_id_from_s3_key(s3_key),
+                "task": task,
+                "language": language,
+                "transcription_options": transcription_options or {},
+                "engine": "sagemaker_async",
+            }
+            public_base = _public_base_url(request)
+            t = threading.Thread(
+                target=_submit_sagemaker_async_job,
+                kwargs={
+                    "job_id": job_id,
+                    "s3_key": s3_key,
+                    "task": task,
+                    "language": language,
+                    "diarization": diarization,
+                    "is_medical": True,
+                    "bucket": target_bucket,
+                    "public_base": public_base,
+                    "transcription_options": transcription_options,
+                    "for_simulation": False,
+                },
+                daemon=True,
+            )
+            t.start()
+            return jsonify({
+                "status": "started",
+                "job_id": job_id,
+                "engine": "sagemaker_async",
+                "endpoint": _sagemaker_medical_endpoint_name(),
+                "transcription_options": transcription_options,
+                **_audio_profile_api_fields,
+            }), 202
+
         # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
         upload_complete[job_id] = True
         _mark_upload_complete(job_id)
@@ -5122,12 +5419,41 @@ def retry_trigger():
         s3_key = info.get("input_s3_key")
         if not s3_key:
             return jsonify({"status": "error", "message": "Job missing s3 key"}), 400
+        task = info.get('task', 'transcribe')
+        language = info.get('language', 'he')
+        is_medical = bool(info.get("is_medical"))
+        if is_medical and _medical_uses_sagemaker_transcription():
+            upload_complete[job_id] = True
+            _mark_upload_complete(job_id)
+            pending_trigger[job_id] = "triggered"
+            _set_trigger_state(job_id, "triggered")
+            public_base = _public_base_url(request)
+            t = threading.Thread(
+                target=_submit_sagemaker_async_job,
+                kwargs={
+                    "job_id": job_id,
+                    "s3_key": s3_key,
+                    "task": task,
+                    "language": language,
+                    "diarization": False,
+                    "is_medical": True,
+                    "bucket": info.get("bucket"),
+                    "public_base": public_base,
+                    "transcription_options": info.get("transcription_options") or {},
+                    "for_simulation": False,
+                },
+                daemon=True,
+            )
+            t.start()
+            return jsonify({
+                "status": "retry_started",
+                "job_id": job_id,
+                "engine": "sagemaker_async",
+            }), 202
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
         api_key = os.environ.get('RUNPOD_API_KEY')
         if not endpoint_id or not api_key:
             return jsonify({"status": "error", "message": "RunPod not configured"}), 503
-        task = info.get('task', 'transcribe')
-        language = info.get('language', 'he')
         public_base = _public_base_url(request)
         callback_url = f"{public_base}/api/gpu_callback"
         start_callback_url = f"{public_base}/api/gpu_started"
