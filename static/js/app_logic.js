@@ -6161,6 +6161,27 @@ function startProcessingStateUI() {
     }, 15000);
 }
 
+/** Stop polling/UI for the current in-flight job without waiting for gpu_callback (browser console: qsDismissActiveJob()). */
+window.qsDismissActiveJob = function () {
+    if (window._checkStatusPollInterval) {
+        clearInterval(window._checkStatusPollInterval);
+        window._checkStatusPollInterval = null;
+    }
+    window.isTriggering = false;
+    window._triggerRetriedForJobId = null;
+    qsStopFakeProgress('dismiss_active_job');
+    window._medicalWarmupSession = null;
+    window._medicalWarmupPromise = null;
+    ['activeJobId', 'pendingJobId', 'pendingS3Key'].forEach((k) => {
+        try { localStorage.removeItem(k); } catch (_) {}
+    });
+    if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI('dismiss_active_job');
+    const mb = document.getElementById('main-btn');
+    if (mb) mb.disabled = false;
+    if (typeof setDiarizationBusyState === 'function') setDiarizationBusyState(false);
+    console.info('[qs] dismissed active job; lastJobId/lastS3Key kept for library reopen');
+};
+
 /** Reset the main screen to initial state (as on first load) — e.g. when user clicks Upload to start a new file. */
 function resetScreenToInitial() {
     try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}

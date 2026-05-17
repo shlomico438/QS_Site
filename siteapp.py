@@ -4345,6 +4345,28 @@ def _simulation_uses_sagemaker_async():
     return bool(_sagemaker_sim_endpoint_name())
 
 
+def _ascii_safe_job_suffix(name: str, max_len: int = 96) -> str:
+    """ASCII-only tail for job_id / S3 keys (SageMaker InferenceId and SigV4 paths break on Hebrew/spaces)."""
+    raw = str(name or '').strip()
+    base = raw.rsplit('.', 1)[0] if raw and '.' in raw else raw
+    safe = re.sub(r'[^a-zA-Z0-9._-]+', '_', base)
+    safe = re.sub(r'_+', '_', safe).strip('._-')
+    if not safe or not re.search(r'[a-zA-Z0-9]', safe):
+        safe = f"audio_{uuid.uuid4().hex[:12]}"
+    return safe[:max_len]
+
+
+def _build_transcription_job_id(filename: str) -> str:
+    base_name, _extension = os.path.splitext(str(filename or 'audio'))
+    return f"job_{int(time.time())}_{_ascii_safe_job_suffix(base_name)}"
+
+
+def _sagemaker_inference_id(job_id: str, prefix: str) -> str:
+    safe = re.sub(r'[^a-zA-Z0-9._-]+', '_', str(job_id or ''))
+    safe = re.sub(r'_+', '_', safe).strip('_') or uuid.uuid4().hex
+    return f"{prefix}-{safe}"[:120]
+
+
 def _medical_uses_sagemaker_transcription():
     """Medical jobs use SageMaker async instead of RunPod when configured."""
     if not _sagemaker_medical_endpoint_name():
@@ -4355,6 +4377,19 @@ def _medical_uses_sagemaker_transcription():
     if engine == 'sagemaker':
         return True
     return str(os.environ.get('MEDICAL_USE_SAGEMAKER', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _sagemaker_async_manifest_bucket(audio_bucket):
+    """S3 bucket for SageMaker async InputLocation JSON.
+
+    Use the general app bucket (no KMS) so the endpoint execution role can read the manifest.
+    Audio paths inside the JSON still point at the HIPAA bucket when is_medical.
+    """
+    return (
+        (os.environ.get('SAGEMAKER_REQUEST_BUCKET') or '').strip()
+        or (os.environ.get('S3_BUCKET') or '').strip()
+        or str(audio_bucket or '').strip()
+    )
 
 
 def _sagemaker_callback_base(public_base=None):
@@ -4423,26 +4458,25 @@ def _submit_sagemaker_async_job(
             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=region,
         )
-        request_bucket = str(bucket or (os.environ.get('S3_BUCKET') or '')).strip()
-        if not request_bucket:
+        audio_bucket = str(bucket or (os.environ.get('S3_BUCKET') or '')).strip()
+        if not audio_bucket:
             raise RuntimeError('Missing S3 bucket for SageMaker async request payload')
+        manifest_bucket = _sagemaker_async_manifest_bucket(audio_bucket)
+        if not manifest_bucket:
+            raise RuntimeError('Missing manifest bucket for SageMaker async (set S3_BUCKET)')
 
         request_key = (
             f"users/{_extract_user_id_from_s3_key(s3_key) or 'anonymous'}"
             f"/{request_subfolder}/{job_id}_{uuid.uuid4().hex}.json"
         )
-        put_kwargs = {
-            'Bucket': request_bucket,
-            'Key': request_key,
-            'Body': payload_json,
-            'ContentType': 'application/json',
-        }
-        kms_arn = _kms_key_arn() if is_medical and not for_simulation else ''
-        if kms_arn and request_bucket == MEDICAL_S3_BUCKET:
-            put_kwargs['ServerSideEncryption'] = 'aws:kms'
-            put_kwargs['SSEKMSKeyId'] = kms_arn
-        s3_client.put_object(**put_kwargs)
-        input_location = f"s3://{request_bucket}/{request_key}"
+        # Manifest must be readable by SageMaker role — do not KMS-encrypt the small JSON stub.
+        s3_client.put_object(
+            Bucket=manifest_bucket,
+            Key=request_key,
+            Body=payload_json,
+            ContentType='application/json',
+        )
+        input_location = f"s3://{manifest_bucket}/{request_key}"
 
         smrt = boto3.client(
             'sagemaker-runtime',
@@ -4455,7 +4489,7 @@ def _submit_sagemaker_async_job(
             'InputLocation': input_location,
             'ContentType': 'application/json',
             'Accept': 'application/json',
-            'InferenceId': f"{inference_prefix}-{job_id}",
+            'InferenceId': _sagemaker_inference_id(job_id, inference_prefix),
         }
         if for_simulation:
             output_location = (os.environ.get('SAGEMAKER_SIM_ASYNC_OUTPUT_S3_URI') or '').strip()
@@ -4479,8 +4513,20 @@ def _submit_sagemaker_async_job(
             input_location,
             output_uri[:220],
         )
+        if job_id:
+            pinfo = pending_job_info.get(job_id) or {}
+            pinfo['sagemaker_submitted'] = True
+            pinfo['engine'] = 'sagemaker_async'
+            pending_job_info[job_id] = pinfo
         return True
     except Exception as e:
+        if job_id:
+            pending_trigger[job_id] = "failed"
+            _set_trigger_state(job_id, "failed")
+            pinfo = pending_job_info.get(job_id) or {}
+            pinfo['sagemaker_submitted'] = False
+            pinfo['sagemaker_error'] = str(e)[:500]
+            pending_job_info[job_id] = pinfo
         if for_simulation:
             strict = str(os.environ.get('SAGEMAKER_SIM_STRICT', 'true')).lower() in ('1', 'true', 'yes')
             if strict:
@@ -4575,7 +4621,13 @@ def sign_s3():
         )
 
         base_name, extension = os.path.splitext(filename)
-        job_id = f"job_{int(time.time())}_{base_name}"
+        job_id = _build_transcription_job_id(filename)
+        if base_name != _ascii_safe_job_suffix(base_name):
+            logging.info(
+                "sign_s3: sanitized job_id for non-ASCII filename (original_base=%r -> job_id=%s)",
+                base_name[:80],
+                job_id,
+            )
         s3_key = f"{storage_profile['input_prefix']}/{job_id}{extension}"
         params = {
             'Bucket': bucket,
@@ -4592,14 +4644,20 @@ def sign_s3():
             ExpiresIn=3600
         )
 
-        # Trigger RunPod early (before upload) so container warms during upload.
-        # Skip when medical uses SageMaker, RUNPOD_SKIP_WARMUP, or audio-profile must run first (regular only).
-        skip_warmup_effective = (
+        # Warm GPU during upload: RunPod early /run, or SageMaker async at sign-s3 for medical (unless RUNPOD_SKIP_WARMUP).
+        if is_medical and _medical_uses_sagemaker_transcription():
+            _start_medical_sagemaker_warmup_if_configured(
+                job_id,
+                s3_key,
+                request,
+                language=data.get('language', 'he'),
+                bucket=bucket,
+                transcription_options=transcription_options,
+            )
+        elif not (
             _runpod_skip_warmup()
             or (_audio_profile_detection_enabled() and not is_medical)
-            or (is_medical and _medical_uses_sagemaker_transcription())
-        )
-        if not skip_warmup_effective:
+        ):
             _start_trigger_if_configured(
                 job_id=job_id,
                 s3_key=s3_key,
@@ -4614,12 +4672,11 @@ def sign_s3():
             )
         else:
             logging.info(
-                "Skipping sign-s3 warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s, medical_sagemaker=%s)",
+                "Skipping sign-s3 RunPod warmup for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s)",
                 job_id,
                 _runpod_skip_warmup(),
                 _audio_profile_detection_enabled(),
                 is_medical,
-                _medical_uses_sagemaker_transcription(),
             )
 
         return jsonify({
@@ -4735,7 +4792,13 @@ def sign_s3_multipart_init():
     )
 
     base_name, extension = os.path.splitext(filename or 'upload')
-    job_id = f"job_{int(time.time())}_{base_name}"
+    job_id = _build_transcription_job_id(filename or 'upload')
+    if base_name != _ascii_safe_job_suffix(base_name):
+        logging.info(
+            "sign_s3_multipart_init: sanitized job_id for non-ASCII filename (original_base=%r -> job_id=%s)",
+            base_name[:80],
+            job_id,
+        )
     s3_key = f"{storage_profile['input_prefix']}/{job_id}{extension}"
 
     create_params = {
@@ -4754,12 +4817,19 @@ def sign_s3_multipart_init():
         logging.exception("create_multipart_upload failed")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    skip_warmup_effective = (
+    if is_medical and _medical_uses_sagemaker_transcription():
+        _start_medical_sagemaker_warmup_if_configured(
+            job_id,
+            s3_key,
+            request,
+            language=data.get('language', 'he'),
+            bucket=bucket,
+            transcription_options=transcription_options,
+        )
+    elif not (
         _runpod_skip_warmup()
         or (_audio_profile_detection_enabled() and not is_medical)
-        or (is_medical and _medical_uses_sagemaker_transcription())
-    )
-    if not skip_warmup_effective:
+    ):
         _start_trigger_if_configured(
             job_id=job_id,
             s3_key=s3_key,
@@ -4771,15 +4841,6 @@ def sign_s3_multipart_init():
             is_medical=is_medical,
             bucket=bucket,
             transcription_options=transcription_options,
-        )
-    else:
-        logging.info(
-            "Skipping multipart-init warmup trigger for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s, medical_sagemaker=%s)",
-            job_id,
-            _runpod_skip_warmup(),
-            _audio_profile_detection_enabled(),
-            is_medical,
-            _medical_uses_sagemaker_transcription(),
         )
 
     return jsonify({
@@ -4995,6 +5056,52 @@ def sign_s3_multipart_abort():
         logging.warning("abort_multipart_upload: %s", e)
 
     return jsonify({'status': 'ok'})
+
+
+def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, language='he', bucket=None, transcription_options=None):
+    """Queue SageMaker async at sign-s3 (during recording) so endpoint scales before upload finishes."""
+    if SIMULATION_MODE or not _medical_uses_sagemaker_transcription():
+        return
+    if _runpod_skip_warmup():
+        logging.info(
+            "Skipping sign-s3 SageMaker warmup for %s (RUNPOD_SKIP_WARMUP defers invoke to trigger_processing)",
+            job_id,
+        )
+        return
+    public_base = _public_base_url(request)
+    pending_job_info[job_id] = {
+        "input_s3_key": s3_key,
+        "bucket": bucket,
+        "is_medical": True,
+        "user_id": _extract_user_id_from_s3_key(s3_key),
+        "task": "transcribe",
+        "language": language,
+        "transcription_options": transcription_options or {},
+        "engine": "sagemaker_async",
+        "sagemaker_submitted": False,
+    }
+    pending_trigger[job_id] = "queued"
+    pending_trigger_at[job_id] = time.time()
+    _set_trigger_state(job_id, "queued", queued_at=pending_trigger_at[job_id])
+
+    def _run():
+        _submit_sagemaker_async_job(
+            job_id,
+            s3_key,
+            task='transcribe',
+            language=language,
+            diarization=False,
+            is_medical=True,
+            bucket=bucket,
+            public_base=public_base,
+            transcription_options=transcription_options,
+            for_simulation=False,
+        )
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.daemon = True
+    t.start()
+    logging.info("Medical SageMaker warmup queued at sign-s3 for job_id=%s", job_id)
 
 
 def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None, transcription_options=None):
@@ -5325,12 +5432,10 @@ def trigger_processing():
         if is_medical and _medical_uses_sagemaker_transcription():
             task = data.get('task', 'transcribe')
             language = data.get('language', 'he')
-            diarization = data.get('diarization', False)
             upload_complete[job_id] = True
             _mark_upload_complete(job_id)
-            pending_trigger[job_id] = "triggered"
-            _set_trigger_state(job_id, "triggered")
-            pending_job_info[job_id] = {
+            pinfo = pending_job_info.get(job_id) or {}
+            pinfo.update({
                 "input_s3_key": s3_key,
                 "bucket": target_bucket,
                 "is_medical": True,
@@ -5339,30 +5444,50 @@ def trigger_processing():
                 "language": language,
                 "transcription_options": transcription_options or {},
                 "engine": "sagemaker_async",
-            }
-            public_base = _public_base_url(request)
-            t = threading.Thread(
-                target=_submit_sagemaker_async_job,
-                kwargs={
-                    "job_id": job_id,
-                    "s3_key": s3_key,
-                    "task": task,
-                    "language": language,
-                    "diarization": diarization,
-                    "is_medical": True,
-                    "bucket": target_bucket,
-                    "public_base": public_base,
-                    "transcription_options": transcription_options,
-                    "for_simulation": False,
-                },
-                daemon=True,
+            })
+            pending_job_info[job_id] = pinfo
+            already_submitted = bool(pinfo.get('sagemaker_submitted'))
+            if pinfo.get('sagemaker_error') and not already_submitted:
+                pending_trigger[job_id] = "failed"
+                _set_trigger_state(job_id, "failed")
+                return jsonify({
+                    "status": "error",
+                    "message": pinfo.get('sagemaker_error'),
+                    "engine": "sagemaker_async",
+                }), 502
+            if not already_submitted:
+                public_base = _public_base_url(request)
+                diarization = data.get('diarization', False)
+                t = threading.Thread(
+                    target=_submit_sagemaker_async_job,
+                    kwargs={
+                        "job_id": job_id,
+                        "s3_key": s3_key,
+                        "task": task,
+                        "language": language,
+                        "diarization": diarization,
+                        "is_medical": True,
+                        "bucket": target_bucket,
+                        "public_base": public_base,
+                        "transcription_options": transcription_options,
+                        "for_simulation": False,
+                    },
+                    daemon=True,
+                )
+                t.start()
+            pending_trigger[job_id] = "triggered"
+            _set_trigger_state(job_id, "triggered")
+            logging.info(
+                "trigger_processing medical sagemaker job_id=%s upload_complete=True already_submitted=%s",
+                job_id,
+                already_submitted,
             )
-            t.start()
             return jsonify({
                 "status": "started",
                 "job_id": job_id,
                 "engine": "sagemaker_async",
                 "endpoint": _sagemaker_medical_endpoint_name(),
+                "sagemaker_already_submitted": already_submitted,
                 "transcription_options": transcription_options,
                 **_audio_profile_api_fields,
             }), 202
