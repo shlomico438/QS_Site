@@ -587,6 +587,7 @@ function qsIsSevereServerPollError(status) {
 /** Start polling check_status and trigger_status for a job (used after trigger and on retry). */
 window.startJobStatusPolling = function(jobId) {
     if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+    window._pollingJobId = jobId;
     // Slower cadence + server-side row cache keeps Supabase load and CPU down (was ~4s + frequent trigger_status).
     const pollMs = 9000;
     const triggerStatusEveryNPolls = 3;
@@ -611,7 +612,18 @@ window.startJobStatusPolling = function(jobId) {
 
     window._checkStatusPollInterval = setInterval(async () => {
         polls++;
-        if (!localStorage.getItem('activeJobId')) {
+        if (window._pollingJobId !== jobId) {
+            if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+            window._checkStatusPollInterval = null;
+            return;
+        }
+        const activeNow = String(localStorage.getItem('activeJobId') || '').trim();
+        if (activeNow && activeNow !== jobId) {
+            if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
+            window._checkStatusPollInterval = null;
+            return;
+        }
+        if (!activeNow) {
             if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
             window._checkStatusPollInterval = null;
             return;
@@ -6914,6 +6926,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function beginMedicalRecordingWarmup(mimeRaw) {
         if (!isMedicalModeEnabled()) return null;
+        if (typeof window.qsDismissActiveJob === 'function') {
+            window.qsDismissActiveJob();
+        }
         if (window._medicalWarmupPromise) return window._medicalWarmupPromise;
         const warmupToken = (Number(window._medicalWarmupToken || 0) + 1);
         window._medicalWarmupToken = warmupToken;
@@ -6954,6 +6969,8 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem('lastS3Key', session.s3Key);
             localStorage.setItem('pendingS3Key', session.s3Key);
             localStorage.setItem('lastJobId', session.jobId);
+            localStorage.setItem('activeJobId', session.jobId);
+            window.isTriggering = false;
             if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId: session.jobId, s3Key: session.s3Key });
             try { if (typeof socket !== 'undefined') socket.emit('join', { room: session.jobId }); } catch (_) {}
             qsUploadTraceErr('medical_recording_warmup_ready', { jobId: session.jobId, s3Key: session.s3Key });
