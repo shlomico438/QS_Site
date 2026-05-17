@@ -1164,12 +1164,45 @@ async function qsS3MultipartUploadFile(opts) {
     }
 }
 
+const QS_ACTIVE_JOB_STARTED_KEY = 'activeJobStartedAt';
+/** Match server CHECK_STATUS_MAX_AFTER_QUEUED_SEC (~90m); do not resume stale jobs on refresh. */
+const QS_ACTIVE_JOB_RESUME_MAX_MS = 90 * 60 * 1000;
+
+window.qsSetActiveJob = function (jobId) {
+    const id = String(jobId || '').trim();
+    if (!id) return;
+    try {
+        localStorage.setItem('activeJobId', id);
+        localStorage.setItem(QS_ACTIVE_JOB_STARTED_KEY, String(Date.now()));
+    } catch (_) {}
+};
+
+window.qsClearActiveJob = function () {
+    ['activeJobId', 'pendingJobId', 'pendingS3Key', QS_ACTIVE_JOB_STARTED_KEY].forEach((k) => {
+        try { localStorage.removeItem(k); } catch (_) {}
+    });
+};
+
+/** Active job worth resuming after refresh (recent + not dismissed). */
+window.qsGetActiveJobForResume = function () {
+    const jobId = String(localStorage.getItem('activeJobId') || '').trim();
+    if (!jobId) return '';
+    const started = parseInt(localStorage.getItem(QS_ACTIVE_JOB_STARTED_KEY) || '0', 10);
+    if (!started || (Date.now() - started) > QS_ACTIVE_JOB_RESUME_MAX_MS) {
+        window.qsClearActiveJob();
+        return '';
+    }
+    return jobId;
+};
+
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
 if (typeof socket !== 'undefined') {
     socket.on('connect', () => {
-        const savedJobId = localStorage.getItem('activeJobId');
+        const savedJobId = typeof window.qsGetActiveJobForResume === 'function'
+            ? window.qsGetActiveJobForResume()
+            : String(localStorage.getItem('activeJobId') || '').trim();
         if (savedJobId) {
-            console.log("🔄 Re-joining room:", savedJobId);
+            console.log('🔄 Re-joining room:', savedJobId);
             socket.emit('join', { room: savedJobId });
         }
     });
@@ -5278,7 +5311,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isMedicalEntry = pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
         try {
-            const activeJobId = String(localStorage.getItem('activeJobId') || '').trim();
+            const activeJobId = typeof window.qsGetActiveJobForResume === 'function'
+                ? window.qsGetActiveJobForResume()
+                : String(localStorage.getItem('activeJobId') || '').trim();
             if (activeJobId) {
                 window.isTriggering = true;
                 if (typeof window.startJobStatusPolling === 'function') {
@@ -6184,9 +6219,13 @@ window.qsDismissActiveJob = function () {
     qsStopFakeProgress('dismiss_active_job');
     window._medicalWarmupSession = null;
     window._medicalWarmupPromise = null;
-    ['activeJobId', 'pendingJobId', 'pendingS3Key'].forEach((k) => {
-        try { localStorage.removeItem(k); } catch (_) {}
-    });
+    if (typeof window.qsClearActiveJob === 'function') {
+        window.qsClearActiveJob();
+    } else {
+        ['activeJobId', 'pendingJobId', 'pendingS3Key'].forEach((k) => {
+            try { localStorage.removeItem(k); } catch (_) {}
+        });
+    }
     if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI('dismiss_active_job');
     const mb = document.getElementById('main-btn');
     if (mb) mb.disabled = false;
@@ -6969,8 +7008,6 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem('lastS3Key', session.s3Key);
             localStorage.setItem('pendingS3Key', session.s3Key);
             localStorage.setItem('lastJobId', session.jobId);
-            localStorage.setItem('activeJobId', session.jobId);
-            window.isTriggering = false;
             if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId: session.jobId, s3Key: session.s3Key });
             try { if (typeof socket !== 'undefined') socket.emit('join', { room: session.jobId }); } catch (_) {}
             qsUploadTraceErr('medical_recording_warmup_ready', { jobId: session.jobId, s3Key: session.s3Key });
@@ -7039,7 +7076,6 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('lastS3Key', session.s3Key);
         localStorage.setItem('pendingS3Key', session.s3Key);
         localStorage.setItem('lastJobId', session.jobId);
-        localStorage.setItem('activeJobId', session.jobId);
         window._lastProcessedJobId = null;
         const dbId = localStorage.getItem('lastJobDbId');
         if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
@@ -7059,6 +7095,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, session.jobId);
         if (!triggerRes.ok) {
             throw new Error(triggerData.message || triggerData.error || `Server error (${triggerRes.status})`);
+        }
+        if (typeof window.qsSetActiveJob === 'function') {
+            window.qsSetActiveJob(session.jobId);
+        } else {
+            localStorage.setItem('activeJobId', session.jobId);
         }
         if (typeof startFakeProgress === 'function') startFakeProgress();
         if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(session.jobId);
@@ -7265,22 +7306,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (!window._medicalOsInterruptListenersBound) {
         window._medicalOsInterruptListenersBound = true;
+        // Resume after real OS interrupts (phone call, mic revoked) — not tab switches.
         const onReturnToApp = () => {
             if (document.visibilityState !== 'visible') return;
+            if (!window._medicalSystemRecordingInterrupted) return;
+            const reason = String(window._medicalPauseReason || '');
+            if (reason === 'visibility_hidden' || reason === 'window_blur') return;
             setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 50);
         };
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') {
-                try { pauseMedicalRecordingForInterruption('visibility_hidden'); } catch (_) {}
-                return;
-            }
-            onReturnToApp();
-        });
-        window.addEventListener('blur', () => {
-            try { pauseMedicalRecordingForInterruption('window_blur'); } catch (_) {}
+            if (document.visibilityState === 'visible') onReturnToApp();
         });
         window.addEventListener('focus', onReturnToApp);
         window.addEventListener('pageshow', () => {
+            if (!window._medicalSystemRecordingInterrupted) return;
             setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
         });
     }
@@ -7323,6 +7362,8 @@ document.addEventListener('DOMContentLoaded', () => {
         (stream.getAudioTracks ? stream.getAudioTracks() : []).forEach((track) => {
             try {
                 track.addEventListener('mute', () => {
+                    // Browsers may briefly mute on tab blur; keep recording unless track is dead.
+                    if (document.visibilityState === 'hidden') return;
                     pauseMedicalRecordingForInterruption('track_mute');
                 });
                 track.addEventListener('unmute', () => {
@@ -7927,7 +7968,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // self-stop mid-flight before GPT translate (user saw "animation died" while chunks ran).
         setDiarizationBusyState(false);
         setSeoHomeContentVisibility(false);
-        localStorage.removeItem('activeJobId');
+        if (typeof window.qsClearActiveJob === 'function') {
+            window.qsClearActiveJob();
+        } else {
+            localStorage.removeItem('activeJobId');
+        }
         qsStopFakeProgress('handle_job_update_start');
 
         const statusTxt = document.getElementById('upload-status');
