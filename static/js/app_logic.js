@@ -6842,6 +6842,13 @@ document.addEventListener('DOMContentLoaded', () => {
         wf.rafId = null;
     }
 
+    function resetMedicalWaveformClock() {
+        const wf = window._medicalWave;
+        if (!wf) return;
+        wf.lastTs = 0;
+        wf.wasHidden = false;
+    }
+
     function stopMedicalWaveform(keepCanvas = true) {
         const wf = window._medicalWave;
         if (!wf) return;
@@ -6917,7 +6924,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             window._medicalWave = {
                 canvas, ctx, audioCtx, analyser, dataArray, sourceNode,
-                rafId: null, lastTs: 0
+                rafId: null, lastTs: 0, wasHidden: false
             };
         }
 
@@ -6925,8 +6932,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const wf = window._medicalWave;
             if (!wf || window._medicalRecorderPaused || !window._medicalRecorder) return;
             const { canvas: c, ctx: x, analyser: a, dataArray: arr } = wf;
+            if (document.visibilityState === 'hidden') {
+                // Recording continues in the background, but drawing is throttled.
+                // Do not scroll the waveform while hidden; otherwise returning to
+                // the tab creates an artificial blank gap.
+                wf.wasHidden = true;
+                wf.lastTs = 0;
+                wf.rafId = requestAnimationFrame(draw);
+                return;
+            }
             const prev = wf.lastTs || ts;
-            const dt = Math.max(0.001, (ts - prev) / 1000);
+            let dt = Math.max(0.001, (ts - prev) / 1000);
+            if (wf.wasHidden || dt > 0.25) {
+                dt = 1 / 60;
+                wf.wasHidden = false;
+            }
             wf.lastTs = ts;
             const shiftPx = Math.max(1, Math.round(28 * dt)); // approx 28px/sec to the left
             x.drawImage(c, -shiftPx, 0);
@@ -7315,7 +7335,10 @@ document.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 50);
         };
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') onReturnToApp();
+            if (document.visibilityState === 'visible') {
+                resetMedicalWaveformClock();
+                onReturnToApp();
+            }
         });
         window.addEventListener('focus', onReturnToApp);
         window.addEventListener('pageshow', () => {
