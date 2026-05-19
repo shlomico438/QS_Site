@@ -4134,9 +4134,112 @@ def api_export_docx():
         return jsonify({"error": str(e)}), 500
 
 
-# --- GPU Callback: bulletproof contract (return 200 only after we've saved) ---
-# Worker must POST here; only 200 + body.ok=true means "app has received and stored the result".
-# See docs/GPU_CALLBACK_API.md for full contract.
+# --- GPU Callback: ack fast to worker; persist in background (see docs/GPU_CALLBACK_API.md) ---
+def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base):
+    """S3 persist, DB timings, email — runs after HTTP 200 ack so the worker is not blocked."""
+    result_s3_key = None
+    try:
+        if input_s3_key:
+            transcript_payload = {"segments": segments}
+            w, c = _flatten_words_from_segments(segments)
+            if w is not None and c is not None:
+                transcript_payload["words"] = w
+                transcript_payload["captions"] = c
+            preserved_fmt = _existing_formatted_norm_for_merge(user_id, input_s3_key)
+            if preserved_fmt:
+                transcript_payload["formatted"] = preserved_fmt
+                logging.info(
+                    "gpu_callback: merged existing formatted onto new segments (input_s3_key suffix=%s)",
+                    input_s3_key.rsplit('/', 1)[-1][:80],
+                )
+            result_s3_key = _put_transcript_json_to_s3(
+                user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt'
+            )
+            result_dict = dict(data.get('result') or result) if isinstance(result, dict) else {}
+            result_dict['result_s3_key'] = result_s3_key
+            data['result'] = result_dict
+            job_results_cache[job_id] = data
+            _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
+            _schedule_runpod_min_workers(0)
+    except Exception as e:
+        logging.exception("gpu_callback background save failed for %s", job_id)
+        fail_payload = {
+            "jobId": job_id,
+            "status": "failed",
+            "error": "Failed to save result on server",
+        }
+        job_results_cache[job_id] = fail_payload
+        socketio.emit('job_status_update', fail_payload, room=job_id)
+        return
+
+    now = time.time()
+    file_timings = _get_trigger_timings(job_id)
+    mem_timings = job_timings.pop(job_id, {})
+    db_timings = _get_job_timings_from_db(job_id, user_id) if user_id else {}
+    queued_at = file_timings.get("queued_at") or pending_trigger_at.get(job_id, t0)
+    trigger_completed_at = file_timings.get("trigger_completed_at") or mem_timings.get("trigger_completed_at")
+    started_at = file_timings.get("gpu_started_at") or gpu_started_at.pop(job_id, None) or db_timings.get("gpu_started_at")
+
+    total_sec = now - queued_at
+    trigger_sec = mem_timings.get("trigger_sec") or file_timings.get("trigger_sec") or db_timings.get("trigger_sec")
+
+    waiting_for_run = None
+    if trigger_completed_at is not None and started_at is not None:
+        waiting_for_run = started_at - trigger_completed_at
+
+    runpod_process = (now - started_at) if started_at is not None else None
+    worker_timing = (result if isinstance(result, dict) else {}).get("timing") or {}
+    if not isinstance(worker_timing, dict):
+        worker_timing = {}
+
+    _set_trigger_state(job_id, "triggered")
+    _set_last_callback_for_gpt(job_id, now, user_id=user_id)
+    _update_job_timings(
+        job_id,
+        user_id=user_id,
+        trigger_sec=trigger_sec,
+        download_sec=worker_timing.get("download_sec"),
+        runpod_wakeup_sec=worker_timing.get("wakeup_sec") or waiting_for_run,
+        runpod_process_sec=runpod_process,
+        gpt_sec=worker_timing.get("gpt_sec"),
+        total_sec=total_sec,
+    )
+
+    try:
+        if job_id not in transcription_email_sent:
+            notify = _get_job_notification_info(job_id, user_id=user_id)
+            to_email = (notify.get("user_email") or "").strip()
+            open_job_id = (notify.get("job_id") or job_id)
+            is_medical_job = bool(
+                ('/raw-audio/' in str(input_s3_key or ''))
+                or ('/summaries/' in str(input_s3_key or ''))
+                or str(input_s3_key or '').startswith('medical/')
+            )
+            if to_email and open_job_id:
+                from urllib.parse import quote
+                if is_medical_job:
+                    open_url = f"{public_base}/medical?open={quote(str(open_job_id), safe='')}"
+                else:
+                    open_url = f"{public_base}/?open={quote(str(open_job_id), safe='')}"
+                sent_ok = _send_transcription_ready_email(
+                    to_email,
+                    notify.get("user_name"),
+                    open_url,
+                    is_medical=is_medical_job,
+                )
+                if sent_ok:
+                    transcription_email_sent.add(job_id)
+    except Exception as _email_err:
+        logging.warning("transcription ready email flow failed for %s: %s", job_id, _email_err)
+
+    logging.info(
+        "gpu_callback background done job_id=%s result_s3_key=%s persist_sec=%.2f",
+        job_id,
+        (result_s3_key or '')[:80],
+        now - t0,
+    )
+
+
 @app.route('/api/gpu_callback', methods=['POST'])
 def gpu_callback():
     t0 = time.time()
@@ -4164,7 +4267,6 @@ def gpu_callback():
         logging.error("gpu_callback failure job_id=%s error=%s", job_id, fail_payload.get("error"))
         return jsonify({"ok": True}), 200
 
-    # Resolve input_s3_key and user_id (for S3 path)
     pending = pending_job_info.pop(job_id, None)
     if pending:
         input_s3_key = pending.get('input_s3_key') or ''
@@ -4173,33 +4275,6 @@ def gpu_callback():
         input_info = data.get('input') or {}
         input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
         user_id = _extract_user_id_from_s3_key(input_s3_key)
-
-    result_s3_key = None
-    s3_sec = 0.0
-    if input_s3_key:
-        try:
-            transcript_payload = {"segments": segments}
-            w, c = _flatten_words_from_segments(segments)
-            if w is not None and c is not None:
-                transcript_payload["words"] = w
-                transcript_payload["captions"] = c
-            preserved_fmt = _existing_formatted_norm_for_merge(user_id, input_s3_key)
-            if preserved_fmt:
-                transcript_payload["formatted"] = preserved_fmt
-                logging.info(
-                    "gpu_callback: merged existing formatted onto new segments (input_s3_key suffix=%s)",
-                    input_s3_key.rsplit('/', 1)[-1][:80],
-                )
-            result_s3_key = _put_transcript_json_to_s3(user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt')
-            result_dict = dict(result) if isinstance(result, dict) else {}
-            result_dict['result_s3_key'] = result_s3_key
-            data = dict(data)
-            data['result'] = result_dict
-            _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
-            _schedule_runpod_min_workers(0)
-        except Exception as e:
-            logging.exception("Failed to save job result to S3 for %s", job_id)
-            return jsonify({"ok": False, "error": "Failed to save result", "detail": str(e)}), 500
 
     data = dict(data)
     data.setdefault('result', {})
@@ -4210,103 +4285,33 @@ def gpu_callback():
 
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
-
-    # Build timing summary: read from metadata.qs_trigger, in-memory, or timing columns (DB survives multi-instance)
-    now = time.time()
-    file_timings = _get_trigger_timings(job_id)
-    mem_timings = job_timings.pop(job_id, {})
-    db_timings = _get_job_timings_from_db(job_id, user_id) if user_id else {}
-    queued_at = file_timings.get("queued_at") or pending_trigger_at.get(job_id, t0)
-    trigger_completed_at = file_timings.get("trigger_completed_at") or mem_timings.get("trigger_completed_at")
-    started_at = file_timings.get("gpu_started_at") or gpu_started_at.pop(job_id, None) or db_timings.get("gpu_started_at")
-
-    total_sec = now - queued_at
-    trigger_sec = mem_timings.get("trigger_sec") or file_timings.get("trigger_sec") or db_timings.get("trigger_sec")
-
-    # runpod wakeup = trigger to gpu_started (cold start; download happens after gpu_started)
-    waiting_for_run = None
-    if trigger_completed_at is not None and started_at is not None:
-        waiting_for_run = started_at - trigger_completed_at
-
-    runpod_process = None
-    if started_at is not None:
-        runpod_process = now - started_at
-
-    # Worker can send timing in result.timing: { download_sec, wakeup_sec, transcribe_sec, gpt_sec }
-    worker_timing = (result if isinstance(result, dict) else {}).get("timing") or {}
-    if not isinstance(worker_timing, dict):
-        worker_timing = {}
-
-    download_sec = worker_timing.get("download_sec")
-    wakeup_sec = worker_timing.get("wakeup_sec") or waiting_for_run
-    process_sec = runpod_process
-    gpt_sec = worker_timing.get("gpt_sec")
-
-    # So frontend handshake completes even if /api/gpu_started was never called; shared store for multi-worker
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
-    _set_trigger_state(job_id, "triggered")
 
-    # Store for GPT timing inference: api_translate_segments will log addendum when it completes
-    _set_last_callback_for_gpt(job_id, now, user_id=user_id)
-
-    # Persist PROCESS TIMING to DB (runpod_wakeup_sec, runpod_process_sec, gpt_sec; gpt filled when translate completes)
-    _update_job_timings(
-        job_id,
-        user_id=user_id,
-        trigger_sec=trigger_sec,
-        download_sec=download_sec,
-        runpod_wakeup_sec=wakeup_sec,
-        runpod_process_sec=process_sec,
-        gpt_sec=gpt_sec,
-        total_sec=total_sec,
+    public_base = _public_base_url(request)
+    t = threading.Thread(
+        target=_finalize_gpu_callback_background,
+        kwargs={
+            "job_id": job_id,
+            "data": data,
+            "segments": segments,
+            "result": result,
+            "input_s3_key": input_s3_key,
+            "user_id": user_id,
+            "t0": t0,
+            "public_base": public_base,
+        },
+        daemon=True,
     )
+    t.start()
 
-    # Optional transcription completion email.
-    # Sends once per runpod job id for this process lifetime.
-    try:
-        if job_id not in transcription_email_sent:
-            notify = _get_job_notification_info(job_id, user_id=user_id)
-            to_email = (notify.get("user_email") or "").strip()
-            open_job_id = (notify.get("job_id") or job_id)
-            is_medical_job = bool(
-                ('/raw-audio/' in str(input_s3_key or ''))
-                or ('/summaries/' in str(input_s3_key or ''))
-                or str(input_s3_key or '').startswith('medical/')
-            )
-            if to_email and open_job_id:
-                from urllib.parse import quote
-                public_base = _public_base_url(request)
-                if is_medical_job:
-                    open_url = f"{public_base}/medical?open={quote(str(open_job_id), safe='')}"
-                else:
-                    open_url = f"{public_base}/?open={quote(str(open_job_id), safe='')}"
-                sent_ok = _send_transcription_ready_email(
-                    to_email,
-                    notify.get("user_name"),
-                    open_url,
-                    is_medical=is_medical_job
-                )
-                if sent_ok:
-                    transcription_email_sent.add(job_id)
-                else:
-                    logging.warning("transcription ready email not sent for %s: SMTP send returned false", job_id)
-            else:
-                logging.warning(
-                    "transcription ready email skipped for %s: missing to_email or open_job_id (to_email=%s, open_job_id=%s)",
-                    job_id,
-                    bool(to_email),
-                    bool(open_job_id),
-                )
-    except Exception as _email_err:
-        logging.warning("transcription ready email flow failed for %s: %s", job_id, _email_err)
-
+    ack_ms = int((time.time() - t0) * 1000)
+    logging.info("gpu_callback ack job_id=%s segments=%s ack_ms=%s", job_id, len(segments), ack_ms)
     return jsonify({
         "ok": True,
         "received": True,
         "job_id": job_id,
-        "stage": "saved",
-        "result_s3_key": result_s3_key,
+        "stage": "accepted",
     }), 200
 
 

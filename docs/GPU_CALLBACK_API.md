@@ -83,11 +83,12 @@ Or with `result` and optional `timing` (for PROCESS TIMING summary):
 
 ## 3. Callback response (Site → worker)
 
-The Site returns **200 only after** it has:
+The Site returns **200 quickly** after:
 
 1. Validated `jobId` and `segments`.
-2. Saved the result to S3 (when `input_s3_key` is known).
-3. Stored the result in cache and emitted to the frontend.
+2. Stored the result in cache and emitted to the frontend (so the browser can start GPT/UI work).
+
+S3 persist, DB timings, and email run **in a background thread** so the worker is not blocked (~10s saved per job). The worker should treat **200 + `ok: true`** as “delivered”; `stage` may be `"accepted"` (ack) rather than `"saved"`.
 
 **Success (200):**
 
