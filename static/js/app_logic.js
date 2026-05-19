@@ -10463,7 +10463,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     if (!triggerRes.ok) {
                         console.log("trigger nack", triggerRes.status, triggerData);
                         console.log("❌ Triggering processing failed:", triggerRes.status, triggerData);
-                        const msg = triggerData.message || triggerData.error || `Server error (${triggerRes.status})`;
+                        const msg = triggerData.message || triggerData.error
+                            || (triggerRes.status === 502 && !triggerData.status
+                                ? 'Server timed out starting transcription. Please try again.'
+                                : `Server error (${triggerRes.status})`);
                         if (typeof showStatus === 'function') showStatus(msg, true);
                         const dbId2 = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');

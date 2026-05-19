@@ -2311,6 +2311,23 @@ def _mark_upload_complete(job_id):
         logging.warning("Could not persist upload_complete for %s: %s", job_id, e)
 
 
+def _persist_upload_and_trigger_async(job_id, trigger_status="triggered"):
+    """Persist upload/trigger to Supabase off the request thread (avoids gateway timeouts)."""
+    def _run():
+        _mark_upload_complete(job_id)
+        _set_trigger_state(job_id, trigger_status)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
+def _persist_upload_complete_async(job_id):
+    """Persist upload-complete only (preserve existing trigger status)."""
+    def _run():
+        _mark_upload_complete(job_id)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
 def _set_last_callback_for_gpt(job_id: str, at: float, user_id: str = None) -> None:
     """Store last gpu_callback job so api_translate_segments can infer GPT timing."""
     try:
@@ -5433,7 +5450,6 @@ def trigger_processing():
             task = data.get('task', 'transcribe')
             language = data.get('language', 'he')
             upload_complete[job_id] = True
-            _mark_upload_complete(job_id)
             pinfo = pending_job_info.get(job_id) or {}
             pinfo.update({
                 "input_s3_key": s3_key,
@@ -5445,16 +5461,16 @@ def trigger_processing():
                 "transcription_options": transcription_options or {},
                 "engine": "sagemaker_async",
             })
+            stale_warmup_error = pinfo.get('sagemaker_error')
+            if stale_warmup_error and not pinfo.get('sagemaker_submitted'):
+                logging.info(
+                    "trigger_processing medical sagemaker retry after warmup error job_id=%s err=%s",
+                    job_id,
+                    str(stale_warmup_error)[:200],
+                )
+                pinfo.pop('sagemaker_error', None)
             pending_job_info[job_id] = pinfo
             already_submitted = bool(pinfo.get('sagemaker_submitted'))
-            if pinfo.get('sagemaker_error') and not already_submitted:
-                pending_trigger[job_id] = "failed"
-                _set_trigger_state(job_id, "failed")
-                return jsonify({
-                    "status": "error",
-                    "message": pinfo.get('sagemaker_error'),
-                    "engine": "sagemaker_async",
-                }), 502
             if not already_submitted:
                 public_base = _public_base_url(request)
                 diarization = data.get('diarization', False)
@@ -5476,7 +5492,8 @@ def trigger_processing():
                 )
                 t.start()
             pending_trigger[job_id] = "triggered"
-            _set_trigger_state(job_id, "triggered")
+            pending_trigger_at[job_id] = time.time()
+            _persist_upload_and_trigger_async(job_id, "triggered")
             logging.info(
                 "trigger_processing medical sagemaker job_id=%s upload_complete=True already_submitted=%s",
                 job_id,
@@ -5494,7 +5511,7 @@ def trigger_processing():
 
         # Trigger was already started at sign-s3 (before upload); signal upload complete for worker
         upload_complete[job_id] = True
-        _mark_upload_complete(job_id)
+        _persist_upload_complete_async(job_id)
         logging.info(
             "upload_complete set for job_id=%s (worker upload_status will see complete); s3_key_suffix=%s",
             job_id,
@@ -5625,9 +5642,12 @@ def retry_trigger():
         is_medical = bool(info.get("is_medical"))
         if is_medical and _medical_uses_sagemaker_transcription():
             upload_complete[job_id] = True
-            _mark_upload_complete(job_id)
             pending_trigger[job_id] = "triggered"
-            _set_trigger_state(job_id, "triggered")
+            pending_trigger_at[job_id] = time.time()
+            _persist_upload_and_trigger_async(job_id, "triggered")
+            info = dict(info)
+            info.pop('sagemaker_error', None)
+            pending_job_info[job_id] = info
             public_base = _public_base_url(request)
             t = threading.Thread(
                 target=_submit_sagemaker_async_job,
