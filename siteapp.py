@@ -2619,12 +2619,12 @@ def check_job_status(job_id):
         print(f"馃攷 Client checked status for {job_id} -> Found completed result!")
         return jsonify(job_results_cache[job_id])
 
-    # If trigger already failed, surface it immediately.
-    persisted_status, _ = _get_trigger_state(job_id)
-    mem_status = pending_trigger.get(job_id)
-    status = persisted_status or mem_status
+    # If trigger failed, surface it (merge DB + memory so stale warmup "failed" does not win over retry).
+    status, _ = _resolve_trigger_status_for_poll(job_id)
     if status == "failed":
-        return jsonify({"jobId": job_id, "status": "failed", "error": "Processing trigger failed"}), 200
+        pinfo = pending_job_info.get(job_id) or {}
+        err = (pinfo.get('sagemaker_error') or '').strip() or 'Processing trigger failed'
+        return jsonify({"jobId": job_id, "status": "failed", "error": err}), 200
 
     # Guard against endless "processing" when callback is never received.
     timings = _get_trigger_timings(job_id)
@@ -4133,10 +4133,7 @@ def api_export_docx():
         return jsonify({"error": str(e)}), 500
 
 
-# --- 1. Add Global Cache at the top ---
-job_results_cache = {}
-
-# --- 2. GPU Callback: bulletproof contract (return 200 only after we've saved) ---
+# --- GPU Callback: bulletproof contract (return 200 only after we've saved) ---
 # Worker must POST here; only 200 + body.ok=true means "app has received and stored the result".
 # See docs/GPU_CALLBACK_API.md for full contract.
 @app.route('/api/gpu_callback', methods=['POST'])
@@ -4147,9 +4144,24 @@ def gpu_callback():
     if not job_id:
         return jsonify({"ok": False, "error": "jobId required"}), 400
     result = data.get('result') or {}
+    callback_status = str(data.get('status') or '').strip().lower()
+    callback_error = str(data.get('error') or '').strip()
     segments = result.get('segments') or data.get('segments') or []
     if not isinstance(segments, list):
         return jsonify({"ok": False, "error": "segments must be an array"}), 400
+
+    if callback_status == 'failed' or callback_error:
+        pending_trigger[job_id] = "failed"
+        _set_trigger_state(job_id, "failed")
+        fail_payload = {
+            "jobId": job_id,
+            "status": "failed",
+            "error": callback_error or "Transcription failed on worker",
+        }
+        job_results_cache[job_id] = fail_payload
+        socketio.emit('job_status_update', fail_payload, room=job_id)
+        logging.error("gpu_callback failure job_id=%s error=%s", job_id, fail_payload.get("error"))
+        return jsonify({"ok": True}), 200
 
     # Resolve input_s3_key and user_id (for S3 path)
     pending = pending_job_info.pop(job_id, None)

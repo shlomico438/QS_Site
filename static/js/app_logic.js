@@ -680,6 +680,9 @@ window.startJobStatusPolling = function(jobId) {
             if (data.status === 'completed' || data.status === 'failed' || (data.segments && data.segments.length > 0)) {
                 if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
                 window._checkStatusPollInterval = null;
+                if (data.status === 'failed') {
+                    console.warn('[check_status] job failed', jobId, data.error || data);
+                }
                 window.handleJobUpdate(data);
             }
         } catch (_) {
@@ -8009,7 +8012,9 @@ document.addEventListener('DOMContentLoaded', () => {
         window._qsDocPreferSegmentsAfterEdit = false;
         const jobStatus = String(rawResult.status || (output && output.status) || '').toLowerCase();
         const jobError = String(rawResult.error || (output && output.error) || '').trim();
-        const isFailedJob = jobStatus === 'failed' || !!jobError;
+        const hasSegments = Array.isArray(rawResult.segments) && rawResult.segments.length > 0
+            || (output && Array.isArray(output.segments) && output.segments.length > 0);
+        const isFailedJob = jobStatus === 'failed' || (!!jobError && !hasSegments);
 
         // 1. SHOW PLAYER: same layout (video-wrapper) for both audio (m4a) and video so transcript is visible in parallel
         const playerContainer = document.getElementById('audio-player-container');
