@@ -10,6 +10,7 @@ except ImportError:
 
 from flask import Flask, render_template, request, jsonify, redirect, send_from_directory, Response, stream_with_context
 from flask_socketio import SocketIO, join_room
+import hashlib
 import json
 import math
 from array import array
@@ -4404,13 +4405,27 @@ def _ascii_safe_job_suffix(name: str, max_len: int = 96) -> str:
 
 def _build_transcription_job_id(filename: str) -> str:
     base_name, _extension = os.path.splitext(str(filename or 'audio'))
-    return f"job_{int(time.time())}_{_ascii_safe_job_suffix(base_name)}"
+    suffix = _ascii_safe_job_suffix(base_name)
+    # Re-uploads often use a prior job id in the filename (job_<ts>_job_<ts>_...); strip one layer.
+    suffix = re.sub(r'^job_\d+_+', '', suffix) or suffix
+    return f"job_{int(time.time())}_{suffix}"
 
 
 def _sagemaker_inference_id(job_id: str, prefix: str) -> str:
+    """SageMaker InvokeEndpointAsync InferenceId — max 64 chars (AWS constraint)."""
     safe = re.sub(r'[^a-zA-Z0-9._-]+', '_', str(job_id or ''))
     safe = re.sub(r'_+', '_', safe).strip('_') or uuid.uuid4().hex
-    return f"{prefix}-{safe}"[:120]
+    prefix_safe = re.sub(r'[^a-zA-Z0-9._-]+', '_', str(prefix or 'qs')).strip('_') or 'qs'
+    max_len = 64
+    head = f"{prefix_safe}-"
+    if len(head) >= max_len:
+        head = head[: max_len - 1] + "-"
+    budget = max_len - len(head)
+    if len(safe) <= budget:
+        return f"{head}{safe}"
+    digest = hashlib.sha256(safe.encode('utf-8')).hexdigest()[:8]
+    tail_budget = max(1, budget - 9)
+    return f"{head}{safe[:tail_budget]}_{digest}"
 
 
 def _medical_uses_sagemaker_transcription():
