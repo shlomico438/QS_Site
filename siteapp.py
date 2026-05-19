@@ -2243,6 +2243,23 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
         logging.warning("_merge_job_qs_trigger: %s", e)
 
 
+def _resolve_trigger_status_for_poll(job_id):
+    """Merge in-memory and Supabase trigger status for /api/trigger_status polling."""
+    mem = pending_trigger.get(job_id)
+    persisted_status, persisted_at = _get_trigger_state(job_id)
+    timings = _get_trigger_timings(job_id)
+    upload_done = (job_id in upload_complete) or bool(timings.get("upload_complete"))
+    pinfo = pending_job_info.get(job_id) or {}
+    if upload_done and pinfo.get("sagemaker_submitted"):
+        return "triggered", persisted_at
+    if upload_done and mem in ("triggered", "queued", "run_accepted"):
+        if persisted_status == "failed":
+            return mem, persisted_at
+    if persisted_status:
+        return persisted_status, persisted_at
+    return mem or "unknown", persisted_at
+
+
 def _get_trigger_state(job_id):
     """Return (trigger_status, at_ts) from Supabase (metadata.qs_trigger), or (None, None) if missing.
 
@@ -4534,16 +4551,32 @@ def _submit_sagemaker_async_job(
             pinfo = pending_job_info.get(job_id) or {}
             pinfo['sagemaker_submitted'] = True
             pinfo['engine'] = 'sagemaker_async'
+            pinfo.pop('sagemaker_error', None)
             pending_job_info[job_id] = pinfo
+            pending_trigger[job_id] = "triggered"
+            _set_trigger_state(job_id, "triggered")
         return True
     except Exception as e:
         if job_id:
-            pending_trigger[job_id] = "failed"
-            _set_trigger_state(job_id, "failed")
+            upload_done = (job_id in upload_complete) or bool(_get_trigger_timings(job_id).get("upload_complete"))
             pinfo = pending_job_info.get(job_id) or {}
             pinfo['sagemaker_submitted'] = False
             pinfo['sagemaker_error'] = str(e)[:500]
             pending_job_info[job_id] = pinfo
+            if upload_done:
+                logging.error(
+                    "SageMaker async invoke failed after upload complete job_id=%s: %s",
+                    job_id,
+                    e,
+                )
+                pending_trigger[job_id] = "failed"
+                _set_trigger_state(job_id, "failed")
+            else:
+                logging.warning(
+                    "SageMaker warmup invoke failed (will retry at trigger_processing) job_id=%s: %s",
+                    job_id,
+                    e,
+                )
         if for_simulation:
             strict = str(os.environ.get('SAGEMAKER_SIM_STRICT', 'true')).lower() in ('1', 'true', 'yes')
             if strict:
@@ -5296,8 +5329,7 @@ def trigger_status():
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
-    persisted_status, persisted_at = _get_trigger_state(job_id)
-    status = persisted_status if persisted_status else pending_trigger.get(job_id, "unknown")
+    status, persisted_at = _resolve_trigger_status_for_poll(job_id)
     queued_since_sec = None
     if status == "queued":
         at = persisted_at if persisted_at else pending_trigger_at.get(job_id, 0)

@@ -10481,7 +10481,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                     // Option A: wait for RunPod trigger confirmation before showing "processing"
                     if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {
-                        console.log("trigger ack (started, waiting for worker handshake)");
+                        const skipRunpodHandshake = triggerData.engine === 'sagemaker_async';
+                        if (skipRunpodHandshake) {
+                            console.log("trigger ack (sagemaker async — skipping RunPod gpu_started handshake)");
+                        } else {
+                            console.log("trigger ack (started, waiting for worker handshake)");
+                        }
                         const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
                         const processingLabel = (typeof window.t === 'function' ? window.t('processing') : 'Processing...');
                         hideProgressBar(); // from here on, progress is % in button only
@@ -10493,12 +10498,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const pollInterval = 4000;
                         const maxTriggerWaitPolls = 240; // ~16 min at 4s; avoids infinite loop on 503 / empty body
                         let waitPct = 0;
-                        let ts = { status: '' };
+                        let ts = skipRunpodHandshake ? { status: 'triggered' } : { status: '' };
                         let httpBadStreak = 0;
                         // If socket delivers completion before /api/trigger_status shows "triggered", handleJobUpdate
                         // sets _lastProcessedJobId — don't block here or restart fake progress on top of GPT.
                         const jobAlreadyHandledBySocket = () => (jobId && window._lastProcessedJobId === jobId);
-                        if (jobAlreadyHandledBySocket()) {
+                        if (skipRunpodHandshake) {
+                            console.log("✅ SageMaker transcription queued.", triggerData.endpoint || '');
+                        } else if (jobAlreadyHandledBySocket()) {
                             console.log('[trigger] socket already handled job before handshake wait; skipping poll loop');
                         } else {
                             for (let pollIx = 0; pollIx < maxTriggerWaitPolls; pollIx++) {
@@ -10537,7 +10544,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 if (ts.status === 'triggered' || ts.status === 'failed') break;
                             }
                         }
-                        if (ts.status === 'failed' && ts._serverUnavailable) {
+                        if (!skipRunpodHandshake && ts.status === 'failed' && ts._serverUnavailable) {
                             const dbId2 = localStorage.getItem('lastJobDbId');
                             window.isTriggering = false;
                             setDiarizationBusyState(false);
@@ -10551,7 +10558,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             if (mainBtn) mainBtn.disabled = false;
                             return;
                         }
-                        if (ts.status === 'failed') {
+                        if (!skipRunpodHandshake && ts.status === 'failed') {
                             console.log("trigger nack", ts.status);
                             console.log("❌ Trigger not confirmed:", ts.status);
                             const dbId2 = localStorage.getItem('lastJobDbId');
