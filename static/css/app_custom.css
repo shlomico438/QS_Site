@@ -1285,8 +1285,28 @@ input:checked + .slider:before { transform: translateX(16px); }
   font-size: 1.15rem;
 }
 
-.medical-warmup-banner-text {
+.medical-warmup-banner-body {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.medical-warmup-banner-text {
+  display: block;
+}
+
+.medical-warmup-banner-subtext {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.35;
+  opacity: 0.92;
+}
+
+.medical-warmup-banner.is-ready .medical-warmup-banner-subtext {
+  display: none;
 }
 
 .main-app-container.medical-mode #audio-player-container {
