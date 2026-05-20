@@ -6316,6 +6316,144 @@ const PROCESSING_PHASES_HE = [
     "משפר תמלול וכותרות (GPT)..."
 ];
 const QS_GPT_PHASE_INDEX = 4;
+const QS_PIPELINE_TRANSCRIBE_MS = 30000;
+const QS_PIPELINE_SUMMARY_MS = 30000;
+
+function qsProcessingPipelineUsesBars() {
+    return typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+}
+
+function qsPipelineProgressLabels() {
+    const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+    if (isHe) {
+        return {
+            transcribe: 'תמלול',
+            summary: 'סיכום',
+            transcribeEst: '~30 שניות',
+            summaryEst: '~30 שניות',
+        };
+    }
+    return {
+        transcribe: 'Transcription',
+        summary: 'Summary',
+        transcribeEst: '~30 sec',
+        summaryEst: '~30 sec',
+    };
+}
+
+function qsClearPipelineProgressTimers() {
+    const t = window.__QS_PIPELINE_TIMERS;
+    if (!t) return;
+    if (t.transcribe) clearInterval(t.transcribe);
+    if (t.summary) clearInterval(t.summary);
+    window.__QS_PIPELINE_TIMERS = { transcribe: null, summary: null };
+}
+
+function qsSetPipelineBarFill(barEl, pct) {
+    if (!barEl) return;
+    const n = Math.max(0, Math.min(100, Number(pct) || 0));
+    barEl.style.width = n + '%';
+}
+
+function qsSetPipelineStepUi(step, state) {
+    const pipeline = document.getElementById('processing-pipeline');
+    if (!pipeline) return;
+    if (state === 'reset') {
+        pipeline.querySelectorAll('.processing-pipeline-step').forEach((el) => {
+            el.classList.remove('is-active', 'is-done');
+        });
+        return;
+    }
+    const el = pipeline.querySelector('.processing-pipeline-step[data-step="' + step + '"]');
+    if (!el) return;
+    if (state === 'active') {
+        el.classList.add('is-active');
+        el.classList.remove('is-done');
+    } else if (state === 'done') {
+        el.classList.remove('is-active');
+        el.classList.add('is-done');
+    }
+}
+
+function qsResetPipelineProgress() {
+    qsClearPipelineProgressTimers();
+    const transcribeBar = document.getElementById('qs-pipeline-transcribe-bar');
+    const summaryBar = document.getElementById('qs-pipeline-summary-bar');
+    qsSetPipelineBarFill(transcribeBar, 0);
+    qsSetPipelineBarFill(summaryBar, 0);
+    qsSetPipelineStepUi('transcribe', 'reset');
+    const labels = qsPipelineProgressLabels();
+    const tLabel = document.getElementById('processing-pipeline-transcribe-label');
+    const sLabel = document.getElementById('processing-pipeline-summary-label');
+    const tEst = document.getElementById('processing-pipeline-transcribe-est');
+    const sEst = document.getElementById('processing-pipeline-summary-est');
+    if (tLabel) tLabel.textContent = labels.transcribe;
+    if (sLabel) sLabel.textContent = labels.summary;
+    if (tEst) tEst.textContent = labels.transcribeEst;
+    if (sEst) sEst.textContent = labels.summaryEst;
+    const transcribeStep = document.querySelector('.processing-pipeline-step[data-step="transcribe"]');
+    if (transcribeStep) transcribeStep.classList.add('is-active');
+}
+
+function qsAnimatePipelineBar(barEl, durationMs, capPct) {
+    const cap = capPct != null ? capPct : 95;
+    const ms = Math.max(1000, Number(durationMs) || QS_PIPELINE_TRANSCRIBE_MS);
+    const start = Date.now();
+    return setInterval(() => {
+        if (!window.isTriggering) {
+            qsSetPipelineBarFill(barEl, qsGetPipelineBarPct(barEl));
+            return;
+        }
+        const elapsed = Date.now() - start;
+        const pct = Math.min(cap, Math.round((elapsed / ms) * cap));
+        qsSetPipelineBarFill(barEl, pct);
+    }, 400);
+}
+
+function qsGetPipelineBarPct(barEl) {
+    if (!barEl || !barEl.style || !barEl.style.width) return 0;
+    return parseFloat(String(barEl.style.width).replace('%', '')) || 0;
+}
+
+function qsStartTranscribePipelineProgress() {
+    qsResetPipelineProgress();
+    const bar = document.getElementById('qs-pipeline-transcribe-bar');
+    if (!window.__QS_PIPELINE_TIMERS) window.__QS_PIPELINE_TIMERS = { transcribe: null, summary: null };
+    qsClearPipelineProgressTimers();
+    window.__QS_PIPELINE_TIMERS.transcribe = qsAnimatePipelineBar(bar, QS_PIPELINE_TRANSCRIBE_MS, 95);
+}
+
+function qsCompleteTranscribePipelineProgress() {
+    qsClearPipelineProgressTimers();
+    const bar = document.getElementById('qs-pipeline-transcribe-bar');
+    qsSetPipelineBarFill(bar, 100);
+    qsSetPipelineStepUi('transcribe', 'done');
+    qsSetPipelineStepUi('summary', 'active');
+}
+
+function qsStartSummaryPipelineProgress() {
+    const bar = document.getElementById('qs-pipeline-summary-bar');
+    if (!window.__QS_PIPELINE_TIMERS) window.__QS_PIPELINE_TIMERS = { transcribe: null, summary: null };
+    if (window.__QS_PIPELINE_TIMERS.summary) clearInterval(window.__QS_PIPELINE_TIMERS.summary);
+    qsSetPipelineBarFill(bar, 0);
+    window.__QS_PIPELINE_TIMERS.summary = qsAnimatePipelineBar(bar, QS_PIPELINE_SUMMARY_MS, 95);
+}
+
+function qsCompleteSummaryPipelineProgress() {
+    qsClearPipelineProgressTimers();
+    const bar = document.getElementById('qs-pipeline-summary-bar');
+    qsSetPipelineBarFill(bar, 100);
+    qsSetPipelineStepUi('summary', 'done');
+}
+
+function qsShowProcessingPipelineChrome(useBars) {
+    const pipeline = document.getElementById('processing-pipeline');
+    const spinner = document.getElementById('processing-state-spinner');
+    const phaseEl = document.getElementById('processing-state-phase');
+    if (pipeline) pipeline.style.display = useBars ? 'flex' : 'none';
+    if (spinner) spinner.style.display = useBars ? 'none' : '';
+    if (phaseEl) phaseEl.style.display = useBars ? 'none' : '';
+}
 
 /** Console breadcrumb when processing overlay / fake % animation stops (debug UI freezes). */
 function qsLogProcessingAnimStop(kind, detail) {
@@ -6345,6 +6483,7 @@ function stopProcessingStateUI(reason) {
     const phaseIndexWhenStopped = Number(window.processingPhaseIndex || 0);
     const panel = document.getElementById('processing-state-panel');
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
+    qsClearPipelineProgressTimers();
     let panelWasVisible = false;
     try {
         if (panel) {
@@ -6396,17 +6535,31 @@ function startProcessingStateUI() {
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
     const phaseEl = document.getElementById('processing-state-phase');
     const introEl = document.getElementById('processing-state-intro');
-    if (!panel || !phaseEl) return;
+    if (!panel) return;
 
     if (window.processingStateTimer) {
         clearInterval(window.processingStateTimer);
         window.processingStateTimer = null;
     }
 
+    const usePipelineBars = qsProcessingPipelineUsesBars();
+    qsShowProcessingPipelineChrome(usePipelineBars);
+
     window.processingPhaseIndex = 0;
-    phaseEl.textContent = PROCESSING_PHASES_HE[0];
+    if (phaseEl) phaseEl.textContent = PROCESSING_PHASES_HE[0];
     panel.style.display = 'flex';
     if (controlsRow) controlsRow.style.display = 'none';
+
+    if (usePipelineBars) {
+        qsStartTranscribePipelineProgress();
+    } else if (phaseEl) {
+        window.processingStateTimer = setInterval(() => {
+            const currentIndex = Number(window.processingPhaseIndex || 0);
+            const next = (currentIndex + 1) % PROCESSING_PHASES_HE.length;
+            window.processingPhaseIndex = next;
+            phaseEl.textContent = PROCESSING_PHASES_HE[next];
+        }, 15000);
+    }
 
     if (introEl) {
         const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
@@ -6426,14 +6579,6 @@ function startProcessingStateUI() {
             }
         })();
     }
-
-    window.processingStateTimer = setInterval(() => {
-        const currentIndex = Number(window.processingPhaseIndex || 0);
-        // Keep cycling for long GPT / RunPod runs (previously stopped after the last string ~45s).
-        const next = (currentIndex + 1) % PROCESSING_PHASES_HE.length;
-        window.processingPhaseIndex = next;
-        phaseEl.textContent = PROCESSING_PHASES_HE[next];
-    }, 15000);
 }
 
 /** Stop polling/UI for the current in-flight job without waiting for gpu_callback (browser console: qsDismissActiveJob()). */
@@ -8334,6 +8479,11 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        if (qsProcessingPipelineUsesBars()) {
+            qsCompleteTranscribePipelineProgress();
+            qsStartSummaryPipelineProgress();
+        }
+
         /** Medical: keep export/edit toolbar + result tabs hidden until GPT summary + transcript paint (spinner stays up). */
         const medicalDeferToolbarUntilGptDone = (
             typeof effectiveIsMedicalForFormatting === 'function'
@@ -8370,117 +8520,132 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // First, treat these as raw segments (or derived captions).
 
-        // Then, run GPT post-processing via /api/translate_segments (decoupled from RunPod callback).
-        // Chunk size: larger = fewer requests (faster when browser limits ~4–6 connections). Keep under ~55s for gateway.
-        const TRANSLATE_CHUNK_SIZE = 40;
-        const GPT_PHASE_BASE_PCT = 70; // GPT phase continues from 70% to 100% so progress doesn't restart
+        const GPT_PHASE_BASE_PCT = 70;
         let translationMeta = null;
-        let translatedCount = 0;
-        let changedCount = 0;
         let userLang = 'he';
         try {
-            const T = typeof window.t === 'function' ? window.t : (k) => k;
-            const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
-            if (mainBtn) {
-                mainBtn.disabled = true;
-                mainBtn.innerText = processingLabel + ' ' + GPT_PHASE_BASE_PCT + '%';
-            }
             userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
-            const phaseElGpt = document.getElementById('processing-state-phase');
-            if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
-                window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
-                phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
-            }
-            const chunks = [];
-            for (let i = 0; i < window.currentSegments.length; i += TRANSLATE_CHUNK_SIZE) {
-                chunks.push(window.currentSegments.slice(i, i + TRANSLATE_CHUNK_SIZE));
-            }
-            console.info('[qs-processing-ui] gpt_translate_start', {
-                segment_count: window.currentSegments.length,
-                chunk_requests: chunks.length
-            });
-            if (chunks.length > 1) console.log('[GPT] Chunked translate:', segments.length, 'segments ->', chunks.length, 'requests (all in flight)');
-            var completedCount = 0;
-            function onChunkDone() {
-                completedCount++;
-                var pct = chunks.length > 1
-                    ? GPT_PHASE_BASE_PCT + Math.round(30 * completedCount / chunks.length)
-                    : GPT_PHASE_BASE_PCT;
-                if (mainBtn) mainBtn.innerText = processingLabel + ' ' + Math.min(100, pct) + '%';
-            }
-            const chunkPromises = chunks.map(function (chunk, c) {
-                return fetch('/api/translate_segments', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ segments: chunk, targetLang: userLang })
-                }).then(function (res) {
-                    if (res.ok) return res.json().then(function (data) {
-                        onChunkDone();
-                        return { index: c, segments: Array.isArray(data.segments) ? data.segments : chunk, meta: data.meta };
-                    });
-                    onChunkDone();
-                    console.error('[GPT] translate_segments chunk ' + (c + 1) + '/' + chunks.length + ' failed:', res.status);
-                    return { index: c, segments: chunk, meta: null };
-                }).catch(function (err) {
-                    onChunkDone();
-                    console.warn('[GPT] translate chunk ' + (c + 1) + ' error:', err);
-                    return { index: c, segments: chunk, meta: null };
+        } catch (_) {}
+
+        // Medical: one GPT call (clean transcript + clinical summary). Skip per-segment translate_segments.
+        if (!medicalDeferToolbarUntilGptDone) {
+            const TRANSLATE_CHUNK_SIZE = 40;
+            let translatedCount = 0;
+            let changedCount = 0;
+            try {
+                const T = typeof window.t === 'function' ? window.t : (k) => k;
+                const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
+                if (mainBtn) {
+                    mainBtn.disabled = true;
+                    mainBtn.innerText = processingLabel + ' ' + GPT_PHASE_BASE_PCT + '%';
+                }
+                const phaseElGpt = document.getElementById('processing-state-phase');
+                if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
+                    window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
+                    phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
+                }
+                const chunks = [];
+                for (let i = 0; i < window.currentSegments.length; i += TRANSLATE_CHUNK_SIZE) {
+                    chunks.push(window.currentSegments.slice(i, i + TRANSLATE_CHUNK_SIZE));
+                }
+                console.info('[qs-processing-ui] gpt_translate_start', {
+                    segment_count: window.currentSegments.length,
+                    chunk_requests: chunks.length
                 });
-            });
-            const chunkResults = await Promise.all(chunkPromises);
-            chunkResults.sort(function (a, b) { return a.index - b.index; });
-            const allTranslated = [];
-            let lastMeta = null;
-            for (let r = 0; r < chunkResults.length; r++) {
-                allTranslated.push(...chunkResults[r].segments);
-                if (chunkResults[r].meta) lastMeta = chunkResults[r].meta;
-            }
-            if (allTranslated.length) {
-                translationMeta = lastMeta;
-                translatedCount = allTranslated.filter(s => String(s.translated_text || '').trim().length > 0).length;
-                changedCount = allTranslated.filter(s => {
-                    const t = String(s.translated_text || '').trim();
-                    const o = String(s.text || '').trim();
-                    return t.length > 0 && t !== o;
-                }).length;
-                // Apply GPT text back onto our current cues.
-                const updated = allTranslated.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
-                window.currentSegments = updated;
-                // If we are in word/caption mode, reflect caption text by updating words (timings remain unchanged).
-                if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
-                    for (let ci = 0; ci < window.currentCaptions.length && ci < updated.length; ci++) {
-                        const cap = window.currentCaptions[ci];
-                        const text = String(updated[ci].text || '').trim();
-                        const parts = text.split(/\s+/).filter(Boolean);
-                        const len = cap.wordEndIndex - cap.wordStartIndex + 1;
-                        for (let k = 0; k < len; k++) {
-                            const wi = cap.wordStartIndex + k;
-                            if (window.currentWords[wi]) {
-                                window.currentWords[wi].text = (parts[k] !== undefined ? parts[k] : window.currentWords[wi].text);
+                if (chunks.length > 1) console.log('[GPT] Chunked translate:', segments.length, 'segments ->', chunks.length, 'requests (all in flight)');
+                var completedCount = 0;
+                function onChunkDone() {
+                    completedCount++;
+                    var pct = chunks.length > 1
+                        ? GPT_PHASE_BASE_PCT + Math.round(30 * completedCount / chunks.length)
+                        : GPT_PHASE_BASE_PCT;
+                    if (mainBtn) mainBtn.innerText = processingLabel + ' ' + Math.min(100, pct) + '%';
+                }
+                const chunkPromises = chunks.map(function (chunk, c) {
+                    return fetch('/api/translate_segments', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ segments: chunk, targetLang: userLang })
+                    }).then(function (res) {
+                        if (res.ok) return res.json().then(function (data) {
+                            onChunkDone();
+                            return { index: c, segments: Array.isArray(data.segments) ? data.segments : chunk, meta: data.meta };
+                        });
+                        onChunkDone();
+                        console.error('[GPT] translate_segments chunk ' + (c + 1) + '/' + chunks.length + ' failed:', res.status);
+                        return { index: c, segments: chunk, meta: null };
+                    }).catch(function (err) {
+                        onChunkDone();
+                        console.warn('[GPT] translate chunk ' + (c + 1) + ' error:', err);
+                        return { index: c, segments: chunk, meta: null };
+                    });
+                });
+                const chunkResults = await Promise.all(chunkPromises);
+                chunkResults.sort(function (a, b) { return a.index - b.index; });
+                const allTranslated = [];
+                let lastMeta = null;
+                for (let r = 0; r < chunkResults.length; r++) {
+                    allTranslated.push(...chunkResults[r].segments);
+                    if (chunkResults[r].meta) lastMeta = chunkResults[r].meta;
+                }
+                if (allTranslated.length) {
+                    translationMeta = lastMeta;
+                    translatedCount = allTranslated.filter(s => String(s.translated_text || '').trim().length > 0).length;
+                    changedCount = allTranslated.filter(s => {
+                        const t = String(s.translated_text || '').trim();
+                        const o = String(s.text || '').trim();
+                        return t.length > 0 && t !== o;
+                    }).length;
+                    const updated = allTranslated.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
+                    window.currentSegments = updated;
+                    if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
+                        for (let ci = 0; ci < window.currentCaptions.length && ci < updated.length; ci++) {
+                            const cap = window.currentCaptions[ci];
+                            const text = String(updated[ci].text || '').trim();
+                            const parts = text.split(/\s+/).filter(Boolean);
+                            const len = cap.wordEndIndex - cap.wordStartIndex + 1;
+                            for (let k = 0; k < len; k++) {
+                                const wi = cap.wordStartIndex + k;
+                                if (window.currentWords[wi]) {
+                                    window.currentWords[wi].text = (parts[k] !== undefined ? parts[k] : window.currentWords[wi].text);
+                                }
                             }
                         }
+                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, window.currentCaptions, 27);
+                        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                     }
-                    // Reflow after translation so subtitle cuts stay stable across upload flows.
-                    window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, window.currentCaptions, 27);
-                    // Re-derive segments from words/captions after applying text.
-                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                    console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
+                } else if (lastMeta) {
+                    translationMeta = lastMeta;
                 }
-                console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
-            } else if (lastMeta) {
-                translationMeta = lastMeta;
+            } catch (e) {
+                console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
             }
-        } catch (e) {
-            console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
+        } else {
+            try {
+                const T = typeof window.t === 'function' ? window.t : (k) => k;
+                const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
+                if (mainBtn) {
+                    mainBtn.disabled = true;
+                    mainBtn.innerText = processingLabel + ' ' + GPT_PHASE_BASE_PCT + '%';
+                }
+            } catch (_) {}
+            console.info('[medical] skipping translate_segments; single format_transcript_summary (clean + summary)');
         }
 
         // One-time doc formatting pass (clean transcript + summary), reused by exports.
-        // Standard mode keeps this in the background so the transcript appears immediately.
-        // Medical mode awaits it so the spinner stays up until the doctor-facing summary is ready to render.
+        // Standard mode: translate_segments above, then format in background.
+        // Medical mode: format only (one GPT call — no prior translate_segments).
         const runPostTranscriptionFormatting = async () => {
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return false;
             const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
             try {
+                if (medicalDeferToolbarUntilGptDone) {
+                    console.info('[medical] format_transcript_summary start (unified clean + summary)', {
+                        chars: fullText.length
+                    });
+                }
                 const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId);
                 if (!ok || !fmt || typeof fmt !== 'object') return false;
                     const rawFmt = {
@@ -8540,14 +8705,15 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         if (medicalDeferToolbarUntilGptDone) {
-            try {
-                const T = typeof window.t === 'function' ? window.t : (k) => k;
-                const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
-                if (mainBtn) mainBtn.innerText = processingLabel + ' — מייצר סיכום רפואי…';
-                const phaseElMedicalFmt = document.getElementById('processing-state-phase');
-                if (phaseElMedicalFmt) phaseElMedicalFmt.textContent = 'מייצר סיכום רפואי';
-            } catch (_) {}
+            if (!qsProcessingPipelineUsesBars()) {
+                try {
+                    const T = typeof window.t === 'function' ? window.t : (k) => k;
+                    const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
+                    if (mainBtn) mainBtn.innerText = processingLabel + ' — מייצר סיכום רפואי…';
+                } catch (_) {}
+            }
             await runPostTranscriptionFormatting();
+            if (qsProcessingPipelineUsesBars()) qsCompleteSummaryPipelineProgress();
         } else {
             // Defer with setTimeout(0) so the main thread can paint after heavy translate merges.
             setTimeout(() => { void runPostTranscriptionFormatting(); }, 0);
@@ -11129,13 +11295,6 @@ function renderMedicalTranscriptMainView() {
     if (!transcriptWindow) return;
     if (!isMedicalModeEnabled()) return;
     if (String(window.medicalActiveTab || 'summary') !== 'transcript') return;
-    const timedCues = Array.isArray(window.currentSegments)
-        ? window.currentSegments.filter((c) => Number.isFinite(_asTranscriptTime(c && c.start)) && String((c && (c.translated_text || c.text)) || '').trim())
-        : [];
-    if (timedCues.length > 0) {
-        renderTranscriptFromCues(window.currentSegments || []);
-        return;
-    }
     const preferSeg = !!window._qsDocPreferSegmentsAfterEdit;
     let clean = '';
     if (!preferSeg) {
@@ -11143,6 +11302,13 @@ function renderMedicalTranscriptMainView() {
     }
     if (!clean) {
         clean = String(buildTranscriptPlainBodyForExport() || '').trim();
+    }
+    const timedCues = Array.isArray(window.currentSegments)
+        ? window.currentSegments.filter((c) => Number.isFinite(_asTranscriptTime(c && c.start)) && String((c && (c.translated_text || c.text)) || '').trim())
+        : [];
+    if (!clean && timedCues.length > 0) {
+        renderTranscriptFromCues(window.currentSegments || []);
+        return;
     }
     const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
     const isRtl = locale.startsWith('he') || locale.startsWith('ar');

@@ -197,8 +197,28 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <p id="processing-state-intro" class="processing-state-primary"></p>
-                <div class="processing-state-spinner" aria-hidden="true"></div>
-                <p id="processing-state-phase" class="processing-state-phase">מפעיל שרתים מרוחקים...</p>
+                <div id="processing-pipeline" class="processing-pipeline">
+                    <div class="processing-pipeline-step is-active" data-step="transcribe">
+                        <div class="processing-pipeline-label">
+                            <span id="processing-pipeline-transcribe-label">תמלול</span>
+                            <span class="processing-pipeline-est" id="processing-pipeline-transcribe-est">~30 שניות</span>
+                        </div>
+                        <div class="progress-container processing-pipeline-track">
+                            <div id="qs-pipeline-transcribe-bar" class="processing-pipeline-fill"></div>
+                        </div>
+                    </div>
+                    <div class="processing-pipeline-step" data-step="summary">
+                        <div class="processing-pipeline-label">
+                            <span id="processing-pipeline-summary-label">סיכום</span>
+                            <span class="processing-pipeline-est" id="processing-pipeline-summary-est">~30 שניות</span>
+                        </div>
+                        <div class="progress-container processing-pipeline-track">
+                            <div id="qs-pipeline-summary-bar" class="processing-pipeline-fill"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="processing-state-spinner" id="processing-state-spinner" style="display:none;" aria-hidden="true"></div>
+                <p id="processing-state-phase" class="processing-state-phase" style="display:none;">מפעיל שרתים מרוחקים...</p>
             </div>
             </div>
             <div class="controls-bar">
