@@ -2236,24 +2236,37 @@ def _write_medical_warmup_status(user_id, payload):
 def _notify_medical_warmup_ready(user_id, job_id, ready_at=None):
     ready_at = float(ready_at or time.time())
     prev = _read_medical_warmup_status(user_id) or {}
+    if str(prev.get('status') or '').lower() == 'ready':
+        return
+    current_job = str(prev.get('job_id') or '').strip()
+    jid = str(job_id or '').strip()
+    if current_job and jid and jid != current_job:
+        logging.info(
+            "medical_warmup_ready ignored stale job_id=%s (current=%s)",
+            jid,
+            current_job,
+        )
+        return
     _write_medical_warmup_status(user_id, {
         'status': 'ready',
-        'job_id': job_id or prev.get('job_id'),
+        'job_id': jid or current_job,
         'submitted_at': prev.get('submitted_at') or ready_at,
         'ready_at': ready_at,
     })
     room = _medical_warmup_room(user_id)
     payload = {
         'userId': user_id,
-        'jobId': job_id,
+        'jobId': jid or current_job,
         'status': 'ready',
         'ready_at': ready_at,
     }
     try:
         socketio.emit('medical_warmup_ready', payload, room=room)
-        logging.info("medical_warmup_ready emitted room=%s job_id=%s", room, job_id)
+        logging.info("medical_warmup_ready emitted room=%s job_id=%s", room, jid or current_job)
     except Exception as e:
         logging.warning("medical_warmup_ready emit failed room=%s: %s", room, e)
+
+
 job_timings = {}  # job_id -> {"trigger_sec": float, "trigger_completed_at": float}
 gpu_started_at = {}  # job_id -> when worker called /api/gpu_started (container running)
 upload_complete = {}  # job_id -> True when trigger_processing called (upload done); worker polls until this
@@ -5258,9 +5271,14 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None):
     now = time.time()
     interval = _medical_session_warmup_interval_sec()
     safe_user = str(user_id or '').strip() or 'anonymous'
+    prev = _read_medical_warmup_status(safe_user) or {}
+    prev_status = str(prev.get('status') or '').lower()
+    if prev_status == 'ready':
+        return True, 'already_ready', prev.get('job_id')
+    if prev_status == 'preparing' and prev.get('job_id'):
+        return True, 'skipped_recent', prev.get('job_id')
     with _medical_session_warmup_lock:
         if _medical_session_warmup_last_at and (now - _medical_session_warmup_last_at) < interval:
-            prev = _read_medical_warmup_status(safe_user) or {}
             return True, 'skipped_recent', prev.get('job_id')
         _medical_session_warmup_last_at = now
 

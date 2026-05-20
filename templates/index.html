@@ -197,24 +197,10 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <p id="processing-state-intro" class="processing-state-primary"></p>
-                <div id="processing-pipeline" class="processing-pipeline">
-                    <div class="processing-pipeline-step is-active" data-step="transcribe">
-                        <div class="processing-pipeline-label">
-                            <span id="processing-pipeline-transcribe-label">תמלול</span>
-                            <span class="processing-pipeline-est" id="processing-pipeline-transcribe-est">~30 שניות</span>
-                        </div>
-                        <div class="progress-container processing-pipeline-track">
-                            <div id="qs-pipeline-transcribe-bar" class="processing-pipeline-fill"></div>
-                        </div>
-                    </div>
-                    <div class="processing-pipeline-step" data-step="summary">
-                        <div class="processing-pipeline-label">
-                            <span id="processing-pipeline-summary-label">סיכום</span>
-                            <span class="processing-pipeline-est" id="processing-pipeline-summary-est">~30 שניות</span>
-                        </div>
-                        <div class="progress-container processing-pipeline-track">
-                            <div id="qs-pipeline-summary-bar" class="processing-pipeline-fill"></div>
-                        </div>
+                <div id="processing-unified-progress" class="processing-unified-progress" style="display:none;">
+                    <div id="qs-unified-phase-label" class="processing-unified-label">העלאה</div>
+                    <div class="progress-container processing-unified-track">
+                        <div id="progress-bar" class="processing-unified-fill"></div>
                     </div>
                 </div>
                 <div class="processing-state-spinner" id="processing-state-spinner" style="display:none;" aria-hidden="true"></div>
@@ -403,8 +389,8 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 <div id="medical-record-timer" class="medical-record-timer" style="visibility:hidden;"></div>
             </div>
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
-            <div class="progress-container" id="p-container" style="display:none;">
-                <div id="progress-bar"></div>
+            <div class="progress-container" id="p-container" style="display:none;" aria-hidden="true">
+                <div id="progress-bar-legacy"></div>
             </div>
             <!-- diarization toggle removed on mobile upload UI -->
         </div>
