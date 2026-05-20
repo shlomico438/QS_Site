@@ -81,6 +81,8 @@ def _doctor_prompt_training_config():
             "sagemaker" if _medical_uses_sagemaker_transcription() else "runpod"
         ),
         "sagemaker_medical_endpoint": _sagemaker_medical_endpoint_name(),
+        "runpod_skip_warmup": _runpod_skip_warmup(),
+        "aws_skip_warmup": _aws_skip_warmup(),
     }
 
 # GPT clean transcript + optional TXT re-flow: max characters per wrapped line (TRANSCRIPT_LINE_MAX_CHARS, default 200).
@@ -278,10 +280,26 @@ RUNPOD_MOVIE_ENDPOINT_ID = os.environ.get('RUNPOD_MOVIE_ENDPOINT_ID') or RUNPOD_
 BUCKET_NAME = "quickscribe-v2-12345"
 
 
-def _runpod_skip_warmup():
-    """If true, do not POST RunPod /run from sign-s3; first /run happens in trigger_processing after upload."""
-    v = (os.environ.get('RUNPOD_SKIP_WARMUP') or '').strip().lower()
+def _env_flag_true(name):
+    v = (os.environ.get(name) or '').strip().lower()
     return v in ('1', 'true', 'yes', 'on')
+
+
+def _runpod_skip_warmup():
+    """If true, skip RunPod /run warmup at sign-s3 (first /run happens in trigger_processing after upload)."""
+    return _env_flag_true('RUNPOD_SKIP_WARMUP')
+
+
+def _aws_skip_warmup():
+    """If true, skip per-job SageMaker async warmup at sign-s3 (defer invoke to trigger_processing).
+
+    Independent of RUNPOD_SKIP_WARMUP. Use AWS_SKIP_WARMUP=true for medical SageMaker; keep session
+    warmup via POST /api/medical_session_warmup when the doctor opens the UI."""
+    return _env_flag_true('AWS_SKIP_WARMUP')
+
+
+def _medical_session_warmup_interval_sec():
+    return max(60, int(os.environ.get('MEDICAL_SESSION_WARMUP_INTERVAL_SEC', '600') or 600))
 
 def _audio_profile_detection_enabled():
     """Enable speech/music auto-profile and per-job transcription options from Site."""
@@ -2134,6 +2152,8 @@ pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, 
 _medical_learn_async_jobs = {}  # learn_job_id -> {status, result|error, started_at}
 _medical_learn_async_lock = threading.Lock()
 MEDICAL_LEARN_ASYNC_TTL_SEC = 3600
+_medical_session_warmup_lock = threading.Lock()
+_medical_session_warmup_last_at = 0.0
 job_timings = {}  # job_id -> {"trigger_sec": float, "trigger_completed_at": float}
 gpu_started_at = {}  # job_id -> when worker called /api/gpu_started (container running)
 upload_complete = {}  # job_id -> True when trigger_processing called (upload done); worker polls until this
@@ -4486,6 +4506,7 @@ def _submit_sagemaker_async_job(
     transcription_options=None,
     *,
     for_simulation=False,
+    warmup_only=False,
 ):
     """Submit async SageMaker inference (simulation or production medical)."""
     endpoint_name = _sagemaker_sim_endpoint_name() if for_simulation else _sagemaker_medical_endpoint_name()
@@ -4512,10 +4533,14 @@ def _submit_sagemaker_async_job(
             "language": language,
             "diarization": bool(diarization),
             "transcription_options": transcription_options or {},
-            "callback_url": f"{base}/api/gpu_callback" if base else None,
-            "start_callback_url": f"{base}/api/gpu_started" if base else None,
-            "upload_status_url": f"{base}/api/upload_status?job_id={job_id}" if base else None,
+            "warmupOnly": bool(warmup_only),
         }
+        if warmup_only:
+            payload["start_callback_url"] = f"{base}/api/gpu_started" if base else None
+        else:
+            payload["callback_url"] = f"{base}/api/gpu_callback" if base else None
+            payload["start_callback_url"] = f"{base}/api/gpu_started" if base else None
+            payload["upload_status_url"] = f"{base}/api/upload_status?job_id={job_id}" if base else None
         payload_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
 
         s3_client = boto3.client(
@@ -4726,7 +4751,7 @@ def sign_s3():
             ExpiresIn=3600
         )
 
-        # Warm GPU during upload: RunPod early /run, or SageMaker async at sign-s3 for medical (unless RUNPOD_SKIP_WARMUP).
+        # Warm GPU during upload: RunPod early /run, or SageMaker async at sign-s3 for medical (unless AWS_SKIP_WARMUP).
         if is_medical and _medical_uses_sagemaker_transcription():
             _start_medical_sagemaker_warmup_if_configured(
                 job_id,
@@ -5144,9 +5169,9 @@ def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, langu
     """Queue SageMaker async at sign-s3 (during recording) so endpoint scales before upload finishes."""
     if SIMULATION_MODE or not _medical_uses_sagemaker_transcription():
         return
-    if _runpod_skip_warmup():
+    if _aws_skip_warmup():
         logging.info(
-            "Skipping sign-s3 SageMaker warmup for %s (RUNPOD_SKIP_WARMUP defers invoke to trigger_processing)",
+            "Skipping sign-s3 SageMaker warmup for %s (AWS_SKIP_WARMUP defers invoke to trigger_processing)",
             job_id,
         )
         return
@@ -5184,6 +5209,74 @@ def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, langu
     t.daemon = True
     t.start()
     logging.info("Medical SageMaker warmup queued at sign-s3 for job_id=%s", job_id)
+
+
+def _submit_medical_sagemaker_session_warmup(user_id, public_base=None):
+    """Scale/wake SageMaker for an idle medical session (no patient audio yet)."""
+    global _medical_session_warmup_last_at
+    if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
+        return False, 'simulation_without_sagemaker'
+    if not _medical_uses_sagemaker_transcription():
+        return False, 'sagemaker_not_configured'
+
+    now = time.time()
+    interval = _medical_session_warmup_interval_sec()
+    with _medical_session_warmup_lock:
+        if _medical_session_warmup_last_at and (now - _medical_session_warmup_last_at) < interval:
+            return True, 'skipped_recent'
+        _medical_session_warmup_last_at = now
+
+    safe_user = str(user_id or '').strip() or 'anonymous'
+    prof = _resolve_storage_profile(safe_user, is_medical=True)
+    job_id = f"warmup_{int(now)}_{uuid.uuid4().hex[:8]}"
+    s3_key = f"{prof['input_prefix']}/_session_warmup"
+
+    def _run():
+        ok = _submit_sagemaker_async_job(
+            job_id,
+            s3_key,
+            task='transcribe',
+            language='he',
+            diarization=False,
+            is_medical=True,
+            bucket=prof['bucket'],
+            public_base=public_base,
+            transcription_options={},
+            for_simulation=False,
+            warmup_only=True,
+        )
+        if ok:
+            logging.info("Medical session SageMaker warmup submitted job_id=%s", job_id)
+        else:
+            logging.warning("Medical session SageMaker warmup failed job_id=%s", job_id)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return True, 'started'
+
+
+@app.route('/api/medical_session_warmup', methods=['POST'])
+def medical_session_warmup():
+    """Wake SageMaker when a registered doctor opens medical mode (not tied to a patient upload)."""
+    data = request.json if request.is_json else {}
+    user_id = (data.get('userId') or data.get('user_id') or '').strip()
+    if not user_id or user_id.lower() == 'anonymous':
+        return jsonify({"status": "error", "message": "userId required"}), 400
+    try:
+        uuid.UUID(str(user_id))
+    except (ValueError, AttributeError):
+        return jsonify({"status": "error", "message": "Invalid userId"}), 400
+
+    public_base = _public_base_url(request)
+    started, reason = _submit_medical_sagemaker_session_warmup(user_id, public_base=public_base)
+    if not started and reason == 'sagemaker_not_configured':
+        return jsonify({"status": "skipped", "reason": reason}), 200
+    return jsonify({
+        "status": "ok" if started else "skipped",
+        "reason": reason,
+        "engine": "sagemaker_async",
+        "endpoint": _sagemaker_medical_endpoint_name(),
+    }), 202 if reason == 'started' else 200
 
 
 def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None, transcription_options=None):

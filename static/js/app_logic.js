@@ -350,6 +350,47 @@ function isMedicalModeEnabled() {
     return window.isMedicalMode === true;
 }
 
+/** Wake SageMaker when medical UI loads and user is signed in (not per-upload sign-s3 warmup). */
+window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup() {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+    if (window.__QS_MEDICAL_SESSION_WARMUP_IN_FLIGHT) return;
+    let user = null;
+    try {
+        const { data: { user: u } } = await supabase.auth.getUser();
+        user = u;
+    } catch (_) {
+        return;
+    }
+    if (!user || !user.id) return;
+
+    const storageKey = 'qs_medical_session_warmup_at';
+    const minIntervalMs = 10 * 60 * 1000;
+    try {
+        const last = Number(sessionStorage.getItem(storageKey) || 0);
+        if (last && (Date.now() - last) < minIntervalMs) return;
+    } catch (_) {}
+
+    window.__QS_MEDICAL_SESSION_WARMUP_IN_FLIGHT = true;
+    try {
+        const res = await fetch('/api/medical_session_warmup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: user.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && (data.status === 'ok' || data.reason === 'skipped_recent')) {
+            try { sessionStorage.setItem(storageKey, String(Date.now())); } catch (_) {}
+            if (data.reason === 'started') {
+                console.info('[medical] session warmup started', data.endpoint || '');
+            }
+        }
+    } catch (e) {
+        console.warn('[medical] session warmup failed', e);
+    } finally {
+        window.__QS_MEDICAL_SESSION_WARMUP_IN_FLIGHT = false;
+    }
+};
+
 function _isLikelyIOSInAppBrowser() {
     const ua = String(navigator.userAgent || navigator.vendor || '').toLowerCase();
     const isIOS = /iphone|ipad|ipod/.test(ua) || (/macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1);
@@ -544,6 +585,9 @@ function setMedicalMode(enabled, opts) {
     try {
         if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
     } catch (_) {}
+    if (on) {
+        try { void window.qsMaybeMedicalSessionWarmup(); } catch (_) {}
+    }
 }
 
 (() => {
@@ -747,6 +791,9 @@ supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session) {
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            try { void window.qsMaybeMedicalSessionWarmup(); } catch (_) {}
+        }
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
         if (window.location.hash && /access_token/.test(window.location.hash)) {
             // Keep the current in-memory transcript/video UI state.
@@ -1632,6 +1679,9 @@ async function setupNavbarAuth(userOverride) {
 
     const user = userOverride != null ? userOverride : await qsGetAuthUserForUi({ waitMs: 1500 });
     try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
+    if (user && typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        try { void window.qsMaybeMedicalSessionWarmup(); } catch (_) {}
+    }
 
     const personalLink = document.getElementById('nav-personal-link');
     if (user) {
@@ -6716,6 +6766,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (_) {}
         updateMedicalTabUi();
         syncRegularRecordUi();
+        if (on) {
+            try { void window.qsMaybeMedicalSessionWarmup(); } catch (_) {}
+        }
     };
 
     function stopMedicalRecordingTimer() {
