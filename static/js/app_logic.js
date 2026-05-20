@@ -93,7 +93,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     }
 });
 
-// Console gate:
+// Console gate + timestamp prefix on every line:
 // - Default ON for localhost (dev), OFF for non-local hosts (production-like).
 // - Override via localStorage key `qs_console`:
 //     '1' => force enable, '0' => force disable.
@@ -111,13 +111,35 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
         enabled = false;
     }
     window.__QS_CONSOLE_ENABLED = enabled;
-    if (!enabled && window.console) {
-        console.log = () => {};
-        console.info = () => {};
-        console.debug = () => {};
-        console.warn = () => {};
+    const c = window.console;
+    if (!c) return;
+    const qsConsoleTs = () => new Date().toISOString();
+    const qsWrapConsole = (method) => {
+        const orig = typeof c[method] === 'function' ? c[method].bind(c) : c.log.bind(c);
+        return function (...args) {
+            return orig(`[${qsConsoleTs()}]`, ...args);
+        };
+    };
+    const wrapped = {
+        log: qsWrapConsole('log'),
+        info: qsWrapConsole('info'),
+        debug: qsWrapConsole('debug'),
+        warn: qsWrapConsole('warn'),
+        error: qsWrapConsole('error'),
+    };
+    if (!enabled) {
+        c.log = () => {};
+        c.info = () => {};
+        c.debug = () => {};
+        c.warn = () => {};
+    } else {
+        c.log = wrapped.log;
+        c.info = wrapped.info;
+        c.debug = wrapped.debug;
+        c.warn = wrapped.warn;
     }
-    // console.error is intentionally left intact — used for upload/audio-profile diagnostics on prod hosts.
+    // console.error always active on prod — upload/audio-profile diagnostics; still timestamped.
+    c.error = wrapped.error;
 })();
 
 // --- GLOBAL STATE ---
@@ -350,6 +372,139 @@ function isMedicalModeEnabled() {
     return window.isMedicalMode === true;
 }
 
+const QS_MEDICAL_WARMUP_READY_KEY = 'qs_medical_warmup_ready_at';
+const QS_MEDICAL_WARMUP_PREPARING_MSG = 'System is preparing for the workday... (Est: 10 mins)';
+const QS_MEDICAL_WARMUP_READY_MSG = 'System is Ready! Have a great workday.';
+
+window.qsMedicalWarmupUserRoom = function qsMedicalWarmupUserRoom(userId) {
+    const id = String(userId || '').trim();
+    return id ? `medical_warmup_${id}` : '';
+};
+
+window.qsSetMedicalWarmupBanner = function qsSetMedicalWarmupBanner(state) {
+    const banner = document.getElementById('medical-warmup-banner');
+    const icon = document.getElementById('medical-warmup-banner-icon');
+    const text = document.getElementById('medical-warmup-banner-text');
+    if (!banner || !text) return;
+    const on = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+    const st = String(state || '').trim().toLowerCase();
+    if (!on || st === 'hidden' || st === 'idle') {
+        banner.style.display = 'none';
+        banner.classList.remove('is-visible', 'is-preparing', 'is-ready');
+        return;
+    }
+    banner.style.display = '';
+    banner.classList.add('is-visible');
+    banner.classList.remove('is-preparing', 'is-ready');
+    if (st === 'ready') {
+        banner.classList.add('is-ready');
+        if (icon) icon.textContent = '✅';
+        text.textContent = QS_MEDICAL_WARMUP_READY_MSG;
+    } else {
+        banner.classList.add('is-preparing');
+        if (icon) icon.textContent = '⏳';
+        text.textContent = QS_MEDICAL_WARMUP_PREPARING_MSG;
+    }
+};
+
+window.qsPlayMedicalWarmupChime = function qsPlayMedicalWarmupChime() {
+    try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.07, ctx.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.4);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.42);
+        osc.onended = () => { try { ctx.close(); } catch (_) {} };
+    } catch (_) {}
+};
+
+window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
+    opts = opts || {};
+    const userId = String((data && (data.userId || data.user_id)) || window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+    if (userId) {
+        try { sessionStorage.setItem(QS_MEDICAL_WARMUP_READY_KEY, JSON.stringify({ at: Date.now(), userId })); } catch (_) {}
+    }
+    window.__QS_MEDICAL_WARMUP_STATE = 'ready';
+    if (window.__QS_MEDICAL_WARMUP_POLL_TIMER) {
+        clearInterval(window.__QS_MEDICAL_WARMUP_POLL_TIMER);
+        window.__QS_MEDICAL_WARMUP_POLL_TIMER = null;
+    }
+    qsSetMedicalWarmupBanner('ready');
+    if (opts.playChime !== false) qsPlayMedicalWarmupChime();
+    console.info('[medical] GPU warmup ready', data && data.jobId);
+};
+
+window.qsJoinMedicalWarmupSocket = function qsJoinMedicalWarmupSocket(userId) {
+    const room = qsMedicalWarmupUserRoom(userId);
+    if (!room || typeof socket === 'undefined') return;
+    try {
+        socket.emit('join', { room });
+        console.info('[medical] joined warmup room', room);
+    } catch (e) {
+        console.warn('[medical] warmup socket join failed', e);
+    }
+};
+
+window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(userId, jobId) {
+    const uid = String(userId || '').trim();
+    if (!uid) return null;
+    const params = new URLSearchParams({ userId: uid });
+    if (jobId) params.set('jobId', String(jobId));
+    try {
+        const res = await fetch(`/api/medical_warmup_status?${params.toString()}`);
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && String(data.status || '').toLowerCase() === 'ready') {
+            qsMedicalWarmupOnReady({ userId: uid, jobId: data.job_id || jobId, status: 'ready' }, { playChime: true });
+            return data;
+        }
+        return data;
+    } catch (e) {
+        console.warn('[medical] warmup status poll failed', e);
+        return null;
+    }
+};
+
+window.qsStartMedicalWarmupPoll = function qsStartMedicalWarmupPoll(userId, jobId) {
+    if (window.__QS_MEDICAL_WARMUP_POLL_TIMER) {
+        clearInterval(window.__QS_MEDICAL_WARMUP_POLL_TIMER);
+    }
+    const uid = String(userId || '').trim();
+    const jid = String(jobId || '').trim();
+    if (!uid) return;
+    const poll = () => { void qsPollMedicalWarmupStatus(uid, jid); };
+    poll();
+    window.__QS_MEDICAL_WARMUP_POLL_TIMER = setInterval(poll, 15000);
+};
+
+window.qsInitMedicalWarmupUi = async function qsInitMedicalWarmupUi(user) {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+    if (!user || !user.id) return;
+    window.__QS_MEDICAL_WARMUP_USER_ID = user.id;
+    try {
+        const raw = sessionStorage.getItem(QS_MEDICAL_WARMUP_READY_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.userId === user.id && parsed.at && (Date.now() - Number(parsed.at)) < 12 * 60 * 60 * 1000) {
+                qsMedicalWarmupOnReady({ userId: user.id, status: 'ready' }, { playChime: false });
+                qsJoinMedicalWarmupSocket(user.id);
+                return;
+            }
+        }
+    } catch (_) {}
+    window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+    qsSetMedicalWarmupBanner('preparing');
+    qsJoinMedicalWarmupSocket(user.id);
+};
+
 /** Wake SageMaker when medical UI loads and user is signed in (not per-upload sign-s3 warmup). */
 window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup() {
     if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
@@ -363,11 +518,19 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
     }
     if (!user || !user.id) return;
 
+    await qsInitMedicalWarmupUi(user);
+
     const storageKey = 'qs_medical_session_warmup_at';
     const minIntervalMs = 10 * 60 * 1000;
     try {
         const last = Number(sessionStorage.getItem(storageKey) || 0);
-        if (last && (Date.now() - last) < minIntervalMs) return;
+        if (last && (Date.now() - last) < minIntervalMs) {
+            void qsPollMedicalWarmupStatus(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID);
+            if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+                qsStartMedicalWarmupPoll(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID);
+            }
+            return;
+        }
     } catch (_) {}
 
     window.__QS_MEDICAL_SESSION_WARMUP_IN_FLIGHT = true;
@@ -380,9 +543,21 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
         const data = await res.json().catch(() => ({}));
         if (res.ok && (data.status === 'ok' || data.reason === 'skipped_recent')) {
             try { sessionStorage.setItem(storageKey, String(Date.now())); } catch (_) {}
-            if (data.reason === 'started') {
-                console.info('[medical] session warmup started', data.endpoint || '');
+            const jobId = data.warmup_job_id || data.warmupJobId || null;
+            if (jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = jobId;
+            if (String(data.warmup_status || '').toLowerCase() === 'ready') {
+                qsMedicalWarmupOnReady({ userId: user.id, jobId, status: 'ready' }, { playChime: false });
+            } else if (data.reason === 'started' || data.reason === 'skipped_recent') {
+                if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+                    qsSetMedicalWarmupBanner('preparing');
+                }
+                qsStartMedicalWarmupPoll(user.id, jobId);
+                if (data.reason === 'started') {
+                    console.info('[medical] session warmup started', data.endpoint || '', jobId || '');
+                }
             }
+        } else if (data.reason === 'sagemaker_not_configured' || data.reason === 'simulation_without_sagemaker') {
+            qsSetMedicalWarmupBanner('hidden');
         }
     } catch (e) {
         console.warn('[medical] session warmup failed', e);
@@ -1254,6 +1429,19 @@ if (typeof socket !== 'undefined') {
         if (savedJobId) {
             console.log('🔄 Re-joining room:', savedJobId);
             socket.emit('join', { room: savedJobId });
+        }
+        const warmUid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+        if (warmUid && typeof qsJoinMedicalWarmupSocket === 'function') {
+            qsJoinMedicalWarmupSocket(warmUid);
+        }
+    });
+
+    socket.on('medical_warmup_ready', (data) => {
+        const uid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+        const evtUid = String((data && (data.userId || data.user_id)) || '').trim();
+        if (uid && evtUid && evtUid !== uid) return;
+        if (typeof qsMedicalWarmupOnReady === 'function') {
+            qsMedicalWarmupOnReady(data || {}, { playChime: true });
         }
     });
 
@@ -3932,68 +4120,14 @@ async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
         isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
         ...(hint ? { input_s3_key: hint } : {}),
     });
-    if (!fullText || fullText.length <= QS_FORMAT_MULTI_REQUEST_CHARS) {
-        const res = await fetch('/api/format_transcript_summary', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...base(), text: fullText })
-        });
-        const fmt = await res.json().catch(() => ({}));
-        return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt };
-    }
-    const planRes = await fetch('/api/transcript_format_chunks_plan', {
+    // One server request: GPT runs grammar/clean + summary in the same prompt (faster than N+1 chunk flow).
+    const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: fullText })
+        body: JSON.stringify({ ...base(), text: fullText })
     });
-    const plan = await planRes.json().catch(() => ({}));
-    if (!planRes.ok || !Array.isArray(plan.chunks) || !plan.chunks.length) {
-        return { ok: false, res: planRes, fmt: plan };
-    }
-    const cleanParts = [];
-    // Sequential chunks: parallel OpenAI calls share one worker and can each exceed proxy read timeouts (504).
-    for (let i = 0; i < plan.chunks.length; i++) {
-        const res = await fetch('/api/format_transcript_summary', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                ...base(),
-                mode: 'clean_chunk',
-                text: plan.chunks[i]
-            })
-        });
-        const part = await res.json().catch(() => ({}));
-        if (!res.ok || (part && part.error)) {
-            return { ok: false, res, fmt: part };
-        }
-        cleanParts.push(String(part.clean_transcript || '').trim());
-    }
-    const merged = cleanParts.filter(Boolean).join('\n\n');
-    const sumRes = await fetch('/api/format_transcript_summary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            ...base(),
-            mode: 'summary_only',
-            text: merged
-        })
-    });
-    const sumFmt = await sumRes.json().catch(() => ({}));
-    if (!sumRes.ok || (sumFmt && sumFmt.error)) {
-        return { ok: false, res: sumRes, fmt: sumFmt };
-    }
-    const rawFmt = {
-        clean_transcript: String(sumFmt.clean_transcript || merged || '').trim(),
-        overview: String(sumFmt.overview || '').trim(),
-        key_points: Array.isArray(sumFmt.key_points)
-            ? sumFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
-            : []
-    };
-    for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
-        if (sumFmt[k] != null) rawFmt[k] = sumFmt[k];
-    }
-    const fmt = normalizeFormattedFields(rawFmt);
-    return { ok: true, res: sumRes, fmt };
+    const fmt = await res.json().catch(() => ({}));
+    return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt: fmt && !fmt.error ? normalizeFormattedFields(fmt) : fmt };
 }
 
 /** Keep document-format source in sync after manual subtitle edits. */
@@ -6726,6 +6860,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalHeader) medicalHeader.style.display = on ? '' : 'none';
         if (medicalTitle) medicalTitle.textContent = 'סשן הקלטה רפואי מאובטח';
         if (medicalSubtitle) medicalSubtitle.textContent = 'תמלול קליני בתקן HIPAA פעיל';
+        if (!on) {
+            if (typeof qsSetMedicalWarmupBanner === 'function') qsSetMedicalWarmupBanner('hidden');
+            if (window.__QS_MEDICAL_WARMUP_POLL_TIMER) {
+                clearInterval(window.__QS_MEDICAL_WARMUP_POLL_TIMER);
+                window.__QS_MEDICAL_WARMUP_POLL_TIMER = null;
+            }
+        } else if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+            if (typeof qsSetMedicalWarmupBanner === 'function') qsSetMedicalWarmupBanner('ready');
+        } else if (window.__QS_MEDICAL_WARMUP_STATE === 'preparing') {
+            if (typeof qsSetMedicalWarmupBanner === 'function') qsSetMedicalWarmupBanner('preparing');
+        }
         if (on) {
             const hasLoadedPayload = typeof initOpenAppHasLoadedTranscriptPayload === 'function'
                 ? initOpenAppHasLoadedTranscriptPayload()

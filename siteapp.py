@@ -2154,6 +2154,106 @@ _medical_learn_async_lock = threading.Lock()
 MEDICAL_LEARN_ASYNC_TTL_SEC = 3600
 _medical_session_warmup_lock = threading.Lock()
 _medical_session_warmup_last_at = 0.0
+_medical_warmup_status_lock = threading.Lock()
+_medical_warmup_status_by_user = {}  # user_id -> {status, job_id, submitted_at, ready_at}
+
+
+def _medical_warmup_room(user_id):
+    return f"medical_warmup_{str(user_id or '').strip()}"
+
+
+def _is_medical_session_warmup_job(job_id):
+    return str(job_id or '').strip().startswith('warmup_')
+
+
+def _medical_warmup_status_s3_key(user_id):
+    safe_user = str(user_id or '').strip() or 'anonymous'
+    return f"users/{safe_user}/summaries/_session_warmup_status.json"
+
+
+def _read_medical_warmup_status(user_id):
+    uid = str(user_id or '').strip()
+    if not uid:
+        return {}
+    with _medical_warmup_status_lock:
+        cached = dict(_medical_warmup_status_by_user.get(uid) or {})
+    if cached:
+        return cached
+    key = _medical_warmup_status_s3_key(uid)
+    bucket = (MEDICAL_S3_BUCKET or os.environ.get('S3_BUCKET') or '').strip()
+    if not bucket:
+        return {}
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        obj = s3_client.get_object(Bucket=bucket, Key=key)
+        data = json.loads(obj['Body'].read().decode('utf-8'))
+        if isinstance(data, dict):
+            with _medical_warmup_status_lock:
+                _medical_warmup_status_by_user[uid] = dict(data)
+            return data
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') not in ('NoSuchKey', '404', 'NotFound'):
+            logging.debug("_read_medical_warmup_status S3 %s: %s", key, e)
+    except Exception as e:
+        logging.debug("_read_medical_warmup_status failed user=%s: %s", uid[:12], e)
+    return {}
+
+
+def _write_medical_warmup_status(user_id, payload):
+    uid = str(user_id or '').strip()
+    if not uid:
+        return
+    data = dict(payload or {})
+    data['user_id'] = uid
+    with _medical_warmup_status_lock:
+        _medical_warmup_status_by_user[uid] = dict(data)
+    key = _medical_warmup_status_s3_key(uid)
+    bucket = (MEDICAL_S3_BUCKET or os.environ.get('S3_BUCKET') or '').strip()
+    if not bucket:
+        return
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(data, ensure_ascii=False).encode('utf-8'),
+            ContentType='application/json',
+        )
+    except Exception as e:
+        logging.warning("_write_medical_warmup_status S3 failed user=%s: %s", uid[:12], e)
+
+
+def _notify_medical_warmup_ready(user_id, job_id, ready_at=None):
+    ready_at = float(ready_at or time.time())
+    prev = _read_medical_warmup_status(user_id) or {}
+    _write_medical_warmup_status(user_id, {
+        'status': 'ready',
+        'job_id': job_id or prev.get('job_id'),
+        'submitted_at': prev.get('submitted_at') or ready_at,
+        'ready_at': ready_at,
+    })
+    room = _medical_warmup_room(user_id)
+    payload = {
+        'userId': user_id,
+        'jobId': job_id,
+        'status': 'ready',
+        'ready_at': ready_at,
+    }
+    try:
+        socketio.emit('medical_warmup_ready', payload, room=room)
+        logging.info("medical_warmup_ready emitted room=%s job_id=%s", room, job_id)
+    except Exception as e:
+        logging.warning("medical_warmup_ready emit failed room=%s: %s", room, e)
 job_timings = {}  # job_id -> {"trigger_sec": float, "trigger_completed_at": float}
 gpu_started_at = {}  # job_id -> when worker called /api/gpu_started (container running)
 upload_complete = {}  # job_id -> True when trigger_processing called (upload done); worker polls until this
@@ -3126,62 +3226,37 @@ def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, 
     return _wrap_text_to_max_chars(clean)
 
 
-def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
-    """Produce overview + key_points from (possibly truncated) transcript text."""
-    lang_hint = str(target_lang or 'he').strip().lower()[:8]
-    want_hebrew = lang_hint.startswith('he')
-    output_lang_label = 'Hebrew' if want_hebrew else target_lang
-    if is_medical:
-        system_prompt = (
-            "You are a clinical documentation assistant. "
-            "Write only from the transcript: do not invent symptoms, diagnoses, medications, "
-            "allergies, vitals, labs, imaging, or exam findings that are not clearly stated or "
-            "fairly implied. Use tentative language and explicit uncertainty when information is missing. "
-            "Return ONLY valid JSON with exactly these string keys: "
-            "{\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
-            "CRITICAL: Do NOT include any section title or label (such as 'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
-            "or any English equivalent) inside the JSON string values. "
-            "The field name is already the section label — start each value directly with the clinical content. "
-            "No markdown fences."
-        )
-        user_prompt = (
-            "From this clinical encounter transcript, produce three sections in the output language "
-            f"({output_lang_label}). Documentation support only; not a substitute for judgment or the chart.\n\n"
-            f"{_resolve_medical_task2_prompt(output_lang_label, lang_hint, user_id=user_id, prompt_override=medical_task2_prompt_override, single_shot=False)}"
-            f"Transcript:\n\n{transcript_excerpt}"
-        )
-    else:
-        system_prompt = (
-            "You are an expert analyst. "
-            "Return ONLY valid JSON: {\"overview\":string,\"key_points\":[string]} . "
-            "No markdown fences."
-        )
-        user_prompt = (
-            "Summarize this transcript.\n\n"
-            "* A short 3–4 sentence overview.\n"
-            "* 5–8 key points (strings in the array).\n"
-            "Focus on decisions, insights, and actionable ideas. Ignore filler.\n\n"
-            f"Output language must be {output_lang_label}.\n\n"
-            f"Transcript:\n\n{transcript_excerpt}"
-        )
-    parsed = _openai_chat_json_completion(
-        system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
+def _truncate_transcript_for_unified_gpt(transcript_text):
+    """Cap input length for a single unified GPT call (clean + summary together)."""
+    text = str(transcript_text or "").strip()
+    summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000') or 18000)
+    if len(text) <= summary_in_max:
+        return text
+    return (
+        text[: summary_in_max // 2]
+        + "\n\n[… פסקה מקוצרת — המשך התמלול …]\n\n"
+        + text[-(summary_in_max // 2) :]
     )
-    if is_medical:
-        return _medical_summary_from_parsed(parsed, want_hebrew)
-    overview = str((parsed or {}).get("overview") or "").strip()
-    key_points = (parsed or {}).get("key_points")
-    if not isinstance(key_points, list):
-        key_points = []
-    key_points = [str(p).strip() for p in key_points if str(p).strip()]
-    overview, key_points = _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew)
-    return {"overview": overview, "key_points": key_points}
 
 
-def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
-    """One OpenAI call: full transcript + summary (only for moderately sized input)."""
-    timeout_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
-    read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
+def _format_unified_transcript_openai(
+    transcript_text,
+    target_lang='he',
+    is_medical=False,
+    user_id=None,
+    medical_task2_prompt_override=None,
+    gpt_model=None,
+    timeout_sec=None,
+    read_retries=None,
+):
+    """One OpenAI call: Task 1 (clean transcript) + Task 2 (summary) in the same prompt."""
+    transcript_text = str(transcript_text or "").strip()
+    if not transcript_text:
+        raise RuntimeError("empty transcript")
+    if timeout_sec is None:
+        timeout_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
+    if read_retries is None:
+        read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
     output_lang_label = 'Hebrew' if want_hebrew else target_lang
@@ -3196,7 +3271,13 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
             "or any English equivalent) inside the JSON string values. "
             "Start each summary field value directly with the clinical content, without any heading prefix."
         )
-        task2 = _resolve_medical_task2_prompt(output_lang_label, lang_hint, user_id=user_id, prompt_override=medical_task2_prompt_override, single_shot=True)
+        task2 = _resolve_medical_task2_prompt(
+            output_lang_label,
+            lang_hint,
+            user_id=user_id,
+            prompt_override=medical_task2_prompt_override,
+            single_shot=True,
+        )
         json_tail = (
             "Return as JSON fields only: clean_transcript, chief_complaint, examination_transcript, patient_recommendations.\n"
         )
@@ -3250,101 +3331,56 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
     return {
         "clean_transcript": clean_transcript,
         "overview": overview,
-        "key_points": key_points
+        "key_points": key_points,
     }
 
 
-def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
-    """Generate clean transcript paragraphs + summary. Uses chunked calls when input is very long."""
-    transcript_text = str(transcript_text or "").strip()
-    if not transcript_text:
-        raise RuntimeError("empty transcript")
-
-    max_single = int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '6500'))
-    chunk_chars = int(os.environ.get('FORMAT_TRANSCRIPT_CHUNK_CHARS', '5000'))
-    summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000'))
-    format_read_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
-    read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
-    parallel = max(1, min(8, int(os.environ.get('FORMAT_TRANSCRIPT_PARALLEL', '2'))))
-
-    if len(transcript_text) <= max_single:
-        return _format_transcript_and_summary_single_shot(
-            transcript_text,
-            target_lang=target_lang,
-            is_medical=is_medical,
-            user_id=user_id,
-            medical_task2_prompt_override=medical_task2_prompt_override,
-            gpt_model=gpt_model,
-        )
-
-    logging.info(
-        "format_transcript: chunked path total_chars=%s chunk≈%s parallel=%s",
-        len(transcript_text),
-        chunk_chars,
-        parallel,
+def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+    """Unified clean + summary in one GPT call (legacy name for API mode=summary_only)."""
+    return _format_unified_transcript_openai(
+        transcript_excerpt,
+        target_lang=target_lang,
+        is_medical=is_medical,
+        user_id=user_id,
+        medical_task2_prompt_override=medical_task2_prompt_override,
+        gpt_model=gpt_model,
+        timeout_sec=timeout_sec,
+        read_retries=read_retries,
     )
-    parts = _split_text_for_format_chunks(transcript_text, chunk_chars)
-    if not parts:
-        raise RuntimeError("no chunks after split")
 
-    clean_parts = [None] * len(parts)
 
-    def _run_chunk(idx_part):
-        idx, part = idx_part
-        logging.info(
-            "format_transcript: chunk %s/%s chars=%s",
-            idx + 1,
-            len(parts),
-            len(part),
-        )
-        return idx, _format_transcript_clean_chunk_openai(
-            part, target_lang, format_read_sec, read_retries, gpt_model=gpt_model
-        )
-
-    if parallel <= 1 or len(parts) == 1:
-        for i, part in enumerate(parts):
-            _, c = _run_chunk((i, part))
-            clean_parts[i] = c
-    else:
-        with ThreadPoolExecutor(max_workers=parallel) as pool:
-            futures = [pool.submit(_run_chunk, (i, p)) for i, p in enumerate(parts)]
-            for fut in as_completed(futures):
-                try:
-                    idx, c = fut.result()
-                    clean_parts[idx] = c
-                except Exception as e:
-                    raise RuntimeError(f"OpenAI format chunk failed: {e}") from e
-
-    clean_merged = "\n\n".join(p.strip() for p in clean_parts if p and str(p).strip())
-    clean_merged = _wrap_text_to_max_chars(clean_merged)
-
-    summ_input = clean_merged
-    if len(summ_input) > summary_in_max:
-        summ_input = (
-            clean_merged[: summary_in_max // 2]
-            + "\n\n[… פסקה מקוצרת — המשך התמלול …]\n\n"
-            + clean_merged[-(summary_in_max // 2) :]
-        )
-    summary = _format_summary_only_openai(
-        summ_input,
-        target_lang,
-        format_read_sec,
-        read_retries,
+def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+    """One OpenAI call: clean transcript + summary."""
+    return _format_unified_transcript_openai(
+        transcript_text,
+        target_lang=target_lang,
         is_medical=is_medical,
         user_id=user_id,
         medical_task2_prompt_override=medical_task2_prompt_override,
         gpt_model=gpt_model,
     )
-    out = {
-        "clean_transcript": clean_merged,
-        "overview": summary.get("overview") or "",
-        "key_points": summary.get("key_points") or [],
-    }
-    if is_medical:
-        for k in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
-            if k in summary:
-                out[k] = summary[k]
-    return out
+
+
+def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+    """Generate clean transcript + summary in a single GPT request (truncates very long input)."""
+    transcript_text = str(transcript_text or "").strip()
+    if not transcript_text:
+        raise RuntimeError("empty transcript")
+    summ_input = _truncate_transcript_for_unified_gpt(transcript_text)
+    if len(summ_input) < len(transcript_text):
+        logging.info(
+            "format_transcript: unified single call truncated input %s -> %s chars",
+            len(transcript_text),
+            len(summ_input),
+        )
+    return _format_unified_transcript_openai(
+        summ_input,
+        target_lang=target_lang,
+        is_medical=is_medical,
+        user_id=user_id,
+        medical_task2_prompt_override=medical_task2_prompt_override,
+        gpt_model=gpt_model,
+    )
 
 
 # --- TRANSLATE SEGMENTS (GPT via Node script from package.json) ---
@@ -3508,10 +3544,7 @@ def api_wrap_transcript_text():
 
 @app.route('/api/transcript_format_chunks_plan', methods=['POST'])
 def api_transcript_format_chunks_plan():
-    """Split transcript text for multi-request formatting (avoids proxy 504 on long jobs).
-
-    Client calls /api/format_transcript_summary mode=clean_chunk once per chunk, then mode=summary_only.
-    """
+    """Legacy: split transcript for old multi-request flow. Prefer one POST /api/format_transcript_summary with text only."""
     data = request.json or {}
     raw_text = str(data.get('text') or '').strip()
     segments = data.get('segments') or []
@@ -3569,10 +3602,9 @@ def _medical_minimal_format_payload(raw_text: str, target_lang: str = 'he') -> d
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export.
 
-    For long transcripts, use multi-request flow to stay under gateway timeouts:
-      POST /api/transcript_format_chunks_plan  -> { chunks }
-      POST this route with {\"mode\":\"clean_chunk\",\"text\": chunk} per chunk
-      POST this route with {\"mode\":\"summary_only\",\"text\": merged_clean}
+    Default (no mode): one GPT call does Task 1 (grammar/clean) + Task 2 (summary) together.
+    mode=summary_only: same unified call (raw transcript; very long input is truncated server-side).
+    mode=clean_chunk: legacy grammar-only chunk (deprecated; prefer default).
     """
     t0 = time.time()
     data = request.json or {}
@@ -3631,32 +3663,33 @@ def api_format_transcript_summary():
                 "gpt_format_sec": round(float(elapsed), 3),
                 "format_guardrail": "medical_short_transcript_bypass",
             }), 200
-        full_clean = _wrap_text_to_max_chars(raw)
-        summary_in_max = int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000') or 18000)
-        summ_input = full_clean
-        if len(summ_input) > summary_in_max:
-            summ_input = (
-                full_clean[: summary_in_max // 2]
-                + "\n\n[… פסקה מקוצרת — המשך התמלול …]\n\n"
-                + full_clean[-(summary_in_max // 2) :]
-            )
-        summary_timeout = int(os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC', '120') or 120)
+        summ_input = _truncate_transcript_for_unified_gpt(raw)
+        summary_timeout = int(
+            os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
+            or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270')
+            or 270
+        )
         try:
-            summary = _format_summary_only_openai(
-                summ_input, target_lang, summary_timeout, read_retries, is_medical=is_medical, user_id=req_user_id
+            out = _format_summary_only_openai(
+                summ_input,
+                target_lang,
+                summary_timeout,
+                read_retries,
+                is_medical=is_medical,
+                user_id=req_user_id,
             )
             elapsed = time.time() - t0
             _apply_format_timing(elapsed)
             payload = {
-                "clean_transcript": full_clean,
-                "overview": summary.get("overview") or "",
-                "key_points": summary.get("key_points") or [],
+                "clean_transcript": out.get("clean_transcript") or "",
+                "overview": out.get("overview") or "",
+                "key_points": out.get("key_points") or [],
                 "gpt_format_sec": round(float(elapsed), 3),
             }
             if is_medical:
                 for k in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
-                    if k in summary:
-                        payload[k] = summary[k]
+                    if k in out:
+                        payload[k] = out[k]
             return jsonify(payload), 200
         except Exception as e:
             logging.warning("format_transcript_summary summary_only failed: %s", e)
@@ -3892,7 +3925,7 @@ def api_medical_training_preview():
             user_id[:12],
             preview_model,
             len(transcript),
-            len(transcript) > int(os.environ.get('FORMAT_TRANSCRIPT_MAX_SINGLE_CHARS', '6500') or 6500),
+            len(transcript) > int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000') or 18000),
         )
         out = _format_transcript_and_summary_via_openai(
             transcript,
@@ -5212,24 +5245,43 @@ def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, langu
 
 
 def _submit_medical_sagemaker_session_warmup(user_id, public_base=None):
-    """Scale/wake SageMaker for an idle medical session (no patient audio yet)."""
+    """Scale/wake SageMaker for an idle medical session (no patient audio yet).
+
+    Returns (started: bool, reason: str, warmup_job_id: str | None).
+    """
     global _medical_session_warmup_last_at
     if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
-        return False, 'simulation_without_sagemaker'
+        return False, 'simulation_without_sagemaker', None
     if not _medical_uses_sagemaker_transcription():
-        return False, 'sagemaker_not_configured'
+        return False, 'sagemaker_not_configured', None
 
     now = time.time()
     interval = _medical_session_warmup_interval_sec()
+    safe_user = str(user_id or '').strip() or 'anonymous'
     with _medical_session_warmup_lock:
         if _medical_session_warmup_last_at and (now - _medical_session_warmup_last_at) < interval:
-            return True, 'skipped_recent'
+            prev = _read_medical_warmup_status(safe_user) or {}
+            return True, 'skipped_recent', prev.get('job_id')
         _medical_session_warmup_last_at = now
 
-    safe_user = str(user_id or '').strip() or 'anonymous'
     prof = _resolve_storage_profile(safe_user, is_medical=True)
     job_id = f"warmup_{int(now)}_{uuid.uuid4().hex[:8]}"
     s3_key = f"{prof['input_prefix']}/_session_warmup"
+    pending_job_info[job_id] = {
+        "input_s3_key": s3_key,
+        "user_id": safe_user,
+        "is_medical": True,
+        "session_warmup": True,
+        "task": "transcribe",
+        "language": "he",
+        "engine": "sagemaker_async",
+    }
+    _write_medical_warmup_status(safe_user, {
+        'status': 'preparing',
+        'job_id': job_id,
+        'submitted_at': now,
+        'ready_at': None,
+    })
 
     def _run():
         ok = _submit_sagemaker_async_job(
@@ -5252,7 +5304,7 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None):
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    return True, 'started'
+    return True, 'started', job_id
 
 
 @app.route('/api/medical_session_warmup', methods=['POST'])
@@ -5268,15 +5320,48 @@ def medical_session_warmup():
         return jsonify({"status": "error", "message": "Invalid userId"}), 400
 
     public_base = _public_base_url(request)
-    started, reason = _submit_medical_sagemaker_session_warmup(user_id, public_base=public_base)
+    started, reason, warmup_job_id = _submit_medical_sagemaker_session_warmup(user_id, public_base=public_base)
     if not started and reason == 'sagemaker_not_configured':
         return jsonify({"status": "skipped", "reason": reason}), 200
+    warm_status = _read_medical_warmup_status(user_id) or {}
     return jsonify({
         "status": "ok" if started else "skipped",
         "reason": reason,
+        "warmup_job_id": warmup_job_id or warm_status.get('job_id'),
+        "warmup_status": warm_status.get('status') or ('preparing' if reason == 'started' else 'idle'),
         "engine": "sagemaker_async",
         "endpoint": _sagemaker_medical_endpoint_name(),
+        "warmup_room": _medical_warmup_room(user_id),
     }), 202 if reason == 'started' else 200
+
+
+@app.route('/api/medical_warmup_status', methods=['GET'])
+def medical_warmup_status():
+    """Poll session GPU warmup status (preparing → ready after /api/gpu_started)."""
+    user_id = (request.args.get('userId') or request.args.get('user_id') or '').strip()
+    job_id = (request.args.get('jobId') or request.args.get('job_id') or '').strip()
+    if not user_id or user_id.lower() == 'anonymous':
+        return jsonify({"status": "error", "message": "userId required"}), 400
+    try:
+        uuid.UUID(str(user_id))
+    except (ValueError, AttributeError):
+        return jsonify({"status": "error", "message": "Invalid userId"}), 400
+    data = _read_medical_warmup_status(user_id) or {}
+    status = str(data.get('status') or 'idle').strip().lower()
+    active_job = str(data.get('job_id') or '').strip()
+    if job_id and active_job and job_id != active_job and status != 'ready':
+        status = 'idle'
+    ready_at = data.get('ready_at')
+    submitted_at = data.get('submitted_at')
+    now = time.time()
+    return jsonify({
+        "status": status,
+        "job_id": active_job or job_id or None,
+        "ready_at": ready_at,
+        "submitted_at": submitted_at,
+        "elapsed_sec": int(now - float(submitted_at)) if submitted_at else None,
+        "warmup_room": _medical_warmup_room(user_id),
+    }), 200
 
 
 def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None, transcription_options=None):
@@ -5386,6 +5471,10 @@ def gpu_started():
     _set_trigger_state(job_id, "triggered")
     if job_id not in pending_trigger or pending_trigger.get(job_id) == "failed":
         logging.warning("gpu_started for unknown or failed job_id %s", job_id)
+    if _is_medical_session_warmup_job(job_id):
+        warm_user = (pending.get("user_id") or _extract_user_id_from_s3_key((pending.get("input_s3_key") or "")))
+        if warm_user and warm_user.lower() != 'anonymous':
+            _notify_medical_warmup_ready(warm_user, job_id, started_at)
     return jsonify({"ok": True, "job_id": job_id}), 200
 
 
