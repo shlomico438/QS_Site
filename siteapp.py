@@ -429,7 +429,15 @@ def _sync_medical_endpoint_capacity_from_aws(force=False):
             return _read_medical_endpoint_scale_state()
         if cap <= 0:
             prev = _read_medical_endpoint_scale_state()
-            if prev.get('warm') is not False or _medical_endpoint_desired_capacity_from_state(prev) != 0:
+            if _medical_endpoint_worker_live(prev):
+                st = dict(prev)
+                st['desired_capacity'] = 0
+                st['updated_at'] = now
+                _write_medical_endpoint_scale_state(st)
+                logging.info(
+                    "medical_endpoint capacity_sync desired=0 (worker_ready — keeping warm)"
+                )
+            elif prev.get('warm') is not False or _medical_endpoint_desired_capacity_from_state(prev) != 0:
                 _set_medical_endpoint_warm(
                     False,
                     reason='capacity_sync_zero',
@@ -457,22 +465,39 @@ def _sync_medical_endpoint_capacity_from_aws(force=False):
         return _read_medical_endpoint_scale_state()
 
 
-def _medical_endpoint_is_warm():
-    """True only when capacity > 0 and session warmup marked the endpoint warm."""
-    st = _read_medical_endpoint_scale_state()
-    cap = _medical_endpoint_desired_capacity_from_state(st)
-    if cap is not None and cap <= 0:
+def _medical_endpoint_worker_live(st=None):
+    """SageMaker worker called /api/gpu_started for the current session warmup job."""
+    st = st if st is not None else _read_medical_endpoint_scale_state()
+    if not _medical_global_warmup_job_id(st):
         return False
+    try:
+        wr = float(st.get('worker_ready_at') or 0)
+    except (TypeError, ValueError):
+        return False
+    if wr <= 0:
+        return False
+    try:
+        age = time.time() - wr
+    except (TypeError, ValueError):
+        return False
+    return age <= _medical_warmup_stale_sec()
+
+
+def _medical_endpoint_is_warm():
+    """Warm after session warmup; capacity may still read 0 until AWS autoscaling catches up."""
+    st = _read_medical_endpoint_scale_state()
     if not st or 'warm' not in st:
         return False
-    return bool(st.get('warm'))
+    if not bool(st.get('warm')):
+        return False
+    cap = _medical_endpoint_desired_capacity_from_state(st)
+    if cap is not None and cap > 0:
+        return True
+    return _medical_endpoint_worker_live(st)
 
 
 def _medical_endpoint_is_ready():
-    """Shared clinic GPU: warm model on a non-zero capacity variant."""
-    cap = _medical_endpoint_desired_capacity_from_state()
-    if cap is not None and cap <= 0:
-        return False
+    """Shared clinic GPU ready for transcription (warm + instance live)."""
     return _medical_endpoint_is_warm()
 
 
@@ -546,19 +571,22 @@ def _medical_sagemaker_scalable_resource_id():
 
 def _set_medical_endpoint_warm(warm, reason='warmup_ready', **extra):
     prev = _read_medical_endpoint_scale_state()
-    payload = {
-        'warm': bool(warm),
-        'reason': str(reason or ''),
-        'updated_at': time.time(),
-    }
+    st = dict(prev)
+    now = time.time()
+    st['warm'] = bool(warm)
+    st['reason'] = str(reason or '')
+    st['updated_at'] = now
     if warm:
-        payload['warmed_at'] = payload['updated_at']
+        st['warmed_at'] = now
     else:
-        payload['scaled_down_at'] = payload['updated_at']
+        st['scaled_down_at'] = now
         if prev.get('scaled_down_at'):
-            payload['previous_scaled_down_at'] = prev.get('scaled_down_at')
-    payload.update(extra or {})
-    _write_medical_endpoint_scale_state(payload)
+            st['previous_scaled_down_at'] = prev.get('scaled_down_at')
+        st.pop('worker_ready_at', None)
+    for key, val in (extra or {}).items():
+        if val is not None:
+            st[key] = val
+    _write_medical_endpoint_scale_state(st)
     logging.info("medical_endpoint_scale warm=%s reason=%s", warm, reason)
 
 
@@ -770,9 +798,6 @@ def _try_complete_medical_warmup_from_sagemaker_output(job_id=None):
     """Mark endpoint warm when SageMaker async warmup output lands in S3."""
     jid = str(job_id or _medical_global_warmup_job_id() or '').strip()
     if not jid or not _is_medical_session_warmup_job(jid):
-        return False
-    cap = _medical_endpoint_desired_capacity_from_state()
-    if cap is not None and cap <= 0:
         return False
     if _medical_endpoint_is_ready():
         return True
@@ -2686,14 +2711,9 @@ def _is_medical_session_warmup_job(job_id):
 
 def _notify_medical_endpoint_ready(job_id, ready_at=None):
     """Mark shared endpoint warm; emit to all medical clients (not per-doctor S3)."""
-    cap = _medical_endpoint_desired_capacity_from_state()
-    if cap is not None and cap <= 0:
-        logging.warning(
-            "medical_endpoint_ready ignored job=%s — desired_capacity=0",
-            str(job_id or '')[:32],
-        )
-        return
     ready_at = float(ready_at or time.time())
+    if _medical_uses_sagemaker_transcription():
+        _sync_medical_endpoint_capacity_from_aws(force=True)
     current_job = _medical_global_warmup_job_id()
     jid = str(job_id or '').strip()
     if current_job and jid and jid != current_job:
@@ -2706,11 +2726,19 @@ def _notify_medical_endpoint_ready(job_id, ready_at=None):
     if _medical_endpoint_is_ready():
         return
     active_job = jid or current_job
+    cap = _medical_endpoint_desired_capacity_from_state()
+    warm_extra = {'warmup_job_id': active_job or None}
+    if cap is not None and cap <= 0:
+        warm_extra['worker_ready_at'] = ready_at
+        logging.info(
+            "medical_endpoint_ready job=%s worker live (DescribeScalableTargets cap=0)",
+            str(active_job or '')[:32],
+        )
     _set_medical_endpoint_warm(
         True,
         reason='session_warmup_ready',
-        job_id=active_job,
         warmed_at=ready_at,
+        **warm_extra,
     )
     payload = {
         'status': 'ready',
@@ -2742,31 +2770,40 @@ def _medical_endpoint_status_payload():
     job_id = _medical_global_warmup_job_id(st)
     submitted_at = _medical_global_warmup_submitted_at(st)
     now = time.time()
-    endpoint_scaled_down = cap is not None and cap <= 0
+    stale = _medical_warmup_preparing_is_stale_global(st, now) if job_id else False
+    warmup_in_flight = bool(job_id) and not endpoint_ready and not stale
 
-    if (
-        job_id
-        and not endpoint_scaled_down
-        and not endpoint_ready
-        and (cap is None or cap > 0)
-    ):
+    if warmup_in_flight and (cap is None or cap > 0):
         _try_complete_medical_warmup_from_sagemaker_output(job_id)
         endpoint_warm = _medical_endpoint_is_warm()
         endpoint_ready = _medical_endpoint_is_ready()
         st = _read_medical_endpoint_scale_state()
         job_id = _medical_global_warmup_job_id(st)
         submitted_at = _medical_global_warmup_submitted_at(st)
+        stale = False
+        warmup_in_flight = bool(job_id) and not endpoint_ready
 
-    if endpoint_scaled_down:
-        status = 'scaled_out'
-    elif endpoint_ready:
+    if endpoint_ready:
         status = 'ready'
+        endpoint_scaled_down = False
+    elif warmup_in_flight:
+        # Session warmup was triggered on login — AWS may still show capacity 0 while scaling up.
+        status = 'preparing'
+        endpoint_scaled_down = False
+    elif cap is not None and cap <= 0:
+        status = 'scaled_out'
+        endpoint_scaled_down = True
     elif job_id:
         status = 'preparing'
+        endpoint_scaled_down = False
     else:
         status = 'idle'
+        endpoint_scaled_down = False
 
-    stale = _medical_warmup_preparing_is_stale_global(st, now) if status == 'preparing' else False
+    if status == 'preparing' and job_id:
+        stale = _medical_warmup_preparing_is_stale_global(st, now)
+    else:
+        stale = False
     elapsed = int(now - float(submitted_at)) if submitted_at else None
     sagemaker_output_uri = _medical_global_warmup_output_uri(st)
     waiting_sagemaker = (
@@ -2798,6 +2835,7 @@ def _medical_endpoint_status_payload():
         'stale_after_sec': _medical_warmup_stale_sec(),
         'sagemaker_output_uri': sagemaker_output_uri or None,
         'waiting_sagemaker': waiting_sagemaker,
+        'worker_ready_at': st.get('worker_ready_at'),
         'endpoint_events_room': MEDICAL_ENDPOINT_EVENTS_ROOM,
         'endpoint': _sagemaker_medical_endpoint_name(),
         'engine': 'sagemaker_async' if _medical_uses_sagemaker_transcription() else None,
@@ -6138,7 +6176,7 @@ def gpu_started():
     if trigger_completed_at is None:
         db_timings = _get_job_timings_from_db(job_id, user_id)
         trigger_completed_at = db_timings.get("trigger_completed_at")
-    if trigger_completed_at is not None:
+    if trigger_completed_at is not None and not _is_medical_session_warmup_job(job_id):
         wakeup_sec = started_at - trigger_completed_at
         _update_job_timings(job_id, user_id=user_id, runpod_wakeup_sec=wakeup_sec, gpu_started_at=started_at)
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
