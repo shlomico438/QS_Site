@@ -42,6 +42,13 @@ SAGEMAKER_MEDICAL_ENDPOINT_NAME=quickscribe-transcribe-async
 MEDICAL_SAGEMAKER_VARIANT_NAME=AllTraffic
 ```
 
+**Global endpoint state** (one S3 file, shared by all doctors):
+
+- `users/_global/medical_sagemaker_endpoint_scale.json` — `warm`, `desired_capacity`, `warmup_job_id`, etc.
+- Poll: `GET /api/medical_endpoint_status` (optional `userId`; same JSON for every doctor).
+- Green banner: `endpoint_ready === true` (warm and capacity &gt; 0).
+- Per-user `_session_warmup_status.json` is no longer written.
+
 Optional legacy CPU CloudWatch alarm on the same topic:
 
 ```env
