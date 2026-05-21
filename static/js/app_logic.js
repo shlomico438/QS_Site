@@ -6774,27 +6774,21 @@ function stopProcessingStateUI(reason) {
 }
 
 function _processingIntroThreeSentencesHe(loggedIn) {
-    const s2 = 'התהליך עשוי לקחת כמה דקות.';
     if (isMedicalModeEnabled()) {
-        const s3 = loggedIn ? '' : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
-        return s3 ? `${s2}\n\n${s3}` : s2;
+        return loggedIn ? '' : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
     }
-    const s3 = loggedIn
+    return loggedIn
         ? 'אפשר לסגור את העמוד — נשלח לך מייל ברגע שהוידאו יהיה מוכן עם הכתוביות.'
         : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
-    return `${s2}\n\n${s3}`;
 }
 
 function _processingIntroThreeSentencesEn(loggedIn) {
-    const s2 = 'This may take a few minutes.';
     if (isMedicalModeEnabled()) {
-        const s3 = loggedIn ? '' : 'Sign in to the site so we can notify you by email when it is ready.';
-        return s3 ? `${s2}\n\n${s3}` : s2;
+        return loggedIn ? '' : 'Sign in to the site so we can notify you by email when it is ready.';
     }
-    const s3 = loggedIn
+    return loggedIn
         ? "You can leave this page — we'll email you when your video and subtitles are ready."
         : 'Sign in to the site so we can notify you by email when it is ready.';
-    return `${s2}\n\n${s3}`;
 }
 
 function startProcessingStateUI() {
@@ -6833,7 +6827,14 @@ function startProcessingStateUI() {
 
     if (introEl) {
         const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-        introEl.textContent = isHe ? _processingIntroThreeSentencesHe(false) : _processingIntroThreeSentencesEn(false);
+        const setIntro = (loggedIn) => {
+            const text = isHe
+                ? _processingIntroThreeSentencesHe(loggedIn)
+                : _processingIntroThreeSentencesEn(loggedIn);
+            introEl.textContent = text;
+            introEl.style.display = text ? '' : 'none';
+        };
+        setIntro(false);
         (async () => {
             let loggedIn = false;
             try {
@@ -6842,11 +6843,7 @@ function startProcessingStateUI() {
                     loggedIn = !!(data && data.session && data.session.user);
                 }
             } catch (_) {}
-            if (introEl) {
-                introEl.textContent = isHe
-                    ? _processingIntroThreeSentencesHe(loggedIn)
-                    : _processingIntroThreeSentencesEn(loggedIn);
-            }
+            setIntro(loggedIn);
         })();
     }
 }

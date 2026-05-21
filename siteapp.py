@@ -320,6 +320,88 @@ def _medical_warmup_preparing_is_stale(prev, now=None):
         return True
     return age > _medical_warmup_stale_sec()
 
+
+def _parse_s3_uri(uri):
+    u = str(uri or '').strip()
+    if not u.startswith('s3://'):
+        return None, None
+    rest = u[5:]
+    if '/' not in rest:
+        return rest, ''
+    bucket, key = rest.split('/', 1)
+    return bucket, key
+
+
+def _medical_warmup_sagemaker_output_uri(job_id, warm_status=None):
+    jid = str(job_id or '').strip()
+    if not jid:
+        return ''
+    warm_status = warm_status or {}
+    out = str(warm_status.get('sagemaker_output_uri') or '').strip()
+    if out:
+        return out
+    pinfo = pending_job_info.get(jid) or {}
+    return str(pinfo.get('sagemaker_output_uri') or '').strip()
+
+
+def _try_complete_medical_warmup_from_sagemaker_output(user_id, job_id, warm_status=None):
+    """Mark warmup ready when SageMaker async output lands in S3 (fallback if gpu_started POST fails)."""
+    jid = str(job_id or '').strip()
+    uid = str(user_id or '').strip()
+    if not jid or not uid or not _is_medical_session_warmup_job(jid):
+        return False
+    if str((warm_status or _read_medical_warmup_status(uid) or {}).get('status') or '').lower() == 'ready':
+        return True
+    output_uri = _medical_warmup_sagemaker_output_uri(jid, warm_status)
+    if not output_uri:
+        return False
+    bucket, key = _parse_s3_uri(output_uri)
+    if not bucket or not key:
+        return False
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        obj = s3_client.get_object(Bucket=bucket, Key=key)
+        raw = obj['Body'].read().decode('utf-8', errors='replace').strip()
+        if not raw:
+            return False
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return False
+        ok_status = str(payload.get('status') or '').lower() == 'success'
+        is_warmup = payload.get('warmup') is True or _is_medical_session_warmup_job(
+            payload.get('jobId') or payload.get('job_id') or jid
+        )
+        if ok_status and is_warmup:
+            _notify_medical_warmup_ready(uid, jid)
+            logging.info(
+                "medical_warmup ready from SageMaker async output (user=%s job=%s s3=%s)",
+                uid[:12],
+                jid,
+                output_uri[:120],
+            )
+            return True
+        if str(payload.get('status') or '').lower() in ('error', 'failed'):
+            logging.warning(
+                "medical_warmup SageMaker output failed user=%s job=%s payload=%s",
+                uid[:12],
+                jid,
+                str(payload)[:300],
+            )
+    except ClientError as e:
+        code = (e.response.get('Error') or {}).get('Code') or ''
+        if code not in ('NoSuchKey', '404', 'NotFound'):
+            logging.debug("medical_warmup output poll s3 %s: %s", output_uri[:80], e)
+    except json.JSONDecodeError:
+        logging.debug("medical_warmup output not JSON yet s3=%s", output_uri[:80])
+    except Exception as e:
+        logging.debug("medical_warmup output poll failed: %s", e)
+    return False
+
 def _audio_profile_detection_enabled():
     """Enable speech/music auto-profile and per-job transcription options from Site."""
     v = (os.environ.get('TRANSCRIBE_AUTO_AUDIO_PROFILE') or 'true').strip().lower()
@@ -2173,6 +2255,7 @@ _medical_learn_async_lock = threading.Lock()
 MEDICAL_LEARN_ASYNC_TTL_SEC = 3600
 _medical_session_warmup_lock = threading.Lock()
 _medical_session_warmup_last_at = 0.0
+_medical_warmup_waiting_logged = set()
 _medical_warmup_status_lock = threading.Lock()
 _medical_warmup_status_by_user = {}  # user_id -> {status, job_id, submitted_at, ready_at}
 
@@ -4673,6 +4756,8 @@ def _submit_sagemaker_async_job(
             pinfo = pending_job_info.get(job_id) or {}
             pinfo['sagemaker_submitted'] = True
             pinfo['engine'] = 'sagemaker_async'
+            if output_uri:
+                pinfo['sagemaker_output_uri'] = output_uri
             pinfo.pop('sagemaker_error', None)
             pending_job_info[job_id] = pinfo
             pending_trigger[job_id] = "triggered"
@@ -5368,7 +5453,20 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=Fa
             warmup_only=True,
         )
         if ok:
-            logging.info("Medical session SageMaker warmup submitted job_id=%s", job_id)
+            pinfo = pending_job_info.get(job_id) or {}
+            out_uri = str(pinfo.get('sagemaker_output_uri') or '').strip()
+            st = _read_medical_warmup_status(safe_user) or {}
+            if str(st.get('job_id') or '').strip() in ('', job_id):
+                st['job_id'] = job_id
+                st['status'] = 'preparing'
+                if out_uri:
+                    st['sagemaker_output_uri'] = out_uri
+                _write_medical_warmup_status(safe_user, st)
+            logging.info(
+                "Medical session SageMaker warmup submitted job_id=%s output=%s",
+                job_id,
+                (out_uri or '')[:120],
+            )
         else:
             logging.warning("Medical session SageMaker warmup failed job_id=%s", job_id)
 
@@ -5431,11 +5529,33 @@ def medical_warmup_status():
     active_job = str(data.get('job_id') or '').strip()
     if job_id and active_job and job_id != active_job and status != 'ready':
         status = 'idle'
+    if status == 'preparing' and active_job:
+        _try_complete_medical_warmup_from_sagemaker_output(user_id, active_job, data)
+        data = _read_medical_warmup_status(user_id) or {}
+        status = str(data.get('status') or 'idle').strip().lower()
+        active_job = str(data.get('job_id') or '').strip()
     ready_at = data.get('ready_at')
     submitted_at = data.get('submitted_at')
     now = time.time()
     stale = _medical_warmup_preparing_is_stale(data, now) if status == 'preparing' else False
     elapsed = int(now - float(submitted_at)) if submitted_at else None
+    sagemaker_output_uri = _medical_warmup_sagemaker_output_uri(active_job, data)
+    waiting_sagemaker = (
+        status == 'preparing'
+        and bool(sagemaker_output_uri)
+        and not ready_at
+    )
+    if waiting_sagemaker and elapsed is not None and elapsed >= 120:
+        wait_key = f"{user_id}:{active_job}"
+        if wait_key not in _medical_warmup_waiting_logged:
+            _medical_warmup_waiting_logged.add(wait_key)
+            logging.info(
+                "medical_warmup still preparing user=%s job=%s elapsed_sec=%s "
+                "(SageMaker endpoint scaling — async output not in S3 yet)",
+                str(user_id)[:12],
+                active_job,
+                elapsed,
+            )
     return jsonify({
         "status": status,
         "job_id": active_job or job_id or None,
@@ -5444,6 +5564,8 @@ def medical_warmup_status():
         "elapsed_sec": elapsed,
         "stale": stale,
         "stale_after_sec": _medical_warmup_stale_sec(),
+        "sagemaker_output_uri": sagemaker_output_uri or None,
+        "waiting_sagemaker": waiting_sagemaker,
         "warmup_room": _medical_warmup_room(user_id),
     }), 200
 
