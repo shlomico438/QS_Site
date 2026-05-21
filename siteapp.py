@@ -497,8 +497,14 @@ def _medical_endpoint_is_warm():
 
 
 def _medical_endpoint_is_ready():
-    """Shared clinic GPU ready for transcription (warm + instance live)."""
-    return _medical_endpoint_is_warm()
+    """Clinic ready for transcription: model warm and autoscaling shows capacity > 0."""
+    st = _read_medical_endpoint_scale_state()
+    cap = _medical_endpoint_desired_capacity_from_state(st)
+    if cap is not None and cap <= 0:
+        return False
+    if not st or not bool(st.get('warm')):
+        return False
+    return True
 
 
 def _update_medical_endpoint_state(**fields):
@@ -5870,7 +5876,15 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=Fa
         )
         return True, 'already_ready', prev_job or None
 
-    if prev_job and not stale and not force and not _medical_endpoint_is_ready():
+    cap = _medical_endpoint_desired_capacity_from_state()
+    if (
+        prev_job
+        and not stale
+        and not force
+        and not _medical_endpoint_is_ready()
+        and cap is not None
+        and cap > 0
+    ):
         logging.info(
             "medical_session_warmup user=%s skipped_recent job=%s (global still preparing)",
             safe_user[:12],

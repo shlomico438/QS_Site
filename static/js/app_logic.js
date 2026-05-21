@@ -840,6 +840,26 @@ function qsMarkMedicalSessionWarmupSubmitted(_userId, jobId, atMs) {
     } catch (_) {}
 }
 
+function qsClearMedicalSessionWarmupSubmitted() {
+    window.__QS_MEDICAL_SESSION_WARMUP_ATTEMPTED = false;
+    window.__QS_MEDICAL_WARMUP_RESUME_LOGGED = false;
+    window.__QS_MEDICAL_WARMUP_STARTED_LOGGED = false;
+    try {
+        sessionStorage.removeItem(QS_MEDICAL_ENDPOINT_WARMUP_SUBMITTED_KEY);
+    } catch (_) {}
+}
+
+function qsMedicalServerNeedsSessionWarmup(data) {
+    if (!data) return true;
+    if (qsMedicalEndpointReadyFromData(data)) return false;
+    const st = String(data.warmup_status || data.status || '').toLowerCase();
+    if (st === 'scaled_out' || data.endpoint_scaled_down) return true;
+    if (data.endpoint_desired_capacity === 0) return true;
+    if (st === 'idle' && !data.warmup_job_id) return true;
+    if (data.stale === true) return true;
+    return false;
+}
+
 function qsLogMedicalSessionWarmup(msg, detail) {
     try {
         const extra = detail && typeof detail === 'object' ? detail : (detail != null ? { detail } : {});
@@ -872,7 +892,25 @@ async function qsMaybeMedicalSessionWarmupOnce() {
 
     await qsInitMedicalWarmupUi(user);
 
-    const alreadySubmitted = qsMedicalSessionWarmupSubmittedForUser(user.id);
+    let statusData = null;
+    try {
+        statusData = await qsPollMedicalWarmupStatus(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID);
+        if (statusData && typeof qsApplyMedicalWarmupStatusFromServer === 'function') {
+            statusData.userId = user.id;
+            qsApplyMedicalWarmupStatusFromServer(statusData, { playChime: false });
+        }
+    } catch (_) {}
+
+    const serverNeedsWarmup = qsMedicalServerNeedsSessionWarmup(statusData);
+    let alreadySubmitted = qsMedicalSessionWarmupSubmittedForUser(user.id);
+    if (alreadySubmitted && serverNeedsWarmup) {
+        qsClearMedicalSessionWarmupSubmitted();
+        alreadySubmitted = false;
+        qsLogMedicalSessionWarmup('re-warm — endpoint not ready', {
+            status: statusData && statusData.status,
+            capacity: statusData && statusData.endpoint_desired_capacity,
+        });
+    }
     if (alreadySubmitted) {
         try {
             const subRaw = sessionStorage.getItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY);
@@ -902,10 +940,11 @@ async function qsMaybeMedicalSessionWarmupOnce() {
     qsMarkMedicalSessionWarmupSubmitted(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID || null, Date.now());
     qsLogMedicalSessionWarmup('POST /api/medical_session_warmup', { userId: user.id });
     try {
+        const forceWarmup = serverNeedsWarmup && !!(statusData && (statusData.endpoint_desired_capacity === 0 || String(statusData.status || '').toLowerCase() === 'scaled_out'));
         const res = await fetch('/api/medical_session_warmup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: user.id }),
+            body: JSON.stringify({ userId: user.id, force: forceWarmup || undefined }),
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && (data.status === 'ok' || data.reason === 'skipped_recent' || data.reason === 'already_ready')) {
@@ -953,6 +992,11 @@ window.qsMaybeMedicalSessionWarmup = function qsMaybeMedicalSessionWarmup() {
             return qsPollMedicalWarmupStatus(uid, window.__QS_MEDICAL_WARMUP_JOB_ID).then((data) => {
                 if (data && typeof qsApplyMedicalWarmupStatusFromServer === 'function') {
                     qsApplyMedicalWarmupStatusFromServer(data, { playChime: false });
+                }
+                if (qsMedicalServerNeedsSessionWarmup(data)) {
+                    window.__QS_MEDICAL_WARMUP_STATE = null;
+                    qsClearMedicalSessionWarmupSubmitted();
+                    return qsMaybeMedicalSessionWarmupOnce();
                 }
             });
         }
@@ -1853,6 +1897,7 @@ if (typeof socket !== 'undefined') {
         if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
         window.__QS_MEDICAL_WARMUP_STATE = 'scaled_out';
         qsSetMedicalWarmupBanner('scaled_out');
+        if (typeof qsClearMedicalSessionWarmupSubmitted === 'function') qsClearMedicalSessionWarmupSubmitted();
         const uid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
         if (uid) qsStartMedicalWarmupPoll(uid, window.__QS_MEDICAL_WARMUP_JOB_ID);
         console.info('[medical] endpoint scaled down (socket)', data && data.reason);
