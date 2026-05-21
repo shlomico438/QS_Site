@@ -321,6 +321,9 @@ _medical_session_warmup_lock = threading.Lock()
 _medical_session_warmup_last_at = 0.0
 _medical_last_warmup_job_id = None
 _medical_warmup_requested_at = 0.0
+_medical_warmup_hint_s3_key = 'users/_global/medical_warmup_session_hint.json'
+_medical_warmup_hint_cache_lock = threading.Lock()
+_medical_warmup_hint_cache = {'submitted_at': 0.0, 'job_id': None, 'fetched_at': 0.0}
 
 
 def _medical_starting_window_sec():
@@ -371,13 +374,20 @@ def _fetch_medical_sagemaker_endpoint_status():
         ep_status = str(resp.get('EndpointStatus') or '')
         in_service = ep_status == 'InService'
         current = 0
-        for pv in resp.get('ProductionVariants') or []:
+        variants = resp.get('ProductionVariants') or []
+        for pv in variants:
             if str(pv.get('VariantName') or '') == variant:
                 try:
                     current = int(pv.get('CurrentInstanceCount') or 0)
                 except (TypeError, ValueError):
                     current = 0
                 break
+        else:
+            for pv in variants:
+                try:
+                    current = max(current, int(pv.get('CurrentInstanceCount') or 0))
+                except (TypeError, ValueError):
+                    pass
         return ep_status, in_service, current
     except Exception as e:
         logging.warning("describe_endpoint %s failed: %s", ep, e)
@@ -439,6 +449,7 @@ def _medical_apply_sns_capacity(capacity, source_payload=None):
         _medical_aws_cache['source'] = 'sns'
     if cap <= 0:
         _medical_warmup_requested_at = 0.0
+        _clear_medical_warmup_hint_s3()
     logging.info(
         "medical_endpoint SNS capacity=%s resource=%s",
         cap,
@@ -446,33 +457,144 @@ def _medical_apply_sns_capacity(capacity, source_payload=None):
     )
 
 
-def _medical_warmup_requested_recently(now=None):
-    global _medical_warmup_requested_at
+def _medical_warmup_hint_bucket():
+    return (MEDICAL_S3_BUCKET or '').strip()
+
+
+def _read_medical_warmup_hint_s3():
+    """Shared warmup timestamp across Koyeb workers (small JSON, not capacity state)."""
+    now = time.time()
+    with _medical_warmup_hint_cache_lock:
+        if (now - float(_medical_warmup_hint_cache.get('fetched_at') or 0)) < 5.0:
+            at = float(_medical_warmup_hint_cache.get('submitted_at') or 0)
+            jid = _medical_warmup_hint_cache.get('job_id')
+            if at > 0:
+                return {'submitted_at': at, 'job_id': jid}
+    bucket = _medical_warmup_hint_bucket()
+    if not bucket:
+        return {}
     try:
-        at = float(_medical_warmup_requested_at or 0)
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        resp = s3.get_object(Bucket=bucket, Key=_medical_warmup_hint_s3_key)
+        raw = resp['Body'].read().decode('utf-8')
+        data = json.loads(raw) if raw else {}
+    except ClientError as ce:
+        code = str((ce.response or {}).get('Error', {}).get('Code', '')).strip()
+        if code not in ('404', 'NoSuchKey', 'NotFound'):
+            logging.warning('medical warmup hint read failed: %s', ce)
+        data = {}
+    except Exception as e:
+        logging.warning('medical warmup hint read failed: %s', e)
+        data = {}
+    try:
+        at = float(data.get('submitted_at') or 0)
     except (TypeError, ValueError):
-        return False
+        at = 0.0
+    jid = str(data.get('job_id') or '').strip() or None
+    with _medical_warmup_hint_cache_lock:
+        _medical_warmup_hint_cache['submitted_at'] = at
+        _medical_warmup_hint_cache['job_id'] = jid
+        _medical_warmup_hint_cache['fetched_at'] = now
+    return {'submitted_at': at, 'job_id': jid} if at > 0 else {}
+
+
+def _write_medical_warmup_hint_s3(job_id, submitted_at=None):
+    bucket = _medical_warmup_hint_bucket()
+    if not bucket:
+        return
+    at = float(submitted_at or time.time())
+    jid = str(job_id or '').strip() or None
+    payload = {'submitted_at': at, 'job_id': jid}
+    try:
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        s3.put_object(
+            Bucket=bucket,
+            Key=_medical_warmup_hint_s3_key,
+            Body=json.dumps(payload).encode('utf-8'),
+            ContentType='application/json',
+        )
+    except Exception as e:
+        logging.warning('medical warmup hint write failed: %s', e)
+        return
+    with _medical_warmup_hint_cache_lock:
+        _medical_warmup_hint_cache['submitted_at'] = at
+        _medical_warmup_hint_cache['job_id'] = jid
+        _medical_warmup_hint_cache['fetched_at'] = time.time()
+
+
+def _clear_medical_warmup_hint_s3():
+    with _medical_warmup_hint_cache_lock:
+        _medical_warmup_hint_cache['submitted_at'] = 0.0
+        _medical_warmup_hint_cache['job_id'] = None
+        _medical_warmup_hint_cache['fetched_at'] = time.time()
+    bucket = _medical_warmup_hint_bucket()
+    if not bucket:
+        return
+    try:
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        s3.delete_object(Bucket=bucket, Key=_medical_warmup_hint_s3_key)
+    except Exception as e:
+        logging.debug('medical warmup hint delete: %s', e)
+
+
+def _medical_warmup_submitted_at_merged():
+    global _medical_warmup_requested_at, _medical_last_warmup_job_id
+    try:
+        at_mem = float(_medical_warmup_requested_at or 0)
+    except (TypeError, ValueError):
+        at_mem = 0.0
+    hint = _read_medical_warmup_hint_s3()
+    try:
+        at_hint = float(hint.get('submitted_at') or 0)
+    except (TypeError, ValueError):
+        at_hint = 0.0
+    at = max(at_mem, at_hint)
     if at <= 0:
+        return None
+    if at_hint > at_mem and hint.get('job_id'):
+        _medical_last_warmup_job_id = str(hint.get('job_id') or '').strip() or _medical_last_warmup_job_id
+    if at_mem > at_hint:
+        _medical_warmup_requested_at = at_mem
+    return at
+
+
+def _medical_warmup_requested_recently(now=None):
+    at = _medical_warmup_submitted_at_merged()
+    if at is None:
         return False
     return (float(now or time.time()) - at) <= _medical_starting_window_sec()
 
 
 def _record_medical_warmup_request(job_id):
     global _medical_warmup_requested_at, _medical_last_warmup_job_id
-    _medical_warmup_requested_at = time.time()
+    now = time.time()
+    _medical_warmup_requested_at = now
     _medical_last_warmup_job_id = str(job_id or '').strip() or None
+    _write_medical_warmup_hint_s3(_medical_last_warmup_job_id, submitted_at=now)
 
 
 def _medical_global_warmup_job_id():
+    _medical_warmup_submitted_at_merged()
     return str(_medical_last_warmup_job_id or '').strip()
 
 
 def _medical_global_warmup_submitted_at():
-    try:
-        at = float(_medical_warmup_requested_at or 0)
-        return at if at > 0 else None
-    except (TypeError, ValueError):
-        return None
+    return _medical_warmup_submitted_at_merged()
 
 
 def _medical_endpoint_clinic_status(snapshot=None):
