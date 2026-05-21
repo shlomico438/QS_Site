@@ -568,7 +568,7 @@ window.qsSetMedicalWarmupBanner = function qsSetMedicalWarmupBanner(state) {
         if (icon) icon.textContent = '✅';
         text.textContent = QS_MEDICAL_WARMUP_READY_MSG;
         if (subtext) subtext.textContent = '';
-    } else if (st === 'scaled_out') {
+    } else if (st === 'scaled_out' || st === 'off') {
         banner.classList.add('is-scaled-out', 'is-preparing');
         if (icon) icon.textContent = '⏸';
         text.textContent = QS_MEDICAL_WARMUP_SCALED_OUT_MSG;
@@ -586,7 +586,7 @@ function qsMedicalEndpointReadyFromData(data) {
     return data.endpoint_ready === true;
 }
 
-/** Apply global /api/medical_endpoint_status (same for every doctor). */
+/** Apply global /api/medical_endpoint_status (AWS-only: off | starting | ready). */
 window.qsApplyMedicalWarmupStatusFromServer = function qsApplyMedicalWarmupStatusFromServer(data, opts) {
     opts = opts || {};
     if (!data || typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
@@ -596,44 +596,30 @@ window.qsApplyMedicalWarmupStatusFromServer = function qsApplyMedicalWarmupStatu
     const jid = String(data.warmup_job_id || data.job_id || data.jobId || '').trim();
     if (jid) window.__QS_MEDICAL_WARMUP_JOB_ID = jid;
 
-    if (qsMedicalEndpointReadyFromData(data)) {
+    if (st === 'ready' || qsMedicalEndpointReadyFromData(data)) {
         qsMedicalWarmupOnReady(
             { userId: uid, jobId: jid, status: 'ready', endpoint_ready: true },
             { playChime: opts.playChime !== false }
         );
         return;
     }
-    window.__QS_MEDICAL_SCALED_OUT_LOGGED = false;
 
-    const warmupInFlight =
-        data.stale !== true &&
-        (st === 'preparing' || !!jid || data.waiting_sagemaker);
-    if (warmupInFlight) {
-        if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-            qsMedicalWarmupOnNotReady({ userId: uid, jobId: jid }, { restartSessionWarmup: false });
-        }
-        window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
-        qsSetMedicalWarmupBanner('preparing');
-        if (!window.__QS_MEDICAL_WARMUP_POLL_TIMER) qsStartMedicalWarmupPoll(uid);
-        return;
-    }
-
-    if (st === 'scaled_out' || cap === 0 || data.endpoint_scaled_down) {
-        window.__QS_MEDICAL_WARMUP_STATE = 'scaled_out';
-        qsSetMedicalWarmupBanner('scaled_out');
+    if (st === 'off' || st === 'scaled_out' || data.endpoint_scaled_down) {
+        window.__QS_MEDICAL_WARMUP_STATE = 'off';
+        qsSetMedicalWarmupBanner('off');
         if (!window.__QS_MEDICAL_WARMUP_POLL_TIMER) qsStartMedicalWarmupPoll(uid);
         if (!window.__QS_MEDICAL_SCALED_OUT_LOGGED) {
             window.__QS_MEDICAL_SCALED_OUT_LOGGED = true;
-            console.info('[medical] endpoint scaled out (global)', { capacity: cap, status: st });
+            console.info('[medical] endpoint off (AWS)', { capacity: cap, status: st });
         }
         return;
     }
 
+    window.__QS_MEDICAL_SCALED_OUT_LOGGED = false;
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-        qsMedicalWarmupOnNotReady({ userId: uid, jobId: jid }, { restartSessionWarmup: true });
-        return;
+        qsMedicalWarmupOnNotReady({ userId: uid, jobId: jid }, { restartSessionWarmup: false });
     }
-    window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+    window.__QS_MEDICAL_WARMUP_STATE = 'starting';
     qsSetMedicalWarmupBanner('preparing');
     if (!window.__QS_MEDICAL_WARMUP_POLL_TIMER) qsStartMedicalWarmupPoll(uid);
 };
@@ -853,11 +839,10 @@ function qsMedicalServerNeedsSessionWarmup(data) {
     if (!data) return true;
     if (qsMedicalEndpointReadyFromData(data)) return false;
     const st = String(data.warmup_status || data.status || '').toLowerCase();
-    if (st === 'scaled_out' || data.endpoint_scaled_down) return true;
-    if (data.endpoint_desired_capacity === 0) return true;
-    if (st === 'idle' && !data.warmup_job_id) return true;
+    if (st === 'off' || st === 'scaled_out' || data.endpoint_scaled_down) return true;
     if (data.stale === true) return true;
-    return false;
+    if (st === 'starting' || st === 'preparing') return false;
+    return true;
 }
 
 function qsLogMedicalSessionWarmup(msg, detail) {
@@ -940,7 +925,8 @@ async function qsMaybeMedicalSessionWarmupOnce() {
     qsMarkMedicalSessionWarmupSubmitted(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID || null, Date.now());
     qsLogMedicalSessionWarmup('POST /api/medical_session_warmup', { userId: user.id });
     try {
-        const forceWarmup = serverNeedsWarmup && !!(statusData && (statusData.endpoint_desired_capacity === 0 || String(statusData.status || '').toLowerCase() === 'scaled_out'));
+        const stPre = statusData ? String(statusData.status || '').toLowerCase() : '';
+        const forceWarmup = serverNeedsWarmup && (stPre === 'off' || stPre === 'scaled_out' || statusData.endpoint_scaled_down);
         const res = await fetch('/api/medical_session_warmup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -957,7 +943,7 @@ async function qsMaybeMedicalSessionWarmupOnce() {
                 );
                 qsLogMedicalSessionWarmup('ready', { reason: data.reason, jobId });
             } else if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready' && (data.reason === 'started' || data.reason === 'skipped_recent')) {
-                window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+                window.__QS_MEDICAL_WARMUP_STATE = 'starting';
                 qsSetMedicalWarmupBanner('preparing');
                 qsStartMedicalWarmupPoll(user.id, jobId);
                 if (!window.__QS_MEDICAL_WARMUP_STARTED_LOGGED) {
@@ -1883,24 +1869,21 @@ if (typeof socket !== 'undefined') {
         window.__QS_MEDICAL_WARMUP_SOCKET_ROOM = null;
     });
 
-    const qsOnMedicalEndpointReadyEvent = (data) => {
+    const qsPollMedicalEndpointFromAws = () => {
         if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
-        if (!qsMedicalEndpointReadyFromData(data) && data && data.endpoint_ready !== true) return;
-        if (typeof qsMedicalWarmupOnReady === 'function') {
-            qsMedicalWarmupOnReady(data || {}, { playChime: true });
-        }
-    };
-    socket.on('medical_endpoint_ready', qsOnMedicalEndpointReadyEvent);
-    socket.on('medical_warmup_ready', qsOnMedicalEndpointReadyEvent);
-
-    socket.on('medical_endpoint_scaled_down', (data) => {
-        if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
-        window.__QS_MEDICAL_WARMUP_STATE = 'scaled_out';
-        qsSetMedicalWarmupBanner('scaled_out');
-        if (typeof qsClearMedicalSessionWarmupSubmitted === 'function') qsClearMedicalSessionWarmupSubmitted();
         const uid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
-        if (uid) qsStartMedicalWarmupPoll(uid, window.__QS_MEDICAL_WARMUP_JOB_ID);
-        console.info('[medical] endpoint scaled down (socket)', data && data.reason);
+        if (!uid || typeof qsPollMedicalWarmupStatus !== 'function') return;
+        void qsPollMedicalWarmupStatus(uid, window.__QS_MEDICAL_WARMUP_JOB_ID).then((pollData) => {
+            if (pollData && typeof qsApplyMedicalWarmupStatusFromServer === 'function') {
+                qsApplyMedicalWarmupStatusFromServer(pollData, { playChime: false });
+            }
+        });
+    };
+    socket.on('medical_endpoint_ready', qsPollMedicalEndpointFromAws);
+    socket.on('medical_warmup_ready', qsPollMedicalEndpointFromAws);
+    socket.on('medical_endpoint_scaled_down', () => {
+        if (typeof qsClearMedicalSessionWarmupSubmitted === 'function') qsClearMedicalSessionWarmupSubmitted();
+        qsPollMedicalEndpointFromAws();
     });
 
     document.addEventListener('visibilitychange', () => {

@@ -2,9 +2,15 @@
 
 The medical UI should match **real endpoint capacity** (Application Auto Scaling), not inferred CPU gaps.
 
-**Preferred path:** Application Auto Scaling scaling activity → **EventBridge** → **SNS** → HTTPS webhook → Site sets `endpoint warm=false` when `newDesiredCapacity` is **0**.
+**Preferred path:** Application Auto Scaling scaling activity → **EventBridge** → **SNS** → HTTPS webhook → Site updates an in-memory capacity hint.
 
-**Warm again** only after session warmup completes (`/api/gpu_started` or S3 async output) → `endpoint warm=true`.
+**UI state (poll only):** `GET /api/medical_endpoint_status` reads AWS live (`DescribeScalableTargets` + `DescribeEndpoint`):
+
+- `newDesiredCapacity == 0` → `status: off`
+- `newDesiredCapacity >= 1` and endpoint `InService` → `status: ready`
+- After `POST /api/medical_session_warmup` while still at 0 → `status: starting`
+
+No shared S3 JSON file. `gpu_started` does not drive the medical banner.
 
 ## Flow
 
@@ -19,12 +25,12 @@ sequenceDiagram
     AS->>EB: Scaling Activity (scale-in, newDesiredCapacity=0)
     EB->>SNS: Rule target
     SNS->>Site: HTTPS POST /api/aws/sns/medical_endpoint_scale
-    Site->>Site: warm=false, desired_capacity=0
-    Site->>UI: Socket medical_endpoint_scaled_down
-    UI->>UI: Green banner → preparing, restart warmup
+    Site->>Site: in_memory capacity hint
+    UI->>Site: GET /api/medical_endpoint_status
+    Site-->>UI: off (all doctors, same JSON)
 ```
 
-Scale-out (`0 → 1`) is also recorded (`desired_capacity=1`, `warm=false`) so status reflects “instances exist but not warmed yet.”
+Scale-out (`0 → 1`) updates the same in-memory hint; browsers see `ready` on the next poll when AWS reports `InService`.
 
 ## Prerequisites
 
@@ -42,12 +48,12 @@ SAGEMAKER_MEDICAL_ENDPOINT_NAME=quickscribe-transcribe-async
 MEDICAL_SAGEMAKER_VARIANT_NAME=AllTraffic
 ```
 
-**Global endpoint state** (one S3 file, shared by all doctors):
+**Clinic status (AWS-only, same JSON for every doctor):**
 
-- `users/_global/medical_sagemaker_endpoint_scale.json` — `warm`, `desired_capacity`, `warmup_job_id`, etc.
-- Poll: `GET /api/medical_endpoint_status` (optional `userId`; same JSON for every doctor).
-- Green banner: `endpoint_ready === true` (warm and capacity &gt; 0).
-- Per-user `_session_warmup_status.json` is no longer written.
+- Poll: `GET /api/medical_endpoint_status` (optional `userId` for logging only).
+- Green banner: `endpoint_ready === true` (`status === ready` from AWS).
+- SNS does not push to browsers; each client polls (socket may trigger one immediate poll).
+- See [medical-warmup-architecture.md](./medical-warmup-architecture.md).
 
 Optional legacy CPU CloudWatch alarm on the same topic:
 
