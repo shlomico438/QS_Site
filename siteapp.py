@@ -386,8 +386,23 @@ def _fetch_medical_sagemaker_endpoint_status():
 
 def _medical_aws_endpoint_snapshot():
     """Live clinic endpoint state from AWS (authoritative on poll)."""
-    cap = _fetch_medical_endpoint_desired_capacity()
-    ep_status, in_service, current = _fetch_medical_sagemaker_endpoint_status()
+    cap_result = [None]
+    ep_result = [None, False, 0]
+
+    def _fetch_cap():
+        cap_result[0] = _fetch_medical_endpoint_desired_capacity()
+
+    def _fetch_ep():
+        ep_result[0], ep_result[1], ep_result[2] = _fetch_medical_sagemaker_endpoint_status()
+
+    t_cap = threading.Thread(target=_fetch_cap, daemon=True)
+    t_ep = threading.Thread(target=_fetch_ep, daemon=True)
+    t_cap.start()
+    t_ep.start()
+    t_cap.join(timeout=30)
+    t_ep.join(timeout=30)
+    cap = cap_result[0]
+    ep_status, in_service, current = ep_result[0], ep_result[1], ep_result[2]
     now = time.time()
     snap = {
         'desired_capacity': cap,
@@ -411,6 +426,7 @@ def _medical_aws_endpoint_snapshot():
 
 def _medical_apply_sns_capacity(capacity, source_payload=None):
     """EventBridge scale-in/out — in-memory hint only; polls re-verify via AWS."""
+    global _medical_warmup_requested_at
     try:
         cap = int(capacity)
     except (TypeError, ValueError):
@@ -421,6 +437,8 @@ def _medical_apply_sns_capacity(capacity, source_payload=None):
         _medical_aws_cache['desired_capacity'] = cap
         _medical_aws_cache['updated_at'] = now
         _medical_aws_cache['source'] = 'sns'
+    if cap <= 0:
+        _medical_warmup_requested_at = 0.0
     logging.info(
         "medical_endpoint SNS capacity=%s resource=%s",
         cap,
@@ -458,15 +476,20 @@ def _medical_global_warmup_submitted_at():
 
 
 def _medical_endpoint_clinic_status(snapshot=None):
-    """off | starting | ready — derived only from AWS capacity/health + recent warmup POST."""
+    """off | starting | ready — AWS capacity/health only (not recent warmup POST)."""
     snap = snapshot if snapshot is not None else _medical_aws_endpoint_snapshot()
     cap = snap.get('desired_capacity')
+    ep_st = str(snap.get('endpoint_status') or '')
     if cap is None:
         return 'off'
     if cap <= 0:
-        return 'starting' if _medical_warmup_requested_recently() else 'off'
+        if ep_st in ('Updating', 'Creating'):
+            return 'starting'
+        return 'off'
     if snap.get('in_service'):
         return 'ready'
+    if ep_st in ('Updating', 'Creating'):
+        return 'starting'
     return 'starting'
 
 
