@@ -235,6 +235,8 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     if (k === 'qs_reg_prompt_dismissed') return true;
     // Prompt-training UI flag only (no transcript/PHI); must persist in medical mode or enable from summary CTA is a no-op.
     if (k === 'qs_medical_training_mode') return true;
+    // Session GPU warmup markers (no PHI) — must persist or every auth tick re-POSTs /api/medical_session_warmup.
+    if (k === QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY || k === QS_MEDICAL_WARMUP_READY_KEY) return true;
     // Current job pointers only (not cached transcript text): required so jobs row + result_s3_key updates work; Personal list reads jobs table.
     if (k === 'lastJobDbId' || k === 'lastS3Key' || k === 'lastJobId' || k === 'activeJobId' || k === 'pendingS3Key' || k === 'pendingJobId') return true;
     return false;
@@ -704,6 +706,40 @@ window.qsInitMedicalWarmupUi = async function qsInitMedicalWarmupUi(user) {
     qsJoinMedicalWarmupSocket(user.id);
 };
 
+function qsMedicalSessionWarmupSubmittedForUser(userId) {
+    if (window.__QS_MEDICAL_SESSION_WARMUP_ATTEMPTED) return true;
+    const uid = String(userId || '').trim();
+    if (!uid) return false;
+    try {
+        const raw = sessionStorage.getItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY);
+        if (!raw) return false;
+        const parsed = JSON.parse(raw);
+        return !!(
+            parsed &&
+            parsed.userId === uid &&
+            parsed.at &&
+            (Date.now() - Number(parsed.at)) < QS_MEDICAL_WARMUP_SESSION_MS
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function qsMarkMedicalSessionWarmupSubmitted(userId, jobId, atMs) {
+    const uid = String(userId || '').trim();
+    const at = Number(atMs) || Date.now();
+    window.__QS_MEDICAL_SESSION_WARMUP_ATTEMPTED = true;
+    window.__QS_MEDICAL_WARMUP_STARTED_AT = at;
+    if (jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = jobId;
+    try {
+        sessionStorage.setItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY, JSON.stringify({
+            at,
+            userId: uid,
+            jobId: jobId || null,
+        }));
+    } catch (_) {}
+}
+
 function qsLogMedicalSessionWarmup(msg, detail) {
     try {
         const extra = detail && typeof detail === 'object' ? detail : (detail != null ? { detail } : {});
@@ -743,20 +779,16 @@ async function qsMaybeMedicalSessionWarmupOnce() {
         return;
     }
 
-    let alreadySubmitted = false;
-    try {
-        const subRaw = sessionStorage.getItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY);
-        if (subRaw) {
-            const parsed = JSON.parse(subRaw);
-            if (parsed && parsed.userId === user.id && parsed.at && (Date.now() - Number(parsed.at)) < QS_MEDICAL_WARMUP_SESSION_MS) {
-                alreadySubmitted = true;
-                window.__QS_MEDICAL_WARMUP_STARTED_AT = Number(parsed.at);
-                if (parsed.jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = parsed.jobId;
-            }
-        }
-    } catch (_) {}
-
+    const alreadySubmitted = qsMedicalSessionWarmupSubmittedForUser(user.id);
     if (alreadySubmitted) {
+        try {
+            const subRaw = sessionStorage.getItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY);
+            if (subRaw) {
+                const parsed = JSON.parse(subRaw);
+                if (parsed && parsed.at) window.__QS_MEDICAL_WARMUP_STARTED_AT = Number(parsed.at);
+                if (parsed && parsed.jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = parsed.jobId;
+            }
+        } catch (_) {}
         if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
             window.__QS_MEDICAL_WARMUP_STATE = window.__QS_MEDICAL_WARMUP_STATE || 'preparing';
             qsSetMedicalWarmupBanner('preparing');
@@ -774,6 +806,7 @@ async function qsMaybeMedicalSessionWarmupOnce() {
         return;
     }
 
+    qsMarkMedicalSessionWarmupSubmitted(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID || null, Date.now());
     qsLogMedicalSessionWarmup('POST /api/medical_session_warmup', { userId: user.id });
     try {
         const res = await fetch('/api/medical_session_warmup', {
@@ -784,16 +817,7 @@ async function qsMaybeMedicalSessionWarmupOnce() {
         const data = await res.json().catch(() => ({}));
         if (res.ok && (data.status === 'ok' || data.reason === 'skipped_recent' || data.reason === 'already_ready')) {
             const jobId = data.warmup_job_id || data.warmupJobId || null;
-            if (jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = jobId;
-            const warmupStartedAt = Date.now();
-            window.__QS_MEDICAL_WARMUP_STARTED_AT = warmupStartedAt;
-            try {
-                sessionStorage.setItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY, JSON.stringify({
-                    at: warmupStartedAt,
-                    userId: user.id,
-                    jobId: jobId || null,
-                }));
-            } catch (_) {}
+            qsMarkMedicalSessionWarmupSubmitted(user.id, jobId, Date.now());
             if (String(data.warmup_status || '').toLowerCase() === 'ready' || data.reason === 'already_ready') {
                 qsMedicalWarmupOnReady({ userId: user.id, jobId, status: 'ready' }, { playChime: false });
                 qsLogMedicalSessionWarmup('ready', { reason: data.reason, jobId });
@@ -1240,9 +1264,7 @@ supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session) {
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
-        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
-            try { void window.qsMaybeMedicalSessionWarmup(); } catch (_) {}
-        }
+        // Warmup is started from setupNavbarAuth / setMedicalMode (avoid duplicate POST on delayed SIGNED_IN).
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
         if (window.location.hash && /access_token/.test(window.location.hash)) {
             // Keep the current in-memory transcript/video UI state.
