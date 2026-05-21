@@ -640,6 +640,36 @@ window.qsJoinMedicalWarmupSocket = function qsJoinMedicalWarmupSocket(userId) {
     }
 };
 
+window.qsForceMedicalSessionWarmup = async function qsForceMedicalSessionWarmup(userId) {
+    const uid = String(userId || window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+    if (!uid) return null;
+    window.__QS_MEDICAL_SESSION_WARMUP_ATTEMPTED = false;
+    qsLogMedicalSessionWarmup('POST /api/medical_session_warmup (force)', { userId: uid });
+    try {
+        const res = await fetch('/api/medical_session_warmup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: uid, force: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && (data.status === 'ok' || data.reason === 'started' || data.reason === 'skipped_recent')) {
+            const jobId = data.warmup_job_id || data.warmupJobId || null;
+            qsMarkMedicalSessionWarmupSubmitted(uid, jobId, Date.now());
+            if (String(data.warmup_status || '').toLowerCase() === 'ready' || data.reason === 'already_ready') {
+                qsMedicalWarmupOnReady({ userId: uid, jobId, status: 'ready' }, { playChime: false });
+            } else if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+                window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+                qsSetMedicalWarmupBanner('preparing');
+                qsStartMedicalWarmupPoll(uid, jobId);
+            }
+        }
+        return data;
+    } catch (e) {
+        console.warn('[medical] force session warmup failed', e);
+        return null;
+    }
+};
+
 window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(userId, jobId) {
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') return { status: 'ready' };
     const uid = String(userId || '').trim();
@@ -649,6 +679,15 @@ window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(user
     try {
         const res = await fetch(`/api/medical_warmup_status?${params.toString()}`);
         const data = await res.json().catch(() => ({}));
+        if (res.ok && data.stale && String(data.status || '').toLowerCase() === 'preparing' && !window.__QS_MEDICAL_WARMUP_STALE_RETRY) {
+            window.__QS_MEDICAL_WARMUP_STALE_RETRY = true;
+            qsLogMedicalSessionWarmup('stale preparing — forcing new SageMaker warmup', {
+                jobId: data.job_id || jobId,
+                elapsed_sec: data.elapsed_sec,
+            });
+            await qsForceMedicalSessionWarmup(uid);
+            return data;
+        }
         if (res.ok && String(data.status || '').toLowerCase() === 'ready') {
             qsMedicalWarmupOnReady({ userId: uid, jobId: data.job_id || jobId, status: 'ready' }, { playChime: true });
             return data;

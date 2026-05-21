@@ -301,6 +301,25 @@ def _aws_skip_warmup():
 def _medical_session_warmup_interval_sec():
     return max(60, int(os.environ.get('MEDICAL_SESSION_WARMUP_INTERVAL_SEC', '600') or 600))
 
+
+def _medical_warmup_stale_sec():
+    """If preparing longer than this without gpu_started, allow a new SageMaker session warmup."""
+    return max(120, int(os.environ.get('MEDICAL_WARMUP_STALE_SEC', '900') or 900))
+
+
+def _medical_warmup_preparing_is_stale(prev, now=None):
+    prev = prev or {}
+    if str(prev.get('status') or '').lower() != 'preparing':
+        return False
+    submitted = prev.get('submitted_at')
+    if submitted is None:
+        return True
+    try:
+        age = float(now or time.time()) - float(submitted)
+    except (TypeError, ValueError):
+        return True
+    return age > _medical_warmup_stale_sec()
+
 def _audio_profile_detection_enabled():
     """Enable speech/music auto-profile and per-job transcription options from Site."""
     v = (os.environ.get('TRANSCRIBE_AUTO_AUDIO_PROFILE') or 'true').strip().lower()
@@ -5257,7 +5276,7 @@ def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, langu
     logging.info("Medical SageMaker warmup queued at sign-s3 for job_id=%s", job_id)
 
 
-def _submit_medical_sagemaker_session_warmup(user_id, public_base=None):
+def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=False):
     """Scale/wake SageMaker for an idle medical session (no patient audio yet).
 
     Returns (started: bool, reason: str, warmup_job_id: str | None).
@@ -5273,12 +5292,45 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None):
     safe_user = str(user_id or '').strip() or 'anonymous'
     prev = _read_medical_warmup_status(safe_user) or {}
     prev_status = str(prev.get('status') or '').lower()
-    if prev_status == 'ready':
+    stale = _medical_warmup_preparing_is_stale(prev, now)
+    force = bool(force)
+
+    if prev_status == 'ready' and not force:
+        logging.info("medical_session_warmup user=%s already_ready job=%s", safe_user[:12], prev.get('job_id'))
         return True, 'already_ready', prev.get('job_id')
-    if prev_status == 'preparing' and prev.get('job_id'):
+
+    if prev_status == 'preparing' and prev.get('job_id') and not stale and not force:
+        logging.info(
+            "medical_session_warmup user=%s skipped_recent job=%s (still preparing)",
+            safe_user[:12],
+            prev.get('job_id'),
+        )
         return True, 'skipped_recent', prev.get('job_id')
+
+    if stale and prev_status == 'preparing':
+        try:
+            age_sec = int(now - float(prev.get('submitted_at') or now))
+        except (TypeError, ValueError):
+            age_sec = -1
+        logging.warning(
+            "medical_session_warmup user=%s stale preparing job=%s age_sec=%s — resubmitting SageMaker",
+            safe_user[:12],
+            prev.get('job_id'),
+            age_sec,
+        )
+
     with _medical_session_warmup_lock:
-        if _medical_session_warmup_last_at and (now - _medical_session_warmup_last_at) < interval:
+        if (
+            not force
+            and not stale
+            and _medical_session_warmup_last_at
+            and (now - _medical_session_warmup_last_at) < interval
+        ):
+            logging.info(
+                "medical_session_warmup user=%s skipped_recent (instance debounce %.0fs)",
+                safe_user[:12],
+                interval,
+            )
             return True, 'skipped_recent', prev.get('job_id')
         _medical_session_warmup_last_at = now
 
@@ -5322,6 +5374,13 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None):
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
+    logging.info(
+        "medical_session_warmup user=%s started job=%s endpoint=%s callback_base=%s",
+        safe_user[:12],
+        job_id,
+        _sagemaker_medical_endpoint_name(),
+        (_sagemaker_callback_base(public_base) or '')[:80],
+    )
     return True, 'started', job_id
 
 
@@ -5337,8 +5396,11 @@ def medical_session_warmup():
     except (ValueError, AttributeError):
         return jsonify({"status": "error", "message": "Invalid userId"}), 400
 
+    force = str(data.get('force') or '').strip().lower() in ('1', 'true', 'yes', 'on')
     public_base = _public_base_url(request)
-    started, reason, warmup_job_id = _submit_medical_sagemaker_session_warmup(user_id, public_base=public_base)
+    started, reason, warmup_job_id = _submit_medical_sagemaker_session_warmup(
+        user_id, public_base=public_base, force=force,
+    )
     if not started and reason == 'sagemaker_not_configured':
         return jsonify({"status": "skipped", "reason": reason}), 200
     warm_status = _read_medical_warmup_status(user_id) or {}
@@ -5372,12 +5434,16 @@ def medical_warmup_status():
     ready_at = data.get('ready_at')
     submitted_at = data.get('submitted_at')
     now = time.time()
+    stale = _medical_warmup_preparing_is_stale(data, now) if status == 'preparing' else False
+    elapsed = int(now - float(submitted_at)) if submitted_at else None
     return jsonify({
         "status": status,
         "job_id": active_job or job_id or None,
         "ready_at": ready_at,
         "submitted_at": submitted_at,
-        "elapsed_sec": int(now - float(submitted_at)) if submitted_at else None,
+        "elapsed_sec": elapsed,
+        "stale": stale,
+        "stale_after_sec": _medical_warmup_stale_sec(),
         "warmup_room": _medical_warmup_room(user_id),
     }), 200
 
