@@ -1309,11 +1309,7 @@ input:checked + .slider:before { transform: translateX(16px); }
   display: none;
 }
 
-/* One progress bar in medical mode: processing panel only (no banner / legacy upload bar). */
-.main-app-container.medical-mode #medical-warmup-banner {
-  display: none !important;
-}
-
+/* Medical: legacy upload-zone bar hidden; warmup notification banner stays at startup. */
 .main-app-container.medical-mode #p-container {
   display: none !important;
 }
