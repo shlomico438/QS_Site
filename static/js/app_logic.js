@@ -713,18 +713,10 @@ function qsLogMedicalSessionWarmup(msg, detail) {
     }
 }
 
-/** Wake SageMaker when medical UI loads and user is signed in (not per-upload sign-s3 warmup). */
-window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup() {
-    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) {
-        return;
-    }
-    if (window.__QS_MEDICAL_SESSION_WARMUP_IN_FLIGHT) {
-        qsLogMedicalSessionWarmup('request already in flight');
-        return;
-    }
+/** Single in-flight warmup per page load (setupNavbarAuth, setMedicalMode, SIGNED_IN, etc. share one POST). */
+async function qsMaybeMedicalSessionWarmupOnce() {
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
         qsSetMedicalWarmupBanner('ready');
-        qsLogMedicalSessionWarmup('already ready (memory)');
         return;
     }
     let user = null;
@@ -732,17 +724,22 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
         const { data: { user: u } } = await supabase.auth.getUser();
         user = u;
     } catch (e) {
-        qsLogMedicalSessionWarmup('skipped — auth error', { err: String((e && e.message) || e) });
+        if (!window.__QS_MEDICAL_WARMUP_SKIP_LOGGED) {
+            window.__QS_MEDICAL_WARMUP_SKIP_LOGGED = true;
+            qsLogMedicalSessionWarmup('skipped — auth error', { err: String((e && e.message) || e) });
+        }
         return;
     }
     if (!user || !user.id) {
-        qsLogMedicalSessionWarmup('skipped — not signed in');
+        if (!window.__QS_MEDICAL_WARMUP_SKIP_LOGGED) {
+            window.__QS_MEDICAL_WARMUP_SKIP_LOGGED = true;
+            qsLogMedicalSessionWarmup('skipped — not signed in');
+        }
         return;
     }
 
     await qsInitMedicalWarmupUi(user);
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-        qsLogMedicalSessionWarmup('already ready (UI init)', { userId: user.id });
         return;
     }
 
@@ -763,20 +760,20 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
         if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
             window.__QS_MEDICAL_WARMUP_STATE = window.__QS_MEDICAL_WARMUP_STATE || 'preparing';
             qsSetMedicalWarmupBanner('preparing');
-            qsLogMedicalSessionWarmup('resuming status poll (submitted earlier)', {
-                jobId: window.__QS_MEDICAL_WARMUP_JOB_ID || null,
-            });
+            if (!window.__QS_MEDICAL_WARMUP_RESUME_LOGGED) {
+                window.__QS_MEDICAL_WARMUP_RESUME_LOGGED = true;
+                qsLogMedicalSessionWarmup('resuming status poll', {
+                    jobId: window.__QS_MEDICAL_WARMUP_JOB_ID || null,
+                });
+            }
             void qsPollMedicalWarmupStatus(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID);
             if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
                 qsStartMedicalWarmupPoll(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID);
             }
-        } else {
-            qsLogMedicalSessionWarmup('already ready (session cache)');
         }
         return;
     }
 
-    window.__QS_MEDICAL_SESSION_WARMUP_IN_FLIGHT = true;
     qsLogMedicalSessionWarmup('POST /api/medical_session_warmup', { userId: user.id });
     try {
         const res = await fetch('/api/medical_session_warmup', {
@@ -799,7 +796,7 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
             } catch (_) {}
             if (String(data.warmup_status || '').toLowerCase() === 'ready' || data.reason === 'already_ready') {
                 qsMedicalWarmupOnReady({ userId: user.id, jobId, status: 'ready' }, { playChime: false });
-                qsLogMedicalSessionWarmup('ready immediately', { reason: data.reason, jobId });
+                qsLogMedicalSessionWarmup('ready', { reason: data.reason, jobId });
             } else if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready' && (data.reason === 'started' || data.reason === 'skipped_recent')) {
                 window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
                 qsSetMedicalWarmupBanner('preparing');
@@ -813,8 +810,6 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
                         engine: data.engine || '',
                     });
                 }
-            } else {
-                qsLogMedicalSessionWarmup('API ok but no active warmup', { reason: data.reason, warmup_status: data.warmup_status });
             }
         } else if (data.reason === 'sagemaker_not_configured' || data.reason === 'simulation_without_sagemaker') {
             qsSetMedicalWarmupBanner('hidden');
@@ -824,9 +819,25 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
         }
     } catch (e) {
         console.warn('[medical] session warmup failed', e);
-    } finally {
-        window.__QS_MEDICAL_SESSION_WARMUP_IN_FLIGHT = false;
     }
+}
+
+/** Wake SageMaker when medical UI loads and user is signed in (not per-upload sign-s3 warmup). */
+window.qsMaybeMedicalSessionWarmup = function qsMaybeMedicalSessionWarmup() {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) {
+        return Promise.resolve();
+    }
+    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+        qsSetMedicalWarmupBanner('ready');
+        return Promise.resolve();
+    }
+    if (window.__QS_MEDICAL_SESSION_WARMUP_PROMISE) {
+        return window.__QS_MEDICAL_SESSION_WARMUP_PROMISE;
+    }
+    window.__QS_MEDICAL_SESSION_WARMUP_PROMISE = qsMaybeMedicalSessionWarmupOnce().finally(() => {
+        window.__QS_MEDICAL_SESSION_WARMUP_PROMISE = null;
+    });
+    return window.__QS_MEDICAL_SESSION_WARMUP_PROMISE;
 };
 
 function _isLikelyIOSInAppBrowser() {
@@ -5743,9 +5754,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (typeof window.applyTranslations === 'function') window.applyTranslations();
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
-    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
-        try { void window.qsMaybeMedicalSessionWarmup(); } catch (_) {}
-    }
 
     try {
         if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
@@ -7315,9 +7323,6 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (_) {}
         updateMedicalTabUi();
         syncRegularRecordUi();
-        if (on) {
-            try { void window.qsMaybeMedicalSessionWarmup(); } catch (_) {}
-        }
     };
 
     function stopMedicalRecordingTimer() {
