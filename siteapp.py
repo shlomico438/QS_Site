@@ -476,21 +476,31 @@ def _medical_global_warmup_submitted_at():
 
 
 def _medical_endpoint_clinic_status(snapshot=None):
-    """off | starting | ready — AWS capacity/health only (not recent warmup POST)."""
+    """off | starting | ready — AWS capacity + live instance count (not desired_capacity alone)."""
     snap = snapshot if snapshot is not None else _medical_aws_endpoint_snapshot()
     cap = snap.get('desired_capacity')
     ep_st = str(snap.get('endpoint_status') or '')
-    if cap is None:
-        return 'off'
-    if cap <= 0:
-        if ep_st in ('Updating', 'Creating'):
-            return 'starting'
-        return 'off'
-    if snap.get('in_service'):
-        return 'ready'
+    try:
+        current = int(snap.get('current_instance_count') or 0)
+    except (TypeError, ValueError):
+        current = 0
+    in_service = bool(snap.get('in_service'))
+
+    # DescribeEndpoint: instances running even when autoscaling DesiredCapacity still 0
+    if current > 0:
+        return 'ready' if in_service else 'starting'
+
+    if cap is not None and cap > 0:
+        return 'ready' if in_service else 'starting'
+
     if ep_st in ('Updating', 'Creating'):
         return 'starting'
-    return 'starting'
+
+    # Scale-up requested but ASG desired count not updated yet — show preparing, not "server off"
+    if _medical_warmup_requested_recently():
+        return 'starting'
+
+    return 'off'
 
 
 def _medical_endpoint_is_ready():

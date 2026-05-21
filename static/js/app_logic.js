@@ -984,6 +984,9 @@ window.qsMaybeMedicalSessionWarmup = function qsMaybeMedicalSessionWarmup() {
     if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) {
         return Promise.resolve();
     }
+    if (window.__QS_MEDICAL_SESSION_WARMUP_PROMISE) {
+        return window.__QS_MEDICAL_SESSION_WARMUP_PROMISE;
+    }
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
         const uid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
         if (uid) {
@@ -1000,9 +1003,6 @@ window.qsMaybeMedicalSessionWarmup = function qsMaybeMedicalSessionWarmup() {
         }
         qsSetMedicalWarmupBanner('ready');
         return Promise.resolve();
-    }
-    if (window.__QS_MEDICAL_SESSION_WARMUP_PROMISE) {
-        return window.__QS_MEDICAL_SESSION_WARMUP_PROMISE;
     }
     window.__QS_MEDICAL_SESSION_WARMUP_PROMISE = qsMaybeMedicalSessionWarmupOnce().finally(() => {
         window.__QS_MEDICAL_SESSION_WARMUP_PROMISE = null;
