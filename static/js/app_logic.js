@@ -698,7 +698,10 @@ window.qsForceMedicalSessionWarmup = async function qsForceMedicalSessionWarmup(
         if (res.ok && (data.status === 'ok' || data.reason === 'started' || data.reason === 'skipped_recent')) {
             const jobId = data.warmup_job_id || data.warmupJobId || null;
             qsMarkMedicalSessionWarmupSubmitted(uid, jobId, Date.now());
-            if (String(data.warmup_status || '').toLowerCase() === 'ready' || data.reason === 'already_ready') {
+            if (
+                (String(data.warmup_status || '').toLowerCase() === 'ready' || data.reason === 'already_ready')
+                && data.endpoint_warm !== false
+            ) {
                 qsMedicalWarmupOnReady({ userId: uid, jobId, status: 'ready' }, { playChime: false });
             } else if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
                 window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
@@ -739,11 +742,11 @@ window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(user
             );
             return data;
         }
-        if (res.ok && st === 'ready') {
+        if (res.ok && st === 'ready' && data.endpoint_warm === true) {
             qsMedicalWarmupOnReady({ userId: uid, jobId: data.job_id || jobId, status: 'ready' }, { playChime: true });
             return data;
         }
-        if (res.ok && (st === 'preparing' || st === 'idle')) {
+        if (res.ok && (st === 'preparing' || st === 'idle' || data.endpoint_warm === false || data.endpoint_scaled_down)) {
             if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
                 qsMedicalWarmupOnNotReady(
                     { userId: uid, jobId: data.job_id || jobId, invalidate_reason: data.invalidate_reason },
@@ -784,22 +787,21 @@ window.qsInitMedicalWarmupUi = async function qsInitMedicalWarmupUi(user) {
     if (!user || !user.id) return;
     window.__QS_MEDICAL_WARMUP_USER_ID = user.id;
     if (typeof qsJoinMedicalEndpointScaleEvents === 'function') qsJoinMedicalEndpointScaleEvents();
-    if (window.__QS_MEDICAL_WARMUP_UI_INIT_USER === user.id) {
-        if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-            qsSetMedicalWarmupBanner('ready');
-        } else if (window.__QS_MEDICAL_WARMUP_STATE === 'preparing') {
-            qsSetMedicalWarmupBanner('preparing');
-        }
-        return;
-    }
     window.__QS_MEDICAL_WARMUP_UI_INIT_USER = user.id;
     qsJoinMedicalWarmupSocket(user.id);
     void qsPollMedicalWarmupStatus(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID).then((data) => {
         const st = data && String(data.status || '').toLowerCase();
-        if (st === 'ready') return;
-        if (st !== 'preparing') {
-            window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
-            qsSetMedicalWarmupBanner('preparing');
+        if (st === 'ready' && data && data.endpoint_warm === true) return;
+        if (st !== 'preparing' || (data && data.endpoint_warm === false)) {
+            if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+                qsMedicalWarmupOnNotReady(
+                    { userId: user.id, invalidate_reason: (data && data.invalidate_reason) || 'endpoint_scaled_down' },
+                    { restartSessionWarmup: true }
+                );
+            } else {
+                window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+                qsSetMedicalWarmupBanner('preparing');
+            }
         }
     });
 };
@@ -909,7 +911,10 @@ async function qsMaybeMedicalSessionWarmupOnce() {
         if (res.ok && (data.status === 'ok' || data.reason === 'skipped_recent' || data.reason === 'already_ready')) {
             const jobId = data.warmup_job_id || data.warmupJobId || null;
             qsMarkMedicalSessionWarmupSubmitted(user.id, jobId, Date.now());
-            if (String(data.warmup_status || '').toLowerCase() === 'ready' || data.reason === 'already_ready') {
+            if (
+                (String(data.warmup_status || '').toLowerCase() === 'ready' || data.reason === 'already_ready')
+                && data.endpoint_warm === true
+            ) {
                 qsMedicalWarmupOnReady({ userId: user.id, jobId, status: 'ready' }, { playChime: false });
                 qsLogMedicalSessionWarmup('ready', { reason: data.reason, jobId });
             } else if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready' && (data.reason === 'started' || data.reason === 'skipped_recent')) {

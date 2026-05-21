@@ -346,6 +346,8 @@ def _medical_warmup_ready_is_expired(data, now=None):
 MEDICAL_ENDPOINT_EVENTS_ROOM = 'medical_endpoint_events'
 _medical_endpoint_scale_lock = threading.Lock()
 _medical_endpoint_scale_cache = None
+_medical_capacity_sync_lock = threading.Lock()
+_medical_capacity_sync_at = 0.0
 
 
 def _medical_endpoint_scale_s3_key():
@@ -409,11 +411,92 @@ def _write_medical_endpoint_scale_state(payload):
         logging.warning("_write_medical_endpoint_scale_state S3 failed: %s", e)
 
 
+def _medical_capacity_sync_interval_sec():
+    return max(15, int(os.environ.get('MEDICAL_CAPACITY_SYNC_SEC', '60') or 60))
+
+
+def _medical_endpoint_desired_capacity_from_state(st=None):
+    st = st if st is not None else _read_medical_endpoint_scale_state()
+    try:
+        return int(st.get('desired_capacity'))
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_medical_endpoint_desired_capacity():
+    """Live DesiredCapacity from Application Auto Scaling (source of truth)."""
+    rid = _medical_sagemaker_scalable_resource_id()
+    if not rid or not _medical_uses_sagemaker_transcription():
+        return None
+    try:
+        aas = boto3.client(
+            'application-autoscaling',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        resp = aas.describe_scalable_targets(
+            ServiceNamespace='sagemaker',
+            ResourceIds=[rid],
+            ScalableDimension='sagemaker:variant:DesiredInstanceCount',
+        )
+        targets = resp.get('ScalableTargets') or []
+        if not targets:
+            return None
+        return int(targets[0].get('DesiredCapacity', 0))
+    except Exception as e:
+        logging.warning("describe_scalable_targets %s failed: %s", rid, e)
+        return None
+
+
+def _sync_medical_endpoint_capacity_from_aws(force=False):
+    """Refresh global scale state from AWS (fallback when EventBridge/SNS missed)."""
+    global _medical_capacity_sync_at
+    if not _medical_uses_sagemaker_transcription():
+        return _read_medical_endpoint_scale_state()
+    now = time.time()
+    interval = _medical_capacity_sync_interval_sec()
+    with _medical_capacity_sync_lock:
+        if not force and _medical_capacity_sync_at and (now - _medical_capacity_sync_at) < interval:
+            return _read_medical_endpoint_scale_state()
+        cap = _fetch_medical_endpoint_desired_capacity()
+        _medical_capacity_sync_at = now
+        if cap is None:
+            return _read_medical_endpoint_scale_state()
+        if cap <= 0:
+            prev = _read_medical_endpoint_scale_state()
+            if prev.get('warm') is not False or _medical_endpoint_desired_capacity_from_state(prev) != 0:
+                _set_medical_endpoint_warm(
+                    False,
+                    reason='capacity_sync_zero',
+                    desired_capacity=0,
+                )
+                logging.info("medical_endpoint capacity_sync desired=0")
+        else:
+            prev = _read_medical_endpoint_scale_state()
+            if _medical_endpoint_desired_capacity_from_state(prev) != cap:
+                st = dict(prev)
+                st['desired_capacity'] = cap
+                st['updated_at'] = now
+                if not st.get('warm'):
+                    st['reason'] = st.get('reason') or 'capacity_sync_scale_out'
+                _write_medical_endpoint_scale_state(st)
+                logging.info(
+                    "medical_endpoint capacity_sync desired=%s warm=%s",
+                    cap,
+                    st.get('warm'),
+                )
+        return _read_medical_endpoint_scale_state()
+
+
 def _medical_endpoint_is_warm():
-    """False when Application Auto Scaling reports capacity 0 (via EventBridge → SNS)."""
+    """True only when capacity > 0 and session warmup marked the endpoint warm."""
     st = _read_medical_endpoint_scale_state()
+    cap = _medical_endpoint_desired_capacity_from_state(st)
+    if cap is not None and cap <= 0:
+        return False
     if not st or 'warm' not in st:
-        return True
+        return False
     return bool(st.get('warm'))
 
 
@@ -710,6 +793,9 @@ def _try_complete_medical_warmup_from_sagemaker_output(user_id, job_id, warm_sta
     jid = str(job_id or '').strip()
     uid = str(user_id or '').strip()
     if not jid or not uid or not _is_medical_session_warmup_job(jid):
+        return False
+    cap = _medical_endpoint_desired_capacity_from_state()
+    if cap is not None and cap <= 0:
         return False
     if str((warm_status or _read_medical_warmup_status(uid) or {}).get('status') or '').lower() == 'ready':
         return True
@@ -2697,6 +2783,13 @@ def _write_medical_warmup_status(user_id, payload):
 
 
 def _notify_medical_warmup_ready(user_id, job_id, ready_at=None):
+    cap = _medical_endpoint_desired_capacity_from_state()
+    if cap is not None and cap <= 0:
+        logging.warning(
+            "medical_warmup_ready ignored job=%s — endpoint desired_capacity=0",
+            str(job_id or '')[:32],
+        )
+        return
     ready_at = float(ready_at or time.time())
     prev = _read_medical_warmup_status(user_id) or {}
     if str(prev.get('status') or '').lower() == 'ready':
@@ -5863,17 +5956,21 @@ def medical_session_warmup():
 
     force = str(data.get('force') or '').strip().lower() in ('1', 'true', 'yes', 'on')
     public_base = _public_base_url(request)
+    if _medical_uses_sagemaker_transcription():
+        _sync_medical_endpoint_capacity_from_aws()
     started, reason, warmup_job_id = _submit_medical_sagemaker_session_warmup(
         user_id, public_base=public_base, force=force,
     )
     if not started and reason == 'sagemaker_not_configured':
         return jsonify({"status": "skipped", "reason": reason}), 200
-    warm_status = _read_medical_warmup_status(user_id) or {}
+    warm_status = _medical_warmup_status_effective(_read_medical_warmup_status(user_id) or {})
     return jsonify({
         "status": "ok" if started else "skipped",
         "reason": reason,
         "warmup_job_id": warmup_job_id or warm_status.get('job_id'),
         "warmup_status": warm_status.get('status') or ('preparing' if reason == 'started' else 'idle'),
+        "endpoint_warm": _medical_endpoint_is_warm(),
+        "endpoint_desired_capacity": _medical_endpoint_desired_capacity_from_state(),
         "engine": "sagemaker_async",
         "endpoint": _sagemaker_medical_endpoint_name(),
         "warmup_room": _medical_warmup_room(user_id),
@@ -5923,10 +6020,10 @@ def aws_sns_medical_endpoint_scale():
         logging.warning("SNS Notification Message is not JSON")
     result = _dispatch_sns_medical_endpoint_message(inner)
     if result == 'ignored':
-        logging.debug(
-            "SNS notification ignored type=%s keys=%s",
+        logging.info(
+            "SNS notification ignored handled=%s detail-type=%s",
+            result,
             inner.get('detail-type') or inner.get('Type'),
-            list(inner.keys())[:8],
         )
     return jsonify({"status": "ok", "handled": result}), 200
 
@@ -5942,6 +6039,8 @@ def medical_warmup_status():
         uuid.UUID(str(user_id))
     except (ValueError, AttributeError):
         return jsonify({"status": "error", "message": "Invalid userId"}), 400
+    if _medical_uses_sagemaker_transcription():
+        _sync_medical_endpoint_capacity_from_aws()
     raw = _read_medical_warmup_status(user_id) or {}
     data = _medical_warmup_status_effective(raw)
     status = str(data.get('status') or 'idle').strip().lower()
@@ -5949,11 +6048,17 @@ def medical_warmup_status():
     endpoint_scaled_down = bool(data.get('endpoint_scaled_down'))
     if job_id and active_job and job_id != active_job and status != 'ready':
         status = 'idle'
-    if status == 'preparing' and active_job:
+    if (
+        status == 'preparing'
+        and active_job
+        and not endpoint_scaled_down
+        and (_medical_endpoint_desired_capacity_from_state() or 0) > 0
+    ):
         _try_complete_medical_warmup_from_sagemaker_output(user_id, active_job, data)
-        data = _read_medical_warmup_status(user_id) or {}
+        data = _medical_warmup_status_effective(_read_medical_warmup_status(user_id) or {})
         status = str(data.get('status') or 'idle').strip().lower()
         active_job = str(data.get('job_id') or '').strip()
+        endpoint_scaled_down = bool(data.get('endpoint_scaled_down'))
     ready_at = data.get('ready_at')
     submitted_at = data.get('submitted_at')
     now = time.time()
