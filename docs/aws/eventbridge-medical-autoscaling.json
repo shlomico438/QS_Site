@@ -1,0 +1,10 @@
+{
+  "source": ["aws.application-autoscaling"],
+  "detail-type": ["Application Auto Scaling Scaling Activity State Change"],
+  "detail": {
+    "serviceNamespace": ["sagemaker"],
+    "scalableDimension": ["sagemaker:variant:DesiredInstanceCount"],
+    "statusCode": ["Successful"],
+    "resourceId": ["endpoint/quickscribe-transcribe-async/variant/AllTraffic"]
+  }
+}

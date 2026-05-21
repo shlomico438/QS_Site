@@ -378,6 +378,8 @@ const QS_MEDICAL_WARMUP_READY_KEY = 'qs_medical_warmup_ready_at';
 /** Set after first /api/medical_session_warmup per user — prevents a second SageMaker warmup ~10m later. */
 const QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY = 'qs_medical_session_warmup_submitted';
 const QS_MEDICAL_WARMUP_SESSION_MS = 12 * 60 * 60 * 1000;
+/** While banner shows ready, re-check server every 5 min (TTL / endpoint down). */
+const QS_MEDICAL_ENDPOINT_EVENTS_ROOM = 'medical_endpoint_events';
 const QS_MEDICAL_WARMUP_PREPARING_MSG = 'המערכת מתכוננת ליום העבודה... (משוער: כ-10 דקות)';
 const QS_MEDICAL_WARMUP_PREPARING_SUBMSG = 'ניתן להתחיל להקליט, אך הסיכום הראשון עשוי לקחת מספר דקות';
 const QS_MEDICAL_WARMUP_READY_MSG = 'המערכת מוכנה! יום עבודה מוצלח.';
@@ -598,6 +600,33 @@ window.qsStopMedicalWarmupPoll = function qsStopMedicalWarmupPoll() {
     }
 };
 
+function qsClearMedicalWarmupReadyClientCache() {
+    try { sessionStorage.removeItem(QS_MEDICAL_WARMUP_READY_KEY); } catch (_) {}
+}
+
+window.qsMedicalWarmupOnNotReady = function qsMedicalWarmupOnNotReady(data, opts) {
+    opts = opts || {};
+    qsClearMedicalWarmupReadyClientCache();
+    window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+    qsSetMedicalWarmupBanner('preparing');
+    const uid = String(
+        (data && (data.userId || data.user_id)) || window.__QS_MEDICAL_WARMUP_USER_ID || ''
+    ).trim();
+    const jid = String((data && (data.job_id || data.jobId)) || window.__QS_MEDICAL_WARMUP_JOB_ID || '').trim();
+    if (jid) window.__QS_MEDICAL_WARMUP_JOB_ID = jid;
+    if (!opts.silentLog && !window.__QS_MEDICAL_WARMUP_NOT_READY_LOGGED) {
+        window.__QS_MEDICAL_WARMUP_NOT_READY_LOGGED = true;
+        console.info('[medical] warmup no longer ready', data && data.invalidate_reason ? data.invalidate_reason : '');
+    }
+    if (uid) {
+        qsJoinMedicalWarmupSocket(uid);
+        qsStartMedicalWarmupPoll(uid, jid || window.__QS_MEDICAL_WARMUP_JOB_ID);
+    }
+    if (opts.restartSessionWarmup !== false && typeof window.qsMaybeMedicalSessionWarmup === 'function') {
+        void window.qsMaybeMedicalSessionWarmup();
+    }
+};
+
 window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
     opts = opts || {};
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
@@ -612,9 +641,11 @@ window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
         try { sessionStorage.setItem(QS_MEDICAL_WARMUP_READY_KEY, JSON.stringify({ at: Date.now(), userId })); } catch (_) {}
     }
     window.__QS_MEDICAL_WARMUP_STATE = 'ready';
+    window.__QS_MEDICAL_WARMUP_NOT_READY_LOGGED = false;
     qsStopMedicalWarmupPoll();
     qsClearMedicalWarmupWaitTimer();
     qsSetMedicalWarmupBanner('ready');
+    if (typeof qsJoinMedicalEndpointScaleEvents === 'function') qsJoinMedicalEndpointScaleEvents();
     if (window.__QS_MEDICAL_RECORDING_WARMUP_BAR && !window.isTriggering) {
         if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', 100);
         setTimeout(() => { qsHideMedicalRecordingWarmupProgress(); }, 1200);
@@ -627,8 +658,20 @@ window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
     }
 };
 
+window.qsJoinMedicalEndpointScaleEvents = function qsJoinMedicalEndpointScaleEvents() {
+    if (typeof socket === 'undefined') return;
+    const room = QS_MEDICAL_ENDPOINT_EVENTS_ROOM;
+    if (window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED === room) return;
+    window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = room;
+    try {
+        socket.emit('join', { room });
+    } catch (e) {
+        console.warn('[medical] endpoint scale socket join failed', e);
+    }
+};
+
 window.qsJoinMedicalWarmupSocket = function qsJoinMedicalWarmupSocket(userId) {
-    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') return;
+    if (typeof qsJoinMedicalEndpointScaleEvents === 'function') qsJoinMedicalEndpointScaleEvents();
     const room = qsMedicalWarmupUserRoom(userId);
     if (!room || typeof socket === 'undefined') return;
     if (window.__QS_MEDICAL_WARMUP_SOCKET_ROOM === room) return;
@@ -688,9 +731,29 @@ window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(user
             await qsForceMedicalSessionWarmup(uid);
             return data;
         }
-        if (res.ok && String(data.status || '').toLowerCase() === 'ready') {
+        const st = String(data.status || '').toLowerCase();
+        if (res.ok && data.endpoint_scaled_down && window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+            qsMedicalWarmupOnNotReady(
+                { userId: uid, jobId: data.job_id || jobId, invalidate_reason: data.invalidate_reason || 'endpoint_scaled_down' },
+                { restartSessionWarmup: true }
+            );
+            return data;
+        }
+        if (res.ok && st === 'ready') {
             qsMedicalWarmupOnReady({ userId: uid, jobId: data.job_id || jobId, status: 'ready' }, { playChime: true });
             return data;
+        }
+        if (res.ok && (st === 'preparing' || st === 'idle')) {
+            if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+                qsMedicalWarmupOnNotReady(
+                    { userId: uid, jobId: data.job_id || jobId, invalidate_reason: data.invalidate_reason },
+                    { restartSessionWarmup: true }
+                );
+            } else if (st === 'preparing') {
+                window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+                qsSetMedicalWarmupBanner('preparing');
+                if (data.job_id) window.__QS_MEDICAL_WARMUP_JOB_ID = data.job_id;
+            }
         }
         return data;
     } catch (e) {
@@ -720,29 +783,25 @@ window.qsInitMedicalWarmupUi = async function qsInitMedicalWarmupUi(user) {
     if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
     if (!user || !user.id) return;
     window.__QS_MEDICAL_WARMUP_USER_ID = user.id;
+    if (typeof qsJoinMedicalEndpointScaleEvents === 'function') qsJoinMedicalEndpointScaleEvents();
     if (window.__QS_MEDICAL_WARMUP_UI_INIT_USER === user.id) {
-        if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') qsSetMedicalWarmupBanner('ready');
-        else if (window.__QS_MEDICAL_WARMUP_STATE === 'preparing') qsSetMedicalWarmupBanner('preparing');
+        if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+            qsSetMedicalWarmupBanner('ready');
+        } else if (window.__QS_MEDICAL_WARMUP_STATE === 'preparing') {
+            qsSetMedicalWarmupBanner('preparing');
+        }
         return;
     }
     window.__QS_MEDICAL_WARMUP_UI_INIT_USER = user.id;
-    try {
-        const raw = sessionStorage.getItem(QS_MEDICAL_WARMUP_READY_KEY);
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed && parsed.userId === user.id && parsed.at && (Date.now() - Number(parsed.at)) < 12 * 60 * 60 * 1000) {
-                qsMedicalWarmupOnReady({ userId: user.id, status: 'ready' }, { playChime: false });
-                return;
-            }
-        }
-    } catch (_) {}
-    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-        qsSetMedicalWarmupBanner('ready');
-        return;
-    }
-    window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
-    qsSetMedicalWarmupBanner('preparing');
     qsJoinMedicalWarmupSocket(user.id);
+    void qsPollMedicalWarmupStatus(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID).then((data) => {
+        const st = data && String(data.status || '').toLowerCase();
+        if (st === 'ready') return;
+        if (st !== 'preparing') {
+            window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+            qsSetMedicalWarmupBanner('preparing');
+        }
+    });
 };
 
 function qsMedicalSessionWarmupSubmittedForUser(userId) {
@@ -790,10 +849,6 @@ function qsLogMedicalSessionWarmup(msg, detail) {
 
 /** Single in-flight warmup per page load (setupNavbarAuth, setMedicalMode, SIGNED_IN, etc. share one POST). */
 async function qsMaybeMedicalSessionWarmupOnce() {
-    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-        qsSetMedicalWarmupBanner('ready');
-        return;
-    }
     let user = null;
     try {
         const { data: { user: u } } = await supabase.auth.getUser();
@@ -814,9 +869,6 @@ async function qsMaybeMedicalSessionWarmupOnce() {
     }
 
     await qsInitMedicalWarmupUi(user);
-    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-        return;
-    }
 
     const alreadySubmitted = qsMedicalSessionWarmupSubmittedForUser(user.id);
     if (alreadySubmitted) {
@@ -1765,8 +1817,9 @@ if (typeof socket !== 'undefined') {
             socket.emit('join', { room: savedJobId });
         }
         const warmUid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
-        if (warmUid && window.__QS_MEDICAL_WARMUP_STATE !== 'ready' && typeof qsJoinMedicalWarmupSocket === 'function') {
-            qsJoinMedicalWarmupSocket(warmUid);
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            if (typeof qsJoinMedicalEndpointScaleEvents === 'function') qsJoinMedicalEndpointScaleEvents();
+            if (warmUid && typeof qsJoinMedicalWarmupSocket === 'function') qsJoinMedicalWarmupSocket(warmUid);
         }
     });
 
@@ -1783,6 +1836,27 @@ if (typeof socket !== 'undefined') {
         if (activeJob && evtJob && evtJob !== activeJob) return;
         if (typeof qsMedicalWarmupOnReady === 'function') {
             qsMedicalWarmupOnReady(data || {}, { playChime: true });
+        }
+    });
+
+    socket.on('medical_endpoint_scaled_down', (data) => {
+        if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+        if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') return;
+        if (typeof qsMedicalWarmupOnNotReady === 'function') {
+            qsMedicalWarmupOnNotReady(
+                { invalidate_reason: (data && data.reason) || 'endpoint_scaled_down' },
+                { restartSessionWarmup: true }
+            );
+        }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+        if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') return;
+        const uid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+        if (uid && typeof qsPollMedicalWarmupStatus === 'function') {
+            void qsPollMedicalWarmupStatus(uid, window.__QS_MEDICAL_WARMUP_JOB_ID);
         }
     });
 
@@ -7338,6 +7412,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
             if (typeof qsSetMedicalWarmupBanner === 'function') qsSetMedicalWarmupBanner('ready');
+            const warmUid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+            if (warmUid) {
+                if (typeof qsStartMedicalWarmupReadyRecheck === 'function') {
+                    qsStartMedicalWarmupReadyRecheck(warmUid, window.__QS_MEDICAL_WARMUP_JOB_ID);
+                }
+                void qsPollMedicalWarmupStatus(warmUid, window.__QS_MEDICAL_WARMUP_JOB_ID);
+            }
         } else if (window.__QS_MEDICAL_WARMUP_STATE === 'preparing') {
             if (typeof qsSetMedicalWarmupBanner === 'function') qsSetMedicalWarmupBanner('preparing');
         }

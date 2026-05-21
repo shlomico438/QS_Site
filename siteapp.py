@@ -321,6 +321,367 @@ def _medical_warmup_preparing_is_stale(prev, now=None):
     return age > _medical_warmup_stale_sec()
 
 
+def _medical_warmup_ready_ttl_sec():
+    """Optional TTL fallback when MEDICAL_WARMUP_USE_TTL_FALLBACK is enabled."""
+    return max(300, int(os.environ.get('MEDICAL_WARMUP_READY_TTL_SEC', '2700') or 2700))
+
+
+def _medical_warmup_use_ttl_fallback():
+    return str(os.environ.get('MEDICAL_WARMUP_USE_TTL_FALLBACK', '') or '').lower() in ('1', 'true', 'yes')
+
+
+def _medical_warmup_ready_is_expired(data, now=None):
+    data = data or {}
+    if str(data.get('status') or '').lower() != 'ready':
+        return False
+    ready_at = data.get('ready_at')
+    if ready_at is None:
+        return True
+    try:
+        return (float(now or time.time()) - float(ready_at)) > _medical_warmup_ready_ttl_sec()
+    except (TypeError, ValueError):
+        return True
+
+
+MEDICAL_ENDPOINT_EVENTS_ROOM = 'medical_endpoint_events'
+_medical_endpoint_scale_lock = threading.Lock()
+_medical_endpoint_scale_cache = None
+
+
+def _medical_endpoint_scale_s3_key():
+    return 'users/_global/medical_sagemaker_endpoint_scale.json'
+
+
+def _read_medical_endpoint_scale_state():
+    global _medical_endpoint_scale_cache
+    with _medical_endpoint_scale_lock:
+        if _medical_endpoint_scale_cache is not None:
+            return dict(_medical_endpoint_scale_cache)
+    bucket = (MEDICAL_S3_BUCKET or os.environ.get('S3_BUCKET') or '').strip()
+    if not bucket:
+        return {}
+    key = _medical_endpoint_scale_s3_key()
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        obj = s3_client.get_object(Bucket=bucket, Key=key)
+        data = json.loads(obj['Body'].read().decode('utf-8'))
+        if isinstance(data, dict):
+            with _medical_endpoint_scale_lock:
+                _medical_endpoint_scale_cache = dict(data)
+            return data
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') not in ('NoSuchKey', '404', 'NotFound'):
+            logging.debug("_read_medical_endpoint_scale_state S3 %s: %s", key, e)
+    except Exception as e:
+        logging.debug("_read_medical_endpoint_scale_state failed: %s", e)
+    return {}
+
+
+def _write_medical_endpoint_scale_state(payload):
+    global _medical_endpoint_scale_cache
+    data = dict(payload or {})
+    data['updated_at'] = float(data.get('updated_at') or time.time())
+    with _medical_endpoint_scale_lock:
+        _medical_endpoint_scale_cache = dict(data)
+    bucket = (MEDICAL_S3_BUCKET or os.environ.get('S3_BUCKET') or '').strip()
+    if not bucket:
+        return
+    key = _medical_endpoint_scale_s3_key()
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+        )
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(data, ensure_ascii=False).encode('utf-8'),
+            ContentType='application/json',
+        )
+    except Exception as e:
+        logging.warning("_write_medical_endpoint_scale_state S3 failed: %s", e)
+
+
+def _medical_endpoint_is_warm():
+    """False when Application Auto Scaling reports capacity 0 (via EventBridge → SNS)."""
+    st = _read_medical_endpoint_scale_state()
+    if not st or 'warm' not in st:
+        return True
+    return bool(st.get('warm'))
+
+
+def _medical_sagemaker_scalable_resource_id():
+    """Application Auto Scaling resourceId for the medical endpoint variant."""
+    ep = (_sagemaker_medical_endpoint_name() or '').strip()
+    if not ep:
+        return ''
+    variant = (os.environ.get('MEDICAL_SAGEMAKER_VARIANT_NAME') or 'AllTraffic').strip() or 'AllTraffic'
+    return f'endpoint/{ep}/variant/{variant}'
+
+
+def _set_medical_endpoint_warm(warm, reason='warmup_ready', **extra):
+    prev = _read_medical_endpoint_scale_state()
+    payload = {
+        'warm': bool(warm),
+        'reason': str(reason or ''),
+        'updated_at': time.time(),
+    }
+    if warm:
+        payload['warmed_at'] = payload['updated_at']
+    else:
+        payload['scaled_down_at'] = payload['updated_at']
+        if prev.get('scaled_down_at'):
+            payload['previous_scaled_down_at'] = prev.get('scaled_down_at')
+    payload.update(extra or {})
+    _write_medical_endpoint_scale_state(payload)
+    logging.info("medical_endpoint_scale warm=%s reason=%s", warm, reason)
+
+
+def _scaling_detail_fields(detail):
+    detail = detail or {}
+    out = {}
+    for k in (
+        'resourceId', 'newDesiredCapacity', 'oldDesiredCapacity', 'direction',
+        'statusCode', 'serviceNamespace', 'scalableDimension',
+    ):
+        if k in detail and detail[k] is not None:
+            out[k] = detail[k]
+    return out
+
+
+def _emit_medical_endpoint_scaled_down(extra=None):
+    extra = extra or {}
+    try:
+        socketio.emit(
+            'medical_endpoint_scaled_down',
+            {
+                'reason': extra.get('reason') or 'scale_in',
+                'scaled_down_at': time.time(),
+                'desired_capacity': extra.get('desired_capacity', 0),
+                'resource_id': extra.get('resource_id'),
+            },
+            room=MEDICAL_ENDPOINT_EVENTS_ROOM,
+        )
+        logging.info(
+            "medical_endpoint_scaled_down emitted room=%s capacity=%s",
+            MEDICAL_ENDPOINT_EVENTS_ROOM,
+            extra.get('desired_capacity'),
+        )
+    except Exception as e:
+        logging.warning("medical_endpoint_scaled_down emit failed: %s", e)
+
+
+def _set_medical_endpoint_scaled_down(source_payload=None, *, reason='scale_in'):
+    """Endpoint has 0 capacity — UI should leave 'ready' until session warmup completes."""
+    detail = source_payload if isinstance(source_payload, dict) else {}
+    fields = _scaling_detail_fields(detail)
+    _set_medical_endpoint_warm(
+        False,
+        reason=reason,
+        desired_capacity=0,
+        alarm_name=str(detail.get('AlarmName') or ''),
+        new_state=str(detail.get('NewStateValue') or ''),
+        **fields,
+    )
+    _emit_medical_endpoint_scaled_down({
+        'reason': reason,
+        'desired_capacity': 0,
+        'resource_id': fields.get('resourceId'),
+    })
+
+
+def _set_medical_endpoint_scale_out(source_payload, new_capacity):
+    """Capacity increased; instances may be starting — still not 'warm' until gpu_started."""
+    detail = source_payload if isinstance(source_payload, dict) else {}
+    fields = _scaling_detail_fields(detail)
+    try:
+        cap = int(new_capacity)
+    except (TypeError, ValueError):
+        cap = None
+    _set_medical_endpoint_warm(
+        False,
+        reason='scale_out_capacity',
+        desired_capacity=cap,
+        **fields,
+    )
+    logging.info(
+        "medical_endpoint scale-out capacity=%s resource=%s (await session warmup)",
+        cap,
+        fields.get('resourceId'),
+    )
+
+
+def _medical_warmup_ready_effective(data, now=None):
+    """Per-user S3 may still say ready; endpoint scale state is authoritative."""
+    data = data or {}
+    if str(data.get('status') or '').lower() != 'ready':
+        return False
+    if not _medical_endpoint_is_warm():
+        return False
+    if _medical_warmup_use_ttl_fallback() and _medical_warmup_ready_is_expired(data, now):
+        return False
+    return True
+
+
+def _medical_warmup_status_effective(data, now=None):
+    """Map stored ready → preparing when endpoint scaled down (no per-user S3 rewrite)."""
+    data = dict(data or {})
+    if str(data.get('status') or '').lower() != 'ready':
+        return data
+    if _medical_warmup_ready_effective(data, now):
+        return data
+    out = dict(data)
+    out['status'] = 'preparing'
+    out['endpoint_scaled_down'] = True
+    out['invalidate_reason'] = (
+        'ready_expired' if _medical_warmup_use_ttl_fallback() and _medical_warmup_ready_is_expired(data, now)
+        else 'endpoint_scaled_down'
+    )
+    return out
+
+
+def _expected_medical_warmup_sns_topic_arn():
+    return (os.environ.get('MEDICAL_WARMUP_SNS_TOPIC_ARN') or '').strip()
+
+
+def _sns_topic_arn_allowed(topic_arn):
+    expected = _expected_medical_warmup_sns_topic_arn()
+    if not expected:
+        logging.warning("MEDICAL_WARMUP_SNS_TOPIC_ARN unset — accepting SNS from %s", topic_arn)
+        return True
+    return str(topic_arn or '').strip() == expected
+
+
+def _sns_cloudwatch_is_scale_in_alarm(msg):
+    if str(msg.get('NewStateValue') or '').upper() != 'ALARM':
+        return False
+    allowed = (os.environ.get('MEDICAL_SCALE_IN_ALARM_NAME') or '').strip()
+    if not allowed:
+        return True
+    names = {n.strip() for n in allowed.split(',') if n.strip()}
+    return str(msg.get('AlarmName') or '').strip() in names
+
+
+def _medical_warmup_allow_cloudwatch_alarm():
+    return str(os.environ.get('MEDICAL_WARMUP_ALLOW_CLOUDWATCH_ALARM', '') or '').lower() in (
+        '1', 'true', 'yes',
+    )
+
+
+def _eventbridge_scaling_activity_event(evt):
+    return (
+        str(evt.get('source') or '') == 'aws.application-autoscaling'
+        and str(evt.get('detail-type') or '') == 'Application Auto Scaling Scaling Activity State Change'
+    )
+
+
+def _eventbridge_detail_matches_medical_endpoint(detail):
+    detail = detail or {}
+    if str(detail.get('serviceNamespace') or '') != 'sagemaker':
+        return False
+    if str(detail.get('scalableDimension') or '') != 'sagemaker:variant:DesiredInstanceCount':
+        return False
+    expected = _medical_sagemaker_scalable_resource_id()
+    if not expected:
+        return True
+    return str(detail.get('resourceId') or '').strip() == expected
+
+
+def _parse_eventbridge_autoscaling_capacity_event(evt):
+    """Return dict with new_capacity, direction, detail — or None if not our medical endpoint."""
+    if not _eventbridge_scaling_activity_event(evt):
+        return None
+    detail = evt.get('detail') or {}
+    if not _eventbridge_detail_matches_medical_endpoint(detail):
+        return None
+    if str(detail.get('statusCode') or '') != 'Successful':
+        return None
+    try:
+        new_cap = int(detail.get('newDesiredCapacity'))
+    except (TypeError, ValueError):
+        return None
+    direction = str(detail.get('direction') or '').strip().lower()
+    return {
+        'new_capacity': new_cap,
+        'direction': direction,
+        'detail': detail,
+    }
+
+
+def _dispatch_sns_medical_endpoint_message(inner):
+    """Handle EventBridge capacity events (preferred) or legacy CloudWatch alarm JSON."""
+    parsed = _parse_eventbridge_autoscaling_capacity_event(inner)
+    if parsed is not None:
+        cap = parsed['new_capacity']
+        direction = parsed['direction']
+        detail = parsed['detail']
+        if cap <= 0:
+            logging.info(
+                "EventBridge scale-in capacity=0 resource=%s old=%s",
+                detail.get('resourceId'),
+                detail.get('oldDesiredCapacity'),
+            )
+            _set_medical_endpoint_scaled_down(detail, reason='scale_in_capacity')
+            return 'scale_in_capacity'
+        if cap >= 1 and direction == 'scale-out':
+            logging.info(
+                "EventBridge scale-out capacity=%s resource=%s",
+                cap,
+                detail.get('resourceId'),
+            )
+            _set_medical_endpoint_scale_out(detail, cap)
+            return 'scale_out_capacity'
+        logging.debug(
+            "EventBridge scaling ignored capacity=%s direction=%s",
+            cap,
+            direction,
+        )
+        return 'ignored_scaling'
+
+    if _medical_warmup_allow_cloudwatch_alarm() and _sns_cloudwatch_is_scale_in_alarm(inner):
+        logging.info(
+            "CloudWatch scale-in ALARM alarm=%s (legacy)",
+            inner.get('AlarmName'),
+        )
+        _set_medical_endpoint_scaled_down(inner, reason='scale_in_alarm')
+        return 'cloudwatch_alarm'
+
+    return 'ignored'
+
+
+def _parse_sns_http_body():
+    raw = request.get_data(as_text=True) or ''
+    if raw.strip():
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+    return request.get_json(silent=True) or {}
+
+
+def _invalidate_medical_warmup_ready(user_id, reason='expired'):
+    uid = str(user_id or '').strip()
+    if not uid:
+        return
+    _write_medical_warmup_status(uid, {
+        'status': 'idle',
+        'job_id': None,
+        'submitted_at': None,
+        'ready_at': None,
+        'sagemaker_output_uri': None,
+        'invalidated_at': time.time(),
+        'invalidate_reason': str(reason or 'expired'),
+    })
+    logging.info("medical_warmup invalidated user=%s reason=%s", uid[:12], reason)
+
+
 def _parse_s3_uri(uri):
     u = str(uri or '').strip()
     if not u.startswith('s3://'):
@@ -2355,6 +2716,7 @@ def _notify_medical_warmup_ready(user_id, job_id, ready_at=None):
         'submitted_at': prev.get('submitted_at') or ready_at,
         'ready_at': ready_at,
     })
+    _set_medical_endpoint_warm(True, reason='session_warmup_ready', job_id=jid or current_job)
     room = _medical_warmup_room(user_id)
     payload = {
         'userId': user_id,
@@ -5381,8 +5743,13 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=Fa
     force = bool(force)
 
     if prev_status == 'ready' and not force:
-        logging.info("medical_session_warmup user=%s already_ready job=%s", safe_user[:12], prev.get('job_id'))
-        return True, 'already_ready', prev.get('job_id')
+        if _medical_warmup_ready_effective(prev, now):
+            logging.info("medical_session_warmup user=%s already_ready job=%s", safe_user[:12], prev.get('job_id'))
+            return True, 'already_ready', prev.get('job_id')
+        logging.info(
+            "medical_session_warmup user=%s ready but endpoint cold — re-warming",
+            safe_user[:12],
+        )
 
     if prev_status == 'preparing' and prev.get('job_id') and not stale and not force:
         logging.info(
@@ -5513,6 +5880,57 @@ def medical_session_warmup():
     }), 202 if reason == 'started' else 200
 
 
+@app.route('/api/aws/sns/medical_endpoint_scale', methods=['POST'])
+def aws_sns_medical_endpoint_scale():
+    """SNS HTTPS webhook: EventBridge autoscaling capacity → Site (preferred).
+
+    EventBridge rule (scale-in to 0) → SNS topic → this URL.
+    Also accepts legacy CloudWatch alarms if MEDICAL_WARMUP_ALLOW_CLOUDWATCH_ALARM=true.
+
+    Configure SNS → HTTPS subscription to:
+    {PUBLIC_BASE_URL}/api/aws/sns/medical_endpoint_scale
+    Set MEDICAL_WARMUP_SNS_TOPIC_ARN to the topic ARN (recommended).
+    """
+    payload = _parse_sns_http_body()
+    msg_type = str(payload.get('Type') or '').strip()
+    topic_arn = str(payload.get('TopicArn') or '').strip()
+    if topic_arn and not _sns_topic_arn_allowed(topic_arn):
+        logging.warning("SNS rejected unexpected TopicArn=%s", topic_arn)
+        return jsonify({"status": "error", "message": "TopicArn not allowed"}), 403
+
+    if msg_type == 'SubscriptionConfirmation':
+        subscribe_url = str(payload.get('SubscribeURL') or '').strip()
+        if subscribe_url:
+            try:
+                requests.get(subscribe_url, timeout=15)
+                logging.info("SNS subscription confirmed for medical_endpoint_scale")
+            except Exception as e:
+                logging.error("SNS SubscribeURL GET failed: %s", e)
+                return jsonify({"status": "error", "message": "SubscribeURL confirmation failed"}), 500
+        return jsonify({"status": "ok", "type": msg_type}), 200
+
+    if msg_type == 'UnsubscribeConfirmation':
+        logging.info("SNS unsubscribe confirmation received")
+        return jsonify({"status": "ok", "type": msg_type}), 200
+
+    if msg_type != 'Notification':
+        return jsonify({"status": "ignored", "type": msg_type or None}), 200
+
+    inner = {}
+    try:
+        inner = json.loads(str(payload.get('Message') or '{}'))
+    except json.JSONDecodeError:
+        logging.warning("SNS Notification Message is not JSON")
+    result = _dispatch_sns_medical_endpoint_message(inner)
+    if result == 'ignored':
+        logging.debug(
+            "SNS notification ignored type=%s keys=%s",
+            inner.get('detail-type') or inner.get('Type'),
+            list(inner.keys())[:8],
+        )
+    return jsonify({"status": "ok", "handled": result}), 200
+
+
 @app.route('/api/medical_warmup_status', methods=['GET'])
 def medical_warmup_status():
     """Poll session GPU warmup status (preparing → ready after /api/gpu_started)."""
@@ -5524,9 +5942,11 @@ def medical_warmup_status():
         uuid.UUID(str(user_id))
     except (ValueError, AttributeError):
         return jsonify({"status": "error", "message": "Invalid userId"}), 400
-    data = _read_medical_warmup_status(user_id) or {}
+    raw = _read_medical_warmup_status(user_id) or {}
+    data = _medical_warmup_status_effective(raw)
     status = str(data.get('status') or 'idle').strip().lower()
     active_job = str(data.get('job_id') or '').strip()
+    endpoint_scaled_down = bool(data.get('endpoint_scaled_down'))
     if job_id and active_job and job_id != active_job and status != 'ready':
         status = 'idle'
     if status == 'preparing' and active_job:
@@ -5556,6 +5976,11 @@ def medical_warmup_status():
                 active_job,
                 elapsed,
             )
+    scale_state = _read_medical_endpoint_scale_state()
+    try:
+        desired_capacity = int(scale_state['desired_capacity']) if scale_state.get('desired_capacity') is not None else None
+    except (TypeError, ValueError):
+        desired_capacity = None
     return jsonify({
         "status": status,
         "job_id": active_job or job_id or None,
@@ -5564,9 +5989,23 @@ def medical_warmup_status():
         "elapsed_sec": elapsed,
         "stale": stale,
         "stale_after_sec": _medical_warmup_stale_sec(),
+        "endpoint_warm": _medical_endpoint_is_warm(),
+        "endpoint_scaled_down": endpoint_scaled_down,
+        "endpoint_desired_capacity": desired_capacity,
+        "endpoint_scale_state": {
+            "warm": scale_state.get('warm'),
+            "desired_capacity": desired_capacity,
+            "scaled_down_at": scale_state.get('scaled_down_at'),
+            "warmed_at": scale_state.get('warmed_at'),
+            "reason": scale_state.get('reason'),
+            "resource_id": scale_state.get('resourceId'),
+            "direction": scale_state.get('direction'),
+        },
+        "invalidate_reason": data.get('invalidate_reason'),
         "sagemaker_output_uri": sagemaker_output_uri or None,
         "waiting_sagemaker": waiting_sagemaker,
         "warmup_room": _medical_warmup_room(user_id),
+        "endpoint_events_room": MEDICAL_ENDPOINT_EVENTS_ROOM,
     }), 200
 
 
