@@ -1309,6 +1309,19 @@ input:checked + .slider:before { transform: translateX(16px); }
   display: none;
 }
 
+/* One progress bar in medical mode: processing panel only (no banner / legacy upload bar). */
+.main-app-container.medical-mode #medical-warmup-banner {
+  display: none !important;
+}
+
+.main-app-container.medical-mode #p-container {
+  display: none !important;
+}
+
+.main-app-container.medical-mode #processing-unified-progress .processing-unified-track {
+  margin: 0;
+}
+
 .main-app-container.medical-mode #audio-player-container {
   background: transparent !important;
   margin-bottom: 18px !important;

@@ -379,39 +379,160 @@ const QS_MEDICAL_WARMUP_SESSION_MS = 12 * 60 * 60 * 1000;
 const QS_MEDICAL_WARMUP_PREPARING_MSG = 'המערכת מתכוננת ליום העבודה... (משוער: כ-10 דקות)';
 const QS_MEDICAL_WARMUP_PREPARING_SUBMSG = 'ניתן להתחיל להקליט, אך הסיכום הראשון עשוי לקחת מספר דקות';
 const QS_MEDICAL_WARMUP_READY_MSG = 'המערכת מוכנה! יום עבודה מוצלח.';
+/** Warmup bar fill: elapsed / 12 minutes since session warmup started. */
+const QS_MEDICAL_WARMUP_DURATION_MS = 12 * 60 * 1000;
+
+function qsMedicalWarmupStartedAtMs() {
+    if (window.__QS_MEDICAL_WARMUP_STARTED_AT) return Number(window.__QS_MEDICAL_WARMUP_STARTED_AT);
+    try {
+        const raw = sessionStorage.getItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY);
+        if (raw) {
+            const p = JSON.parse(raw);
+            if (p && p.at) return Number(p.at);
+        }
+    } catch (_) {}
+    return Date.now();
+}
+
+function qsWarmupPhasePct() {
+    const elapsed = Date.now() - qsMedicalWarmupStartedAtMs();
+    return Math.min(100, Math.round((elapsed / QS_MEDICAL_WARMUP_DURATION_MS) * 100));
+}
+
+function qsHideMedicalWarmupBanner() {
+    const banner = document.getElementById('medical-warmup-banner');
+    if (!banner) return;
+    banner.style.display = 'none';
+    banner.classList.remove('is-visible', 'is-preparing', 'is-ready');
+}
+
+function qsEnsureMedicalProgressPanel() {
+    qsHideMedicalWarmupBanner();
+    const panel = document.getElementById('processing-state-panel');
+    const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
+    const pc = document.getElementById('p-container');
+    if (panel) panel.style.display = 'flex';
+    if (controlsRow) controlsRow.style.display = 'none';
+    if (pc) pc.style.display = 'none';
+    if (typeof qsShowUnifiedProgressChrome === 'function') qsShowUnifiedProgressChrome();
+}
+
+function qsClearMedicalWarmupWaitTimer() {
+    if (window.__QS_MEDICAL_WARMUP_WAIT_TIMER) {
+        clearInterval(window.__QS_MEDICAL_WARMUP_WAIT_TIMER);
+        window.__QS_MEDICAL_WARMUP_WAIT_TIMER = null;
+    }
+}
+
+function qsStopMedicalWarmupPhaseTick() {
+    if (window.__QS_MEDICAL_WARMUP_PHASE_TICK) {
+        clearInterval(window.__QS_MEDICAL_WARMUP_PHASE_TICK);
+        window.__QS_MEDICAL_WARMUP_PHASE_TICK = null;
+    }
+}
+
+function qsStartMedicalWarmupPhaseTick() {
+    qsStopMedicalWarmupPhaseTick();
+    qsEnsureMedicalProgressPanel();
+    if (typeof qsSetUnifiedProgressPhase === 'function') {
+        qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
+    }
+    window.__QS_MEDICAL_WARMUP_PHASE_TICK = setInterval(() => {
+        if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+            qsStopMedicalWarmupPhaseTick();
+            if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', 100);
+            return;
+        }
+        if (window.__QS_UNIFIED_PROGRESS_PHASE === 'warmup' || !window.isTriggering) {
+            if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
+        }
+    }, 1000);
+}
+
+function qsResolveMedicalWarmupWaiters() {
+    const waiters = window.__QS_MEDICAL_WARMUP_WAITERS;
+    if (!Array.isArray(waiters) || !waiters.length) return;
+    window.__QS_MEDICAL_WARMUP_WAITERS = [];
+    waiters.forEach((fn) => { try { fn(); } catch (_) {} });
+}
+
+async function qsAwaitMedicalWarmupReady(userId) {
+    const uid = String(userId || window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+        if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', 100);
+        return;
+    }
+    qsEnsureMedicalProgressPanel();
+    if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
+    if (uid) {
+        if (typeof qsJoinMedicalWarmupSocket === 'function') qsJoinMedicalWarmupSocket(uid);
+        if (typeof qsStartMedicalWarmupPoll === 'function') qsStartMedicalWarmupPoll(uid, window.__QS_MEDICAL_WARMUP_JOB_ID);
+    }
+    qsClearMedicalWarmupWaitTimer();
+    return new Promise((resolve) => {
+        const done = () => {
+            qsClearMedicalWarmupWaitTimer();
+            qsStopMedicalWarmupPhaseTick();
+            if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', 100);
+            resolve();
+        };
+        if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+            done();
+            return;
+        }
+        if (!Array.isArray(window.__QS_MEDICAL_WARMUP_WAITERS)) window.__QS_MEDICAL_WARMUP_WAITERS = [];
+        window.__QS_MEDICAL_WARMUP_WAITERS.push(done);
+        const tick = async () => {
+            if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
+                qsResolveMedicalWarmupWaiters();
+                return;
+            }
+            if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
+            if (uid && typeof qsPollMedicalWarmupStatus === 'function') {
+                await qsPollMedicalWarmupStatus(uid, window.__QS_MEDICAL_WARMUP_JOB_ID);
+            }
+            if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') qsResolveMedicalWarmupWaiters();
+        };
+        void tick();
+        window.__QS_MEDICAL_WARMUP_WAIT_TIMER = setInterval(() => { void tick(); }, 1500);
+    });
+}
 
 window.qsMedicalWarmupUserRoom = function qsMedicalWarmupUserRoom(userId) {
     const id = String(userId || '').trim();
     return id ? `medical_warmup_${id}` : '';
 };
 
+/** Medical warmup uses the same unified progress bar as upload/transcribe (no separate banner bar). */
 window.qsSetMedicalWarmupBanner = function qsSetMedicalWarmupBanner(state) {
-    const banner = document.getElementById('medical-warmup-banner');
-    const icon = document.getElementById('medical-warmup-banner-icon');
-    const text = document.getElementById('medical-warmup-banner-text');
-    const subtext = document.getElementById('medical-warmup-banner-subtext');
-    if (!banner || !text) return;
     const on = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+    qsHideMedicalWarmupBanner();
+    if (!on) return;
     const st = String(state || '').trim().toLowerCase();
-    if (!on || st === 'hidden' || st === 'idle') {
-        banner.style.display = 'none';
-        banner.classList.remove('is-visible', 'is-preparing', 'is-ready');
-        if (subtext) subtext.textContent = '';
+    if (st === 'hidden' || st === 'idle') {
+        if (!window.isTriggering) qsStopMedicalWarmupPhaseTick();
         return;
     }
-    banner.style.display = '';
-    banner.classList.add('is-visible');
-    banner.classList.remove('is-preparing', 'is-ready');
     if (st === 'ready') {
-        banner.classList.add('is-ready');
-        if (icon) icon.textContent = '✅';
-        text.textContent = QS_MEDICAL_WARMUP_READY_MSG;
-        if (subtext) subtext.textContent = '';
-    } else {
-        banner.classList.add('is-preparing');
-        if (icon) icon.textContent = '⏳';
-        text.textContent = QS_MEDICAL_WARMUP_PREPARING_MSG;
-        if (subtext) subtext.textContent = QS_MEDICAL_WARMUP_PREPARING_SUBMSG;
+        if (window.isTriggering && typeof qsSetUnifiedProgressPhase === 'function') {
+            qsEnsureMedicalProgressPanel();
+            qsSetUnifiedProgressPhase('warmup', 100);
+        } else if (typeof qsSetUnifiedProgressPhase === 'function') {
+            qsStopMedicalWarmupPhaseTick();
+            qsEnsureMedicalProgressPanel();
+            qsSetUnifiedProgressPhase('warmup', 100);
+            setTimeout(() => {
+                if (!window.isTriggering && typeof stopProcessingStateUI === 'function') {
+                    stopProcessingStateUI('warmup_ready_idle');
+                }
+            }, 2500);
+        }
+        return;
+    }
+    if (!window.isTriggering) {
+        qsStartMedicalWarmupPhaseTick();
+    } else if (typeof qsSetUnifiedProgressPhase === 'function' && window.__QS_UNIFIED_PROGRESS_PHASE === 'warmup') {
+        qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
     }
 };
 
@@ -457,7 +578,9 @@ window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
     }
     window.__QS_MEDICAL_WARMUP_STATE = 'ready';
     qsStopMedicalWarmupPoll();
+    qsClearMedicalWarmupWaitTimer();
     qsSetMedicalWarmupBanner('ready');
+    qsResolveMedicalWarmupWaiters();
     if (opts.playChime !== false) qsPlayMedicalWarmupChime();
     if (!window.__QS_MEDICAL_WARMUP_READY_LOGGED) {
         window.__QS_MEDICAL_WARMUP_READY_LOGGED = true;
@@ -571,6 +694,7 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
             const parsed = JSON.parse(subRaw);
             if (parsed && parsed.userId === user.id && parsed.at && (Date.now() - Number(parsed.at)) < QS_MEDICAL_WARMUP_SESSION_MS) {
                 alreadySubmitted = true;
+                window.__QS_MEDICAL_WARMUP_STARTED_AT = Number(parsed.at);
                 if (parsed.jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = parsed.jobId;
             }
         }
@@ -597,9 +721,11 @@ window.qsMaybeMedicalSessionWarmup = async function qsMaybeMedicalSessionWarmup(
         if (res.ok && (data.status === 'ok' || data.reason === 'skipped_recent' || data.reason === 'already_ready')) {
             const jobId = data.warmup_job_id || data.warmupJobId || null;
             if (jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = jobId;
+            const warmupStartedAt = Date.now();
+            window.__QS_MEDICAL_WARMUP_STARTED_AT = warmupStartedAt;
             try {
                 sessionStorage.setItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY, JSON.stringify({
-                    at: Date.now(),
+                    at: warmupStartedAt,
                     userId: user.id,
                     jobId: jobId || null,
                 }));
@@ -6363,8 +6489,8 @@ function qsSetProgressBarPct(pct) {
 function qsUnifiedPhaseLabel(phase) {
     const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
     const labels = isHe
-        ? { upload: 'העלאה', transcribe: 'תמלול', summary: 'סיכום' }
-        : { upload: 'Upload', transcribe: 'Transcription', summary: 'Summary' };
+        ? { warmup: 'התחממות', upload: 'העלאה', transcribe: 'תמלול', summary: 'סיכום' }
+        : { warmup: 'Warmup', upload: 'Upload', transcribe: 'Transcription', summary: 'Summary' };
     return labels[phase] || labels.upload;
 }
 
@@ -6470,6 +6596,8 @@ function stopProcessingStateUI(reason) {
     const panel = document.getElementById('processing-state-panel');
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
     qsClearUnifiedProgressTimer();
+    qsClearMedicalWarmupWaitTimer();
+    qsStopMedicalWarmupPhaseTick();
     qsHideUnifiedProgressChrome();
     let panelWasVisible = false;
     try {
@@ -6538,7 +6666,14 @@ function startProcessingStateUI() {
     if (controlsRow) controlsRow.style.display = 'none';
 
     if (usePipelineBars) {
-        if (window.__QS_UNIFIED_PROGRESS_PHASE !== 'transcribe' && window.__QS_UNIFIED_PROGRESS_PHASE !== 'summary') {
+        const phase = window.__QS_UNIFIED_PROGRESS_PHASE;
+        if (phase === 'transcribe' || phase === 'summary' || phase === 'upload' || phase === 'warmup') {
+            // Phase already set by upload / warmup wait / caller.
+        } else if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+            qsEnsureMedicalProgressPanel();
+            qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
+            qsStartMedicalWarmupPhaseTick();
+        } else {
             qsStartUnifiedProgressPhase('transcribe');
         }
     } else if (phaseEl) {
@@ -6671,6 +6806,9 @@ function resetScreenToInitial() {
 /** Show progress bar in place and scroll it into view so it stays visible during processing. */
 function showProgressBar() {
     if (qsProcessingPipelineUsesBars()) {
+        qsHideMedicalWarmupBanner();
+        const pc = document.getElementById('p-container');
+        if (pc) pc.style.display = 'none';
         const panel = document.getElementById('processing-state-panel');
         const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
         if (panel) panel.style.display = 'flex';
@@ -7485,6 +7623,14 @@ document.addEventListener('DOMContentLoaded', () => {
         window._lastProcessedJobId = null;
         const dbId = localStorage.getItem('lastJobDbId');
         if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
+        let warmUserId = window.__QS_MEDICAL_WARMUP_USER_ID;
+        try {
+            const { data: { user: wu } } = await supabase.auth.getUser();
+            if (wu && wu.id) warmUserId = wu.id;
+        } catch (_) {}
+        if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+            await qsAwaitMedicalWarmupReady(warmUserId);
+        }
         qsStartUnifiedProgressPhase('transcribe');
         startProcessingStateUI();
         window.isTriggering = true;
@@ -8478,7 +8624,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (qsProcessingPipelineUsesBars()) {
+        if (qsProcessingPipelineUsesBars() && window.isTriggering) {
             qsCompleteTranscribePipelineProgress();
             qsStartSummaryPipelineProgress();
         }
@@ -10844,14 +10990,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
                 qsUploadTrace('s3_multipart_complete', { jobId, bytes: currentFile && currentFile.size });
                 console.log("✅ File uploaded to S3 (multipart).");
-                window.isTriggering = true;
                 setDiarizationBusyState(true);
                 window._triggerRetriedForJobId = null; // allow one auto-retry if trigger gets stuck
                 const dbId = localStorage.getItem('lastJobDbId');
                 if (typeof updateJobStatus === 'function' && dbId) updateJobStatus(dbId, 'uploaded');
                 if (isMedicalUpload) {
+                    if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+                        await qsAwaitMedicalWarmupReady(userId);
+                    }
+                    window.isTriggering = true;
                     qsStartUnifiedProgressPhase('transcribe');
                 } else {
+                    window.isTriggering = true;
                     hideProgressBar();
                 }
                 startProcessingStateUI();
