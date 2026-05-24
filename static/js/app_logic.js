@@ -427,7 +427,7 @@ function qsEnsureMedicalProgressPanel(hideBanner) {
     if (typeof qsShowUnifiedProgressChrome === 'function') qsShowUnifiedProgressChrome();
 }
 
-/** Legacy: warmup progress overlay during recording (disabled — show mic waveform; banner only). */
+/** Warmup progress bar over transcript (after save while GPU warms; not during live recording waveform). */
 function qsShowMedicalWarmupProgressDuringRecording() {
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') return;
     window.__QS_MEDICAL_RECORDING_WARMUP_BAR = true;
@@ -486,7 +486,9 @@ function qsStartMedicalWarmupPhaseTick(options) {
             }
             return;
         }
-        if (window.__QS_UNIFIED_PROGRESS_PHASE === 'warmup' || window.__QS_MEDICAL_RECORDING_WARMUP_BAR || !window.isTriggering) {
+        const phase = window.__QS_UNIFIED_PROGRESS_PHASE;
+        if (phase === 'upload' || phase === 'transcribe' || phase === 'summary') return;
+        if (phase === 'warmup' || window.__QS_MEDICAL_RECORDING_WARMUP_BAR || !window.isTriggering) {
             if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
         }
     }, 1000);
@@ -505,8 +507,7 @@ async function qsAwaitMedicalWarmupReady(userId) {
         if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', 100);
         return;
     }
-    qsEnsureMedicalProgressPanel();
-    if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
+    qsShowMedicalWarmupProgressDuringRecording();
     if (uid) {
         if (typeof qsJoinMedicalWarmupSocket === 'function') qsJoinMedicalWarmupSocket(uid);
         if (typeof qsStartMedicalWarmupPoll === 'function') qsStartMedicalWarmupPoll(uid, window.__QS_MEDICAL_WARMUP_JOB_ID);
@@ -7215,8 +7216,13 @@ function resetScreenToInitial() {
 /** Show progress bar in place and scroll it into view so it stays visible during processing. */
 function showProgressBar() {
     if (qsProcessingPipelineUsesBars()) {
-        window.__QS_MEDICAL_RECORDING_WARMUP_BAR = false;
-        qsStopMedicalWarmupPhaseTick();
+        const keepWarmupBarForPostRecord =
+            window.__QS_MEDICAL_RECORDING_WARMUP_BAR
+            && window.__QS_MEDICAL_WARMUP_STATE !== 'ready';
+        if (!keepWarmupBarForPostRecord) {
+            window.__QS_MEDICAL_RECORDING_WARMUP_BAR = false;
+            qsStopMedicalWarmupPhaseTick();
+        }
         qsHideMedicalWarmupBanner();
         const pc = document.getElementById('p-container');
         if (pc) pc.style.display = 'none';
@@ -8078,6 +8084,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (wu && wu.id) warmUserId = wu.id;
         } catch (_) {}
         if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+            qsShowMedicalWarmupProgressDuringRecording();
             await qsAwaitMedicalWarmupReady(warmUserId);
         }
         qsStartUnifiedProgressPhase('transcribe');
@@ -8433,6 +8440,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!shouldSubmit) {
                     void clearMedicalRecordingWarmup(true);
                     qsHideMedicalRecordingWarmupProgress();
+                } else if (
+                    isMedicalModeEnabled()
+                    && window.__QS_MEDICAL_WARMUP_STATE !== 'ready'
+                    && !window.isTriggering
+                ) {
+                    qsShowMedicalWarmupProgressDuringRecording();
                 } else {
                     window.__QS_MEDICAL_RECORDING_WARMUP_BAR = false;
                 }
@@ -8563,6 +8576,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!rec) return;
             window._medicalSubmitOnStop = true;
             stopMedicalWaveform(true);
+            if (
+                isMedicalModeEnabled()
+                && window.__QS_MEDICAL_WARMUP_STATE !== 'ready'
+            ) {
+                qsShowMedicalWarmupProgressDuringRecording();
+            }
             try { rec.stop(); } catch (_) {}
         });
     }
