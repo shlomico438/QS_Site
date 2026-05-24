@@ -79,10 +79,11 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             <p id="medical-session-subtitle" style="margin:4px 0 0; color:#0f766e;">תמלול קליני בתקן HIPAA פעיל</p>
         </section>
         <div id="medical-warmup-banner" class="medical-warmup-banner" style="display:none;" role="status" aria-live="polite" dir="rtl">
-            <span id="medical-warmup-banner-icon" class="medical-warmup-banner-icon" aria-hidden="true">⏳</span>
+            <span id="medical-warmup-banner-icon" class="medical-warmup-banner-icon" aria-hidden="true">💤</span>
             <div class="medical-warmup-banner-body">
-                <span id="medical-warmup-banner-text" class="medical-warmup-banner-text">המערכת מתכוננת ליום העבודה... (משוער: כ-10 דקות)</span>
-                <span id="medical-warmup-banner-subtext" class="medical-warmup-banner-subtext">ניתן להתחיל להקליט, אך הסיכום הראשון עשוי לקחת מספר דקות</span>
+                <span id="medical-warmup-banner-text" class="medical-warmup-banner-text">סשן קליני חדש</span>
+                <span id="medical-warmup-banner-subtext" class="medical-warmup-banner-subtext">מערכת התמלול במצב שינה כדי לחסוך באנרגיה.
+לחץ על המיקרופון כדי להעיר את המערכת ולהתחיל את יום העבודה.</span>
             </div>
         </div>
 
@@ -153,6 +154,17 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                     <button type="button" id="medical-delete-confirm-no" class="medical-confirm-btn secondary">ביטול</button>
                     <button type="button" id="medical-delete-confirm-yes" class="medical-confirm-btn danger">מחק</button>
                 </div>
+            </div>
+        </div>
+        <div id="medical-wake-choice-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-wake-choice-title">
+                <h3 id="medical-wake-choice-title">העירת מערכת התמלול</h3>
+                <p id="medical-wake-choice-message">המערכת במצב שינה. איך תרצה להמשיך?</p>
+                <div class="medical-confirm-modal-actions medical-wake-choice-actions">
+                    <button type="button" id="medical-wake-choice-wait" class="medical-confirm-btn primary">המתן להתכוננות</button>
+                    <button type="button" id="medical-wake-choice-record" class="medical-confirm-btn primary">הקלט בזמן ההתכוננות</button>
+                </div>
+                <button type="button" id="medical-wake-choice-cancel" class="medical-wake-choice-cancel">ביטול</button>
             </div>
         </div>
         <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
@@ -371,6 +383,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                                     <line x1="12" y1="17.5" x2="12" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></line>
                                     <line x1="9" y1="21" x2="15" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></line>
                                 </svg>
+                                <span id="medical-record-new-session-label" class="medical-record-new-session-label" style="display:none;" aria-hidden="true">סשן<br>חדש</span>
                                 <span id="medical-record-pause-symbol" style="display:none;" aria-hidden="true"></span>
                             </span>
                         </span>
