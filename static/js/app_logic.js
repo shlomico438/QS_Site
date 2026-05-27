@@ -7695,6 +7695,7 @@ function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
     const translateBtn = document.getElementById('btn-translate');
+    const medicalNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
     const togglesGroup = document.querySelector('.switches-top-bar .toggles-group') || document.querySelector('.controls-bar .toggles-group');
     const switchesTopBar = document.querySelector('.switches-top-bar');
     const controlsBar = document.querySelector('.controls-bar');
@@ -7704,6 +7705,14 @@ function setTranscriptActionButtonsVisible(visible) {
     [downloadBtn, editBtn, translateBtn].forEach((el) => {
         if (el) el.style.display = visible ? '' : 'none';
     });
+    if (medicalNewSessionBtn) {
+        const showMedicalNewSession = !!(
+            visible &&
+            typeof isMedicalModeEnabled === 'function' &&
+            isMedicalModeEnabled()
+        );
+        medicalNewSessionBtn.style.display = showMedicalNewSession ? 'inline-flex' : 'none';
+    }
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
     if (switchesTopBar) switchesTopBar.classList.toggle('is-visible', !!visible);
     if (controlsBar) controlsBar.classList.toggle('is-visible', !!visible);
@@ -7723,7 +7732,8 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
     const fmtDoc = document.getElementById('format-mode-doc');
     const editBtn = document.getElementById('btn-edit');
     const subStyleToggle = document.getElementById('subtitle-style-toggle');
-    [fmtSub, fmtDoc, editBtn, subStyleToggle].forEach((el) => {
+    const medicalNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
+    [fmtSub, fmtDoc, editBtn, subStyleToggle, medicalNewSessionBtn].forEach((el) => {
         if (!el) return;
         el.disabled = !!disabled;
     });
@@ -7755,6 +7765,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const medicalTabSummary = document.getElementById('medical-tab-summary');
     const medicalCopyBtn = document.getElementById('medical-copy-btn');
     const translateBtn = document.getElementById('btn-translate');
+    const medicalToolbarNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
     const mobileSessionBtn = document.getElementById('mobile-new-session-btn');
     const navNewSessionBtn = document.getElementById('nav-new-session-btn');
     const statusTxt = document.getElementById('upload-status');
@@ -9123,6 +9134,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.qsMedicalStartNewSession = openFilePickerAfterDisclaimer;
 
+    async function confirmAndStartMedicalNewSession() {
+        if (window.isTriggering) return;
+        const rec = window._medicalRecorder;
+        if (rec && rec.state && rec.state !== 'inactive') {
+            if (typeof showStatus === 'function') showStatus('Finish or cancel the current recording before starting a new session.', true);
+            return;
+        }
+        const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+        let approved = true;
+        if (typeof showGlobalConfirm === 'function') {
+            approved = await showGlobalConfirm(
+                isHebrewUi
+                    ? 'האם להתחיל סשן חדש? התצוגה הנוכחית תתאפס.'
+                    : 'Start a new session? The current view will be reset.',
+                {
+                    confirmText: isHebrewUi ? 'כן, סשן חדש' : 'Yes, start new session',
+                    cancelText: isHebrewUi ? 'ביטול' : 'Cancel',
+                }
+            );
+        } else {
+            approved = window.confirm(isHebrewUi ? 'האם להתחיל סשן חדש?' : 'Start a new session?');
+        }
+        if (!approved) return;
+        openFilePickerAfterDisclaimer();
+    }
+
     function syncMobileVideoSessionState() {
         try {
             const isMobile = (
@@ -9187,6 +9224,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const hamburger = document.querySelector('.hamburger-menu');
             if (navMenu) navMenu.classList.remove('active');
             if (hamburger) hamburger.classList.remove('open');
+        });
+    }
+    if (medicalToolbarNewSessionBtn) {
+        medicalToolbarNewSessionBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            void confirmAndStartMedicalNewSession();
         });
     }
     window.addEventListener('resize', syncMobileVideoSessionState);

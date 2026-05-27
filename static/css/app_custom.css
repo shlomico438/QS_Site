@@ -703,7 +703,36 @@ audio {
 }
 
 .main-app-container.medical-mode .controls-bar .generate-btn-wrap {
-    margin-inline: auto;
+    margin-inline: 0;
+}
+
+.medical-toolbar-new-session-btn {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 0 16px;
+    border-radius: 10px;
+    border: 1px solid #99f6e4;
+    background: #ffffff;
+    color: #0f766e;
+    font-weight: 800;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.main-app-container.medical-mode .medical-toolbar-new-session-btn {
+    display: inline-flex;
+}
+
+.medical-toolbar-new-session-btn:hover {
+    border-color: #2dd4bf;
+    background: linear-gradient(180deg, #f0fdfa 0%, #ccfbf1 100%);
+}
+
+.medical-toolbar-new-session-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
 }
 
 /* Medical: no כתוביות/מסמך format switch or Aa subtitle styling — transcript vs summary uses medical tabs */
