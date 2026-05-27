@@ -2476,6 +2476,7 @@ function _hideToastNow() {
 
 let _translationProgressInterval = null;
 let _translationProgressTargetLang = '';
+let _translationProgressDetail = '';
 
 function _formatTranslationElapsed(ms) {
     const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -2493,20 +2494,31 @@ function showTranslationProgressBar(targetLang) {
     hideTranslationProgressBar();
     _hideToastNow();
     _translationProgressTargetLang = String(targetLang || '').trim() || '?';
+    _translationProgressDetail = '';
     const he = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
     const tick = () => {
         const elapsed = _formatTranslationElapsed(Date.now() - (bar._qsTranslationStart || Date.now()));
+        const detail = _translationProgressDetail ? ` ${_translationProgressDetail}` : '';
         if (he) {
-            textEl.textContent = `מתרגם ל${_translationProgressTargetLang}… התהליך עדיין רץ (זמן שעבר: ${elapsed}). אפשר להמשיך לעבוד בלשונית הזו.`;
+            textEl.textContent = `מתרגם ל${_translationProgressTargetLang}… התהליך עדיין רץ${detail} (זמן שעבר: ${elapsed}). אפשר להמשיך לעבוד בלשונית הזו.`;
         } else {
-            textEl.textContent = `Translating to ${_translationProgressTargetLang}… Still in progress (${elapsed} elapsed). You can keep working in this tab.`;
+            textEl.textContent = `Translating to ${_translationProgressTargetLang}… Still in progress${detail} (${elapsed} elapsed). You can keep working in this tab.`;
         }
     };
     bar._qsTranslationStart = Date.now();
+    bar._qsTranslationTick = tick;
     bar.style.display = 'flex';
     tick();
     _translationProgressInterval = setInterval(tick, 1000);
     try { bar.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+}
+
+function updateTranslationProgressDetail(detail) {
+    _translationProgressDetail = String(detail || '').trim();
+    const bar = document.getElementById('translation-progress-bar');
+    if (bar && typeof bar._qsTranslationTick === 'function') {
+        try { bar._qsTranslationTick(); } catch (_) {}
+    }
 }
 
 function hideTranslationProgressBar() {
@@ -2518,8 +2530,10 @@ function hideTranslationProgressBar() {
     if (bar) {
         bar.style.display = 'none';
         try { delete bar._qsTranslationStart; } catch (_) {}
+        try { delete bar._qsTranslationTick; } catch (_) {}
     }
     _translationProgressTargetLang = '';
+    _translationProgressDetail = '';
 }
 
 function setSeoHomeContentVisibility(visible) {
@@ -4533,6 +4547,109 @@ function askTranslationLanguage() {
     });
 }
 
+const QS_TRANSLATION_TEXT_CHUNK_CHARS = 3000;
+const QS_TRANSLATION_SEGMENT_BATCH_SIZE = 10;
+
+function splitTextForClientTranslation(text, maxChunkChars = QS_TRANSLATION_TEXT_CHUNK_CHARS) {
+    const raw = String(text || '').trim();
+    const maxChars = Math.max(1200, Number(maxChunkChars) || QS_TRANSLATION_TEXT_CHUNK_CHARS);
+    if (!raw) return [];
+    if (raw.length <= maxChars) return [raw];
+    const chunks = [];
+    let start = 0;
+    while (start < raw.length) {
+        let end = Math.min(start + maxChars, raw.length);
+        if (end < raw.length) {
+            const windowText = raw.slice(start, end);
+            const paragraphBreak = windowText.lastIndexOf('\n\n');
+            const newline = windowText.lastIndexOf('\n');
+            const space = windowText.lastIndexOf(' ');
+            const minBreak = Math.floor(maxChars * 0.45);
+            const breakAt = paragraphBreak > minBreak
+                ? paragraphBreak + 2
+                : (newline > minBreak ? newline + 1 : (space > minBreak ? space + 1 : -1));
+            if (breakAt > 0) end = start + breakAt;
+        }
+        const chunk = raw.slice(start, end).trim();
+        if (chunk) chunks.push(chunk);
+        start = Math.max(end, start + 1);
+    }
+    return chunks;
+}
+
+async function fetchTranslationJson(payload) {
+    const res = await fetch('/api/translate_text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Translation failed (${res.status})`);
+    return data;
+}
+
+async function translatePlainTextInClientBatches(sourceText, target, isMedical) {
+    const chunks = splitTextForClientTranslation(sourceText);
+    const translatedParts = [];
+    for (let i = 0; i < chunks.length; i += 1) {
+        updateTranslationProgressDetail(`(${i + 1}/${chunks.length})`);
+        const data = await fetchTranslationJson({
+            text: chunks[i],
+            targetLang: target,
+            isMedical,
+        });
+        const translated = String(data.translation || '').trim();
+        if (!translated) throw new Error('Translation returned empty text');
+        translatedParts.push(translated);
+    }
+    return {
+        translation: translatedParts.join('\n\n').trim(),
+        meta: { client_chunks: chunks.length },
+    };
+}
+
+async function translateSegmentsInClientBatches(segments, target, isMedical) {
+    const sourceSegments = Array.isArray(segments) ? segments : [];
+    const translatedSegments = sourceSegments.map((seg) => (
+        seg && typeof seg === 'object' ? { ...seg } : {}
+    ));
+    const translatable = [];
+    sourceSegments.forEach((seg, idx) => {
+        if (seg && typeof seg === 'object' && String(seg.text || seg.translated_text || '').trim()) {
+            translatable.push({ idx, seg });
+        }
+    });
+    const totalBatches = Math.max(1, Math.ceil(translatable.length / QS_TRANSLATION_SEGMENT_BATCH_SIZE));
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
+        const batch = translatable.slice(
+            batchIndex * QS_TRANSLATION_SEGMENT_BATCH_SIZE,
+            (batchIndex + 1) * QS_TRANSLATION_SEGMENT_BATCH_SIZE
+        );
+        if (!batch.length) continue;
+        updateTranslationProgressDetail(`(${batchIndex + 1}/${totalBatches})`);
+        const data = await fetchTranslationJson({
+            segments: batch.map((item) => item.seg),
+            targetLang: target,
+            isMedical,
+        });
+        const batchTranslations = Array.isArray(data.segments) ? data.segments : [];
+        if (!batchTranslations.length) throw new Error('Translation returned empty segments');
+        batchTranslations.forEach((translated, idx) => {
+            const original = batch[idx];
+            if (original && translated && typeof translated === 'object') {
+                translatedSegments[original.idx] = translated;
+            }
+        });
+    }
+    return {
+        segments: translatedSegments,
+        meta: {
+            client_batches: totalBatches,
+            batch_size: QS_TRANSLATION_SEGMENT_BATCH_SIZE,
+        },
+    };
+}
+
 async function runUserRequestedTranslation() {
     const translateBtn = document.getElementById('btn-translate');
     const sourceText = getCurrentTextForTranslation();
@@ -4549,24 +4666,16 @@ async function runUserRequestedTranslation() {
         isMedicalModeEnabled() &&
         String(window.medicalActiveTab || 'summary') === 'summary'
     ) && Array.isArray(window.currentSegments) && window.currentSegments.some((s) => String((s && s.text) || '').trim());
+    const isMedical = typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false;
     try {
         if (translateBtn) {
             translateBtn.disabled = true;
             translateBtn.textContent = '…';
         }
         showTranslationProgressBar(target);
-        const res = await fetch('/api/translate_text', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: sourceText,
-                segments: canTranslateSegments ? window.currentSegments : undefined,
-                targetLang: target,
-                isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false,
-            }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `Translation failed (${res.status})`);
+        const data = canTranslateSegments
+            ? await translateSegmentsInClientBatches(window.currentSegments, target, isMedical)
+            : await translatePlainTextInClientBatches(sourceText, target, isMedical);
         if (canTranslateSegments && Array.isArray(data.segments) && data.segments.length) {
             window.currentSegments = data.segments;
             window.currentWords = null;
