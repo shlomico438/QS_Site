@@ -4,8 +4,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block page_title %}תמלול אוטומטי בעברית ויצירת כתוביות לסרטונים | QuickScribe{% endblock %}</title>
+    {% set is_medical_head = medical_entry | default(false) %}
+    <title>{% block page_title %}{% if is_medical_head %}QuickScribe Medical | תיעוד רפואי חכם{% else %}תמלול אוטומטי בעברית ויצירת כתוביות לסרטונים | QuickScribe{% endif %}{% endblock %}</title>
+    {% if is_medical_head %}
+    <meta name="description" content="הפיכת הקלטות מפגש רפואי לטקסט מדוייק וסיכומי ביקור מותאמים אישית בשניות. חסכו זמן יקר בתיעוד הרפואי.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{{ request.url_root.rstrip('/') }}/medical">
+    <meta property="og:title" content="QuickScribe Medical | תיעוד רפואי חכם">
+    <meta property="og:description" content="מערכת תמלול וסיכום ביקורים רפואיים המותאמת במיוחד לרופאים. העלו הקלטה וקבלו סיכום מדויק קלינית תוך שניות.">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="{{ request.url_root.rstrip('/') }}/medical">
+    <meta name="twitter:title" content="QuickScribe Medical | תיעוד רפואי חכם">
+    <meta name="twitter:description" content="תמלול וסיכום ביקורים רפואיים בשניות. מותאם במיוחד לרופאים וצוותים רפואיים.">
+    {% else %}
     <meta name="description" content="QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.">
+    {% endif %}
     <link rel="alternate" hreflang="he" href="{{ request.url_root.rstrip('/') }}/?lang=he">
     <link rel="alternate" hreflang="en" href="{{ request.url_root.rstrip('/') }}/?lang=en">
     <link rel="alternate" hreflang="x-default" href="{{ request.url_root.rstrip('/') }}/">
