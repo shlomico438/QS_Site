@@ -19,6 +19,7 @@ import time
 import logging
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 import os
 import re
 import subprocess
@@ -327,6 +328,40 @@ _medical_warmup_hint_cache_lock = threading.Lock()
 _medical_warmup_hint_cache = {'submitted_at': 0.0, 'job_id': None, 'fetched_at': 0.0}
 
 
+def _medical_endpoint_status_cache_ttl_sec():
+    return max(0.0, float(os.environ.get('MEDICAL_ENDPOINT_STATUS_CACHE_SEC', '10') or 10))
+
+
+def _medical_endpoint_status_aws_timeout_sec():
+    return max(1.0, float(os.environ.get('MEDICAL_ENDPOINT_STATUS_AWS_TIMEOUT_SEC', '4') or 4))
+
+
+def _medical_aws_client_config():
+    timeout = _medical_endpoint_status_aws_timeout_sec()
+    return Config(
+        connect_timeout=min(2.0, timeout),
+        read_timeout=timeout,
+        retries={'max_attempts': 1},
+    )
+
+
+def _medical_cached_endpoint_snapshot(source_suffix='cache'):
+    with _medical_aws_cache_lock:
+        updated_at = float(_medical_aws_cache.get('updated_at') or 0)
+        if updated_at <= 0:
+            return None
+        snap = {
+            'desired_capacity': _medical_aws_cache.get('desired_capacity'),
+            'endpoint_status': _medical_aws_cache.get('endpoint_status'),
+            'in_service': bool(_medical_aws_cache.get('in_service')),
+            'current_instance_count': int(_medical_aws_cache.get('current_instance_count') or 0),
+            'updated_at': updated_at,
+            'source': _medical_aws_cache.get('source') or source_suffix,
+        }
+    snap['source'] = f"{snap.get('source')}_{source_suffix}" if source_suffix else snap.get('source')
+    return snap
+
+
 def _medical_starting_window_sec():
     """After POST /api/medical_session_warmup, show starting while AWS still reports cap=0."""
     return _medical_warmup_stale_sec()
@@ -343,6 +378,7 @@ def _fetch_medical_endpoint_desired_capacity():
             aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+            config=_medical_aws_client_config(),
         )
         resp = aas.describe_scalable_targets(
             ServiceNamespace='sagemaker',
@@ -370,6 +406,7 @@ def _fetch_medical_sagemaker_endpoint_status():
             aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+            config=_medical_aws_client_config(),
         )
         resp = sm.describe_endpoint(EndpointName=ep)
         ep_status = str(resp.get('EndpointStatus') or '')
@@ -396,7 +433,15 @@ def _fetch_medical_sagemaker_endpoint_status():
 
 
 def _medical_aws_endpoint_snapshot():
-    """Live clinic endpoint state from AWS (authoritative on poll)."""
+    """Clinic endpoint state from AWS, bounded by short timeouts and a small cache."""
+    now = time.time()
+    cached = _medical_cached_endpoint_snapshot('')
+    if cached:
+        age = now - float(cached.get('updated_at') or 0)
+        if age <= _medical_endpoint_status_cache_ttl_sec():
+            cached['source'] = cached.get('source') or 'cache'
+            return cached
+
     cap_result = [None]
     ep_result = [None, False, 0]
 
@@ -410,18 +455,35 @@ def _medical_aws_endpoint_snapshot():
     t_ep = threading.Thread(target=_fetch_ep, daemon=True)
     t_cap.start()
     t_ep.start()
-    t_cap.join(timeout=30)
-    t_ep.join(timeout=30)
+    timeout = _medical_endpoint_status_aws_timeout_sec()
+    t_cap.join(timeout=timeout)
+    t_ep.join(timeout=timeout)
     cap = cap_result[0]
     ep_status, in_service, current = ep_result[0], ep_result[1], ep_result[2]
     now = time.time()
+    source = 'aws_poll'
+    if t_cap.is_alive() or t_ep.is_alive():
+        source = 'aws_poll_timeout'
+    elif cap is None or ep_status is None:
+        source = 'aws_poll_partial'
+
+    if cached:
+        if cap is None:
+            cap = cached.get('desired_capacity')
+        if ep_status is None:
+            ep_status = cached.get('endpoint_status')
+            in_service = bool(cached.get('in_service'))
+            current = int(cached.get('current_instance_count') or 0)
+        if source != 'aws_poll':
+            source = f"{source}_with_cache"
+
     snap = {
         'desired_capacity': cap,
         'endpoint_status': ep_status,
         'in_service': in_service,
         'current_instance_count': current,
         'updated_at': now,
-        'source': 'aws_poll',
+        'source': source,
     }
     with _medical_aws_cache_lock:
         if cap is not None:
@@ -431,7 +493,7 @@ def _medical_aws_endpoint_snapshot():
         _medical_aws_cache['in_service'] = in_service
         _medical_aws_cache['current_instance_count'] = current
         _medical_aws_cache['updated_at'] = now
-        _medical_aws_cache['source'] = 'aws_poll'
+        _medical_aws_cache['source'] = source
     return snap
 
 

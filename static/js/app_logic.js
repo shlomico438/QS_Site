@@ -532,13 +532,10 @@ async function qsAwaitMedicalWarmupReady(userId) {
                 return;
             }
             if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
-            if (uid && typeof qsPollMedicalWarmupStatus === 'function') {
-                await qsPollMedicalWarmupStatus(uid, window.__QS_MEDICAL_WARMUP_JOB_ID);
-            }
             if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') qsResolveMedicalWarmupWaiters();
         };
         void tick();
-        window.__QS_MEDICAL_WARMUP_WAIT_TIMER = setInterval(() => { void tick(); }, 1500);
+        window.__QS_MEDICAL_WARMUP_WAIT_TIMER = setInterval(() => { void tick(); }, 1000);
     });
 }
 
@@ -664,6 +661,7 @@ window.qsStopMedicalWarmupPoll = function qsStopMedicalWarmupPoll() {
         clearInterval(window.__QS_MEDICAL_WARMUP_POLL_TIMER);
         window.__QS_MEDICAL_WARMUP_POLL_TIMER = null;
     }
+    window.__QS_MEDICAL_WARMUP_POLL_KEY = '';
 };
 
 window.qsMedicalWarmupOnNotReady = function qsMedicalWarmupOnNotReady(data, opts) {
@@ -741,7 +739,7 @@ window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
         qsSetMedicalWarmupBanner('ready');
         if (!window.__QS_MEDICAL_WARMUP_POLL_TIMER && userId) {
-            qsStartMedicalWarmupPoll(userId, activeJob || evtJob, { intervalMs: 60000 });
+            qsStartMedicalWarmupPoll(userId, activeJob || evtJob, { intervalMs: 60000, immediate: false });
         }
         return;
     }
@@ -751,7 +749,7 @@ window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
     qsClearMedicalWarmupWaitTimer();
     qsSetMedicalWarmupBanner('ready');
     if (userId) {
-        qsStartMedicalWarmupPoll(userId, activeJob || evtJob, { intervalMs: 60000 });
+        qsStartMedicalWarmupPoll(userId, activeJob || evtJob, { intervalMs: 60000, immediate: false });
     }
     if (typeof qsJoinMedicalEndpointScaleEvents === 'function') qsJoinMedicalEndpointScaleEvents();
     if (window.__QS_MEDICAL_RECORDING_WARMUP_BAR && !window.isTriggering) {
@@ -816,13 +814,37 @@ window.qsForceMedicalSessionWarmup = async function qsForceMedicalSessionWarmup(
 
 window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(userId, jobId) {
     const uid = String(userId || window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
+    if (window.__QS_MEDICAL_WARMUP_STATUS_IN_FLIGHT) {
+        return window.__QS_MEDICAL_WARMUP_STATUS_IN_FLIGHT;
+    }
     const params = new URLSearchParams();
     if (uid) params.set('userId', uid);
-    try {
+    window.__QS_MEDICAL_WARMUP_STATUS_IN_FLIGHT = (async () => {
         const qs = params.toString();
-        const res = await fetch(`/api/medical_endpoint_status${qs ? `?${qs}` : ''}`);
+        let abortTimer = null;
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        if (controller) {
+            abortTimer = setTimeout(() => {
+                try { controller.abort(); } catch (_) {}
+            }, 9000);
+        }
+        const res = await fetch(`/api/medical_endpoint_status${qs ? `?${qs}` : ''}`, {
+            signal: controller ? controller.signal : undefined,
+        });
+        if (abortTimer) clearTimeout(abortTimer);
         const data = await res.json().catch(() => ({}));
         const st = String(data.warmup_status || data.status || '').toLowerCase();
+        if (!res.ok) {
+            window.__QS_MEDICAL_WARMUP_STATUS_FAILS = Number(window.__QS_MEDICAL_WARMUP_STATUS_FAILS || 0) + 1;
+            if (
+                window.__QS_MEDICAL_WARMUP_STATUS_FAILS === 1 ||
+                window.__QS_MEDICAL_WARMUP_STATUS_FAILS % 10 === 0
+            ) {
+                console.warn('[medical] warmup status unavailable', res.status);
+            }
+            return { status: 'unavailable', http_status: res.status, error: data.error || data.message || '' };
+        }
+        window.__QS_MEDICAL_WARMUP_STATUS_FAILS = 0;
         if (res.ok && data.stale && (st === 'starting' || st === 'preparing') && !window.__QS_MEDICAL_WARMUP_STALE_RETRY) {
             window.__QS_MEDICAL_WARMUP_STALE_RETRY = true;
             qsLogMedicalSessionWarmup('stale preparing — forcing new SageMaker warmup', {
@@ -837,20 +859,36 @@ window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(user
             qsApplyMedicalWarmupStatusFromServer(data, { playChime });
         }
         return data;
+    })();
+    try {
+        return await window.__QS_MEDICAL_WARMUP_STATUS_IN_FLIGHT;
     } catch (e) {
-        console.warn('[medical] warmup status poll failed', e);
+        window.__QS_MEDICAL_WARMUP_STATUS_FAILS = Number(window.__QS_MEDICAL_WARMUP_STATUS_FAILS || 0) + 1;
+        if (
+            window.__QS_MEDICAL_WARMUP_STATUS_FAILS === 1 ||
+            window.__QS_MEDICAL_WARMUP_STATUS_FAILS % 10 === 0
+        ) {
+            console.warn('[medical] warmup status poll failed', e);
+        }
         return null;
+    } finally {
+        window.__QS_MEDICAL_WARMUP_STATUS_IN_FLIGHT = null;
     }
 };
 
 window.qsStartMedicalWarmupPoll = function qsStartMedicalWarmupPoll(userId, jobId, options) {
-    qsStopMedicalWarmupPoll();
     const uid = String(userId || '').trim();
     const jid = String(jobId || '').trim();
     if (!uid) return;
     const intervalMs = (options && options.intervalMs) || 15000;
+    const pollKey = `${uid}|${jid}|${intervalMs}`;
+    if (window.__QS_MEDICAL_WARMUP_POLL_TIMER && window.__QS_MEDICAL_WARMUP_POLL_KEY === pollKey) {
+        return;
+    }
+    qsStopMedicalWarmupPoll();
+    window.__QS_MEDICAL_WARMUP_POLL_KEY = pollKey;
     const poll = () => { void qsPollMedicalWarmupStatus(uid, jid); };
-    poll();
+    if (!options || options.immediate !== false) poll();
     window.__QS_MEDICAL_WARMUP_POLL_TIMER = setInterval(poll, intervalMs);
 };
 
