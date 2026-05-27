@@ -8246,6 +8246,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!keepCanvas) {
             const host = document.getElementById('medical-wave-wrap');
             if (host && host.parentNode) host.parentNode.removeChild(host);
+            const transcriptWindow = document.getElementById('transcript-window');
+            if (transcriptWindow) transcriptWindow.classList.remove('medical-wave-active');
             window._medicalWave = null;
         }
     }
@@ -8812,6 +8814,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 return;
             }
+            // Recording is complete once onstop has delivered the last chunk. Stop the live
+            // stream before warmup/upload waits so the mic indicator and waveform do not linger.
+            stopMedicalWaveform(false);
+            (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
             let shouldSubmit = false;
             try {
                 if (!window._medicalRecorderPaused) {
@@ -8831,8 +8837,6 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (e) {
                 if (typeof showStatus === 'function') showStatus(`Recording upload failed: ${e.message || e}`, true);
             } finally {
-                stopMedicalWaveform(true);
-                (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
                 window._medicalRecorder = null;
                 window._medicalRecorderChunks = [];
                 window._medicalRecorderSegments = [];
@@ -8980,7 +8984,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const rec = window._medicalRecorder;
             if (!rec) return;
             window._medicalSubmitOnStop = true;
-            stopMedicalWaveform(true);
+            stopMedicalWaveform(false);
+            stopMedicalRecordingTimer();
+            setMedicalTimerVisibility(false);
+            setMedicalRecordingVisualState('idle');
             if (
                 isMedicalModeEnabled()
                 && window.__QS_MEDICAL_WARMUP_STATE !== 'ready'
