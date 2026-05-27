@@ -2035,7 +2035,8 @@ input:checked + .slider:before { transform: translateX(16px); }
     overflow: hidden;
 }
 
-#progress-bar {
+#progress-bar,
+#progress-bar-legacy {
     height: 100%;
     width: 0%;
     background: #5d5dff;

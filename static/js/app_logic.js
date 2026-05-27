@@ -1315,6 +1315,9 @@ try {
         // Prevent sticky medical landing from forcing non-medical URLs into HIPAA mode.
         window.__QS_MEDICAL_URL_ENTRY = false;
         _qsClearMedicalLanding();
+        // Also clear persisted medical mode on regular routes so trigger_processing stays non-medical.
+        try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '0'); } catch (_) {}
+        window.isMedicalMode = false;
     }
 } catch (_) {}
 
@@ -7062,6 +7065,7 @@ function startProcessingStateUI() {
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
     const phaseEl = document.getElementById('processing-state-phase');
     const introEl = document.getElementById('processing-state-intro');
+    const spinner = document.getElementById('processing-state-spinner');
     if (!panel) return;
 
     if (window.processingStateTimer) {
@@ -7078,11 +7082,18 @@ function startProcessingStateUI() {
     if (controlsRow) controlsRow.style.display = 'none';
 
     if (usePipelineBars) {
+        if (spinner) spinner.style.display = 'none';
+        if (phaseEl) phaseEl.style.display = 'none';
         const phase = window.__QS_UNIFIED_PROGRESS_PHASE;
         if (phase !== 'transcribe' && phase !== 'summary' && phase !== 'upload' && phase !== 'warmup') {
             qsStartUnifiedProgressPhase('transcribe');
         }
     } else if (phaseEl) {
+        // Regular mode: show the classic spinner + rotating status lines.
+        if (spinner) spinner.style.display = 'block';
+        if (phaseEl) phaseEl.style.display = '';
+        // Ensure the unified bar UI is hidden in regular mode.
+        try { qsHideUnifiedProgressChrome(); } catch (_) {}
         window.processingStateTimer = setInterval(() => {
             const currentIndex = Number(window.processingPhaseIndex || 0);
             const next = (currentIndex + 1) % PROCESSING_PHASES_HE.length;
