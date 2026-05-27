@@ -864,6 +864,18 @@ input:checked + .slider:before { transform: translateX(16px); }
     border-color: #818cf8;
 }
 
+.controls-bar #btn-translate.btn-icon {
+    color: #0f766e;
+    border-color: #99f6e4;
+    background: linear-gradient(180deg, #f0fdfa 0%, #ccfbf1 100%);
+    font-size: 18px;
+}
+
+.controls-bar #btn-translate.btn-icon:hover {
+    border-color: #2dd4bf;
+    background: linear-gradient(180deg, #ccfbf1 0%, #99f6e4 100%);
+}
+
 .controls-bar #subtitle-style-toggle.subtitle-style-toggle-btn {
     color: #4338ca;
     border-color: #a5b4fc;
@@ -874,6 +886,165 @@ input:checked + .slider:before { transform: translateX(16px); }
 .controls-bar #subtitle-style-toggle.subtitle-style-toggle-btn:hover {
     border-color: #818cf8;
     background: linear-gradient(180deg, #ede9fe 0%, #ddd6fe 100%);
+}
+
+.translation-result-title {
+    margin: 0 0 12px;
+    color: #0f766e;
+    font-weight: 800;
+    text-align: center;
+}
+
+.translation-result-body {
+    white-space: normal;
+    line-height: 1.7;
+    color: #111827;
+}
+
+.translation-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10001;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.5);
+    backdrop-filter: blur(5px);
+}
+
+.translation-modal {
+    width: min(420px, calc(100vw - 32px));
+    max-height: min(620px, calc(100vh - 48px));
+    overflow: hidden;
+    border-radius: 18px;
+    background: #ffffff;
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+    padding: 22px;
+    direction: ltr;
+    text-align: left;
+}
+
+.translation-modal h3 {
+    margin: 0 0 6px;
+    color: #111827;
+    font-size: 1.2rem;
+}
+
+.translation-modal-subtitle {
+    margin: 0 0 14px;
+    color: #64748b;
+    font-size: 0.9rem;
+}
+
+.translation-language-input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    padding: 11px 12px;
+    font: inherit;
+    outline: none;
+}
+
+.translation-language-input:focus {
+    border-color: #14b8a6;
+    box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.16);
+}
+
+.translation-language-list {
+    margin-top: 10px;
+    max-height: 290px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 6px;
+    background: #f8fafc;
+}
+
+.translation-language-option {
+    width: 100%;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #0f172a;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 10px;
+    font: inherit;
+    text-align: left;
+}
+
+.translation-language-option:hover,
+.translation-language-option.is-selected {
+    background: #ccfbf1;
+    color: #0f766e;
+}
+
+.translation-language-native {
+    color: #64748b;
+    font-size: 0.82rem;
+}
+
+.translation-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.translation-modal-btn {
+    border: 0;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 700;
+    padding: 10px 14px;
+}
+
+.translation-modal-btn.secondary {
+    background: #f1f5f9;
+    color: #475569;
+}
+
+.translation-modal-btn.primary {
+    background: #0f766e;
+    color: #ffffff;
+}
+
+/* Long-running translation: persistent bar (not a short toast) */
+.translation-progress-bar {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1px solid #99f6e4;
+    background: linear-gradient(180deg, #f0fdfa 0%, #ecfeff 100%);
+    color: #0f766e;
+    font-weight: 600;
+    font-size: 0.92rem;
+    line-height: 1.45;
+}
+
+.translation-progress-spinner {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 3px solid #ccfbf1;
+    border-top-color: #0d9488;
+    flex-shrink: 0;
+    animation: qs-translation-spin 0.85s linear infinite;
+}
+
+@keyframes qs-translation-spin {
+    to { transform: rotate(360deg); }
+}
+
+.translation-progress-text {
+    flex: 1;
+    min-width: 0;
 }
 
 .controls-bar #edit-actions .btn-icon svg {

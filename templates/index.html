@@ -167,6 +167,18 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 <button type="button" id="medical-wake-choice-cancel" class="medical-wake-choice-cancel">ביטול</button>
             </div>
         </div>
+        <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
+                <h3 id="translation-modal-title">Translate transcript</h3>
+                <p class="translation-modal-subtitle">Choose a language or type to filter.</p>
+                <input type="text" id="translation-language-input" class="translation-language-input" placeholder="Search language..." autocomplete="off">
+                <div id="translation-language-list" class="translation-language-list" role="listbox"></div>
+                <div class="translation-modal-actions">
+                    <button type="button" id="translation-language-cancel" class="translation-modal-btn secondary">Cancel</button>
+                    <button type="button" id="translation-language-confirm" class="translation-modal-btn primary">Translate</button>
+                </div>
+            </div>
+        </div>
         <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
             <audio id="main-audio" controls style="width: 100%; max-width: 100%;">
                 <source id="audio-source" src="" type="audio/mpeg">
@@ -194,6 +206,10 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 </div>
             </div>
             <div class="transcript-area-wrap">
+            <div id="translation-progress-bar" class="translation-progress-bar" style="display:none;" aria-live="polite" role="status">
+                <span class="translation-progress-spinner" aria-hidden="true"></span>
+                <span id="translation-progress-text" class="translation-progress-text"></span>
+            </div>
             <div id="medical-result-tabs" style="display:none; margin-bottom:8px; gap:8px;">
                 <button type="button" id="medical-tab-transcript" class="format-ab-option is-active">תמלול מלא</button>
                 <button type="button" id="medical-tab-summary" class="format-ab-option">סיכום רפואי</button>
@@ -300,6 +316,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                         </div>
                     </div>
                     <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><img src="{{ url_for('static', filename='images/edit.png') }}" alt="Edit" style="width:20px; height:20px; object-fit:contain;"></button>
+                    <button class="btn-icon" id="btn-translate" type="button" title="Translate" aria-label="Translate">🌐</button>
                     <div id="subtitle-style-selector" class="subtitle-style-drawer-host" style="display: none;">
                         <button id="subtitle-style-toggle" class="subtitle-style-toggle-btn" type="button" aria-label="Subtitle styles" title="Subtitle styles">Aa</button>
                         <div id="subtitle-style-drawer" class="subtitle-style-drawer-panel">

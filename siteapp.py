@@ -28,6 +28,7 @@ import tempfile
 import threading
 import uuid
 import pathlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
@@ -3945,6 +3946,178 @@ def api_translate_segments():
         return jsonify({"segments": translated, "meta": meta})
     finally:
         _translate_in_flight -= 1
+
+
+def _translate_text_via_openai(text, target_lang):
+    """Translate a complete transcript/summary to target_lang using GPT, preserving structure."""
+    raw_text = str(text or "").strip()
+    target = str(target_lang or "").strip()
+    if not raw_text:
+        raise ValueError("No text provided")
+    if not target:
+        raise ValueError("No target language provided")
+
+    max_chars = int(os.environ.get('POST_TRANSLATION_CHUNK_CHARS', '6000') or 6000)
+    max_chars = max(1500, min(max_chars, 12000))
+    chunks = _split_text_for_format_chunks(raw_text, max_chars)
+    timeout_sec = int(os.environ.get('POST_TRANSLATION_TIMEOUT_SEC', '120') or 120)
+    read_retries = max(0, int(os.environ.get('POST_TRANSLATION_READ_RETRIES', '1') or 1))
+    model = (os.environ.get('POST_TRANSLATION_MODEL') or 'gpt-4o-mini').strip()
+
+    system_prompt = (
+        "You are a professional translation engine. "
+        "Translate the user's text to the requested target language. "
+        "Preserve meaning, paragraph breaks, line breaks, section headings, speaker labels, numbering, and timestamps if present. "
+        "Do not summarize, omit, add facts, explain, or wrap the answer in markdown. "
+        "Return ONLY valid JSON with this exact shape: {\"translation\":\"...\"}."
+    )
+
+    translated_parts = []
+    for idx, chunk in enumerate(chunks):
+        user_prompt = (
+            f"Target language: {target}\n"
+            f"Chunk {idx + 1} of {len(chunks)}.\n\n"
+            "Translate this text exactly, preserving structure:\n\n"
+            f"{chunk}"
+        )
+        parsed = _openai_chat_json_completion(
+            system_prompt,
+            user_prompt,
+            timeout_sec=timeout_sec,
+            read_retries=read_retries,
+            model_name=model,
+            temperature=0,
+        )
+        translated = str((parsed or {}).get("translation") or "").strip()
+        if not translated:
+            raise RuntimeError("OpenAI returned empty translation")
+        translated_parts.append(translated)
+
+    return "\n\n".join(translated_parts).strip(), {
+        "model": model,
+        "target_language": target,
+        "chunks": len(chunks),
+        "source_chars": len(raw_text),
+    }
+
+
+def _translate_segments_for_user_via_openai(segments, target_lang):
+    """Translate timed transcript segments while preserving timing metadata."""
+    if not isinstance(segments, list) or not segments:
+        raise ValueError("No segments provided")
+    target = str(target_lang or "").strip()
+    if not target:
+        raise ValueError("No target language provided")
+    clean_segments = []
+    for idx, seg in enumerate(segments):
+        if not isinstance(seg, dict):
+            continue
+        text = str(seg.get("text") or seg.get("translated_text") or "").strip()
+        if not text:
+            clean_segments.append({**seg, "text": ""})
+            continue
+        clean_segments.append({**seg, "_qs_translate_id": idx, "text": text})
+    if not clean_segments:
+        raise ValueError("No segment text provided")
+
+    chunk_size = int(os.environ.get('POST_TRANSLATION_SEGMENT_CHUNK_SIZE', '24') or 24)
+    chunk_size = max(8, min(chunk_size, 80))
+    max_workers = int(os.environ.get('POST_TRANSLATION_MAX_WORKERS', '4') or 4)
+    max_workers = max(1, min(max_workers, 8))
+    timeout_sec = int(os.environ.get('POST_TRANSLATION_TIMEOUT_SEC', '120') or 120)
+    read_retries = max(0, int(os.environ.get('POST_TRANSLATION_READ_RETRIES', '1') or 1))
+    model = (os.environ.get('POST_TRANSLATION_MODEL') or 'gpt-4o-mini').strip()
+    chunks = [clean_segments[i:i + chunk_size] for i in range(0, len(clean_segments), chunk_size)]
+
+    system_prompt = (
+        "You are a professional subtitle/transcript translation engine. "
+        "Translate every item to the requested target language. "
+        "Preserve meaning, speaker labels, punctuation intent, and timing metadata by keeping ids unchanged. "
+        "Do not summarize, omit, add facts, or explain. "
+        "Return ONLY valid JSON with this exact shape: {\"results\":[{\"id\":number,\"text\":string}]}."
+    )
+
+    def _translate_chunk(chunk):
+        payload_items = [
+            {"id": int(seg.get("_qs_translate_id")), "text": str(seg.get("text") or "")}
+            for seg in chunk
+        ]
+        user_prompt = (
+            f"Target language: {target}\n\n"
+            "Translate each item. Return the same ids.\n\n"
+            f"{json.dumps({'results': payload_items}, ensure_ascii=False)}"
+        )
+        parsed = _openai_chat_json_completion(
+            system_prompt,
+            user_prompt,
+            timeout_sec=timeout_sec,
+            read_retries=read_retries,
+            model_name=model,
+            temperature=0,
+        )
+        results = (parsed or {}).get("results")
+        if not isinstance(results, list):
+            raise RuntimeError("OpenAI returned no results array")
+        return {
+            int(r.get("id")): str(r.get("text") or "").strip()
+            for r in results
+            if isinstance(r, dict) and r.get("id") is not None
+        }
+
+    translations_by_id = {}
+    if len(chunks) == 1 or max_workers == 1:
+        for chunk in chunks:
+            translations_by_id.update(_translate_chunk(chunk))
+    else:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(chunks))) as executor:
+            futures = [executor.submit(_translate_chunk, chunk) for chunk in chunks]
+            for future in as_completed(futures):
+                translations_by_id.update(future.result())
+
+    out = []
+    translated_count = 0
+    for seg in clean_segments:
+        seg_id = int(seg.get("_qs_translate_id"))
+        translated = translations_by_id.get(seg_id, "").strip()
+        copy = {k: v for k, v in seg.items() if k != "_qs_translate_id"}
+        if translated:
+            copy["text"] = translated
+            copy["translated_text"] = translated
+            copy["translation_status"] = "ok"
+            translated_count += 1
+        else:
+            copy["translation_status"] = "empty"
+        out.append(copy)
+
+    return out, {
+        "model": model,
+        "target_language": target,
+        "chunks": len(chunks),
+        "parallel_workers": min(max_workers, len(chunks)),
+        "total": len(out),
+        "translated_count": translated_count,
+    }
+
+
+@app.route('/api/translate_text', methods=['POST'])
+def api_translate_text():
+    data = request.json or {}
+    text = str(data.get('text') or '').strip()
+    segments = data.get('segments') or []
+    target_lang = str(data.get('targetLang') or data.get('target_lang') or '').strip()
+    if not text and not segments:
+        return jsonify({"error": "No text provided"}), 400
+    if not target_lang:
+        return jsonify({"error": "No target language provided"}), 400
+    try:
+        if isinstance(segments, list) and segments:
+            translated_segments, meta = _translate_segments_for_user_via_openai(segments, target_lang)
+            return jsonify({"segments": translated_segments, "meta": meta}), 200
+        translation, meta = _translate_text_via_openai(text, target_lang)
+        return jsonify({"translation": translation, "meta": meta}), 200
+    except Exception as e:
+        logging.warning("translate_text failed: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/wrap_transcript_text', methods=['POST'])

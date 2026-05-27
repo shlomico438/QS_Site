@@ -2474,6 +2474,54 @@ function _hideToastNow() {
     toast.style.opacity = '0';
 }
 
+let _translationProgressInterval = null;
+let _translationProgressTargetLang = '';
+
+function _formatTranslationElapsed(ms) {
+    const totalSec = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+}
+
+/** Persistent bar above the transcript while /api/translate_text runs (not a timed toast). */
+function showTranslationProgressBar(targetLang) {
+    const bar = document.getElementById('translation-progress-bar');
+    const textEl = document.getElementById('translation-progress-text');
+    if (!bar || !textEl) return;
+    hideTranslationProgressBar();
+    _hideToastNow();
+    _translationProgressTargetLang = String(targetLang || '').trim() || '?';
+    const he = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+    const tick = () => {
+        const elapsed = _formatTranslationElapsed(Date.now() - (bar._qsTranslationStart || Date.now()));
+        if (he) {
+            textEl.textContent = `מתרגם ל${_translationProgressTargetLang}… התהליך עדיין רץ (זמן שעבר: ${elapsed}). אפשר להמשיך לעבוד בלשונית הזו.`;
+        } else {
+            textEl.textContent = `Translating to ${_translationProgressTargetLang}… Still in progress (${elapsed} elapsed). You can keep working in this tab.`;
+        }
+    };
+    bar._qsTranslationStart = Date.now();
+    bar.style.display = 'flex';
+    tick();
+    _translationProgressInterval = setInterval(tick, 1000);
+    try { bar.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+}
+
+function hideTranslationProgressBar() {
+    if (_translationProgressInterval) {
+        try { clearInterval(_translationProgressInterval); } catch (_) {}
+        _translationProgressInterval = null;
+    }
+    const bar = document.getElementById('translation-progress-bar');
+    if (bar) {
+        bar.style.display = 'none';
+        try { delete bar._qsTranslationStart; } catch (_) {}
+    }
+    _translationProgressTargetLang = '';
+}
+
 function setSeoHomeContentVisibility(visible) {
     const seo = document.getElementById('seo-home-content');
     if (!seo) return;
@@ -4359,6 +4407,193 @@ function getMedicalActiveTabTextForCopy() {
         return lines.join('\n').trim();
     }
     return String(buildTranscriptPlainBodyForExport() || '').trim();
+}
+
+function getCurrentTextForTranslation() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        const medicalText = String(getMedicalActiveTabTextForCopy() || '').trim();
+        if (medicalText) return medicalText;
+    }
+    const exportText = String(buildTranscriptPlainBodyForExport() || '').trim();
+    if (exportText) return exportText;
+    const formatted = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? String(window.currentFormattedDoc.clean_transcript || '').trim()
+        : '';
+    if (formatted) return formatted;
+    const transcriptWindow = document.getElementById('transcript-window');
+    return String((transcriptWindow && (transcriptWindow.innerText || transcriptWindow.textContent)) || '').trim();
+}
+
+function renderPlainTextInTranscriptWindow(text, title) {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow) return;
+    const safeTitle = String(title || '').trim();
+    const safeText = escapeHtml(String(text || '').trim()).replace(/\r?\n/g, '<br>');
+    transcriptWindow.innerHTML = (
+        safeTitle
+            ? `<div class="translation-result-title">${escapeHtml(safeTitle)}</div>`
+            : ''
+    ) + `<div class="translation-result-body">${safeText}</div>`;
+    transcriptWindow.setAttribute('contenteditable', 'false');
+}
+
+const QS_TRANSLATION_LANGUAGES = [
+    { label: 'English', native: 'English' },
+    { label: 'Hebrew', native: 'עברית' },
+    { label: 'Arabic', native: 'العربية' },
+    { label: 'Russian', native: 'Русский' },
+    { label: 'French', native: 'Français' },
+    { label: 'Spanish', native: 'Español' },
+    { label: 'German', native: 'Deutsch' },
+    { label: 'Italian', native: 'Italiano' },
+    { label: 'Portuguese', native: 'Português' },
+    { label: 'Chinese', native: '中文' },
+    { label: 'Japanese', native: '日本語' },
+    { label: 'Korean', native: '한국어' },
+    { label: 'Hindi', native: 'हिन्दी' },
+    { label: 'Ukrainian', native: 'Українська' },
+    { label: 'Polish', native: 'Polski' },
+];
+
+function askTranslationLanguage() {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('translation-language-modal');
+        const input = document.getElementById('translation-language-input');
+        const list = document.getElementById('translation-language-list');
+        const confirmBtn = document.getElementById('translation-language-confirm');
+        const cancelBtn = document.getElementById('translation-language-cancel');
+        if (!modal || !input || !list || !confirmBtn || !cancelBtn) {
+            resolve('');
+            return;
+        }
+        let selected = '';
+        let done = false;
+        const close = (value) => {
+            if (done) return;
+            done = true;
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+            input.removeEventListener('input', render);
+            confirmBtn.removeEventListener('click', onConfirm);
+            cancelBtn.removeEventListener('click', onCancel);
+            modal.removeEventListener('click', onBackdrop);
+            document.removeEventListener('keydown', onKeydown);
+            resolve(String(value || '').trim());
+        };
+        const render = () => {
+            const q = String(input.value || '').trim().toLowerCase();
+            const matches = QS_TRANSLATION_LANGUAGES
+                .filter((lang) => {
+                    if (!q) return true;
+                    return lang.label.toLowerCase().includes(q) || String(lang.native || '').toLowerCase().includes(q);
+                })
+                .slice(0, 12);
+            list.innerHTML = '';
+            matches.forEach((lang) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'translation-language-option' + (selected === lang.label ? ' is-selected' : '');
+                btn.setAttribute('role', 'option');
+                btn.innerHTML = `<span>${escapeHtml(lang.label)}</span><span class="translation-language-native">${escapeHtml(lang.native)}</span>`;
+                btn.addEventListener('click', () => {
+                    selected = lang.label;
+                    input.value = lang.label;
+                    render();
+                });
+                btn.addEventListener('dblclick', () => close(lang.label));
+                list.appendChild(btn);
+            });
+            if (!matches.length && q) {
+                const custom = document.createElement('button');
+                custom.type = 'button';
+                custom.className = 'translation-language-option is-selected';
+                custom.innerHTML = `<span>${escapeHtml(input.value.trim())}</span><span class="translation-language-native">Custom</span>`;
+                custom.addEventListener('click', () => close(input.value.trim()));
+                list.appendChild(custom);
+            }
+        };
+        const onConfirm = () => close(selected || input.value);
+        const onCancel = () => close('');
+        const onBackdrop = (event) => { if (event.target === modal) close(''); };
+        const onKeydown = (event) => {
+            if (event.key === 'Escape') close('');
+            if (event.key === 'Enter') close(selected || input.value);
+        };
+        selected = 'English';
+        input.value = '';
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden', 'false');
+        input.addEventListener('input', render);
+        confirmBtn.addEventListener('click', onConfirm);
+        cancelBtn.addEventListener('click', onCancel);
+        modal.addEventListener('click', onBackdrop);
+        document.addEventListener('keydown', onKeydown);
+        render();
+        setTimeout(() => { try { input.focus(); } catch (_) {} }, 0);
+    });
+}
+
+async function runUserRequestedTranslation() {
+    const translateBtn = document.getElementById('btn-translate');
+    const sourceText = getCurrentTextForTranslation();
+    if (!sourceText) {
+        if (typeof showStatus === 'function') showStatus('No text to translate.', true);
+        return;
+    }
+    const targetLang = await askTranslationLanguage();
+    const target = String(targetLang || '').trim();
+    if (!target) return;
+    const originalLabel = translateBtn ? translateBtn.textContent : '';
+    const canTranslateSegments = !(
+        typeof isMedicalModeEnabled === 'function' &&
+        isMedicalModeEnabled() &&
+        String(window.medicalActiveTab || 'summary') === 'summary'
+    ) && Array.isArray(window.currentSegments) && window.currentSegments.some((s) => String((s && s.text) || '').trim());
+    try {
+        if (translateBtn) {
+            translateBtn.disabled = true;
+            translateBtn.textContent = '…';
+        }
+        showTranslationProgressBar(target);
+        const res = await fetch('/api/translate_text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: sourceText,
+                segments: canTranslateSegments ? window.currentSegments : undefined,
+                targetLang: target,
+                isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false,
+            }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Translation failed (${res.status})`);
+        if (canTranslateSegments && Array.isArray(data.segments) && data.segments.length) {
+            window.currentSegments = data.segments;
+            window.currentWords = null;
+            window.currentCaptions = null;
+            window.currentTranslationTargetLang = target;
+            window.currentTranslationText = String(buildTranscriptPlainBodyForExport() || '').trim();
+            if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments);
+            if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(true);
+            if (typeof showStatus === 'function') showStatus(`Translated to ${target}.`, false, { duration: 5000 });
+            return;
+        }
+        const translated = String(data.translation || '').trim();
+        if (!translated) throw new Error('Translation returned empty text');
+        window.currentTranslationText = translated;
+        window.currentTranslationTargetLang = target;
+        renderPlainTextInTranscriptWindow(translated, `Translation: ${target}`);
+        if (typeof showStatus === 'function') showStatus(`Translated to ${target}.`, false, { duration: 5000 });
+    } catch (e) {
+        console.warn('[translate_text] failed', e);
+        if (typeof showStatus === 'function') showStatus(e.message || 'Translation failed.', true);
+    } finally {
+        hideTranslationProgressBar();
+        if (translateBtn) {
+            translateBtn.disabled = false;
+            translateBtn.textContent = originalLabel || '🌐';
+        }
+    }
 }
 
 async function commitActiveWordTokenEditIfAny() {
@@ -7312,13 +7547,14 @@ function hideProgressBar() {
 function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
+    const translateBtn = document.getElementById('btn-translate');
     const togglesGroup = document.querySelector('.switches-top-bar .toggles-group') || document.querySelector('.controls-bar .toggles-group');
     const switchesTopBar = document.querySelector('.switches-top-bar');
     const controlsBar = document.querySelector('.controls-bar');
     const editActions = document.getElementById('edit-actions');
     const downloadMenu = document.getElementById('download-menu');
 
-    [downloadBtn, editBtn].forEach((el) => {
+    [downloadBtn, editBtn, translateBtn].forEach((el) => {
         if (el) el.style.display = visible ? '' : 'none';
     });
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
@@ -7371,6 +7607,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const medicalTabTranscript = document.getElementById('medical-tab-transcript');
     const medicalTabSummary = document.getElementById('medical-tab-summary');
     const medicalCopyBtn = document.getElementById('medical-copy-btn');
+    const translateBtn = document.getElementById('btn-translate');
     const mobileSessionBtn = document.getElementById('mobile-new-session-btn');
     const navNewSessionBtn = document.getElementById('nav-new-session-btn');
     const statusTxt = document.getElementById('upload-status');
@@ -7380,6 +7617,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
     setTranscriptActionButtonsVisible(false);
+    if (translateBtn) {
+        translateBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            void runUserRequestedTranslation();
+        });
+    }
     window.medicalActiveTab = window.medicalActiveTab || 'summary';
     window._medicalRecorder = null;
     window._medicalRecorderChunks = [];
