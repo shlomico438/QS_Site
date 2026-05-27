@@ -45,7 +45,7 @@
             <span></span>
         </div>
 
-        <a href="/" class="nav-logo">
+        <a href="{% if medical_entry | default(false) %}/medical{% else %}/{% endif %}" class="nav-logo" id="nav-logo-link">
             <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 60px; width: auto;">
         </a>
 

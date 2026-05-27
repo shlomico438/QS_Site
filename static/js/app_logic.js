@@ -1340,11 +1340,13 @@ function setMedicalMode(enabled, opts) {
         if (typeof window.applyMedicalModeUi === 'function') {
             try { window.applyMedicalModeUi(); } catch (_) {}
         }
+        try { qsSyncNavLogoHref(); } catch (_) {}
         return;
     }
     const on = !!enabled;
     window.isMedicalMode = on;
     try { localStorage.setItem(QS_MEDICAL_MODE_KEY, on ? '1' : '0'); } catch (_) {}
+    try { qsSyncNavLogoHref(); } catch (_) {}
     if (on) clearSensitiveStorageForMedicalMode();
     try {
         const navToggle = document.getElementById('nav-medical-mode-toggle');
@@ -1356,6 +1358,46 @@ function setMedicalMode(enabled, opts) {
     if (on) {
         try { void window.qsRefreshMedicalEndpointStatus(); } catch (_) {}
     }
+}
+
+function qsNavLogoTargetPath() {
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return '/medical';
+    } catch (_) {}
+    try {
+        if (window.__QS_MEDICAL_URL_ENTRY === true) return '/medical';
+    } catch (_) {}
+    try {
+        if (String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1') return '/medical';
+    } catch (_) {}
+    return '/';
+}
+
+function qsSyncNavLogoHref() {
+    const logoLink = document.getElementById('nav-logo-link');
+    if (!logoLink) return;
+    logoLink.setAttribute('href', qsNavLogoTargetPath());
+}
+
+function qsWireNavLogoMedicalRouting() {
+    const logoLink = document.getElementById('nav-logo-link');
+    if (!logoLink || logoLink.dataset.qsMedicalRouting === '1') return;
+    logoLink.dataset.qsMedicalRouting = '1';
+    qsSyncNavLogoHref();
+    logoLink.addEventListener('click', (event) => {
+        const target = qsNavLogoTargetPath();
+        logoLink.setAttribute('href', target);
+        if (window.location && window.location.pathname !== target) {
+            event.preventDefault();
+            window.location.assign(target);
+        }
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', qsWireNavLogoMedicalRouting, { once: true });
+} else {
+    qsWireNavLogoMedicalRouting();
 }
 
 (() => {
