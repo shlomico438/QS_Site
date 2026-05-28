@@ -4587,6 +4587,8 @@ function askTranslationLanguage() {
 
 const QS_TRANSLATION_TEXT_CHUNK_CHARS = 6000;
 const QS_TRANSLATION_SEGMENT_BATCH_SIZE = 96;
+const QS_TRANSLATION_TEXT_MAX_CLIENT_CONCURRENCY = 2;
+const QS_TRANSLATION_SEGMENT_MAX_CLIENT_CONCURRENCY = 2;
 
 function splitTextForClientTranslation(text, maxChunkChars = QS_TRANSLATION_TEXT_CHUNK_CHARS) {
     const raw = String(text || '').trim();
@@ -4628,21 +4630,31 @@ async function fetchTranslationJson(payload) {
 
 async function translatePlainTextInClientBatches(sourceText, target, isMedical) {
     const chunks = splitTextForClientTranslation(sourceText);
-    const translatedParts = [];
-    for (let i = 0; i < chunks.length; i += 1) {
-        updateTranslationProgressDetail(`(${i + 1}/${chunks.length})`);
-        const data = await fetchTranslationJson({
-            text: chunks[i],
-            targetLang: target,
-            isMedical,
-        });
-        const translated = String(data.translation || '').trim();
-        if (!translated) throw new Error('Translation returned empty text');
-        translatedParts.push(translated);
-    }
+    const translatedParts = new Array(chunks.length);
+    let completed = 0;
+    let nextIdx = 0;
+    const workers = Math.max(1, Math.min(QS_TRANSLATION_TEXT_MAX_CLIENT_CONCURRENCY, chunks.length));
+    const runWorker = async () => {
+        while (true) {
+            const idx = nextIdx;
+            nextIdx += 1;
+            if (idx >= chunks.length) return;
+            const data = await fetchTranslationJson({
+                text: chunks[idx],
+                targetLang: target,
+                isMedical,
+            });
+            const translated = String(data.translation || '').trim();
+            if (!translated) throw new Error('Translation returned empty text');
+            translatedParts[idx] = translated;
+            completed += 1;
+            updateTranslationProgressDetail(`(${completed}/${chunks.length})`);
+        }
+    };
+    await Promise.all(Array.from({ length: workers }, () => runWorker()));
     return {
         translation: translatedParts.join('\n\n').trim(),
-        meta: { client_chunks: chunks.length },
+        meta: { client_chunks: chunks.length, client_concurrency: workers },
     };
 }
 
@@ -4658,32 +4670,47 @@ async function translateSegmentsInClientBatches(segments, target, isMedical) {
         }
     });
     const totalBatches = Math.max(1, Math.ceil(translatable.length / QS_TRANSLATION_SEGMENT_BATCH_SIZE));
+    const batchJobs = [];
     for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
         const batch = translatable.slice(
             batchIndex * QS_TRANSLATION_SEGMENT_BATCH_SIZE,
             (batchIndex + 1) * QS_TRANSLATION_SEGMENT_BATCH_SIZE
         );
-        if (!batch.length) continue;
-        updateTranslationProgressDetail(`(${batchIndex + 1}/${totalBatches})`);
-        const data = await fetchTranslationJson({
-            segments: batch.map((item) => item.seg),
-            targetLang: target,
-            isMedical,
-        });
-        const batchTranslations = Array.isArray(data.segments) ? data.segments : [];
-        if (!batchTranslations.length) throw new Error('Translation returned empty segments');
-        batchTranslations.forEach((translated, idx) => {
-            const original = batch[idx];
-            if (original && translated && typeof translated === 'object') {
-                translatedSegments[original.idx] = translated;
-            }
-        });
+        if (batch.length) batchJobs.push({ batchIndex, batch });
     }
+    let completed = 0;
+    let nextJob = 0;
+    const workers = Math.max(1, Math.min(QS_TRANSLATION_SEGMENT_MAX_CLIENT_CONCURRENCY, batchJobs.length));
+    const runWorker = async () => {
+        while (true) {
+            const jobIdx = nextJob;
+            nextJob += 1;
+            if (jobIdx >= batchJobs.length) return;
+            const { batch } = batchJobs[jobIdx];
+            const data = await fetchTranslationJson({
+                segments: batch.map((item) => item.seg),
+                targetLang: target,
+                isMedical,
+            });
+            const batchTranslations = Array.isArray(data.segments) ? data.segments : [];
+            if (!batchTranslations.length) throw new Error('Translation returned empty segments');
+            batchTranslations.forEach((translated, idx) => {
+                const original = batch[idx];
+                if (original && translated && typeof translated === 'object') {
+                    translatedSegments[original.idx] = translated;
+                }
+            });
+            completed += 1;
+            updateTranslationProgressDetail(`(${completed}/${totalBatches})`);
+        }
+    };
+    await Promise.all(Array.from({ length: workers }, () => runWorker()));
     return {
         segments: translatedSegments,
         meta: {
             client_batches: totalBatches,
             batch_size: QS_TRANSLATION_SEGMENT_BATCH_SIZE,
+            client_concurrency: workers,
         },
     };
 }
