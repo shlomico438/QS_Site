@@ -3707,7 +3707,7 @@ async function initOpenInApp(jobId) {
                     if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
                         console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length });
                         window.currentWords = tr.words;
-                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 27);
+                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 54);
                         window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                         segments = window.currentSegments;
                     } else if (Array.isArray(tr.segments)) {
@@ -3721,7 +3721,7 @@ async function initOpenInApp(jobId) {
                         if (model) {
                             console.log('[word-edit] open-in-app: derived words/captions from segments[*].words or word_segments', { words: model.words.length, captions: model.captions.length });
                             window.currentWords = model.words;
-                            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 27);
+                            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 54);
                             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                             segments = window.currentSegments;
                         } // No fallback fetch here: avoids noisy 404s for jobs without an intermediate debug artifact.
@@ -3736,7 +3736,7 @@ async function initOpenInApp(jobId) {
         if (res) {
             if (Array.isArray(res.words) && Array.isArray(res.captions) && res.words.length > 0 && res.captions.length > 0) {
                 window.currentWords = res.words;
-                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, res.captions, 27);
+                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, res.captions, 54);
                 segments = _captionsToCues(window.currentWords, window.currentCaptions);
                 hasTranscriptForOpen = true;
             } else if (Array.isArray(res.segments)) {
@@ -4369,7 +4369,7 @@ async function hydrateFormattedFromSavedTranscript() {
 /**
  * When S3/ memory lack GPT formatting, run /api/format_transcript_summary once and persist to S3 (same as post-job flow).
  */
-/** Join cue texts for GPT format pass: spaces, not newlines, so the model does not lock in ~27-char “subtitle” lines. */
+/** Join cue texts for GPT format pass: spaces, not newlines, so the model does not lock in ~54-char subtitle lines. */
 function buildTranscriptTextForGptFormat() {
     const fromSegments = (window.currentSegments || [])
         .map((s) => String((s && s.text) || '').trim())
@@ -6183,7 +6183,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         if ((wantTranscript && !hasClean) || (wantSummary && !hasSummaryBits)) {
             await ensureFormattedViaApiForExport();
         }
-        // Caption cues are reflowed (~27 chars per line); do not use newline-joined segments as export body.
+        // Caption cues are reflowed (~54 chars per line); do not use newline-joined segments as export body.
         const segmentFlowFallback = (window.currentSegments || [])
             .map(s => String((s && s.text) || '').trim())
             .filter(Boolean)
@@ -9677,7 +9677,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (wordModel) {
             window.currentWords = wordModel.words;
             // Keep caption line width consistent with file-open/import flow.
-            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, wordModel.captions, 27);
+            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, wordModel.captions, 54);
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
         } else {
             window.currentWords = null;
@@ -9779,7 +9779,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 }
                             }
                         }
-                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, window.currentCaptions, 27);
+                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, window.currentCaptions, 54);
                         window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
                     }
                     console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
@@ -11223,7 +11223,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // Keep line wrapping behavior tied to old tiktok style choice only.
         const isTiktok = window.currentSubtitleStyle === 'tiktok';
         const isPortrait = v && v.videoHeight > 0 && v.videoWidth > 0 && v.videoHeight > v.videoWidth;
-        const maxCharsPerLine = isPortrait ? 14 : 27; // Enforce consistent wrapping in landscape.
+        const maxCharsPerLine = isPortrait ? 28 : 54; // Keep roughly two visual lines in both orientations.
         for (let i = 0; i < window.currentSegments.length; i++) {
             const c = window.currentSegments[i];
             const st = (typeof window.getResolvedCaptionStyle === 'function')
@@ -13740,7 +13740,7 @@ function _qsInsertWordTextsAfterIndex(insertAfterWi, texts) {
     return n;
 }
 
-function reflowCaptionsByMaxChars(words, captions, maxChars = 27) {
+function reflowCaptionsByMaxChars(words, captions, maxChars = 54) {
     // Re-split captions using ONLY word boundaries (no timing estimation).
     if (!Array.isArray(words) || !Array.isArray(captions) || captions.length === 0) return captions;
     const out = [];
