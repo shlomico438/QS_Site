@@ -11220,10 +11220,58 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (pos === 'middle') return ' line:50% position:50% align:center';
             return ' line:90% position:50% align:center';
         };
-        // Keep line wrapping behavior tied to old tiktok style choice only.
-        const isTiktok = window.currentSubtitleStyle === 'tiktok';
-        const isPortrait = v && v.videoHeight > 0 && v.videoWidth > 0 && v.videoHeight > v.videoWidth;
-        const maxCharsPerLine = isPortrait ? 28 : 54; // Keep roughly two visual lines in both orientations.
+        const getCueStyleKey = () => {
+            const raw = String(window.currentSubtitleStyle || '').toLowerCase();
+            if (raw === 'clean' || raw === 'cinematic' || raw === 'tiktok') return raw;
+            return 'tiktok';
+        };
+        const estimateCueFontPx = (videoEl, styleKey) => {
+            const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+            const isMobileViewport = vw > 0 && vw <= 768;
+            // Mirrors ::cue font-size rules from app_custom.css
+            const emByStyleDesktop = { tiktok: 2.5, clean: 1.4, cinematic: 1.6 };
+            const emByStyleMobile = { tiktok: 1.15, clean: 1.05, cinematic: 1.1 };
+            const em = (isMobileViewport ? emByStyleMobile : emByStyleDesktop)[styleKey] || 1.15;
+            const basePx = 16; // Browser default media text size reference.
+            const h = Number(videoEl && videoEl.clientHeight) || Number(videoEl && videoEl.videoHeight) || 0;
+            const heightScale = h > 0 ? Math.max(0.72, Math.min(1.35, h / 720)) : 1;
+            return em * basePx * heightScale;
+        };
+        const estimateMaxCharsPerLine = (videoEl) => {
+            const styleKey = getCueStyleKey();
+            const widthPx = Number(videoEl && videoEl.clientWidth) || Number(videoEl && videoEl.videoWidth) || 0;
+            const heightPx = Number(videoEl && videoEl.clientHeight) || Number(videoEl && videoEl.videoHeight) || 0;
+            const isPortrait = widthPx > 0 && heightPx > 0 ? (heightPx > widthPx) : false;
+            const fontPx = estimateCueFontPx(videoEl, styleKey);
+            // Hebrew/Latin average glyph width is roughly 0.54-0.58 of font-size.
+            const avgCharPx = Math.max(7, fontPx * 0.56);
+            const horizontalPadding = isPortrait ? 20 : 36;
+            const usableWidthPx = Math.max(120, widthPx - (horizontalPadding * 2));
+            const estimated = Math.floor(usableWidthPx / avgCharPx);
+            const minChars = isPortrait ? 10 : 14;
+            const maxChars = isPortrait ? 38 : 68;
+            return Math.max(minChars, Math.min(maxChars, estimated || 0));
+        };
+        const wrapCueTextByMaxChars = (rawText, maxChars) => {
+            const s = String(rawText || '').replace(/\s+/g, ' ').trim();
+            if (!s || !maxChars || s.length <= maxChars) return s;
+            const words = s.split(' ').filter(Boolean);
+            if (!words.length) return s;
+            const lines = [];
+            let line = '';
+            for (const w of words) {
+                const candidate = line ? `${line} ${w}` : w;
+                if (candidate.length <= maxChars) {
+                    line = candidate;
+                } else {
+                    if (line) lines.push(line);
+                    line = w;
+                }
+            }
+            if (line) lines.push(line);
+            return lines.join('\n');
+        };
+        const maxCharsPerLine = estimateMaxCharsPerLine(primary);
         for (let i = 0; i < window.currentSegments.length; i++) {
             const c = window.currentSegments[i];
             const st = (typeof window.getResolvedCaptionStyle === 'function')
@@ -11241,12 +11289,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (end <= start) end = start + 0.05;
             vttLines.push(`${fmt(start)} --> ${fmt(end)}${cueSettings}`);
             let text = (c.text || '').replace(/<[^>]+>/g, '').trim();
-            if (text.length > maxCharsPerLine) {
-                const mid = Math.min(maxCharsPerLine, Math.floor(text.length / 2));
-                const spaceBefore = text.lastIndexOf(' ', mid + 1);
-                const breakAt = spaceBefore > 0 ? spaceBefore : mid;
-                text = text.slice(0, breakAt).trim() + '\n' + text.slice(breakAt).trim();
-            }
+            text = wrapCueTextByMaxChars(text, maxCharsPerLine);
             vttLines.push(text);
             vttLines.push('');
         }

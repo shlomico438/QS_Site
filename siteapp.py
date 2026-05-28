@@ -1242,6 +1242,36 @@ def _apply_medical_audio_transcription_options(base_options):
     return out
 
 
+def _music_vocal_separation_enabled():
+    """Enable Site-side vocals-only preprocessing for jobs classified as music."""
+    raw = os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATION')
+    if raw is None or str(raw).strip() == '':
+        return True
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _music_vocal_separation_fail_open_enabled():
+    raw = os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATION_FAIL_OPEN')
+    if raw is None or str(raw).strip() == '':
+        return True
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _music_vocals_s3_key(source_s3_key, job_id):
+    src = pathlib.PurePosixPath(str(source_s3_key or ''))
+    parent = str(src.parent).strip('.')
+    stem = src.stem or str(job_id or uuid.uuid4())
+    name = f"{stem}.vocals.wav"
+    return f"{parent}/{name}" if parent else name
+
+
+def _should_preprocess_music_vocals(is_medical, audio_profile_info):
+    if is_medical or not _music_vocal_separation_enabled():
+        return False
+    profile = str((audio_profile_info or {}).get('profile') or '').strip().lower()
+    return profile == 'music'
+
+
 def _public_base_url(req):
     """Best-effort public base URL for third-party callbacks (RunPod -> site)."""
     explicit = (os.environ.get('PUBLIC_BASE_URL') or '').strip().rstrip('/')
@@ -6204,6 +6234,107 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         logging.exception("trigger_gpu failed for %s", job_id)
 
 
+def _preprocess_music_vocals_then_trigger(job_id, payload, endpoint_id, api_key, bucket, source_s3_key, vocals_s3_key):
+    """Create a vocals-only WAV for music jobs, then submit the normal RunPod trigger.
+
+    This runs outside the HTTP request so long music separation cannot cause a gateway timeout.
+    If separation is unavailable, the default is fail-open: submit the original audio.
+    """
+    global pending_trigger, pending_trigger_at
+    trigger_payload = payload
+    try:
+        pending_trigger[job_id] = "preprocessing"
+        _set_trigger_state(job_id, "preprocessing")
+        logging.info(
+            "Music vocal separation started job_id=%s source_key_suffix=%s",
+            job_id,
+            (source_s3_key[-80:] if isinstance(source_s3_key, str) and len(source_s3_key) > 80 else source_s3_key),
+        )
+        with tempfile.TemporaryDirectory(prefix=f"qs_vocals_{job_id}_") as tmpdir:
+            suffix = pathlib.Path(str(source_s3_key or '')).suffix or '.bin'
+            local_input = os.path.join(tmpdir, f"input{suffix}")
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                region_name=os.environ.get('AWS_REGION')
+            )
+            s3_client.download_file(bucket, source_s3_key, local_input)
+
+            from music_vocal_separator import separate_vocals
+            result = separate_vocals(
+                local_input,
+                tmpdir,
+                ffmpeg_path=_resolve_ffmpeg(),
+                timeout_sec=max(60, int(os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATION_TIMEOUT_SEC', '1800') or 1800)),
+                model_name=os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_MODEL', 'htdemucs'),
+                command_template=os.environ.get('AUDIO_SEPARATOR_COMMAND'),
+            )
+            s3_client.upload_file(
+                result['vocals_path'],
+                bucket,
+                vocals_s3_key,
+                ExtraArgs={'ContentType': 'audio/wav'}
+            )
+
+        input_payload = trigger_payload.get('input') if isinstance(trigger_payload, dict) else {}
+        if not isinstance(input_payload, dict):
+            input_payload = {}
+            trigger_payload['input'] = input_payload
+        options = dict(input_payload.get('transcription_options') or {})
+        options.update({
+            'preprocessed_audio': True,
+            'preprocess': 'vocal_separation',
+            'preprocess_separator': result.get('separator'),
+            'preprocess_model': result.get('model'),
+            'source_s3_key': source_s3_key,
+            'vocals_s3_key': vocals_s3_key,
+        })
+        input_payload['s3Key'] = vocals_s3_key
+        input_payload['transcription_options'] = options
+        pinfo = dict(pending_job_info.get(job_id) or {})
+        pinfo.update({
+            'input_s3_key': source_s3_key,
+            'transcription_s3_key': vocals_s3_key,
+            'preprocessed_audio': True,
+            'transcription_options': options,
+        })
+        pending_job_info[job_id] = pinfo
+        logging.info(
+            "Music vocal separation complete job_id=%s vocals_key_suffix=%s",
+            job_id,
+            (vocals_s3_key[-80:] if isinstance(vocals_s3_key, str) and len(vocals_s3_key) > 80 else vocals_s3_key),
+        )
+    except Exception as e:
+        logging.exception("Music vocal separation failed job_id=%s", job_id)
+        if not _music_vocal_separation_fail_open_enabled():
+            pending_trigger[job_id] = "failed"
+            _set_trigger_state(job_id, "failed")
+            return
+        input_payload = trigger_payload.get('input') if isinstance(trigger_payload, dict) else {}
+        if isinstance(input_payload, dict):
+            options = dict(input_payload.get('transcription_options') or {})
+            options.update({
+                'preprocessed_audio': False,
+                'preprocess': 'vocal_separation',
+                'preprocess_failed': True,
+                'preprocess_error': str(e)[:300],
+            })
+            input_payload['s3Key'] = source_s3_key
+            input_payload['transcription_options'] = options
+            pinfo = dict(pending_job_info.get(job_id) or {})
+            pinfo.update({
+                'input_s3_key': source_s3_key,
+                'transcription_s3_key': source_s3_key,
+                'transcription_options': options,
+            })
+            pending_job_info[job_id] = pinfo
+    pending_trigger[job_id] = "queued"
+    pending_trigger_at[job_id] = time.time()
+    _set_trigger_state(job_id, "queued", queued_at=pending_trigger_at[job_id])
+    _trigger_gpu(job_id, trigger_payload, endpoint_id, api_key)
+
+
 @app.route('/api/gpu_started', methods=['POST'])
 def gpu_started():
     """Early handshake from worker: called once app_transcribe.py starts.
@@ -6586,25 +6717,37 @@ def trigger_processing():
                 "upload_status_url": upload_status_url,
             }
         }
+        use_music_vocal_preprocess = _should_preprocess_music_vocals(is_medical, audio_profile_info)
+        vocals_s3_key = _music_vocals_s3_key(s3_key, job_id) if use_music_vocal_preprocess else None
+        if use_music_vocal_preprocess:
+            _audio_profile_api_fields["music_vocal_separation"] = "queued"
 
         # So gpu_callback can save raw JSON even when RunPod does not echo input; store task/language for retry
         pending_job_info[job_id] = {
             "input_s3_key": s3_key,
+            "transcription_s3_key": vocals_s3_key or s3_key,
             "bucket": target_bucket,
             "is_medical": bool(is_medical),
             "user_id": _extract_user_id_from_s3_key(s3_key),
             "task": task,
             "language": language,
             "transcription_options": transcription_options or {},
+            "preprocess": "vocal_separation" if use_music_vocal_preprocess else None,
         }
         t_queued = time.time()
         pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
         pending_trigger_at[job_id] = t_queued
         _set_trigger_state(job_id, "queued", queued_at=t_queued)
-        t = threading.Thread(
-            target=_trigger_gpu,
-            args=(job_id, payload, endpoint_id, api_key)
-        )
+        if use_music_vocal_preprocess:
+            t = threading.Thread(
+                target=_preprocess_music_vocals_then_trigger,
+                args=(job_id, payload, endpoint_id, api_key, target_bucket, s3_key, vocals_s3_key)
+            )
+        else:
+            t = threading.Thread(
+                target=_trigger_gpu,
+                args=(job_id, payload, endpoint_id, api_key)
+            )
         t.daemon = True
         t.start()
 
@@ -6638,7 +6781,7 @@ def retry_trigger():
         info = pending_job_info.get(job_id)
         if not info:
             return jsonify({"status": "error", "message": "Job not found or expired"}), 404
-        s3_key = info.get("input_s3_key")
+        s3_key = info.get("transcription_s3_key") or info.get("input_s3_key")
         if not s3_key:
             return jsonify({"status": "error", "message": "Job missing s3 key"}), 400
         task = info.get('task', 'transcribe')
