@@ -4585,8 +4585,8 @@ function askTranslationLanguage() {
     });
 }
 
-const QS_TRANSLATION_TEXT_CHUNK_CHARS = 3000;
-const QS_TRANSLATION_SEGMENT_BATCH_SIZE = 10;
+const QS_TRANSLATION_TEXT_CHUNK_CHARS = 6000;
+const QS_TRANSLATION_SEGMENT_BATCH_SIZE = 96;
 
 function splitTextForClientTranslation(text, maxChunkChars = QS_TRANSLATION_TEXT_CHUNK_CHARS) {
     const raw = String(text || '').trim();
