@@ -921,6 +921,27 @@ def _s3_key_likely_video_container(s3_key):
     )
 
 
+def _guess_upload_content_type(filename, file_type):
+    """Normalize Content-Type for S3 uploads when the browser omits or mislabels audio (esp. .m4a)."""
+    name = str(filename or '').lower()
+    ft = str(file_type or '').strip()
+    if name.endswith('.m4a'):
+        return ft if ft.lower().startswith('audio/') else 'audio/mp4'
+    if name.endswith('.mp3'):
+        return ft or 'audio/mpeg'
+    if name.endswith('.wav'):
+        return ft or 'audio/wav'
+    if name.endswith('.aac'):
+        return ft or 'audio/aac'
+    if name.endswith('.ogg'):
+        return ft or 'audio/ogg'
+    if name.endswith('.flac'):
+        return ft or 'audio/flac'
+    if name.endswith('.webm') and (not ft or ft.lower().startswith('audio/')):
+        return ft or 'audio/webm'
+    return ft or 'application/octet-stream'
+
+
 def _ffmpeg_audio_profile_pcm(ffmpeg_path, input_src, seconds, sr):
     """Decode first `seconds` of audio to mono f32le PCM via ffmpeg.
     `input_src` may be a local path or an HTTP(S) URL (presigned). Prefer local files — URL pulls often fail on
@@ -5432,7 +5453,7 @@ def sign_s3():
     else:
         # --- LIVE AWS LOGIC ---
         filename = data.get('filename')
-        file_type = data.get('filetype')
+        file_type = _guess_upload_content_type(filename, data.get('filetype'))
 
         key_id = os.environ.get("AWS_ACCESS_KEY_ID")
         secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
@@ -5603,7 +5624,7 @@ def sign_s3_multipart_init():
         })
 
     filename = data.get('filename')
-    file_type = data.get('filetype') or 'application/octet-stream'
+    file_type = _guess_upload_content_type(filename, data.get('filetype'))
 
     key_id = os.environ.get("AWS_ACCESS_KEY_ID")
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY")

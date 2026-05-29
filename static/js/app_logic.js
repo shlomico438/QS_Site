@@ -1260,6 +1260,61 @@ function isMedicalLayoutRawAudioKey(s3Key) {
     return String(s3Key || '').includes('/raw-audio/');
 }
 
+const QS_AUDIO_FILE_EXTENSIONS = /\.(m4a|mp3|wav|aac|ogg|flac|weba|caf)$/i;
+const QS_VIDEO_FILE_EXTENSIONS = /\.(mp4|mov|webm|m4v|mkv|avi|mpeg|mpg|wmv|flv)$/i;
+
+function qsUploadFileName(fileOrName) {
+    return String(typeof fileOrName === 'string' ? fileOrName : (fileOrName && fileOrName.name) || '');
+}
+
+function qsUploadFileMime(fileOrName) {
+    return String(typeof fileOrName === 'string' ? '' : (fileOrName && fileOrName.type) || '').toLowerCase();
+}
+
+/** True for common audio uploads; extension wins over mislabeled video/mp4 (common for .m4a). */
+function qsIsAudioMediaFile(fileOrName, mimeOptional) {
+    const name = qsUploadFileName(fileOrName);
+    const mime = String(mimeOptional != null ? mimeOptional : qsUploadFileMime(fileOrName)).toLowerCase();
+    if (QS_AUDIO_FILE_EXTENSIONS.test(name)) return true;
+    if (mime.startsWith('audio/')) return true;
+    return false;
+}
+
+function qsIsVideoMediaFile(fileOrName, mimeOptional) {
+    if (qsIsAudioMediaFile(fileOrName, mimeOptional)) return false;
+    const name = qsUploadFileName(fileOrName);
+    const mime = String(mimeOptional != null ? mimeOptional : qsUploadFileMime(fileOrName)).toLowerCase();
+    return mime.startsWith('video/') || QS_VIDEO_FILE_EXTENSIONS.test(name);
+}
+
+function qsGuessUploadMimeType(fileOrName, fallback) {
+    const name = qsUploadFileName(fileOrName);
+    const mime = qsUploadFileMime(fileOrName);
+    if (/\.m4a$/i.test(name)) return (mime && mime.startsWith('audio/')) ? mime : 'audio/mp4';
+    if (/\.mp3$/i.test(name)) return mime || 'audio/mpeg';
+    if (/\.wav$/i.test(name)) return mime || 'audio/wav';
+    if (/\.aac$/i.test(name)) return mime || 'audio/aac';
+    if (/\.ogg$/i.test(name)) return mime || 'audio/ogg';
+    if (/\.flac$/i.test(name)) return mime || 'audio/flac';
+    if (/\.webm$/i.test(name) && qsIsAudioMediaFile(fileOrName)) return mime || 'audio/webm';
+    if (/\.mp4$/i.test(name) && qsIsAudioMediaFile(fileOrName)) return mime || 'audio/mp4';
+    return mime || fallback || 'application/octet-stream';
+}
+
+function qsMimeForAudioElement(fileOrName, mimeOptional) {
+    const name = qsUploadFileName(fileOrName);
+    const mime = String(mimeOptional != null ? mimeOptional : qsUploadFileMime(fileOrName)).toLowerCase();
+    if (/\.m4a$/i.test(name) || mime.includes('m4a')) return 'audio/mp4';
+    if (/\.mp3$/i.test(name) || mime.includes('mpeg')) return 'audio/mpeg';
+    if (/\.wav$/i.test(name)) return 'audio/wav';
+    if (/\.ogg$/i.test(name)) return 'audio/ogg';
+    if (/\.webm$/i.test(name)) return 'audio/webm';
+    if (/\.aac$/i.test(name)) return 'audio/aac';
+    if (/\.flac$/i.test(name)) return 'audio/flac';
+    if (mime.startsWith('audio/')) return mime;
+    return 'audio/mp4';
+}
+
 /** Canonical transcript JSON S3 key from input media key (matches siteapp `_derive_output_key_base` + `.json`). */
 function deriveTranscriptJsonKeyFromInputS3Key(inputKey) {
     const s = String(inputKey || '').trim();
@@ -3819,8 +3874,8 @@ async function initOpenInApp(jobId) {
     window.originalFileName = filename.replace(/\.[^.]+$/, '') || 'file';
     const forceMedicalAudio =
         isMedicalModeEnabled() || isMedicalLayoutRawAudioKey(job.input_s3_key);
-    let isAudio = /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(filename);
-    let isVideo = !isAudio && /\.(mp4|mov|webm|m4v|mkv|avi)$/i.test(filename);
+    let isAudio = qsIsAudioMediaFile(filename);
+    let isVideo = !isAudio && qsIsVideoMediaFile(filename);
     if (forceMedicalAudio) {
         isAudio = true;
         isVideo = false;
@@ -3896,13 +3951,7 @@ async function initOpenInApp(jobId) {
         if (audioContainer) audioContainer.style.display = 'block';
         if (audioSource && mainAudio) {
             audioSource.src = json.url;
-            const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
-            if (ext === '.m4a') audioSource.type = 'audio/mp4';
-            else if (ext === '.mp3') audioSource.type = 'audio/mpeg';
-            else if (ext === '.wav') audioSource.type = 'audio/wav';
-            else if (ext === '.ogg') audioSource.type = 'audio/ogg';
-            else if (ext === '.webm') audioSource.type = 'audio/webm';
-            else audioSource.type = 'audio/mp4';
+            audioSource.type = qsMimeForAudioElement(filename);
             mainAudio.load();
         }
     }
@@ -8003,13 +8052,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function isMedicalAudioFile(file) {
-        return !!(
-            file &&
-            (
-                (file.type && file.type.startsWith('audio/')) ||
-                /\.(wav|m4a|mp3|aac|ogg|flac|weba|webm)$/i.test(file.name || '')
-            )
-        );
+        return !!(file && qsIsAudioMediaFile(file));
     }
 
     function medicalJsonDragHasFile(e) {
@@ -8058,7 +8101,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             return;
         }
-        if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript or WAV/audio file.', true);
+        if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript or audio file (M4A, MP3, WAV, etc.).', true);
     }
 
     ['dragenter', 'dragover', 'drop'].forEach((evtName) => {
@@ -11762,8 +11805,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const pickerPurpose = String(window.__QS_FILE_PICKER_PURPOSE || 'new_upload');
                 const allowLocalMediaAttach = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON && pickerPurpose === 'attach_local_media';
                 if (allowLocalMediaAttach && typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
-                    let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
-                    let isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
+                    let isAudio = qsIsAudioMediaFile(file);
+                    let isVideo = !isAudio && qsIsVideoMediaFile(file);
                     if (isMedicalModeEnabled()) {
                         isAudio = true;
                         isVideo = false;
@@ -11814,20 +11857,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             if (audioContainer) audioContainer.style.display = 'block';
                             if (audioSource && mainAudio) {
                                 audioSource.src = objectUrl;
-                                const mt = (file.type || '').toLowerCase();
-                                if (mt.includes('webm')) audioSource.type = 'audio/webm';
-                                else if (mt.includes('ogg')) audioSource.type = 'audio/ogg';
-                                else if (mt.includes('mpeg') || /\.mp3$/i.test(file.name)) audioSource.type = 'audio/mpeg';
-                                else if (mt.includes('mp4') || mt.includes('m4a') || /\.m4a$/i.test(file.name)) audioSource.type = 'audio/mp4';
-                                else audioSource.type = file.type || 'audio/webm';
+                                audioSource.type = qsMimeForAudioElement(file);
                                 mainAudio.load();
                             }
                             if (videoPlayer) videoPlayer.style.display = 'block';
                         }
-                        const storeMime = (file.type || '').toLowerCase();
                         const mimeForMov = isMedicalModeEnabled()
-                            ? (storeMime.includes('webm') ? 'audio/webm' : (file.type || 'audio/webm'))
-                            : ((/\.mov$/i.test(file.name) || storeMime.includes('quicktime')) ? 'video/mp4' : (file.type || ''));
+                            ? qsGuessUploadMimeType(file, 'audio/webm')
+                            : ((/\.mov$/i.test(file.name) || String(file.type || '').toLowerCase().includes('quicktime')) ? 'video/mp4' : (file.type || ''));
                         setLocalPreviewAudio(objectUrl, mimeForMov);
                         setTranscriptActionButtonsVisible(true);
                         if (mainBtn) {
@@ -11851,8 +11888,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 }
 
                 try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
-                let isAudio = (file.type && file.type.startsWith('audio')) || /\.(m4a|mp3|wav|aac|ogg|flac|weba)$/i.test(file.name);
-                let isVideo = !isAudio && ((file.type && file.type.startsWith('video')) || /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(file.name));
+                let isAudio = qsIsAudioMediaFile(file);
+                let isVideo = !isAudio && qsIsVideoMediaFile(file);
                 if (isMedicalModeEnabled()) {
                     isAudio = true;
                     isVideo = false;
@@ -11912,20 +11949,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (audioContainer) audioContainer.style.display = 'block';
                 if (audioSource && mainAudio) {
                     audioSource.src = objectUrl;
-                    const mt = (file.type || '').toLowerCase();
-                    if (mt.includes('webm')) audioSource.type = 'audio/webm';
-                    else if (mt.includes('ogg')) audioSource.type = 'audio/ogg';
-                    else if (mt.includes('mpeg') || /\.mp3$/i.test(file.name)) audioSource.type = 'audio/mpeg';
-                    else if (mt.includes('mp4') || mt.includes('m4a') || /\.m4a$/i.test(file.name)) audioSource.type = 'audio/mp4';
-                    else audioSource.type = file.type || 'audio/webm';
+                    audioSource.type = qsMimeForAudioElement(file);
                     mainAudio.load();
                 }
                 if (videoPlayer) videoPlayer.style.display = 'block';
             }
-            const storeMime = (file.type || '').toLowerCase();
             const mimeForMov = isMedicalModeEnabled()
-                ? (storeMime.includes('webm') ? 'audio/webm' : (file.type || 'audio/webm'))
-                : ((/\.mov$/i.test(file.name) || storeMime.includes('quicktime')) ? 'video/mp4' : (file.type || ''));
+                ? qsGuessUploadMimeType(file, 'audio/webm')
+                : ((/\.mov$/i.test(file.name) || String(file.type || '').toLowerCase().includes('quicktime')) ? 'video/mp4' : (file.type || ''));
             setLocalPreviewAudio(objectUrl, mimeForMov);
 
             const currentFile = file; // Captured for use in the fetch
@@ -11955,7 +11986,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         filename: currentFile.name,
-                        filetype: currentFile.type,
+                        filetype: qsGuessUploadMimeType(currentFile, currentFile.type),
                         diarization: diarizationValue,
                         isMedical: isMedicalModeEnabled(),
                         userId: userId,
