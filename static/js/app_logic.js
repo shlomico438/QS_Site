@@ -407,6 +407,32 @@ function qsWarmupPhasePct() {
     return Math.min(100, Math.round((elapsed / QS_MEDICAL_WARMUP_DURATION_MS) * 100));
 }
 
+function qsMedicalWarmupRemainingMinutesAfterRecording(recordingMs) {
+    const remainingMs = Math.max(0, QS_MEDICAL_WARMUP_DURATION_MS - Math.max(0, Number(recordingMs) || 0));
+    return Math.max(1, Math.ceil(remainingMs / 60000));
+}
+
+function qsShowMedicalFirstWakeupWaitNotice(recordingMs) {
+    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') return;
+    if (window.__QS_MEDICAL_WAKEUP_NOTICE_ACTIVE) return;
+    window.__QS_MEDICAL_WAKEUP_NOTICE_ACTIVE = true;
+    const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+    const minutes = qsMedicalWarmupRemainingMinutesAfterRecording(recordingMs);
+    const msg = isHebrewUi
+        ? `המערכת עדיין מתחממת להפעלה הראשונה.\nזמן משוער לסיום: כ-${minutes} דקות.\n\nזה קורה רק בהפעלה הראשונה אחרי שהמערכת הייתה כבויה. בהמשך הסשן, עיבודים נוספים בדרך כלל מתחילים בתוך כדקה.`
+        : `The medical system is still warming up for the first wakeup.\nEstimated time remaining: about ${minutes} minutes.\n\nThis only happens on the first wakeup after the system was off. Later recordings in the same session usually start within about 1 minute.`;
+    if (typeof showGlobalAlert === 'function') {
+        void showGlobalAlert(msg, { confirmText: isHebrewUi ? 'הבנתי' : 'OK' }).finally(() => {
+            window.__QS_MEDICAL_WAKEUP_NOTICE_ACTIVE = false;
+        });
+    } else if (typeof showStatus === 'function') {
+        showStatus(msg, false);
+        window.__QS_MEDICAL_WAKEUP_NOTICE_ACTIVE = false;
+    } else {
+        window.__QS_MEDICAL_WAKEUP_NOTICE_ACTIVE = false;
+    }
+}
+
 function qsHideMedicalWarmupBanner() {
     const banner = document.getElementById('medical-warmup-banner');
     if (!banner) return;
@@ -568,15 +594,9 @@ window.qsSetMedicalWarmupBanner = function qsSetMedicalWarmupBanner(state) {
         text.textContent = QS_MEDICAL_WARMUP_READY_MSG;
         if (subtext) subtext.textContent = '';
     } else if (st === 'scaled_out' || st === 'off') {
-        banner.classList.add('is-scaled-out', 'is-preparing');
-        if (icon) icon.textContent = '💤';
-        text.textContent = QS_MEDICAL_WARMUP_COLD_TITLE;
-        if (subtext) subtext.textContent = `${QS_MEDICAL_WARMUP_COLD_MSG}\n${QS_MEDICAL_WARMUP_COLD_SUBMSG}`;
+        qsHideMedicalWarmupBanner();
     } else {
-        banner.classList.add('is-preparing');
-        if (icon) icon.textContent = '⏳';
-        text.textContent = QS_MEDICAL_WARMUP_PREPARING_MSG;
-        if (subtext) subtext.textContent = QS_MEDICAL_WARMUP_PREPARING_SUBMSG;
+        qsHideMedicalWarmupBanner();
     }
 };
 
@@ -8567,6 +8587,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (wu && wu.id) warmUserId = wu.id;
         } catch (_) {}
         if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+            qsShowMedicalFirstWakeupWaitNotice(window.__QS_MEDICAL_LAST_RECORDING_MS || 0);
             qsShowMedicalWarmupProgressDuringRecording();
             await qsAwaitMedicalWarmupReady(warmUserId);
         }
@@ -8904,6 +8925,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 shouldSubmit = !!window._medicalSubmitOnStop;
                 const prefix = isMedicalModeEnabled() ? 'medical_recording' : 'transcript_record';
                 if (shouldSubmit) {
+                    window.__QS_MEDICAL_LAST_RECORDING_MS = Math.max(0, Number(window._medicalRecordingAccumMs || 0));
                     const file = await buildMedicalRecordingFile(prefix, mime);
                     const uploadedViaWarmup = isMedicalModeEnabled()
                         ? await uploadWarmedMedicalRecordingFile(file)
@@ -9000,25 +9022,11 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         try {
-            if (
-                isMedicalModeEnabled()
-                && typeof window.qsMedicalEndpointIsCold === 'function'
-                && window.qsMedicalEndpointIsCold()
-            ) {
-                const choice = await qsShowMedicalWakeChoiceModal();
-                if (!choice) return;
+            if (isMedicalModeEnabled() && typeof window.qsMaybeMedicalSessionWarmup === 'function') {
                 try {
-                    if (typeof window.qsMaybeMedicalSessionWarmup === 'function') {
-                        await window.qsMaybeMedicalSessionWarmup();
-                    }
+                    void window.qsMaybeMedicalSessionWarmup();
                 } catch (warmErr) {
                     console.warn('[medical] session warmup on mic failed', warmErr);
-                }
-                if (choice === 'wait') {
-                    try {
-                        await qsAwaitMedicalWarmupReady(window.__QS_MEDICAL_WARMUP_USER_ID);
-                    } catch (_) {}
-                    return;
                 }
             }
             await startMedicalRecording();
