@@ -419,8 +419,8 @@ function qsShowMedicalFirstWakeupWaitNotice(recordingMs) {
     const isHebrewUi = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
     const minutes = qsMedicalWarmupRemainingMinutesAfterRecording(recordingMs);
     const msg = isHebrewUi
-        ? `המערכת עדיין מתחממת להפעלה הראשונה.\nזמן משוער לסיום: כ-${minutes} דקות.\n\nזה קורה רק בהפעלה הראשונה אחרי שהמערכת הייתה כבויה. בהמשך הסשן, עיבודים נוספים בדרך כלל מתחילים בתוך כדקה.`
-        : `The medical system is still warming up for the first wakeup.\nEstimated time remaining: about ${minutes} minutes.\n\nThis only happens on the first wakeup after the system was off. Later recordings in the same session usually start within about 1 minute.`;
+        ? `המערכת עדיין מתחממת להפעלה הראשונה.\nזמן משוער לסיום: כ-${minutes} דקות.\n\nזה קורה רק בהפעלה הראשונה אחרי שהמערכת הייתה כבויה. בדרך כלל כל התהליך (העלאה ועיבוד) אורך כדקה ומתחיל מיד לאחר סיום ההקלטה.`
+        : `The medical system is still warming up for the first wakeup.\nEstimated time remaining: about ${minutes} minutes.\n\nThis only happens on the first wakeup after the system was off. Normally the whole process (upload and processing) takes about one minute and starts right after you finish recording.`;
     if (typeof showGlobalAlert === 'function') {
         void showGlobalAlert(msg, { confirmText: isHebrewUi ? 'הבנתי' : 'OK' }).finally(() => {
             window.__QS_MEDICAL_WAKEUP_NOTICE_ACTIVE = false;
