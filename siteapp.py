@@ -3675,6 +3675,61 @@ def _mark_job_transcript_ready_on_gpu_callback(runpod_job_id, user_id, result_s3
         logging.warning("gpu_callback: could not PATCH jobs row (processed/result_s3_key) for runpod_job_id=%s", runpod_job_id)
 
 
+def _completed_job_payload_from_db(runpod_job_id):
+    """Recover completed transcript for polling when this process has no in-memory callback cache."""
+    row = _get_job_row_by_runpod_job_id(
+        runpod_job_id,
+        select="id,status,user_id,input_s3_key,result_s3_key,metadata",
+    )
+    if not isinstance(row, dict):
+        return None
+
+    status = str(row.get("status") or "").strip().lower()
+    result_s3_key = str(row.get("result_s3_key") or "").strip()
+    if not result_s3_key and isinstance(row.get("metadata"), dict):
+        md = row.get("metadata") or {}
+        result_s3_key = str(md.get("result_s3_key") or md.get("resultS3Key") or "").strip()
+    if status not in ("processed", "completed", "exported") and not result_s3_key:
+        return None
+
+    user_id = str(row.get("user_id") or "").strip()
+    input_s3_key = str(row.get("input_s3_key") or "").strip()
+    transcript = None
+    if user_id and input_s3_key:
+        transcript = _get_transcript_json_from_s3(user_id, input_s3_key, stage="gpt")
+
+    if not isinstance(transcript, dict):
+        return {
+            "jobId": runpod_job_id,
+            "status": "completed",
+            "result_s3_key": result_s3_key,
+            "result": {"result_s3_key": result_s3_key},
+        }
+
+    segments = transcript.get("segments") if isinstance(transcript.get("segments"), list) else []
+    payload = {
+        "jobId": runpod_job_id,
+        "status": "completed",
+        "result_s3_key": result_s3_key,
+        "result": {
+            "segments": segments,
+            "result_s3_key": result_s3_key,
+        },
+        "segments": segments,
+    }
+    if isinstance(transcript.get("formatted"), dict):
+        payload["formatted"] = transcript["formatted"]
+        payload["result"]["formatted"] = transcript["formatted"]
+    if isinstance(transcript.get("words"), list):
+        payload["words"] = transcript["words"]
+        payload["result"]["words"] = transcript["words"]
+    if isinstance(transcript.get("captions"), list):
+        payload["captions"] = transcript["captions"]
+        payload["result"]["captions"] = transcript["captions"]
+    job_results_cache[runpod_job_id] = payload
+    return payload
+
+
 def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> None:
     """Update jobs table with PROCESS TIMING data. Matches by runpod_job_id column or metadata.job_id."""
     if not (os.environ.get('SUPABASE_URL') or '').strip() or not (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip():
@@ -3784,6 +3839,11 @@ def check_job_status(job_id):
     if job_id in job_results_cache:
         print(f"馃攷 Client checked status for {job_id} -> Found completed result!")
         return jsonify(job_results_cache[job_id])
+
+    completed_payload = _completed_job_payload_from_db(job_id)
+    if completed_payload:
+        logging.info("check_status recovered completed job from DB/S3 job_id=%s", job_id)
+        return jsonify(completed_payload), 200
 
     # If trigger failed, surface it (merge DB + memory so stale warmup "failed" does not win over retry).
     status, _ = _resolve_trigger_status_for_poll(job_id)
