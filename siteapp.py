@@ -111,6 +111,16 @@ _GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE = (
     "documentation; that style is ONLY for Task 2 (chief_complaint, examination_transcript, patient_recommendations).\n\n"
 )
 
+_GPT_MUSIC_CLEAN_TRANSCRIPT_NOTE = (
+    "Hebrew song transcript correction — clean_transcript only:\n"
+    "אתה עוזר תמלול מקצועי. לפניך טקסט בעברית שיצא ממודל שמע (STT) של שיר עברי ישן. "
+    "הטקסט מכיל שגיאות שמיעה פונטיות קשות (למשל, המילה 'העפילו' הפכה ל'הפילו', "
+    "'ארץ צבי' הפכה ל'ארץ אוויל'). תפקידך להשתמש בידע התרבותי שלך על שירים עבריים, "
+    "לתקן את המילים הנכונות, ולשמור על מבנה ה-SRT והטיימינג במדויק.\n"
+    "Apply this only as correction of likely misheard song lyrics. Do not invent lyrics when uncertain; preserve "
+    "the transcript's line/paragraph order and do not change timestamps or cue order if timing/cue data appears.\n\n"
+)
+
 # Medical / clinical: written documentation for summary fields only (not the dialogue transcript).
 _GPT_MEDICAL_WRITTEN_STYLE_NOTE = (
     "Clinical written style for Task 2 ONLY (chief_complaint, examination_transcript, patient_recommendations)—"
@@ -4238,7 +4248,7 @@ def _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew):
     return overview, key_points
 
 
-def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, read_retries=0, gpt_model=None):
+def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, read_retries=0, gpt_model=None, is_music=False):
     """Format one transcript fragment into clean_transcript (same rules as full-job format)."""
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
@@ -4250,6 +4260,7 @@ def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, 
     )
     user_prompt = (
         f"{_GPT_TASK1_CLEAN_TRANSCRIPT}"
+        f"{_GPT_MUSIC_CLEAN_TRANSCRIPT_NOTE if is_music else ''}"
         "This request is one fragment of a longer transcript; keep paragraph boundaries natural at the edges.\n\n"
         f"Output language: {output_lang_label}\n\n"
         f"Fragment:\n\n{chunk_text}"
@@ -4278,6 +4289,7 @@ def _format_unified_transcript_openai(
     transcript_text,
     target_lang='he',
     is_medical=False,
+    is_music=False,
     user_id=None,
     medical_task2_prompt_override=None,
     gpt_model=None,
@@ -4332,7 +4344,11 @@ def _format_unified_transcript_openai(
             "Ignore filler conversation.\n\n"
         )
         json_tail = "Return as JSON fields only (clean_transcript, overview, key_points).\n"
-    task1_clean = _GPT_TASK1_CLEAN_TRANSCRIPT + (_GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else "")
+    task1_clean = (
+        _GPT_TASK1_CLEAN_TRANSCRIPT
+        + (_GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else "")
+        + (_GPT_MUSIC_CLEAN_TRANSCRIPT_NOTE if (is_music and not is_medical) else "")
+    )
     user_prompt = (
         "You are editing a transcript.\n\n"
         f"{task1_clean}"
@@ -4370,12 +4386,13 @@ def _format_unified_transcript_openai(
     }
 
 
-def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
     """Unified clean + summary in one GPT call (legacy name for API mode=summary_only)."""
     return _format_unified_transcript_openai(
         transcript_excerpt,
         target_lang=target_lang,
         is_medical=is_medical,
+        is_music=is_music,
         user_id=user_id,
         medical_task2_prompt_override=medical_task2_prompt_override,
         gpt_model=gpt_model,
@@ -4384,19 +4401,20 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
     )
 
 
-def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
     """One OpenAI call: clean transcript + summary."""
     return _format_unified_transcript_openai(
         transcript_text,
         target_lang=target_lang,
         is_medical=is_medical,
+        is_music=is_music,
         user_id=user_id,
         medical_task2_prompt_override=medical_task2_prompt_override,
         gpt_model=gpt_model,
     )
 
 
-def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
     """Generate clean transcript + summary in a single GPT request (truncates very long input)."""
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
@@ -4412,6 +4430,7 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
         summ_input,
         target_lang=target_lang,
         is_medical=is_medical,
+        is_music=is_music,
         user_id=user_id,
         medical_task2_prompt_override=medical_task2_prompt_override,
         gpt_model=gpt_model,
@@ -4805,6 +4824,45 @@ def _medical_minimal_format_payload(raw_text: str, target_lang: str = 'he') -> d
     }
 
 
+def _format_request_is_music_context(data, job_id=None):
+    """True when regular GPT formatting belongs to a job classified as music."""
+    def _opts_music(opts):
+        return (
+            isinstance(opts, dict)
+            and str(opts.get('audio_profile') or opts.get('profile') or '').strip().lower() == 'music'
+        )
+
+    if isinstance(data, dict):
+        if str(data.get('audio_profile') or data.get('audioProfile') or '').strip().lower() == 'music':
+            return True
+        if _opts_music(data.get('transcription_options') or data.get('transcriptionOptions')):
+            return True
+
+    jid = str(job_id or '').strip()
+    if not jid:
+        return False
+
+    pending = pending_job_info.get(jid) if isinstance(pending_job_info.get(jid), dict) else {}
+    if _opts_music(pending.get('transcription_options')):
+        return True
+
+    handoff = _load_vocal_separation_handoff(jid)
+    if handoff:
+        if str(handoff.get('status') or '').strip().lower() in ('processing', 'completed'):
+            return True
+        if _opts_music(handoff.get('transcription_options')):
+            return True
+        trigger_input = handoff.get('trigger_input') if isinstance(handoff.get('trigger_input'), dict) else {}
+        if _opts_music(trigger_input.get('transcription_options')):
+            return True
+        trigger_payload = handoff.get('trigger_payload') if isinstance(handoff.get('trigger_payload'), dict) else {}
+        payload_input = trigger_payload.get('input') if isinstance(trigger_payload.get('input'), dict) else {}
+        if _opts_music(payload_input.get('transcription_options')):
+            return True
+
+    return False
+
+
 @app.route('/api/format_transcript_summary', methods=['POST'])
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export.
@@ -4824,6 +4882,7 @@ def api_format_transcript_summary():
             is_medical = True
     req_job_id = (data.get('jobId') or data.get('job_id') or '').strip() or None
     req_user_id = (data.get('userId') or data.get('user_id') or '').strip() or None
+    is_music_format = (not is_medical) and _format_request_is_music_context(data, req_job_id)
     read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
 
     def _apply_format_timing(elapsed):
@@ -4844,7 +4903,9 @@ def api_format_transcript_summary():
         # Keep per-request OpenAI read budget modest so each HTTP round-trip stays under typical proxy limits.
         chunk_timeout = int(os.environ.get('GPT_FORMAT_CHUNK_TIMEOUT_SEC', '75') or 75)
         try:
-            clean = _format_transcript_clean_chunk_openai(part, target_lang, chunk_timeout, read_retries)
+            clean = _format_transcript_clean_chunk_openai(
+                part, target_lang, chunk_timeout, read_retries, is_music=is_music_format
+            )
             elapsed = time.time() - t0
             # Do not _update_job_timings per chunk (would overwrite); client multi-request ends with summary_only.
             return jsonify({"clean_transcript": clean, "gpt_format_sec": round(float(elapsed), 3)}), 200
@@ -4883,6 +4944,7 @@ def api_format_transcript_summary():
                 summary_timeout,
                 read_retries,
                 is_medical=is_medical,
+                is_music=is_music_format,
                 user_id=req_user_id,
             )
             elapsed = time.time() - t0
@@ -4921,7 +4983,11 @@ def api_format_transcript_summary():
             out['format_guardrail'] = 'medical_short_transcript_bypass'
             return jsonify(out), 200
         out = _format_transcript_and_summary_via_openai(
-            raw_text, target_lang=target_lang, is_medical=is_medical, user_id=req_user_id
+            raw_text,
+            target_lang=target_lang,
+            is_medical=is_medical,
+            is_music=is_music_format,
+            user_id=req_user_id,
         )
         elapsed = time.time() - t0
         _apply_format_timing(elapsed)
