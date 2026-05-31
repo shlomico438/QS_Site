@@ -158,7 +158,7 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
     """Separate vocals from a music file and return a timeline-aligned 16 kHz mono WAV.
 
     Uses Demucs by default:
-      python -m demucs --two-stems=vocals -n htdemucs --out <work_dir>/demucs <input>
+      python -m demucs --two-stems=vocals -d cpu -n htdemucs --out <work_dir>/demucs <input>
 
     The output WAV is padded to the source duration so intro/outro music keeps real timing.
     """
@@ -177,11 +177,14 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
         )
         cmd = _split_command(rendered)
     else:
+        device = (os.environ.get("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_DEVICE") or "cpu").strip() or "cpu"
         cmd = [
             os.environ.get("PYTHON", sys.executable or "python"),
             "-m",
             "demucs",
             "--two-stems=vocals",
+            "-d",
+            device,
             "-n",
             str(model_name or "htdemucs"),
             "--out",
