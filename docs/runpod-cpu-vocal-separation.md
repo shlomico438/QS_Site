@@ -21,6 +21,10 @@ PUBLIC_BASE_URL=https://www.getquickscribe.com
 # Auto: use RunPod CPU when RUNPOD_CPU_ENDPOINT_ID is set (default)
 TRANSCRIBE_MUSIC_VOCAL_SEPARATION_ENGINE=runpod
 
+# Subtitle movie burn: RunPod CPU only (no Koyeb ffmpeg in production)
+SIMULATION_MODE=false
+RUNPOD_BURN_ALLOW_LOCAL_FALLBACK=false
+
 # Optional tuning (worker + site)
 TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_MODEL=mdx_extra_q
 TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC=60
@@ -32,6 +36,15 @@ To force local Demucs on Koyeb (not recommended on 2GB):
 ```env
 TRANSCRIBE_MUSIC_VOCAL_SEPARATION_ENGINE=local
 ```
+
+Deploy the CPU worker from `GPU/`:
+
+```bat
+cd C:\Work\QuickScribe\GPU
+deploy.bat burn
+```
+
+Set `ENDPOINT_ID_BURN` and `CPU_IDS_JSON_BURN` in `secrets.bat` (see `secrets.example.bat`).
 
 ## Flow
 
@@ -74,6 +87,24 @@ def handler(job):
 ```
 
 4. Ensure `ffmpeg` is on PATH in the container.
+
+## Troubleshooting hangs
+
+If the UI sits on "Separating vocals..." for a long time:
+
+1. **Worker must handle `task=separate_vocals`** — `quickscribe-burn-worker:v95` only supports `burn_subtitles`. Without a handler update, the container exits in ~10s and may POST a callback **without `job_id`** (Koyeb log: `POST /api/vocal_separation_callback 400`). Deploy a new image (e.g. v96+) with the handler below.
+2. **Check Koyeb callback log** — after Site fix, look for `vocal_separation_callback received body=...` and `Music vocal separation failed ... via callback` followed by GPU trigger (fail-open on original audio).
+3. **RunPod external log** — after worker update you should see `[separate_vocals] start job_id=...`.
+4. **Cold start** — if CPU workersMin=0, first job waits for container boot (~10–30s). Optional: `RUNPOD_CPU_SCALE_ON_VOCAL_SEPARATION=true` on Koyeb to set workersMin=1 when a music job starts.
+5. **S3** — if `{stem}.vocals.wav` appears, transcription should continue even if callback format was wrong (Site polls S3 every 30s).
+
+Optional env:
+
+```env
+TRANSCRIBE_MUSIC_VOCAL_SEPARATION_RUNPOD_TIMEOUT_SEC=1800
+TRANSCRIBE_MUSIC_VOCAL_SEPARATION_RUNPOD_POLL_SEC=30
+RUNPOD_CPU_SCALE_ON_VOCAL_SEPARATION=true
+```
 
 ## Verify
 

@@ -283,6 +283,33 @@ RUNPOD_CPU_ENDPOINT_ID = os.environ.get('RUNPOD_CPU_ENDPOINT_ID') or RUNPOD_MOVI
 BUCKET_NAME = "quickscribe-v2-12345"
 
 
+def _runpod_burn_endpoint_id():
+    """RunPod serverless endpoint for subtitle burn + music vocal separation (CPU worker)."""
+    return (
+        (os.environ.get('RUNPOD_BURN_ENDPOINT_ID') or '').strip()
+        or (RUNPOD_CPU_ENDPOINT_ID or '').strip()
+        or (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()
+        or (RUNPOD_ENDPOINT_ID or '').strip()
+    )
+
+
+def _burn_allow_local_fallback():
+    """Local ffmpeg burn on Koyeb is dev-only unless explicitly enabled."""
+    raw = os.environ.get('RUNPOD_BURN_ALLOW_LOCAL_FALLBACK')
+    if raw is not None and str(raw).strip() != '':
+        return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(SIMULATION_MODE)
+
+
+def _burn_use_runpod(force_local=False):
+    if force_local:
+        return False
+    allow_runpod_in_simulation = str(os.environ.get('RUNPOD_ALLOW_IN_SIMULATION', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
+    if SIMULATION_MODE and not allow_runpod_in_simulation:
+        return False
+    return bool((RUNPOD_API_KEY or '').strip() and _runpod_burn_endpoint_id())
+
+
 def _env_flag_true(name):
     v = (os.environ.get(name) or '').strip().lower()
     return v in ('1', 'true', 'yes', 'on')
@@ -1341,6 +1368,280 @@ def _apply_vocal_separation_failure(trigger_payload, source_s3_key, error_text):
     input_payload['s3Key'] = source_s3_key
     input_payload['transcription_options'] = options
     return trigger_payload
+
+
+_vocal_separation_finish_lock = threading.Lock()
+
+
+def _s3_object_exists(bucket, key):
+    if not bucket or not key:
+        return False
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION')
+        )
+        s3_client.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError:
+        return False
+    except Exception:
+        return False
+
+
+def _get_vocal_separation_meta_from_db(job_id):
+    try:
+        row = _get_job_row_by_runpod_job_id(job_id, select="metadata")
+        if not row:
+            return {}
+        md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+        vs = qt.get("vocal_separation") if isinstance(qt.get("vocal_separation"), dict) else {}
+        return dict(vs)
+    except Exception:
+        return {}
+
+
+def _persist_vocal_separation_handoff(job_id, handoff, trigger_status=None):
+    payload = {"vocal_separation": dict(handoff or {})}
+    _merge_job_qs_trigger(job_id, payload, update_job_status=trigger_status)
+
+
+def _load_vocal_separation_handoff(job_id):
+    mem = dict(vocal_separation_jobs.get(job_id) or {})
+    db_vs = _get_vocal_separation_meta_from_db(job_id)
+    merged = {**db_vs, **{k: v for k, v in mem.items() if v is not None}}
+    trigger_payload = merged.get('trigger_payload') or mem.get('trigger_payload') or {}
+    if (not trigger_payload) and merged.get('trigger_input'):
+        trigger_payload = {'input': dict(merged.get('trigger_input') or {})}
+    merged['trigger_payload'] = trigger_payload
+    merged['gpu_endpoint_id'] = merged.get('gpu_endpoint_id') or RUNPOD_ENDPOINT_ID
+    merged['gpu_api_key'] = merged.get('gpu_api_key') or RUNPOD_API_KEY
+    merged['cpu_endpoint_id'] = merged.get('cpu_endpoint_id') or RUNPOD_CPU_ENDPOINT_ID
+    return merged
+
+
+def _job_id_from_media_s3_key(key):
+    """Infer runpod job_id from an input/output S3 key (e.g. job_123_audio_abc.mp4 or .vocals.wav)."""
+    if not key:
+        return None
+    name = pathlib.PurePosixPath(str(key)).name
+    if name.endswith('.vocals.wav'):
+        stem = name[:-len('.vocals.wav')]
+    else:
+        stem = pathlib.PurePosixPath(str(key)).stem
+    if stem.startswith('job_'):
+        return stem
+    return None
+
+
+def _parse_vocal_separation_callback_payload(data):
+    """Normalize RunPod / burn-worker callback bodies into (job_id, status, error, fields)."""
+    if not isinstance(data, dict):
+        return None, 'processing', '', {}
+
+    def _walk(obj, depth=0):
+        if depth > 4:
+            return
+        if isinstance(obj, dict):
+            yield obj
+            for v in obj.values():
+                yield from _walk(v, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj:
+                yield from _walk(item, depth + 1)
+
+    candidates = list(_walk(data))
+    if data not in candidates:
+        candidates.insert(0, data)
+
+    def _pick(keys):
+        for c in candidates:
+            for k in keys:
+                v = c.get(k) if isinstance(c, dict) else None
+                if v not in (None, ''):
+                    return v
+        return None
+
+    job_id = _pick(['job_id', 'jobId', 'jobID'])
+    if not job_id:
+        for key_name in ('output_s3_key', 'outputS3Key', 'vocals_s3_key', 'source_s3_key', 'sourceS3Key', 's3Key', 'input_s3_key'):
+            job_id = _job_id_from_media_s3_key(_pick([key_name]))
+            if job_id:
+                break
+
+    status_raw = str(_pick(['status', 'state']) or 'processing').strip().lower()
+    error_text = _pick(['error', 'message', 'detail']) or ''
+
+    runpod_status = str(data.get('status') or '').strip().upper()
+    if runpod_status in ('COMPLETED', 'DONE', 'SUCCESS'):
+        status_raw = 'completed'
+    elif runpod_status in ('FAILED', 'ERROR', 'CANCELLED', 'TIMED_OUT'):
+        status_raw = 'failed'
+
+    if not job_id:
+        processing = [
+            jid for jid, info in vocal_separation_jobs.items()
+            if isinstance(info, dict) and not info.get('finished') and info.get('status') == 'processing'
+        ]
+        if len(processing) == 1:
+            job_id = processing[0]
+
+    fields = {
+        'source_s3_key': _pick(['source_s3_key', 'sourceS3Key']),
+        'vocals_s3_key': _pick(['output_s3_key', 'outputS3Key', 'vocals_s3_key']),
+        'separator': _pick(['separator']),
+        'model': _pick(['model', 'preprocess_model']),
+        'source_duration_sec': _pick(['source_duration_sec', 'preprocess_source_duration_sec']),
+        'vocal_onset_sec': _pick(['vocal_onset_sec', 'preprocess_vocal_onset_sec']),
+        'prepended_silence_sec': _pick(['prepended_silence_sec', 'preprocess_prepended_silence_sec']),
+    }
+    return job_id, status_raw, error_text, fields
+
+
+def _fetch_runpod_job_status(endpoint_id, run_id, api_key=None):
+    eid = (endpoint_id or '').strip()
+    rid = (run_id or '').strip()
+    key = (api_key or RUNPOD_API_KEY or '').strip()
+    if not eid or not rid or not key:
+        return None, None, None
+    try:
+        r = requests.get(
+            f"https://api.runpod.ai/v2/{eid}/status/{rid}",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return None, None, f"status HTTP {r.status_code}"
+        data = r.json() if r.content else {}
+        status = str(data.get('status') or '').strip().upper()
+        output = data.get('output')
+        err = data.get('error') or data.get('message')
+        return status, output, err
+    except Exception as e:
+        return None, None, str(e)
+
+
+def _mark_vocal_separation_finished(job_id, status):
+    with _vocal_separation_finish_lock:
+        handoff = _load_vocal_separation_handoff(job_id)
+        if handoff.get('finished'):
+            return False
+        finished = {**handoff, 'finished': True, 'status': status, 'finished_at': time.time()}
+        vocal_separation_jobs[job_id] = finished
+        _persist_vocal_separation_handoff(job_id, finished)
+        return True
+
+
+def _complete_vocal_separation_job(job_id, handoff, result, reason=''):
+    if not _mark_vocal_separation_finished(job_id, 'completed'):
+        logging.info("Music vocal separation duplicate complete ignored job_id=%s reason=%s", job_id, reason)
+        return
+    trigger_payload = _apply_vocal_separation_success(
+        handoff.get('trigger_payload') or {},
+        job_id,
+        handoff.get('source_s3_key'),
+        handoff.get('vocals_s3_key'),
+        result or {},
+    )
+    logging.info("Music vocal separation complete job_id=%s via %s", job_id, reason or 'callback')
+    _finish_vocal_separation_and_trigger_gpu(
+        job_id,
+        trigger_payload,
+        handoff.get('gpu_endpoint_id') or RUNPOD_ENDPOINT_ID,
+        handoff.get('gpu_api_key') or RUNPOD_API_KEY,
+    )
+
+
+def _fail_vocal_separation_job(job_id, handoff, error_text, reason=''):
+    if not _mark_vocal_separation_finished(job_id, 'failed_open' if _music_vocal_separation_fail_open_enabled() else 'failed'):
+        logging.info("Music vocal separation duplicate failure ignored job_id=%s reason=%s", job_id, reason)
+        return
+    logging.error(
+        "Music vocal separation failed job_id=%s via %s error=%s",
+        job_id,
+        reason or 'callback',
+        str(error_text)[:1000],
+    )
+    if not _music_vocal_separation_fail_open_enabled():
+        pending_trigger[job_id] = "failed"
+        _set_trigger_state(job_id, "failed")
+        return
+    trigger_payload = _apply_vocal_separation_failure(
+        handoff.get('trigger_payload') or {},
+        handoff.get('source_s3_key'),
+        error_text,
+    )
+    pinfo = dict(pending_job_info.get(job_id) or {})
+    pinfo.update({
+        'input_s3_key': handoff.get('source_s3_key'),
+        'transcription_s3_key': handoff.get('source_s3_key'),
+        'transcription_options': (trigger_payload.get('input') or {}).get('transcription_options') or {},
+    })
+    pending_job_info[job_id] = pinfo
+    _finish_vocal_separation_and_trigger_gpu(
+        job_id,
+        trigger_payload,
+        handoff.get('gpu_endpoint_id') or RUNPOD_ENDPOINT_ID,
+        handoff.get('gpu_api_key') or RUNPOD_API_KEY,
+    )
+
+
+def _watch_runpod_vocal_separation(job_id):
+    """Poll RunPod + S3 when CPU worker callback is delayed or hits another Site instance."""
+    try:
+        timeout_sec = max(120, int(os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATION_RUNPOD_TIMEOUT_SEC', '1800') or 1800))
+        poll_sec = max(10, int(os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATION_RUNPOD_POLL_SEC', '30') or 30))
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            handoff = _load_vocal_separation_handoff(job_id)
+            if handoff.get('finished'):
+                return
+            run_id = handoff.get('runpod_run_id')
+            cpu_ep = (handoff.get('cpu_endpoint_id') or RUNPOD_CPU_ENDPOINT_ID or '').strip()
+            bucket = handoff.get('bucket')
+            vocals_key = handoff.get('vocals_s3_key')
+            if bucket and vocals_key and _s3_object_exists(bucket, vocals_key):
+                _complete_vocal_separation_job(
+                    job_id,
+                    handoff,
+                    {'separator': 'demucs', 'engine': 'runpod', 'model': os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_MODEL', 'mdx_extra_q')},
+                    reason='poll+s3',
+                )
+                return
+            if run_id and cpu_ep:
+                status, output, err = _fetch_runpod_job_status(cpu_ep, run_id)
+                status_u = str(status or '').upper()
+                if status_u in ('COMPLETED', 'DONE', 'SUCCESS'):
+                    out = output if isinstance(output, dict) else {}
+                    if bucket and vocals_key and _s3_object_exists(bucket, vocals_key):
+                        _complete_vocal_separation_job(job_id, handoff, {
+                            'separator': out.get('separator') or 'demucs',
+                            'model': out.get('model'),
+                            'engine': 'runpod',
+                            'source_duration_sec': out.get('source_duration_sec'),
+                            'vocal_onset_sec': out.get('vocal_onset_sec'),
+                            'prepended_silence_sec': out.get('prepended_silence_sec'),
+                        }, reason='poll+runpod')
+                        return
+                    fail_msg = out.get('error') or err or 'RunPod completed but vocals file missing on S3'
+                    if str(out.get('status') or '').lower() in ('failed', 'error'):
+                        _fail_vocal_separation_job(job_id, handoff, fail_msg, reason='poll+runpod_failed_output')
+                        return
+                if status_u in ('FAILED', 'ERROR', 'CANCELLED', 'TIMED_OUT'):
+                    _fail_vocal_separation_job(job_id, handoff, err or f'RunPod CPU job {status_u}', reason='poll+runpod')
+                    return
+            time.sleep(poll_sec)
+        _fail_vocal_separation_job(
+            job_id,
+            _load_vocal_separation_handoff(job_id),
+            f'RunPod vocal separation timed out after {timeout_sec}s',
+            reason='timeout',
+        )
+    except Exception:
+        logging.exception("_watch_runpod_vocal_separation failed job_id=%s", job_id)
 
 
 def _music_vocals_s3_key(source_s3_key, job_id):
@@ -2882,6 +3183,7 @@ pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detect
 STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
+vocal_separation_jobs = {}  # job_id -> pending RunPod CPU vocal separation + trigger handoff
 _medical_learn_async_jobs = {}  # learn_job_id -> {status, result|error, started_at}
 _medical_learn_async_lock = threading.Lock()
 MEDICAL_LEARN_ASYNC_TTL_SEC = 3600
@@ -6473,24 +6775,39 @@ def _queue_vocal_separation_on_runpod(job_id, bucket, source_s3_key, vocals_s3_k
             raise RuntimeError(f"RunPod CPU vocal separation dispatch failed after {max_attempts} attempts: {last_err}")
         raise RuntimeError(f"RunPod CPU vocal separation dispatch failed after {max_attempts} attempts")
 
-    vocal_separation_jobs[job_id] = {
+    runpod_run_id = (r.json() or {}).get('id') if r.content else None
+    trigger_input = (trigger_payload or {}).get('input') if isinstance(trigger_payload, dict) else {}
+    handoff = {
         'status': 'processing',
         'mode': 'runpod',
         'trigger_payload': json.loads(json.dumps(trigger_payload or {})),
+        'trigger_input': json.loads(json.dumps(trigger_input or {})),
         'gpu_endpoint_id': endpoint_id,
         'gpu_api_key': api_key,
         'bucket': bucket,
         'source_s3_key': source_s3_key,
         'vocals_s3_key': vocals_s3_key,
         'dispatched_at': time.time(),
-        'runpod_run_id': (r.json() or {}).get('id') if r.content else None,
+        'runpod_run_id': runpod_run_id,
+        'cpu_endpoint_id': cpu_endpoint_id,
     }
+    vocal_separation_jobs[job_id] = handoff
+    _persist_vocal_separation_handoff(job_id, handoff, trigger_status='preprocessing')
     logging.info(
-        "Music vocal separation dispatched to RunPod CPU job_id=%s cpu_endpoint=%s vocals_key_suffix=%s",
+        "Music vocal separation dispatched to RunPod CPU job_id=%s cpu_endpoint=%s runpod_run_id=%s vocals_key_suffix=%s",
         job_id,
         cpu_endpoint_id,
+        runpod_run_id,
         (vocals_s3_key[-80:] if isinstance(vocals_s3_key, str) and len(vocals_s3_key) > 80 else vocals_s3_key),
     )
+    t = threading.Thread(target=_watch_runpod_vocal_separation, args=(job_id,), daemon=True)
+    t.start()
+    if _env_flag_true('RUNPOD_CPU_SCALE_ON_VOCAL_SEPARATION'):
+        try:
+            from runpod_endpoint_workers import set_runpod_endpoint_min_workers
+            set_runpod_endpoint_min_workers(1, endpoint_id=cpu_endpoint_id)
+        except Exception as e:
+            logging.warning("RunPod CPU scale-on-vocal-separation skipped: %s", e)
 
 
 def _finish_vocal_separation_and_trigger_gpu(job_id, trigger_payload, endpoint_id, api_key):
@@ -6677,14 +6994,21 @@ def trigger_status():
         return jsonify({"error": "job_id required"}), 400
     status, persisted_at = _resolve_trigger_status_for_poll(job_id)
     queued_since_sec = None
+    preprocessing_since_sec = None
     if status == "queued":
         at = persisted_at if persisted_at else pending_trigger_at.get(job_id, 0)
         queued_since_sec = int(time.time() - at) if at else 0
         if queued_since_sec > STALE_QUEUED_SEC:
             status = "stale_queued"
+    elif status == "preprocessing":
+        vs = _get_vocal_separation_meta_from_db(job_id)
+        at = vs.get('dispatched_at') or persisted_at or pending_trigger_at.get(job_id, 0)
+        preprocessing_since_sec = int(time.time() - at) if at else 0
     out = {"job_id": job_id, "status": status}
     if status in ("queued", "stale_queued") and queued_since_sec is not None:
         out["queued_since_sec"] = queued_since_sec
+    if status == "preprocessing" and preprocessing_since_sec is not None:
+        out["preprocessing_since_sec"] = preprocessing_since_sec
     return jsonify(out), 200
 
 @app.route('/api/trigger_processing', methods=['POST'])
@@ -7111,7 +7435,6 @@ def get_simulation_mode():
 
 # --- BURN SUBTITLES (SERVER-SIDE ON KOYEB) ---
 burn_tasks = {}  # task_id -> { status, output_s3_key?, error? }
-vocal_separation_jobs = {}  # job_id -> pending RunPod CPU vocal separation + trigger handoff
 
 def _resolve_ffmpeg():
     """Return an executable ffmpeg path.
@@ -7618,10 +7941,10 @@ def _build_output_key(user_id, input_s3_key, task_id):
 
 def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
     """Dispatch burn task to RunPod using presigned S3 URLs."""
-    endpoint_id = (RUNPOD_MOVIE_ENDPOINT_ID or "").strip()
+    endpoint_id = _runpod_burn_endpoint_id()
     api_key = (RUNPOD_API_KEY or "").strip()
     if not endpoint_id or not api_key:
-        raise RuntimeError("RunPod movie endpoint is not configured")
+        raise RuntimeError("RunPod burn CPU endpoint is not configured (set RUNPOD_CPU_ENDPOINT_ID or RUNPOD_MOVIE_ENDPOINT_ID)")
 
     bucket = os.environ.get('S3_BUCKET')
     s3_client = boto3.client(
@@ -7836,7 +8159,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
 
 @app.route('/api/burn_subtitles_server', methods=['POST'])
 def burn_subtitles_server():
-    """Start burn job (RunPod if configured, local fallback). Returns task_id for polling."""
+    """Start burn job on RunPod CPU. Koyeb does not run ffmpeg burn in production."""
     try:
         data = request.json or {}
         input_s3_key = data.get('input_s3_key')
@@ -7856,10 +8179,7 @@ def burn_subtitles_server():
         task_id = str(uuid.uuid4())
         burn_tasks[task_id] = {'status': 'processing'}
 
-        allow_runpod_in_simulation = str(os.environ.get('RUNPOD_ALLOW_IN_SIMULATION', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
-        simulation_blocks_runpod = SIMULATION_MODE and not allow_runpod_in_simulation
-        use_runpod = bool((RUNPOD_API_KEY or '').strip() and (RUNPOD_MOVIE_ENDPOINT_ID or '').strip()) and not simulation_blocks_runpod and not force_local_burn
-        if use_runpod:
+        if _burn_use_runpod(force_local=force_local_burn):
             public_base = _public_base_url(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"
             try:
@@ -7875,15 +8195,37 @@ def burn_subtitles_server():
                     job_id=job_id,
                     subtitle_color=subtitle_color
                 )
-                return jsonify({"task_id": task_id, "status": "processing", "mode": "runpod"}), 202
+                return jsonify({
+                    "task_id": task_id,
+                    "status": "processing",
+                    "mode": "runpod",
+                    "endpoint_id": _runpod_burn_endpoint_id(),
+                }), 202
             except Exception as e:
-                logging.warning("RunPod burn dispatch failed; falling back to local ffmpeg: %s", e)
-                allow_local_fallback = str(os.environ.get('RUNPOD_BURN_ALLOW_LOCAL_FALLBACK', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
-                if not allow_local_fallback:
+                logging.warning("RunPod burn dispatch failed: %s", e)
+                if not _burn_allow_local_fallback():
                     burn_tasks[task_id] = {'status': 'failed', 'mode': 'runpod', 'error': f'RunPod dispatch failed: {e}'}
-                    return jsonify({"task_id": task_id, "status": "failed", "mode": "runpod", "error": "RunPod dispatch failed"}), 503
+                    return jsonify({
+                        "task_id": task_id,
+                        "status": "failed",
+                        "mode": "runpod",
+                        "error": "RunPod burn dispatch failed",
+                        "detail": str(e)[:500],
+                    }), 503
 
-        # Local fallback (existing behavior)
+        if not _burn_allow_local_fallback():
+            burn_tasks[task_id] = {
+                'status': 'failed',
+                'mode': 'runpod',
+                'error': 'RunPod burn CPU endpoint is required',
+            }
+            return jsonify({
+                "error": "Subtitle burn runs on RunPod CPU, not on Koyeb.",
+                "detail": "Set RUNPOD_CPU_ENDPOINT_ID (or RUNPOD_MOVIE_ENDPOINT_ID) and RUNPOD_API_KEY on Koyeb.",
+                "endpoint_hint": _runpod_burn_endpoint_id() or None,
+            }), 503
+
+        # Local fallback (simulation / explicit dev only)
         t = threading.Thread(
             target=_run_burn_task,
             args=(task_id, input_s3_key, segments, user_id),
@@ -7950,90 +8292,59 @@ def burn_subtitles_callback():
 def vocal_separation_callback():
     """RunPod CPU worker callback after music vocal separation."""
     try:
-        data = request.json or {}
-        candidates = [
-            data,
-            data.get('input') if isinstance(data.get('input'), dict) else {},
-            data.get('output') if isinstance(data.get('output'), dict) else {},
-            data.get('result') if isinstance(data.get('result'), dict) else {},
-        ]
+        data = request.get_json(silent=True)
+        if data is None:
+            try:
+                data = json.loads(request.get_data(as_text=True) or '{}')
+            except Exception:
+                data = {}
+        logging.info(
+            "vocal_separation_callback received body=%s",
+            json.dumps(data, ensure_ascii=False)[:2000] if isinstance(data, dict) else str(data)[:2000],
+        )
 
-        def _pick(keys):
-            for c in candidates:
-                for k in keys:
-                    v = c.get(k) if isinstance(c, dict) else None
-                    if v not in (None, ''):
-                        return v
-            return None
-
-        job_id = _pick(['job_id', 'jobId'])
+        job_id, status_raw, error_text, fields = _parse_vocal_separation_callback_payload(data if isinstance(data, dict) else {})
+        if error_text and status_raw not in ('completed', 'done', 'success', 'succeeded'):
+            status_raw = 'failed'
         if not job_id:
-            return jsonify({"error": "job_id required"}), 400
+            logging.error(
+                "vocal_separation_callback could not resolve job_id; failing open if a single preprocessing job exists"
+            )
+            processing = [
+                jid for jid, info in vocal_separation_jobs.items()
+                if isinstance(info, dict) and not info.get('finished') and info.get('status') == 'processing'
+            ]
+            if len(processing) == 1:
+                job_id = processing[0]
+                status_raw = 'failed'
+                error_text = error_text or 'CPU worker callback missing job_id (update burn worker for separate_vocals)'
+            else:
+                return jsonify({"ok": True, "ignored": True, "reason": "job_id not found"}), 200
 
-        pending = vocal_separation_jobs.get(job_id) or {}
-        status_raw = str(_pick(['status']) or 'processing').strip().lower()
-        error_text = _pick(['error', 'message']) or ''
+        pending = _load_vocal_separation_handoff(job_id)
+        if not pending.get('source_s3_key') and fields.get('source_s3_key'):
+            pending['source_s3_key'] = fields.get('source_s3_key')
+        if not pending.get('vocals_s3_key') and fields.get('vocals_s3_key'):
+            pending['vocals_s3_key'] = fields.get('vocals_s3_key')
 
         if status_raw in ('completed', 'done', 'success', 'succeeded'):
-            trigger_payload = pending.get('trigger_payload') or {}
-            source_s3_key = pending.get('source_s3_key') or _pick(['source_s3_key', 'sourceS3Key'])
-            vocals_s3_key = pending.get('vocals_s3_key') or _pick(['output_s3_key', 'outputS3Key', 'vocals_s3_key'])
             result = {
-                'separator': _pick(['separator']) or 'demucs',
-                'model': _pick(['model', 'preprocess_model']),
+                'separator': fields.get('separator') or 'demucs',
+                'model': fields.get('model'),
                 'engine': 'runpod',
-                'source_duration_sec': _pick(['source_duration_sec', 'preprocess_source_duration_sec']),
-                'vocal_onset_sec': _pick(['vocal_onset_sec', 'preprocess_vocal_onset_sec']),
-                'prepended_silence_sec': _pick(['prepended_silence_sec', 'preprocess_prepended_silence_sec']),
+                'source_duration_sec': fields.get('source_duration_sec'),
+                'vocal_onset_sec': fields.get('vocal_onset_sec'),
+                'prepended_silence_sec': fields.get('prepended_silence_sec'),
             }
-            trigger_payload = _apply_vocal_separation_success(
-                trigger_payload, job_id, source_s3_key, vocals_s3_key, result
-            )
-            vocal_separation_jobs[job_id] = {
-                **pending,
-                'status': 'completed',
-                'completed_at': time.time(),
-            }
-            logging.info("Music vocal separation RunPod complete job_id=%s", job_id)
-            _finish_vocal_separation_and_trigger_gpu(
-                job_id,
-                trigger_payload,
-                pending.get('gpu_endpoint_id'),
-                pending.get('gpu_api_key'),
-            )
+            _complete_vocal_separation_job(job_id, pending, result, reason='callback')
             return jsonify({"ok": True, "job_id": job_id, "status": "completed"}), 200
 
         if status_raw in ('failed', 'error'):
-            vocal_separation_jobs[job_id] = {
-                **pending,
-                'status': 'failed',
-                'error': str(error_text or 'RunPod vocal separation failed'),
-                'failed_at': time.time(),
-            }
-            logging.error(
-                "Music vocal separation RunPod failed job_id=%s error=%s",
+            _fail_vocal_separation_job(
                 job_id,
-                str(error_text)[:1000],
-            )
-            trigger_payload = pending.get('trigger_payload') or {}
-            source_s3_key = pending.get('source_s3_key')
-            if not _music_vocal_separation_fail_open_enabled():
-                pending_trigger[job_id] = "failed"
-                _set_trigger_state(job_id, "failed")
-                return jsonify({"ok": True, "job_id": job_id, "status": "failed"}), 200
-            trigger_payload = _apply_vocal_separation_failure(trigger_payload, source_s3_key, error_text)
-            pinfo = dict(pending_job_info.get(job_id) or {})
-            pinfo.update({
-                'input_s3_key': source_s3_key,
-                'transcription_s3_key': source_s3_key,
-                'transcription_options': (trigger_payload.get('input') or {}).get('transcription_options') or {},
-            })
-            pending_job_info[job_id] = pinfo
-            _finish_vocal_separation_and_trigger_gpu(
-                job_id,
-                trigger_payload,
-                pending.get('gpu_endpoint_id'),
-                pending.get('gpu_api_key'),
+                pending,
+                error_text or 'RunPod vocal separation failed',
+                reason='callback',
             )
             return jsonify({"ok": True, "job_id": job_id, "status": "failed_open"}), 200
 
@@ -8095,8 +8406,11 @@ BURN_VIDEO_MIMES = {
 
 @app.route('/api/burn_subtitles', methods=['POST'])
 def burn_subtitles():
-    """Accept video file + segments JSON; burn subtitles with ffmpeg; return the video file.
-    Supports all common video formats (mp4, mov, webm, m4v, mkv, avi)."""
+    """Legacy direct upload burn — disabled in production; use /api/burn_subtitles_server (RunPod CPU)."""
+    if not _burn_allow_local_fallback():
+        return jsonify({
+            "error": "Local Koyeb burn is disabled. Use /api/burn_subtitles_server (RunPod CPU worker).",
+        }), 503
     try:
         video_file = request.files.get('video')
         segments_json = request.form.get('segments')

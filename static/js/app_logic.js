@@ -12204,6 +12204,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     }
                                     httpBadStreak = 0;
                                     ts = await stRes.json();
+                                    if (ts.status === 'preprocessing') {
+                                        const prepLabel = isHebrewUi ? 'מפריד קול מהמוזיקה...' : 'Separating vocals from music...';
+                                        if (mainBtn) mainBtn.innerText = prepLabel;
+                                    }
                                 } catch (_) {
                                     httpBadStreak++;
                                     if (httpBadStreak >= 12) {

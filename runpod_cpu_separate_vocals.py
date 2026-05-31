@@ -45,6 +45,7 @@ def _post_callback(callback_url, payload, timeout_sec=30):
 def handle_separate_vocals_task(inp):
     """Run Demucs on RunPod CPU and upload vocals WAV via presigned PUT."""
     job_id = str(inp.get("job_id") or inp.get("jobId") or "").strip()
+    print(f"[separate_vocals] start job_id={job_id}", flush=True)
     input_audio_url = str(inp.get("input_audio_url") or "").strip()
     output_upload_url = str(inp.get("output_upload_url") or "").strip()
     output_s3_key = str(inp.get("output_s3_key") or "").strip()
@@ -108,9 +109,11 @@ def handle_separate_vocals_task(inp):
             "prepended_silence_sec": result.get("prepended_silence_sec"),
         }
         _post_callback(callback_url, payload)
+        print(f"[separate_vocals] complete job_id={job_id}", flush=True)
         return payload
     except Exception as e:
         logger.exception("RunPod separate_vocals failed job_id=%s", job_id)
+        print(f"[separate_vocals] failed job_id={job_id} error={e}", flush=True)
         payload = {"job_id": job_id, "status": "failed", "error": str(e)[:1000]}
         _post_callback(callback_url, payload)
         return payload
