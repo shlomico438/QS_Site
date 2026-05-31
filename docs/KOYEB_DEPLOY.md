@@ -29,14 +29,29 @@ Ensure these are set in Koyeb:
 If `bin/ffmpeg` is missing, the app now starts anyway (with a warning). Burn-in will fail at runtime. To fix: add ffmpeg to your build (e.g. apt-get in Dockerfile, or use a buildpack that includes it).
 
 ### 6. Music vocal separation (Demucs)
-The Python buildpack installs dependencies from root `requirements.txt`, which includes CPU PyTorch, `demucs`, and `soundfile`.
 
-- **System library**: root `Aptfile` installs `libsndfile1` (required by `soundfile` on Linux).
-- **Bundled ffmpeg**: `bin/ffmpeg` and `bin/ffprobe` are used to decode uploads before Demucs runs.
-- **Instance RAM**: use at least **2–4 GB**; Demucs on CPU is memory-heavy.
-- **Build time**: first deploy after adding torch/demucs can take **10–20+ minutes**; increase build timeout if needed.
-- **Runtime device**: Demucs defaults to `-d cpu` (override with `TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_DEVICE`).
-- **CPU jobs**: defaults to `-j 1` (override with `TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_JOBS`).
-- **Optional override**: `AUDIO_SEPARATOR_COMMAND=python -m demucs --two-stems=vocals -d cpu -n htdemucs --out {output_dir} {input}`
-- **Verify**: after a music upload, logs should show `Music vocal separation complete` and S3 should have `{stem}.vocals.wav` beside the original upload.
-- **If separation fails**: logs now include the Demucs command, return code, and stderr/stdout tail.
+**Recommended:** run separation on **RunPod CPU** (`cpu_image_burn`), not on Koyeb.
+
+Koyeb 2GB instances OOM-kill Demucs (`returncode=-9`). The Site auto-dispatches to RunPod CPU when `RUNPOD_CPU_ENDPOINT_ID` (or `RUNPOD_MOVIE_ENDPOINT_ID`) is set. See [runpod-cpu-vocal-separation.md](runpod-cpu-vocal-separation.md).
+
+Koyeb env (minimum):
+
+```env
+RUNPOD_CPU_ENDPOINT_ID=<cpu_image_burn endpoint id>
+PUBLIC_BASE_URL=https://www.getquickscribe.com
+TRANSCRIBE_MUSIC_VOCAL_SEPARATION_ENGINE=runpod
+```
+
+Local Demucs on Koyeb (fallback only — needs 4GB+ instance):
+
+- `requirements.txt` includes CPU PyTorch + `demucs` + `soundfile`
+- root `Aptfile` installs `libsndfile1`
+- `bin/ffmpeg` decodes uploads before Demucs runs
+
+Tuning (RunPod CPU or local):
+
+- **Default model**: `mdx_extra_q`
+- **Chunking**: 60s chunks (`TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC`)
+- **Shifts**: `--shifts 0` (`TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_SHIFTS`)
+
+Verify: logs show `Music vocal separation dispatched to RunPod CPU` then `Music vocal separation RunPod complete`, and S3 has `{stem}.vocals.wav`.
