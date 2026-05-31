@@ -13,3 +13,4 @@ itsdangerous>=2.1.0
 torch==2.3.1
 torchaudio==2.3.1
 demucs==4.0.1
+soundfile>=0.12.1

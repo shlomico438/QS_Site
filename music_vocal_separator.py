@@ -11,12 +11,75 @@ def _split_command(command):
     return shlex.split(command, posix=(os.name != "nt"))
 
 
-def _run_command(args, timeout_sec):
+def _run_command(args, timeout_sec, env=None):
     return subprocess.run(
         args,
         capture_output=True,
         text=True,
         timeout=timeout_sec,
+        env=env,
+    )
+
+
+def _subprocess_env_with_ffmpeg(ffmpeg_path, work_dir=None):
+    """Ensure demucs/torchaudio can find bundled ffmpeg and use a writable cache."""
+    env = os.environ.copy()
+    ff = (ffmpeg_path or "ffmpeg").strip()
+    if ff and os.path.isfile(ff):
+        ff_dir = str(pathlib.Path(ff).resolve().parent)
+        env["PATH"] = ff_dir + os.pathsep + env.get("PATH", "")
+        env["FFMPEG_PATH"] = ff
+        ffprobe = str(pathlib.Path(ff_dir) / "ffprobe")
+        if os.path.isfile(ffprobe):
+            env["FFPROBE_PATH"] = ffprobe
+    if work_dir:
+        cache_root = str(pathlib.Path(work_dir) / "cache")
+        env.setdefault("TORCH_HOME", os.path.join(cache_root, "torch"))
+        env.setdefault("XDG_CACHE_HOME", cache_root)
+    return env
+
+
+def _normalize_input_for_demucs(ffmpeg_path, input_path, work_dir, timeout_sec):
+    """Decode any uploaded format to stereo 44.1 kHz PCM WAV before Demucs."""
+    src = pathlib.Path(input_path)
+    wav_path = pathlib.Path(work_dir) / "demucs_input.wav"
+    cmd = [
+        ffmpeg_path or "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-i", str(src),
+        "-vn",
+        "-ac", "2",
+        "-ar", "44100",
+        "-c:a", "pcm_s16le",
+        str(wav_path),
+    ]
+    conv = _run_command(
+        cmd,
+        timeout_sec,
+        env=_subprocess_env_with_ffmpeg(ffmpeg_path, work_dir),
+    )
+    if conv.returncode != 0 or not wav_path.is_file() or wav_path.stat().st_size < 1024:
+        raise RuntimeError(_format_subprocess_failure("demucs input normalize failed", cmd, conv))
+    return str(wav_path)
+
+
+def _format_subprocess_failure(label, cmd, result):
+    cmd_text = " ".join(shlex.quote(str(part)) for part in (cmd or []))
+    stdout_tail = (result.stdout or "")[-1200:]
+    stderr_tail = (result.stderr or "")[-1200:]
+    detail = stderr_tail or stdout_tail
+    if not detail and result.returncode in (-9, 137, -15, 9):
+        detail = (
+            "process may have been killed (often out-of-memory); "
+            "try a larger Koyeb instance or TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_JOBS=1"
+        )
+    if not detail:
+        detail = f"exit code {result.returncode}"
+    return (
+        f"{label}: returncode={result.returncode} cmd={cmd_text} "
+        f"stderr={stderr_tail} stdout={stdout_tail or detail}"
     )
 
 
@@ -168,16 +231,19 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
     ff = ffmpeg_path or "ffmpeg"
 
     source_duration_sec = _probe_media_duration_sec(ff, str(src), timeout_sec=min(120, timeout_sec)) or 0.0
+    demucs_input = _normalize_input_for_demucs(ff, str(src), work_dir, timeout_sec=min(600, timeout_sec))
+    demucs_env = _subprocess_env_with_ffmpeg(ff, work_dir)
 
     if command_template:
         rendered = command_template.format(
-            input=str(src),
+            input=demucs_input,
             output_dir=str(out_root),
             model=str(model_name or "htdemucs"),
         )
         cmd = _split_command(rendered)
     else:
         device = (os.environ.get("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_DEVICE") or "cpu").strip() or "cpu"
+        jobs = max(1, int(os.environ.get("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_JOBS", "1") or 1))
         cmd = [
             os.environ.get("PYTHON", sys.executable or "python"),
             "-m",
@@ -185,17 +251,18 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
             "--two-stems=vocals",
             "-d",
             device,
+            "-j",
+            str(jobs),
             "-n",
             str(model_name or "htdemucs"),
             "--out",
             str(out_root),
-            str(src),
+            demucs_input,
         ]
 
-    sep = _run_command(cmd, timeout_sec)
+    sep = _run_command(cmd, timeout_sec, env=demucs_env)
     if sep.returncode != 0:
-        stderr_tail = (sep.stderr or sep.stdout or "")[-1200:]
-        raise RuntimeError(f"vocal separation failed: {stderr_tail}")
+        raise RuntimeError(_format_subprocess_failure("vocal separation failed", cmd, sep))
 
     vocals_path = _find_vocals_file(out_root)
     if not vocals_path:

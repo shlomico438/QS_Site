@@ -6411,7 +6411,7 @@ def _preprocess_music_vocals_then_trigger(job_id, payload, endpoint_id, api_key,
             (vocals_s3_key[-80:] if isinstance(vocals_s3_key, str) and len(vocals_s3_key) > 80 else vocals_s3_key),
         )
     except Exception as e:
-        logging.exception("Music vocal separation failed job_id=%s", job_id)
+        logging.exception("Music vocal separation failed job_id=%s error=%s", job_id, str(e)[:2000])
         if not _music_vocal_separation_fail_open_enabled():
             pending_trigger[job_id] = "failed"
             _set_trigger_state(job_id, "failed")
