@@ -13962,7 +13962,7 @@ function renderWordCaptionEditor() {
             `<button type="button" class="qs-inline-seg-btn" data-pos="${p}">${posLabelMap[p] || p}</button>`
         ).join('');
         const styleTooltip = 'עיצוב שורה. גררו כדי לבחור כמה שורות.';
-        const lineTimeDragChip = (timingMode && ci === timingSel && isEditing) ? `
+        const lineTimeDragChip = (timingMode && ci === timingSel) ? `
             <div class="qs-line-time-drag-wrap">
                 <button type="button" class="qs-line-time-drag" data-ci="${ci}" aria-label="גרור להזיז את כל השורה בזמן">
                     <span class="qs-line-time-drag__track" aria-hidden="true"></span>
@@ -13991,7 +13991,6 @@ function renderWordCaptionEditor() {
             ? `
               <div class="caption-row-body qs-sync-caption-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
                 ${toolbarHtml}
-                <button type="button" class="qs-sync-handle qs-sync-handle--end" data-ci="${ci}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
                 <div class="segment-content-wrapper segment-content-wrapper--sync-text">
                   <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0; direction:${textDirection}; text-align:${textAlign};">${tokenHtml}</div>
                 </div>
@@ -14013,6 +14012,7 @@ function renderWordCaptionEditor() {
             <div class="qs-sync-row-core" style="flex:1; min-width:0; display:flex; flex-direction:column; gap:0; align-items:stretch;">
               ${tsBlock}<div class="qs-sync-text-stack">${bodyBlock}${lineTimeDragChip}</div>
             </div>
+            <button type="button" class="qs-sync-handle qs-sync-handle--end" data-ci="${ci}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
           </div>`
             : `<div class="caption-row-main" style="display:flex; flex-direction:column; gap:0; align-items:stretch;">
               ${captionMainHeader}${bodyBlock}
