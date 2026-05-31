@@ -1546,6 +1546,19 @@ def _complete_vocal_separation_job(job_id, handoff, result, reason=''):
         handoff.get('vocals_s3_key'),
         result or {},
     )
+    trigger_input = (trigger_payload.get('input') or {}) if isinstance(trigger_payload, dict) else {}
+    completed_handoff = {
+        **dict(handoff or {}),
+        'finished': True,
+        'status': 'completed',
+        'finished_at': time.time(),
+        'result': dict(result or {}),
+        'trigger_payload': json.loads(json.dumps(trigger_payload or {})),
+        'trigger_input': json.loads(json.dumps(trigger_input or {})),
+        'transcription_options': dict(trigger_input.get('transcription_options') or {}),
+    }
+    vocal_separation_jobs[job_id] = completed_handoff
+    _persist_vocal_separation_handoff(job_id, completed_handoff)
     logging.info("Music vocal separation complete job_id=%s via %s", job_id, reason or 'callback')
     _finish_vocal_separation_and_trigger_gpu(
         job_id,
@@ -1732,6 +1745,48 @@ def _apply_vocal_separation_transcript_timing(segments, transcription_options):
         min_start,
     )
     return shifted
+
+
+def _recover_vocal_separation_callback_context(job_id, data):
+    """Recover original media key/options when the GPU callback does not echo the trigger input."""
+    handoff = _load_vocal_separation_handoff(job_id) if job_id else {}
+    if not handoff:
+        return None, None, {}
+
+    trigger_input = handoff.get('trigger_input')
+    if not isinstance(trigger_input, dict):
+        trigger_payload = handoff.get('trigger_payload') if isinstance(handoff.get('trigger_payload'), dict) else {}
+        trigger_input = trigger_payload.get('input') if isinstance(trigger_payload.get('input'), dict) else {}
+
+    transcription_options = (
+        handoff.get('transcription_options')
+        if isinstance(handoff.get('transcription_options'), dict)
+        else None
+    ) or (
+        trigger_input.get('transcription_options')
+        if isinstance(trigger_input.get('transcription_options'), dict)
+        else None
+    ) or {}
+
+    input_s3_key = (
+        handoff.get('source_s3_key')
+        or transcription_options.get('source_s3_key')
+        or trigger_input.get('source_s3_key')
+    )
+    user_id = _extract_user_id_from_s3_key(input_s3_key or '')
+
+    if isinstance(data, dict):
+        data_input = data.get('input')
+        if not isinstance(data_input, dict):
+            data_input = {}
+        data_input.setdefault('s3Key', handoff.get('vocals_s3_key') or trigger_input.get('s3Key'))
+        if trigger_input.get('bucket'):
+            data_input.setdefault('bucket', trigger_input.get('bucket'))
+        if transcription_options:
+            data_input['transcription_options'] = transcription_options
+        data['input'] = data_input
+
+    return input_s3_key, user_id, transcription_options
 
 
 def _public_base_url(req):
@@ -5483,6 +5538,15 @@ def gpu_callback():
         input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
         user_id = _extract_user_id_from_s3_key(input_s3_key)
         transcription_options = (input_info.get('transcription_options') if isinstance(input_info, dict) else None) or {}
+        if not transcription_options or (
+            isinstance(transcription_options, dict)
+            and transcription_options.get('preprocess') != 'vocal_separation'
+        ):
+            recovered_key, recovered_user, recovered_options = _recover_vocal_separation_callback_context(job_id, data)
+            if recovered_options:
+                transcription_options = recovered_options
+                input_s3_key = recovered_key or input_s3_key
+                user_id = recovered_user or user_id
 
     segments = _apply_vocal_separation_transcript_timing(segments, transcription_options)
 

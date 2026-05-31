@@ -87,7 +87,7 @@ def _build_demucs_command(demucs_input, out_root, model_name, device=None, jobs=
     if not _is_htdemucs_model(model):
         segment = _env_float("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_SEGMENT", 8.0)
         if segment > 0:
-            cmd += ["--segment", str(segment)]
+            cmd += ["--segment", str(max(1, int(round(segment))))]
     cmd.append(str(demucs_input))
     return cmd
 
