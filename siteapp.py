@@ -1293,6 +1293,81 @@ def _should_preprocess_music_vocals(is_medical, audio_profile_info):
     return profile == 'music'
 
 
+def _shift_transcript_segments_times(segments, offset_sec):
+    """Shift segment (and nested word) timestamps by offset_sec for vocal-separation timeline fix."""
+    try:
+        offset = float(offset_sec or 0)
+    except (TypeError, ValueError):
+        return segments
+    if not isinstance(segments, list) or offset <= 0.001:
+        return segments
+    out = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            out.append(seg)
+            continue
+        item = dict(seg)
+        for key in ('start', 'end'):
+            if key in item and isinstance(item.get(key), (int, float)):
+                item[key] = float(item[key]) + offset
+        words = item.get('words')
+        if isinstance(words, list):
+            shifted_words = []
+            for w in words:
+                if not isinstance(w, dict):
+                    shifted_words.append(w)
+                    continue
+                w2 = dict(w)
+                for key in ('start', 'end'):
+                    if key in w2 and isinstance(w2.get(key), (int, float)):
+                        w2[key] = float(w2[key]) + offset
+                shifted_words.append(w2)
+            item['words'] = shifted_words
+        out.append(item)
+    return out
+
+
+def _apply_vocal_separation_transcript_timing(segments, transcription_options):
+    """Re-align SRT/segment times to original media when vocals-only transcription starts at 0."""
+    if not isinstance(segments, list) or not segments:
+        return segments
+    opts = transcription_options if isinstance(transcription_options, dict) else {}
+    if not opts.get('preprocessed_audio') or str(opts.get('preprocess') or '') != 'vocal_separation':
+        return segments
+
+    try:
+        stored_offset = float(opts.get('preprocess_time_offset_sec') or 0)
+    except (TypeError, ValueError):
+        stored_offset = 0.0
+    try:
+        vocal_onset = float(opts.get('preprocess_vocal_onset_sec') or 0)
+    except (TypeError, ValueError):
+        vocal_onset = 0.0
+
+    starts = []
+    for seg in segments:
+        if isinstance(seg, dict) and isinstance(seg.get('start'), (int, float)):
+            starts.append(float(seg['start']))
+    if not starts:
+        return segments
+    min_start = min(starts)
+
+    offset = stored_offset
+    if offset <= 0.001 and vocal_onset > 0.5 and min_start < max(1.0, vocal_onset * 0.5):
+        offset = vocal_onset - min_start
+    if offset <= 0.001:
+        return segments
+
+    shifted = _shift_transcript_segments_times(segments, offset)
+    logging.info(
+        "vocal_separation timing shift applied offset_sec=%.3f vocal_onset_sec=%.3f min_segment_start=%.3f",
+        offset,
+        vocal_onset,
+        min_start,
+    )
+    return shifted
+
+
 def _public_base_url(req):
     """Best-effort public base URL for third-party callbacks (RunPod -> site)."""
     explicit = (os.environ.get('PUBLIC_BASE_URL') or '').strip().rstrip('/')
@@ -5031,13 +5106,18 @@ def gpu_callback():
         return jsonify({"ok": True}), 200
 
     pending = pending_job_info.pop(job_id, None)
+    transcription_options = {}
     if pending:
         input_s3_key = pending.get('input_s3_key') or ''
         user_id = pending.get('user_id')
+        transcription_options = pending.get('transcription_options') or {}
     else:
         input_info = data.get('input') or {}
         input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
         user_id = _extract_user_id_from_s3_key(input_s3_key)
+        transcription_options = (input_info.get('transcription_options') if isinstance(input_info, dict) else None) or {}
+
+    segments = _apply_vocal_separation_transcript_timing(segments, transcription_options)
 
     data = dict(data)
     data.setdefault('result', {})
@@ -6310,6 +6390,10 @@ def _preprocess_music_vocals_then_trigger(job_id, payload, endpoint_id, api_key,
             'preprocess_model': result.get('model'),
             'source_s3_key': source_s3_key,
             'vocals_s3_key': vocals_s3_key,
+            'preprocess_source_duration_sec': result.get('source_duration_sec'),
+            'preprocess_vocal_onset_sec': result.get('vocal_onset_sec'),
+            'preprocess_prepended_silence_sec': result.get('prepended_silence_sec'),
+            'preprocess_time_offset_sec': result.get('vocal_onset_sec'),
         })
         input_payload['s3Key'] = vocals_s3_key
         input_payload['transcription_options'] = options
