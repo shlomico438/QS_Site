@@ -447,7 +447,14 @@ window.setLocale = async function(code) {
     try {
         if (typeof window !== 'undefined' && window.location && window.history && typeof window.history.replaceState === 'function') {
             const u = new URL(window.location.href);
-            u.searchParams.set('lang', code);
+            const path = String(u.pathname || '/');
+            const isHomePath = (path === '/' || path === '/en' || path === '/en/');
+            if (isHomePath) {
+                u.pathname = (code === 'en') ? '/en' : '/';
+                u.searchParams.delete('lang');
+            } else {
+                u.searchParams.set('lang', code);
+            }
             window.history.replaceState({}, document.title, u.pathname + u.search + u.hash);
         }
     } catch (_) {}

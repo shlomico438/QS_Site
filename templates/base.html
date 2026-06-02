@@ -19,8 +19,8 @@
     {% else %}
     <meta name="description" content="QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.">
     {% endif %}
-    <link rel="alternate" hreflang="he" href="{{ request.url_root.rstrip('/') }}/?lang=he">
-    <link rel="alternate" hreflang="en" href="{{ request.url_root.rstrip('/') }}/?lang=en">
+    <link rel="alternate" hreflang="he" href="{{ request.url_root.rstrip('/') }}/">
+    <link rel="alternate" hreflang="en" href="{{ request.url_root.rstrip('/') }}/en">
     <link rel="alternate" hreflang="x-default" href="{{ request.url_root.rstrip('/') }}/">
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -142,9 +142,15 @@
         (function() {
             var urlLocale = null;
             try {
+                var path = String(window.location.pathname || '/');
+                if (path === '/en' || path === '/en/') {
+                    urlLocale = 'en';
+                } else if (path === '/' || path === '') {
+                    urlLocale = 'he';
+                }
                 var params = new URLSearchParams(window.location.search || '');
                 var q = (params.get('lang') || '').toLowerCase();
-                if (q === 'he' || q === 'en') urlLocale = q;
+                if (!urlLocale && (q === 'he' || q === 'en')) urlLocale = q;
             } catch (e) {}
             var locale = urlLocale || localStorage.getItem('locale') || 'he';
             try { localStorage.setItem('locale', locale); } catch (e) {}

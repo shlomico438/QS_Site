@@ -8,7 +8,7 @@ try:
 except ImportError:
     pass
 
-from flask import Flask, render_template, request, jsonify, redirect, send_from_directory, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, redirect, send_from_directory, Response, stream_with_context, url_for
 from flask_socketio import SocketIO, join_room
 import hashlib
 import json
@@ -3175,6 +3175,21 @@ def handle_exception(e):
 # --- WEB ROUTES ---
 @app.route('/')
 def index():
+    # Legacy query-based locale support for SEO-friendly canonical paths.
+    q_lang = str(request.args.get('lang') or '').strip().lower()
+    if q_lang == 'en':
+        return redirect(url_for('index_en'), code=301)
+    if q_lang == 'he':
+        return redirect(url_for('index'), code=301)
+    return render_template('index.html', medical_entry=False)
+
+
+@app.route('/en')
+@app.route('/en/')
+def index_en():
+    # Keep path canonical.
+    if request.path.endswith('/') and request.path != '/':
+        return redirect(url_for('index_en'), code=301)
     return render_template('index.html', medical_entry=False)
 
 
