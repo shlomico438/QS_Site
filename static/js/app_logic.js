@@ -591,7 +591,8 @@ window.qsSetMedicalWarmupBanner = function qsSetMedicalWarmupBanner(state) {
     if (st === 'ready') {
         banner.classList.add('is-ready');
         if (icon) icon.textContent = '✅';
-        text.textContent = QS_MEDICAL_WARMUP_READY_MSG;
+        const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
+        text.textContent = T('medical_warmup_ready_msg') || QS_MEDICAL_WARMUP_READY_MSG;
         if (subtext) subtext.textContent = '';
     } else if (st === 'scaled_out' || st === 'off') {
         qsHideMedicalWarmupBanner();
@@ -8134,7 +8135,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 mainBtn.innerText = T('add_local_media') || 'Add video or audio';
             }
         }
-        if (downloadBtnLabel) downloadBtnLabel.textContent = on ? 'הורדה בפורמט Docx' : 'ייצוא והורדה';
+        const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
+        if (downloadBtnLabel) downloadBtnLabel.textContent = on
+            ? (T('download_docx') || 'Download as Docx')
+            : (T('export_and_download') || 'Export and download');
         if (on) {
             if (seoHome) seoHome.style.display = 'none';
         } else {
@@ -8146,8 +8150,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (mainAppContainer) mainAppContainer.classList.toggle('medical-mode', on);
         if (medicalHeader) medicalHeader.style.display = on ? '' : 'none';
-        if (medicalTitle) medicalTitle.textContent = 'סשן הקלטה רפואי מאובטח';
-        if (medicalSubtitle) medicalSubtitle.textContent = 'תמלול קליני בתקן HIPAA פעיל';
+        if (medicalTitle) medicalTitle.textContent = T('medical_session_secure_recording') || 'Secure medical recording session';
+        if (medicalSubtitle) medicalSubtitle.textContent = T('medical_session_hipaa_active') || 'Clinical transcription with HIPAA mode active';
         if (!on) {
             if (typeof qsSetMedicalWarmupBanner === 'function') qsSetMedicalWarmupBanner('hidden');
             if (window.__QS_MEDICAL_WARMUP_POLL_TIMER) {
@@ -12668,21 +12672,23 @@ function renderTranscriptFromCues(cues) {
     }
     if (!_medicalHasTranscriptModel(cues)) {
         if (isMedical) {
+            const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
             container.innerHTML = `
-                <div style="color:#64748b; text-align:center; margin-top:32px; line-height:1.75; font-size:0.95rem; direction:rtl;">
-                    <div style="font-weight:600; color:#0f766e;">סשן קליני מאובטח</div>
-                    <div style="margin-top:12px;">התחלו בהקלטה מהכפתור למטה. התמלול יוצג כאן לאחר סיום ההקלטה והעיבוד.</div>
+                <div style="color:#64748b; text-align:center; margin-top:32px; line-height:1.75; font-size:0.95rem; direction:${textDirection};">
+                    <div style="font-weight:600; color:#0f766e;">${T('medical_secure_clinical_session') || 'Secure clinical session'}</div>
+                    <div style="margin-top:12px;">${T('medical_start_recording_hint') || 'Start recording with the button below. The transcript will appear here after recording and processing finish.'}</div>
                 </div>
             `;
         } else {
+            const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
             container.innerHTML = `
                 <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">
-                    <div style="font-weight:600;">🎥 וידאו</div>
+                    <div style="font-weight:600;">🎥 ${T('upload_video') || 'Video'}</div>
                     <div style="font-size:0.9em; color:#9ca3af;">MP4, MOV, WEBM, M4V, MKV, AVI</div>
-                    <div style="font-weight:600; margin-top:4px;">🎙️ אודיו</div>
+                    <div style="font-weight:600; margin-top:4px;">🎙️ ${T('upload_audio') || 'Audio'}</div>
                     <div style="font-size:0.9em; color:#9ca3af;">M4A, MP3, WAV, AAC, OGG, FLAC</div>
-                    <div style="font-weight:600; margin-top:4px;">📁 קובץ</div>
-                    <div>בחר וידאו או אודיו כדי להתחיל</div>
+                    <div style="font-weight:600; margin-top:4px;">📁 ${T('upload_file') || 'File'}</div>
+                    <div>${T('upload_prompt_video_or_audio') || 'Choose video or audio to get started'}</div>
                 </div>
             `;
         }
