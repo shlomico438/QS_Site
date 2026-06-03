@@ -10509,6 +10509,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         stopProcessingStateUI('handle_job_update_success_pipeline_done');
+        try {
+            const charged = Number(rawResult.credit_minutes);
+            const used = Number(rawResult.credit_minutes_used);
+            if (Number.isFinite(charged)) {
+                window.__QS_USER_CREDIT_MINUTES = charged;
+                qsSyncUserCreditsUi();
+            }
+            if (typeof qsRefreshUserCredits === 'function') {
+                void qsRefreshUserCredits();
+            }
+            if (Number.isFinite(used) && used > 0) {
+                console.info('[qs-credits] charged for job', { jobId, credit_minutes_used: used, credit_minutes: charged });
+            }
+        } catch (_) {}
     };
 
 function groupSegmentsBySpeaker(segments, enableGlue = true) {

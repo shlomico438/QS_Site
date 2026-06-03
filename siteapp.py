@@ -3001,6 +3001,165 @@ def _user_credits_add_minutes(user_id, minutes):
     return rows[0] if rows else payload
 
 
+def _credits_billing_enabled():
+    v = (os.environ.get('TRANSCRIBE_CREDITS_ENABLED') or 'true').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
+def _job_is_medical_for_credits(input_s3_key, pending_info=None):
+    if isinstance(pending_info, dict) and pending_info.get('is_medical'):
+        return True
+    sk = str(input_s3_key or '')
+    return '/raw-audio/' in sk or '/summaries/' in sk or sk.startswith('medical/')
+
+
+def _duration_seconds_from_segments(segments):
+    if not isinstance(segments, list):
+        return 0.0
+    max_end = 0.0
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            end = float(seg.get('end') or 0)
+            if end > max_end:
+                max_end = end
+        except (TypeError, ValueError):
+            continue
+    return max_end
+
+
+def _duration_seconds_from_worker_result(result):
+    if not isinstance(result, dict):
+        return 0.0
+    for key in ('source_duration_sec', 'duration_sec', 'media_duration_sec', 'preprocess_source_duration_sec'):
+        try:
+            val = float(result.get(key) or 0)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            continue
+    timing = result.get('timing')
+    if isinstance(timing, dict):
+        for key in ('source_duration_sec', 'duration_sec', 'media_duration_sec'):
+            try:
+                val = float(timing.get(key) or 0)
+                if val > 0:
+                    return val
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _credit_minutes_from_duration(duration_sec):
+    try:
+        duration = float(duration_sec or 0)
+    except (TypeError, ValueError):
+        return 0
+    if duration <= 0:
+        return 0
+    return max(1, int(math.ceil(duration / 60.0)))
+
+
+def _user_credits_deduct_minutes(user_id, minutes):
+    """Subtract minutes from wallet (floors at 0). Returns updated row dict."""
+    user_id = str(user_id or '').strip()
+    minutes = int(minutes or 0)
+    if not user_id:
+        raise ValueError("userId required")
+    if minutes <= 0:
+        raise ValueError("minutes must be positive")
+    existing = _user_credits_get(user_id)
+    balance = int((existing or {}).get('credit_minutes') or 0)
+    new_balance = max(0, balance - minutes)
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    ts = datetime.utcnow().isoformat() + 'Z'
+    if not existing:
+        payload = {
+            "user_id": user_id,
+            "credit_minutes": new_balance,
+            "welcome_granted": False,
+            "updated_at": ts,
+        }
+        r = requests.post(
+            f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
+            headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    else:
+        from urllib.parse import quote
+        uid = quote(user_id, safe='')
+        payload = {"credit_minutes": new_balance, "updated_at": ts}
+        r = requests.patch(
+            f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
+            headers={**headers, "Prefer": "return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"Supabase user_credits deduct HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else payload
+
+
+def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=None, pending_info=None):
+    """Idempotent per job: bill transcription minutes when GPU transcript is ready."""
+    if not _credits_billing_enabled():
+        return None
+    user_id = str(user_id or '').strip()
+    runpod_job_id = str(runpod_job_id or '').strip()
+    if not user_id or user_id == 'anonymous' or not runpod_job_id:
+        return None
+    if _job_is_medical_for_credits(input_s3_key, pending_info):
+        return None
+
+    row = _get_job_row_by_runpod_job_id(
+        runpod_job_id,
+        select="id,credit_minutes_used,input_s3_key",
+    )
+    if isinstance(row, dict) and row.get('credit_minutes_used') is not None:
+        try:
+            if float(row.get('credit_minutes_used') or 0) > 0:
+                wallet = _user_credits_get(user_id)
+                return {
+                    "already_charged": True,
+                    "credit_minutes_used": float(row.get('credit_minutes_used')),
+                    "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+                }
+        except (TypeError, ValueError):
+            pass
+
+    duration_sec = _duration_seconds_from_segments(segments)
+    if duration_sec <= 0:
+        duration_sec = _duration_seconds_from_worker_result(result)
+    minutes = _credit_minutes_from_duration(duration_sec)
+    if minutes <= 0:
+        logging.info("credit_charge skip zero minutes job=%s duration_sec=%s", runpod_job_id, duration_sec)
+        return None
+
+    wallet = _user_credits_deduct_minutes(user_id, minutes)
+    _jobs_patch_by_runpod_job_id(
+        runpod_job_id,
+        user_id,
+        {"credit_minutes_used": float(minutes)},
+    )
+    balance = int((wallet or {}).get('credit_minutes') or 0)
+    logging.info(
+        "credit_charge job=%s user=%s duration_sec=%.1f minutes=%s balance=%s",
+        runpod_job_id,
+        user_id[:8],
+        duration_sec,
+        minutes,
+        balance,
+    )
+    return {
+        "credit_minutes_used": minutes,
+        "credit_minutes": balance,
+        "duration_seconds": duration_sec,
+    }
+
+
 def _stripe_credit_purchase_get(session_id):
     session_id = str(session_id or '').strip()
     if not session_id:
@@ -6055,9 +6214,10 @@ def api_export_docx():
 
 
 # --- GPU Callback: ack fast to worker; persist in background (see docs/GPU_CALLBACK_API.md) ---
-def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base):
+def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base, pending_info=None, credit_info=None):
     """S3 persist, DB timings, email — runs after HTTP 200 ack so the worker is not blocked."""
     result_s3_key = None
+    credit_info = None
     try:
         if input_s3_key:
             transcript_payload = {"segments": segments}
@@ -6080,6 +6240,10 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             data['result'] = result_dict
             job_results_cache[job_id] = data
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
+            if credit_info and isinstance(data, dict):
+                data['credit_minutes_used'] = credit_info.get('credit_minutes_used')
+                data['credit_minutes'] = credit_info.get('credit_minutes')
+                job_results_cache[job_id] = data
             _schedule_runpod_min_workers(0)
     except Exception as e:
         logging.exception("gpu_callback background save failed for %s", job_id)
@@ -6153,10 +6317,12 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         logging.warning("transcription ready email flow failed for %s: %s", job_id, _email_err)
 
     logging.info(
-        "gpu_callback background done job_id=%s result_s3_key=%s persist_sec=%.2f",
+        "gpu_callback background done job_id=%s result_s3_key=%s persist_sec=%.2f credit_minutes_used=%s balance=%s",
         job_id,
         (result_s3_key or '')[:80],
         now - t0,
+        (credit_info or {}).get('credit_minutes_used'),
+        (credit_info or {}).get('credit_minutes'),
     )
 
 
@@ -6217,6 +6383,18 @@ def gpu_callback():
     data['segments'] = segments
     data['status'] = 'completed'
 
+    credit_info = _charge_job_credits(
+        user_id,
+        job_id,
+        segments,
+        input_s3_key,
+        result=result,
+        pending_info=pending,
+    )
+    if credit_info:
+        data['credit_minutes_used'] = credit_info.get('credit_minutes_used')
+        data['credit_minutes'] = credit_info.get('credit_minutes')
+
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
@@ -6234,6 +6412,8 @@ def gpu_callback():
             "user_id": user_id,
             "t0": t0,
             "public_base": public_base,
+            "pending_info": pending,
+            "credit_info": credit_info,
         },
         daemon=True,
     )
