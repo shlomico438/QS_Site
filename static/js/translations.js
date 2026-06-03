@@ -112,7 +112,7 @@ window.translations = {
         // Upload zone
         detect_speakers: "זיהוי דוברים",
         new_session: "סשן חדש",
-        start_new_session_confirm: "להתחיל סשן חדש? התמלול והמדיה הנוכחיים ינוקו מהמסך.",
+        start_new_session_confirm: "להתחיל סשן חדש? התמלול והמדיה הנוכחיים יימחקו מהמסך.",
         ready: "מוכן",
         upload_and_process: "התחל כאן",
         add_local_media: "הוספת וידאו או אודיו (מקומי)",
@@ -361,7 +361,7 @@ window.translations = {
         download_docx: "Download as Docx",
         detect_speakers: "Detect Speakers",
         new_session: "New Session",
-        start_new_session_confirm: "Start a new session? Current transcript and media will be cleared from the screen.",
+        start_new_session_confirm: "Start a new session? Your current transcript and media will be cleared from the screen.",
         ready: "Ready",
         upload_and_process: "Start here",
         add_local_media: "Add video or audio (local)",

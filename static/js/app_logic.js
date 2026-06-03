@@ -4298,15 +4298,15 @@ async function initOpenInApp(jobId) {
         }
     }
 
-    document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
+    document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = ''; });
     const hasTranscriptOrSummary = hasTranscriptForOpen || initOpenAppHasLoadedTranscriptPayload();
     setTranscriptActionButtonsVisible(!!hasTranscriptOrSummary);
     const mainBtn = document.getElementById('main-btn');
     const regularRecordBtn = document.getElementById('regular-record-btn');
     if (mainBtn) {
         mainBtn.disabled = false;
-        // "upload" mode → translated upload_and_process ("Start here" / התחל כאן), not transcribe — job already has output.
-        setMainButtonAction(hasTranscriptOrSummary ? 'upload' : 'transcribe_loaded_file');
+        // Completed job with transcript → "New session" (confirms before clearing).
+        setMainButtonAction(hasTranscriptOrSummary ? 'new_session' : 'transcribe_loaded_file');
     }
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (!isMedicalModeEnabled()) {
@@ -7696,12 +7696,16 @@ function setMainButtonAction(mode) {
     const mainBtn = document.getElementById('main-btn');
     if (!mainBtn) return;
     qsClearMainBtnDynamicLabel();
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
     if (window.mainBtnAction === 'transcribe_loaded_file') {
-        mainBtn.innerText = (typeof window.t === 'function'
-            ? (window.t('transcribe') || window.t('transcribe_btn'))
-            : '') || 'תמלל';
+        mainBtn.setAttribute('data-i18n', 'transcribe');
+        mainBtn.innerText = (T('transcribe') || T('transcribe_btn')) || 'תמלל';
+    } else if (window.mainBtnAction === 'new_session') {
+        mainBtn.setAttribute('data-i18n', 'new_session');
+        mainBtn.innerText = T('new_session') || 'New Session';
     } else {
-        mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload';
+        mainBtn.setAttribute('data-i18n', 'upload_and_process');
+        mainBtn.innerText = T('upload_and_process') || 'Upload';
     }
 }
 
@@ -7956,6 +7960,8 @@ function startProcessingStateUI() {
     const spinnerWrap = document.getElementById('processing-state-spinner-wrap');
     if (!panel) return;
 
+    if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
+
     if (window.processingStateTimer) {
         clearInterval(window.processingStateTimer);
         window.processingStateTimer = null;
@@ -8046,7 +8052,6 @@ function resetScreenToInitial() {
     try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
     try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
     window.isTriggering = false;
-    window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
     qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
     window.currentWords = null;
@@ -8109,11 +8114,11 @@ function resetScreenToInitial() {
 
     if (editActions) editActions.style.display = 'none';
 
-    document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = 'flex'; });
-    if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
+    if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
     if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
     try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
     try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
+    if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
 }
 
 /** Show progress bar in place and scroll it into view so it stays visible during processing. */
@@ -8133,6 +8138,7 @@ function showProgressBar() {
         const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
         const introEl = document.getElementById('processing-state-intro');
         if (panel) panel.style.display = 'flex';
+        if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
         qsSetProcessingOverlayActive(true);
         if (controlsRow) controlsRow.style.display = 'none';
         if (introEl) introEl.style.display = '';
@@ -8184,8 +8190,12 @@ function setTranscriptActionButtonsVisible(visible) {
     }
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
     if (switchesTopBar) switchesTopBar.classList.toggle('is-visible', !!visible);
-    if (controlsBar) controlsBar.classList.toggle('is-visible', !!visible);
+    if (controlsBar) {
+        controlsBar.style.display = '';
+        controlsBar.classList.toggle('is-visible', !!visible);
+    }
     if (!visible) {
+        if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
         if (editActions) editActions.style.display = 'none';
         if (downloadMenu) downloadMenu.style.display = 'none';
         setExportMenuAuxiliaryControlsDisabled(false);
@@ -9596,6 +9606,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.qsMedicalStartNewSession = openFilePickerAfterDisclaimer;
 
+    async function confirmAndStartNewSession() {
+        if (window.isTriggering) return;
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        const isHebrewUi = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+        const msg = T('start_new_session_confirm')
+            || (isHebrewUi
+                ? 'להתחיל סשן חדש? התמלול והמדיה הנוכחיים יימחקו מהמסך.'
+                : 'Start a new session? Your current transcript and media will be cleared.');
+        let approved = true;
+        if (typeof showGlobalConfirm === 'function') {
+            approved = await showGlobalConfirm(msg, {
+                confirmText: T('new_session') || (isHebrewUi ? 'סשן חדש' : 'New Session'),
+                cancelText: T('cancel') || (isHebrewUi ? 'ביטול' : 'Cancel'),
+                danger: true,
+            });
+        } else {
+            approved = window.confirm(msg);
+        }
+        if (!approved) return;
+        openFilePickerAfterDisclaimer();
+    }
+    window.confirmAndStartNewSession = confirmAndStartNewSession;
+
     async function confirmAndStartMedicalNewSession() {
         if (window.isTriggering) return;
         const rec = window._medicalRecorder;
@@ -9790,6 +9823,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     setDiarizationBusyState(false);
                     if (typeof showStatus === 'function') showStatus('Transcribe failed: ' + (e.message || 'Unknown error'), true);
                 }
+                return;
+            }
+            if (window.mainBtnAction === 'new_session') {
+                void confirmAndStartNewSession();
                 return;
             }
             openFilePickerAfterDisclaimer();
@@ -10095,8 +10132,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         syncMobileVideoSessionState();
 
-        // 2. UNHIDE CORE COMPONENTS (Styled Subtitles button removed; video is shown immediately for video uploads)
-        document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
         const mainBtn = document.getElementById('main-btn');
 
         if (isFailedJob) {
@@ -10477,13 +10512,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Finally, restore button + status text after GPT stage completes.
-        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
+        qsStopFakeProgress('handleJobUpdate_complete');
         if (mainBtn) {
             mainBtn.disabled = false;
-            if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
+            if (typeof setMainButtonAction === 'function') setMainButtonAction('new_session');
             else {
                 qsClearMainBtnDynamicLabel();
-                mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload';
+                const T = typeof window.t === 'function' ? window.t : (k) => k;
+                mainBtn.innerText = T('new_session') || 'New Session';
             }
         }
         if (statusTxt) {
@@ -11471,6 +11507,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     };
     
     window.showSubtitleStyleSelector = function() {
+        if (!document.body.classList.contains('has-transcript-actions')) return;
         const selector = document.getElementById('subtitle-style-selector');
         const video = document.getElementById('main-video');
         if (selector && video && window.currentSegments && window.currentSegments.length > 0) {
@@ -12173,7 +12210,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     }
     function startFakeProgress() {
         let current = 0;
-        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
         const processingLabel = ((typeof window.t === 'function' ? window.t('processing') : 'Processing...') || '').replace(/\.\.\.?$/, '');
         if (mainBtn) qsSetMainBtnDynamicLabel(processingLabel + ' 0%');
         qsStopFakeProgress('startFakeProgress_replace_previous');
@@ -12187,7 +12223,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window.fakeProgressInterval = null;
                 return;
             }
-            if (window.__QS_VOCAL_PREP_LABEL_ACTIVE) return;
             if (current < 95) {
                 current += 0.5;
                 const pct = Math.round(current);
@@ -12602,7 +12637,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         } else {
                             hideProgressBar(); // from here on, progress is % in button only
                         }
-                        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
                         if (mainBtn) qsSetMainBtnDynamicLabel(processingLabel.replace(/\.\.\.?$/, '') + ' 0%');
                         if (statusTxt) {
                             statusTxt.innerText = '';
@@ -12613,6 +12647,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         let waitPct = 0;
                         let ts = skipRunpodHandshake ? { status: 'triggered' } : { status: '' };
                         let httpBadStreak = 0;
+                        let vocalSepLogged = false;
                         const prepLabel = isHebrewUi ? 'מפריד קול מהמוזיקה...' : 'Separating vocals from music...';
                         // If socket delivers completion before /api/trigger_status shows "triggered", handleJobUpdate
                         // sets _lastProcessedJobId — don't block here or restart fake progress on top of GPT.
@@ -12645,15 +12680,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     }
                                     httpBadStreak = 0;
                                     ts = await stRes.json();
-                                    if (ts.status === 'preprocessing') {
-                                        window.__QS_VOCAL_PREP_LABEL_ACTIVE = true;
-                                        if (mainBtn) qsSetMainBtnDynamicLabel(prepLabel);
-                                    } else {
-                                        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
-                                        if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
-                                        if (mainBtn) {
-                                            qsSetMainBtnDynamicLabel(processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%');
-                                        }
+                                    if (ts.status === 'preprocessing' && !vocalSepLogged) {
+                                        vocalSepLogged = true;
+                                        console.log('[vocals]', prepLabel, jobId ? { jobId } : '');
+                                    }
+                                    if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
+                                    if (mainBtn) {
+                                        qsSetMainBtnDynamicLabel(processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%');
                                     }
                                 } catch (_) {
                                     httpBadStreak++;
@@ -16553,7 +16586,6 @@ async function handleSubtitleFile(file) {
     try {
         const container = document.getElementById('transcript-window');
         if (container) container.setAttribute('contenteditable', 'false');
-        document.querySelectorAll('.controls-bar').forEach(bar => bar.style.display = 'flex');
         setTranscriptActionButtonsVisible(true);
         const video = document.getElementById('main-video');
         const videoWrapper = document.getElementById('video-wrapper');

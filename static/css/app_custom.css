@@ -3299,6 +3299,16 @@ input:checked + .slider:before { transform: translateX(16px); }
     min-height: clamp(300px, 45vh, 520px);
 }
 
+/* Hide transcript toolbar (incl. subtitle "Aa") while upload/processing overlay is active */
+.transcription-wrapper.qs-processing-active .controls-bar,
+.transcription-wrapper.qs-processing-active #subtitle-style-selector {
+    display: none !important;
+}
+
+body:not(.has-transcript-actions) #subtitle-style-selector {
+    display: none !important;
+}
+
 /* Centered over the transcript pane (not the upload / keyboard area) */
 .transcript-area-wrap .processing-state-panel {
     display: none;
