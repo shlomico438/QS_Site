@@ -3288,27 +3288,39 @@ input:checked + .slider:before { transform: translateX(16px); }
     border-top: 1px solid #eee;
 }
 
+/* Reserve height while processing — absolute overlay does not expand the flex parent */
+.transcript-area-wrap.qs-processing-active,
+.transcription-wrapper.qs-processing-active .transcript-area-wrap {
+    flex: 1 1 auto;
+    min-height: clamp(280px, 42vh, 480px);
+}
+
+.transcription-wrapper.qs-processing-active {
+    min-height: clamp(300px, 45vh, 520px);
+}
+
 /* Centered over the transcript pane (not the upload / keyboard area) */
 .transcript-area-wrap .processing-state-panel {
     display: none;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 16px;
+    gap: 18px;
     position: absolute;
     inset: 0;
     z-index: 50;
     margin: 0;
     max-width: none;
-    padding: 22px 18px;
+    min-height: 100%;
+    padding: 28px 22px;
     box-sizing: border-box;
     border-radius: 12px;
-    background: rgba(255, 255, 255, 0.94);
+    background: rgba(255, 255, 255, 0.96);
     border: 1px solid #e5e7eb;
     box-shadow: 0 8px 28px rgba(15, 23, 42, 0.1);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
-    overflow-y: auto;
+    overflow: visible;
 }
 
 .processing-state-primary {
@@ -3343,6 +3355,10 @@ input:checked + .slider:before { transform: translateX(16px); }
   text-align: center;
 }
 
+.qs-processing-active .processing-unified-track {
+  height: 14px;
+}
+
 .processing-unified-track {
   height: 10px;
 }
@@ -3361,17 +3377,17 @@ input:checked + .slider:before { transform: translateX(16px); }
     justify-content: center;
     flex: 0 0 auto;
     flex-shrink: 0;
-    min-width: 48px;
-    min-height: 48px;
-    width: 48px;
-    height: 48px;
+    min-width: 56px;
+    min-height: 56px;
+    width: 56px;
+    height: 56px;
 }
 
 .processing-state-spinner {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    min-height: 40px;
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
     flex: 0 0 auto;
     flex-shrink: 0;
     box-sizing: border-box;

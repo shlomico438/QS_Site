@@ -364,7 +364,10 @@ function restoreMedicalAuthSnapshotAfterSignIn() {
                 try { localStorage.setItem('lastJobId', String(jp.lastJobId)); } catch (_) {}
             }
             if (jp.activeJobId) {
-                try { localStorage.setItem('activeJobId', String(jp.activeJobId)); } catch (_) {}
+                try {
+                    if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(String(jp.activeJobId));
+                    else localStorage.setItem('activeJobId', String(jp.activeJobId));
+                } catch (_) {}
             }
         }
     } catch (_) {}
@@ -472,6 +475,7 @@ function qsEnsureMedicalProgressPanel(hideBanner) {
     const pc = document.getElementById('p-container');
     const introEl = document.getElementById('processing-state-intro');
     if (panel) panel.style.display = 'flex';
+    qsSetProcessingOverlayActive(true);
     if (controlsRow) controlsRow.style.display = 'none';
     if (pc) pc.style.display = 'none';
     if (introEl) introEl.style.display = '';
@@ -488,6 +492,7 @@ function qsShowMedicalWarmupProgressDuringRecording() {
     if (introEl) introEl.style.display = 'none';
     if (spinnerWrap) spinnerWrap.style.display = 'none';
     if (panel) panel.style.display = 'flex';
+    qsSetProcessingOverlayActive(true);
     if (typeof qsShowUnifiedProgressChrome === 'function') qsShowUnifiedProgressChrome();
     if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
     qsStartMedicalWarmupPhaseTick({ forRecording: true });
@@ -503,6 +508,7 @@ function qsHideMedicalRecordingWarmupProgress() {
     const panel = document.getElementById('processing-state-panel');
     const introEl = document.getElementById('processing-state-intro');
     if (panel) panel.style.display = 'none';
+    qsSetProcessingOverlayActive(false);
     if (introEl) introEl.style.display = '';
     if (typeof qsHideUnifiedProgressChrome === 'function') qsHideUnifiedProgressChrome();
 }
@@ -1583,6 +1589,29 @@ function qsIsSevereServerPollError(status) {
     return status === 502 || status === 503 || status === 504 || status === 429;
 }
 
+/** One-shot /api/check_status; returns true if job completion was handed to handleJobUpdate. */
+async function qsPollCheckStatusOnce(jobId) {
+    const jid = String(jobId || '').trim();
+    if (!jid || typeof window.handleJobUpdate !== 'function') return false;
+    if (window._lastProcessedJobId === jid) return true;
+    try {
+        const res = await fetch(`/api/check_status/${encodeURIComponent(jid)}`);
+        if (!res.ok) return false;
+        const data = await res.json();
+        const done = data.status === 'completed' || data.status === 'failed'
+            || (Array.isArray(data.segments) && data.segments.length > 0);
+        if (!done) return false;
+        if (window._checkStatusPollInterval) {
+            clearInterval(window._checkStatusPollInterval);
+            window._checkStatusPollInterval = null;
+        }
+        window.handleJobUpdate(data);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 /** Start polling check_status and trigger_status for a job (used after trigger and on retry). */
 window.startJobStatusPolling = function(jobId) {
     if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
@@ -1594,6 +1623,10 @@ window.startJobStatusPolling = function(jobId) {
     let consecutiveSeverePollFailures = 0;
     // Only check_status (and network errors) count — trigger_status can 503 during proxy blips while check_status still works.
     const maxSevereBeforeStop = 24;
+
+    void qsPollCheckStatusOnce(jobId);
+    setTimeout(() => { void qsPollCheckStatusOnce(jobId); }, 2500);
+    setTimeout(() => { void qsPollCheckStatusOnce(jobId); }, 6000);
 
     const stopPollingServerDown = (isHe) => {
         if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
@@ -1618,11 +1651,6 @@ window.startJobStatusPolling = function(jobId) {
         }
         const activeNow = String(localStorage.getItem('activeJobId') || '').trim();
         if (activeNow && activeNow !== jobId) {
-            if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
-            window._checkStatusPollInterval = null;
-            return;
-        }
-        if (!activeNow) {
             if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
             window._checkStatusPollInterval = null;
             return;
@@ -2192,8 +2220,13 @@ window.qsClearActiveJob = function () {
 window.qsGetActiveJobForResume = function () {
     const jobId = String(localStorage.getItem('activeJobId') || '').trim();
     if (!jobId) return '';
-    const started = parseInt(localStorage.getItem(QS_ACTIVE_JOB_STARTED_KEY) || '0', 10);
-    if (!started || (Date.now() - started) > QS_ACTIVE_JOB_RESUME_MAX_MS) {
+    let started = parseInt(localStorage.getItem(QS_ACTIVE_JOB_STARTED_KEY) || '0', 10);
+    if (!started) {
+        // Jobs parked before qsSetActiveJob stored a timestamp — do not clear on socket reconnect.
+        started = Date.now();
+        try { localStorage.setItem(QS_ACTIVE_JOB_STARTED_KEY, String(started)); } catch (_) {}
+    }
+    if ((Date.now() - started) > QS_ACTIVE_JOB_RESUME_MAX_MS) {
         window.qsClearActiveJob();
         return '';
     }
@@ -3789,7 +3822,8 @@ async function initPersonalPage() {
                     localStorage.setItem('lastJobId', transcribeJobId);
                     localStorage.setItem('lastJobDbId', file.file_id);
                     localStorage.setItem('lastS3Key', file.s3_key);
-                    localStorage.setItem('activeJobId', transcribeJobId);
+                    if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(transcribeJobId);
+                    else localStorage.setItem('activeJobId', transcribeJobId);
                     try {
                         await supabase.from('jobs').update({ runpod_job_id: transcribeJobId, updated_at: new Date().toISOString() }).eq('id', file.file_id).eq('user_id', user.id);
                     } catch (_) {}
@@ -7861,6 +7895,7 @@ function stopProcessingStateUI(reason) {
     }
     window.processingPhaseIndex = 0;
     if (panel) panel.style.display = 'none';
+    qsSetProcessingOverlayActive(false);
     if (controlsRow) controlsRow.style.display = '';
     qsLogProcessingAnimStop('phase_lines_panel', {
         reason: reason != null ? String(reason) : 'unspecified',
@@ -7870,9 +7905,18 @@ function stopProcessingStateUI(reason) {
     });
 }
 
+function qsSetProcessingOverlayActive(active) {
+    const on = !!active;
+    document.querySelectorAll('.transcript-area-wrap, .transcription-wrapper').forEach((el) => {
+        if (el) el.classList.toggle('qs-processing-active', on);
+    });
+}
+
 function _processingIntroThreeSentencesHe(loggedIn) {
     if (isMedicalModeEnabled()) {
-        return loggedIn ? '' : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
+        return loggedIn
+            ? 'התמלול והסיכום הרפואי בתהליך — אפשר לסגור את העמוד. נשלח מייל כשיהיה מוכן.'
+            : 'כשתתחבר לאתר נוכל להודיע לך באמצעות מייל.';
     }
     return loggedIn
         ? 'אפשר לסגור את העמוד — נשלח לך מייל ברגע שהוידאו יהיה מוכן עם הכתוביות.'
@@ -7881,7 +7925,9 @@ function _processingIntroThreeSentencesHe(loggedIn) {
 
 function _processingIntroThreeSentencesEn(loggedIn) {
     if (isMedicalModeEnabled()) {
-        return loggedIn ? '' : 'Sign in to the site so we can notify you by email when it is ready.';
+        return loggedIn
+            ? 'Your transcript and medical summary are processing — you can leave this page. We will email you when ready.'
+            : 'Sign in to the site so we can notify you by email when it is ready.';
     }
     return loggedIn
         ? "You can leave this page — we'll email you when your video and subtitles are ready."
@@ -7907,7 +7953,10 @@ function startProcessingStateUI() {
     window.processingPhaseIndex = 0;
     if (phaseEl) phaseEl.textContent = PROCESSING_PHASES_HE[0];
     panel.style.display = 'flex';
+    qsSetProcessingOverlayActive(true);
     if (controlsRow) controlsRow.style.display = 'none';
+    const legacyPc = document.getElementById('p-container');
+    if (legacyPc) legacyPc.style.display = 'none';
 
     if (usePipelineBars) {
         if (spinnerWrap) spinnerWrap.style.display = 'none';
@@ -8069,6 +8118,7 @@ function showProgressBar() {
         const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
         const introEl = document.getElementById('processing-state-intro');
         if (panel) panel.style.display = 'flex';
+        qsSetProcessingOverlayActive(true);
         if (controlsRow) controlsRow.style.display = 'none';
         if (introEl) introEl.style.display = '';
         qsShowUnifiedProgressChrome();
@@ -8971,7 +9021,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof window.qsSetActiveJob === 'function') {
             window.qsSetActiveJob(session.jobId);
         } else {
-            localStorage.setItem('activeJobId', session.jobId);
+            if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(session.jobId);
+            else localStorage.setItem('activeJobId', session.jobId);
         }
         if (typeof startFakeProgress === 'function') startFakeProgress();
         if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(session.jobId);
@@ -9699,7 +9750,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         ? crypto.randomUUID()
                         : ('job_' + Date.now() + '_' + Math.floor(Math.random() * 100000));
                     localStorage.setItem('lastJobId', transcribeJobId);
-                    localStorage.setItem('activeJobId', transcribeJobId);
+                    if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(transcribeJobId);
+                    else localStorage.setItem('activeJobId', transcribeJobId);
                     window._lastProcessedJobId = null;
                     try {
                         await supabase
@@ -12360,7 +12412,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 localStorage.setItem('lastS3Key', s3Key);
                 localStorage.setItem('pendingS3Key', s3Key);
                 localStorage.setItem('lastJobId', jobId);
-                localStorage.setItem('activeJobId', jobId);
+                if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(jobId);
+                else localStorage.setItem('activeJobId', jobId);
                 window._lastProcessedJobId = null;
                 console.log("💾 Keys parked for recovery:", s3Key);
                 if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId, s3Key });
@@ -12616,6 +12669,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 console.log("✅ RunPod trigger confirmed.");
                             }
                         }
+                        try {
+                            if (typeof socket !== 'undefined' && jobId) {
+                                socket.emit('join', { room: jobId });
+                            }
+                        } catch (_) {}
                         const supersededBySocket = jobAlreadyHandledBySocket();
                         if (!supersededBySocket && typeof startFakeProgress === 'function') {
                             startFakeProgress();

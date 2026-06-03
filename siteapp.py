@@ -4074,6 +4074,40 @@ def _mark_job_transcript_ready_on_gpu_callback(runpod_job_id, user_id, result_s3
         logging.warning("gpu_callback: could not PATCH jobs row (processed/result_s3_key) for runpod_job_id=%s", runpod_job_id)
 
 
+def _get_json_object_from_s3_key(s3_key, user_id=None):
+    """Read a JSON object from an explicit S3 key (e.g. jobs.result_s3_key)."""
+    key = str(s3_key or "").strip()
+    if not key:
+        return None
+    uid = str(user_id or "").strip() or _extract_user_id_from_s3_key(key)
+    bucket = _presign_bucket_for_key(uid, key, None)
+    if not bucket:
+        return None
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION')
+        )
+        resp = s3_client.get_object(Bucket=bucket, Key=key)
+        raw = resp['Body'].read().decode('utf-8')
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except ClientError as e:
+        code = (e.response or {}).get('Error', {}).get('Code', '')
+        if code in ('NoSuchKey', '404'):
+            return None
+        logging.warning("_get_json_object_from_s3_key ClientError %s key=%s", code, key[:120])
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logging.warning("_get_json_object_from_s3_key decode error key=%s: %s", key[:120], e)
+        return None
+    except Exception as e:
+        logging.warning("_get_json_object_from_s3_key failed key=%s: %s", key[:120], e)
+        return None
+
+
 def _completed_job_payload_from_db(runpod_job_id):
     """Recover completed transcript for polling when this process has no in-memory callback cache."""
     row = _get_job_row_by_runpod_job_id(
@@ -4088,7 +4122,8 @@ def _completed_job_payload_from_db(runpod_job_id):
     if not result_s3_key and isinstance(row.get("metadata"), dict):
         md = row.get("metadata") or {}
         result_s3_key = str(md.get("result_s3_key") or md.get("resultS3Key") or "").strip()
-    if status not in ("processed", "completed", "exported") and not result_s3_key:
+    ready_statuses = ("processed", "completed", "exported")
+    if status not in ready_statuses and not result_s3_key:
         return None
 
     user_id = str(row.get("user_id") or "").strip()
@@ -4096,6 +4131,8 @@ def _completed_job_payload_from_db(runpod_job_id):
     transcript = None
     if user_id and input_s3_key:
         transcript = _get_transcript_json_from_s3(user_id, input_s3_key, stage="gpt")
+    if not isinstance(transcript, dict) and result_s3_key:
+        transcript = _get_json_object_from_s3_key(result_s3_key, user_id=user_id)
 
     if not isinstance(transcript, dict):
         return {
