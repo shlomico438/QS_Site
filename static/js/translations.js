@@ -5,12 +5,17 @@
 window.translations = {
     he: {
         // Nav (base)
+        nav_products: "מוצרים",
         nav_about: "אודות",
         nav_blog: "בלוג",
         nav_accuracy: "דיוק",
         nav_contact: "צור קשר",
         nav_personal: "איזור אישי",
         nav_sign_in: "התחבר",
+        nav_credits: "יתרת דקות",
+        nav_minutes_balance: "יתרת דקות",
+        nav_cta_transcription: "תמלול חדש",
+        nav_cta_dashboard: "לאזור האישי",
         nav_logout: "התנתק",
         footer_legal: "תנאים ומדיניות",
         // User menu
@@ -123,6 +128,28 @@ window.translations = {
         medical_warmup_cold_msg: "מערכת התמלול במצב שינה כדי לחסוך באנרגיה.",
         medical_warmup_cold_submsg: "לחץ על המיקרופון כדי להעיר את המערכת ולהתחיל את יום העבודה.",
         medical_warmup_ready_msg: "המערכת מוכנה! יום עבודה מוצלח.",
+        medical_tab_transcript: "תמלול מלא",
+        medical_tab_summary: "סיכום רפואי",
+        medical_delete_recording_title: "מחיקת הקלטה",
+        medical_delete_recording_message: "האם אתה בטוח שברצונך למחוק הקלטה זו?",
+        medical_wake_choice_title: "העירת מערכת התמלול",
+        medical_wake_choice_message: "המערכת במצב שינה. איך תרצה להמשיך?",
+        medical_wake_choice_wait: "המתן להתכוננות",
+        medical_wake_choice_record: "הקלט בזמן ההתכוננות",
+        medical_recording: "הקלטה",
+        medical_save_recording: "שמור הקלטה",
+        medical_delete_recording: "מחק הקלטה",
+        medical_save: "שמור",
+        medical_delete: "מחק",
+        medical_summary_chief: "תלונה",
+        medical_summary_exam: "ממצאים",
+        medical_summary_recommendations: "המלצות למטופל",
+        medical_summary_overview: "סקירה",
+        medical_summary_key_points: "נקודות מפתח",
+        medical_summary_empty: "אין סיכום רפואי זמין עדיין.",
+        medical_summary_not_specified: "לא צוין.",
+        medical_copy: "העתק",
+        medical_no_text_to_copy: "אין טקסט להעתקה",
         upload_placeholder: "",
         upload_disclaimer_accept: "הבנתי",
         upload_disclaimer_text: "התמלולים שלכם מעובדים בצורה מאובטחת, אך עשויים לעבור דרך שרתי פיתוח של צד שלישי.\n\nאנו מבקשים: אנא הימנעו מהעלאת חומרים בעלי רגישות גבוהה (כגון חסיון עורך דין-לקוח, סודיות רפואית, או פרטים מזהים רגישים).\n\nעם סיום תקופת הבטא והמעבר לשירות בתשלום, המערכת תעבור למודל פרטיות סגור ומחמיר לחלוטין.",
@@ -181,15 +208,27 @@ window.translations = {
         video_loaded: "הוידאו נטען",
         // About page
         about_title: "אודות QuickScribe",
-        about_intro1: "QuickScribe היא פלטפורמת תמלול מבוססת AI, בנויה לשפות עשירות בהקשר ולדיוק קריטי.",
-        about_intro2: "באמצעות מודולי מומחים ספציפיים לשפה במקום מודלים גנריים, אנחנו מספקים דיוק ברמת ארגון בסביבות שבהן ממשקי API סטנדרטיים בדרך כלל נכשלים.",
-        about_team: "הצוות",
+        about_intro1: "QuickScribe היא פלטפורמת תמלול ותיעוד מבוססת AI, שנועדה לספק חוויות דיבור-לטקסט מדויקות במיוחד בשפות ובתחומים מקצועיים שבהם מודלי תמלול גנריים לעיתים קרובות מגיעים לתוצאות חלקיות.",
+        about_intro2: "הפלטפורמה שלנו משלבת זיהוי דיבור מתקדם, אופטימיזציה ייחודית לשפה, ועיבוד לאחר התמלול מבוסס AI, כדי לעזור לאנשי מקצוע להפוך הקלטות אודיו ווידאו לטקסט מובנה ושמיש. QuickScribe משרתת מגוון שימושים, כולל תמלול פגישות, יצירת תוכן, ראיונות מחקר, ותהליכי תיעוד מקצועיים.",
+        about_intro3: "בנוסף לפלטפורמת התמלול הכללית, אנחנו מפתחים פתרונות ייעודיים לאנשי מקצוע בתחום הבריאות, המאפשרים לרופאים לייצר תיעוד קליני מדויק תוך הפחתת עומס מנהלי ושיפור הפריון.",
+        about_intro4: "QuickScribe בנויה על ארכיטקטורת ענן scalable באמצעות שירותי AWS כולל Lambda, S3, וצינורות עיבוד serverless, כדי לטפל בצורה מאובטחת בהעלאת מדיה ובעומסי תמלול בקנה מידה גדול.",
+        about_team: "הנהגה",
         about_shlomi_name: "שלומי כהן",
         about_shlomi_role: "מייסד ומנכ\"ל",
-        about_shlomi_bio: "ותיק בתחום ה-Voice AI עם מומחיות עמוקה בהתאמת טכנולוגיות דיבור לשווקים גלובליים ובאופטימיזציה של תהליכי אינפרנס המואצים באמצעות GPU.",
+        about_shlomi_bio1: "שלומי כהן הוא מנהיג טכנולוגי עם למעלה מ-15 שנות ניסיון בתקשורת, מערכות אלחוט, IoT, פלטפורמות embedded וטכנולוגיות קול.",
+        about_shlomi_bio2: "לפני הקמת QuickScribe, שלומי מילא תפקידי הנדסה וארכיטקטורה בכירים ב-DSP Group, Altair Semiconductor ו-Alvarion Technologies, שם הוביל פיתוח של פתרונות אלחוט, IoT וקול חכם. לאורך הקריירה שלו עבד על מוצרים שפותחו ברחבי העולם ותרם לטכנולוגיות רשומות פטנט במערכות קול, פלטפורמות IoT ותקשורת אלחוטית.",
+        about_shlomi_bio3: "ב-QuickScribe, שלומי מוביל את אסטרטגיית המוצר, ארכיטקטורת ה-AI, תשתית הענן, ופיתוח טכנולוגיות תמלול ייחודיות לשפה, שנועדו לשפר דיוק ושימושיות עבור משתמשים מקצועיים.",
         // Contact page
         contact_title: "צור קשר עם QuickScribe",
-        contact_intro: "ממוקמים בנתניה, ישראל, אנחנו בונים את המתומלל המקצועי המדויק ביותר בעולם.",
+        contact_intro: "אנחנו בונים את המתומלל המקצועי המדויק ביותר בעולם.",
+        sales_contact_title: "צור קשר למכירות",
+        sales_contact_sub: "כתבו לנו ונחזור אליכם בהקדם.",
+        sales_contact_message: "הודעה",
+        sales_contact_email: "אימייל (אופציונלי)",
+        sales_contact_send: "שליחה",
+        sales_contact_cancel: "ביטול",
+        sales_contact_sent: "ההודעה נשלחה. תודה!",
+        sales_contact_failed: "שליחה נכשלה. נסו שוב או כתבו ל-info@getquickscribe.com",
         contact_email: "אימייל:",
         contact_linkedin: "LinkedIn:",
         contact_linkedin_link: "עקבו אחר ההתקדמות שלנו",
@@ -222,12 +261,17 @@ window.translations = {
         lang_english: "English"
     },
     en: {
+        nav_products: "Products",
         nav_about: "About Us",
         nav_blog: "Blog",
         nav_accuracy: "Accuracy",
         nav_contact: "Contact",
         nav_personal: "Personal Area",
         nav_sign_in: "Sign In",
+        nav_credits: "Minutes balance",
+        nav_minutes_balance: "Minutes balance",
+        nav_cta_transcription: "New Transcription",
+        nav_cta_dashboard: "Go to Dashboard",
         nav_logout: "Log Out",
         personal_area_title: "Personal Area",
         personal_close_window: "Close and return to transcript",
@@ -333,6 +377,28 @@ window.translations = {
         medical_warmup_cold_msg: "The transcription system is sleeping to save energy.",
         medical_warmup_cold_submsg: "Press the microphone to wake the system and start your workday.",
         medical_warmup_ready_msg: "System is ready. Have a great workday.",
+        medical_tab_transcript: "Full transcript",
+        medical_tab_summary: "Medical summary",
+        medical_delete_recording_title: "Delete recording",
+        medical_delete_recording_message: "Are you sure you want to delete this recording?",
+        medical_wake_choice_title: "Wake transcription system",
+        medical_wake_choice_message: "The system is sleeping. How would you like to continue?",
+        medical_wake_choice_wait: "Wait for warmup",
+        medical_wake_choice_record: "Record during warmup",
+        medical_recording: "Recording",
+        medical_save_recording: "Save recording",
+        medical_delete_recording: "Delete recording",
+        medical_save: "Save",
+        medical_delete: "Delete",
+        medical_summary_chief: "Complaint",
+        medical_summary_exam: "Findings",
+        medical_summary_recommendations: "Patient recommendations",
+        medical_summary_overview: "Overview",
+        medical_summary_key_points: "Key points",
+        medical_summary_empty: "No medical summary is available yet.",
+        medical_summary_not_specified: "Not specified.",
+        medical_copy: "Copy",
+        medical_no_text_to_copy: "No text to copy",
         upload_placeholder: "",
         upload_disclaimer_accept: "I understand",
         upload_disclaimer_text: "Your transcripts are processed securely but may pass through third-party development servers.\n\nWe ask that you avoid uploading highly sensitive material (e.g. attorney-client privilege, medical confidentiality, or sensitive personal data).\n\nWhen the beta period ends and we move to a paid service, the system will switch to a fully closed, strict privacy model.",
@@ -388,15 +454,27 @@ window.translations = {
         video_loaded: "Video loaded locally",
         // About page
         about_title: "About QuickScribe",
-        about_intro1: "QuickScribe is an AI-native transcription platform built for high-context languages and mission-critical accuracy.",
-        about_intro2: "By utilizing language-specific expert modules rather than generic global models, we deliver enterprise-grade precision in environments where standard APIs typically fail.",
-        about_team: "The Team",
+        about_intro1: "QuickScribe is an AI-native transcription and documentation platform built to deliver highly accurate speech-to-text experiences in languages and professional domains where generic transcription models often fall short.",
+        about_intro2: "Our platform combines advanced speech recognition, language-specific optimization, and AI-powered post-processing to help professionals transform audio and video recordings into structured, actionable text. QuickScribe serves a range of use cases, including meeting transcription, content creation, research interviews, and professional documentation workflows.",
+        about_intro3: "In addition to our general transcription platform, we are developing specialized solutions for healthcare professionals, enabling clinicians to generate accurate clinical documentation while reducing administrative workload and improving productivity.",
+        about_intro4: "QuickScribe is built on a scalable cloud-native architecture using AWS services including Lambda, S3, and serverless processing pipelines to securely handle media uploads and large-scale transcription workloads.",
+        about_team: "Leadership",
         about_shlomi_name: "Shlomi Cohen",
         about_shlomi_role: "Founder & CEO",
-        about_shlomi_bio: "A Voice AI veteran with deep expertise in adapting speech technology for global markets and optimizing GPU-accelerated inference pipelines.",
+        about_shlomi_bio1: "Shlomi Cohen is a technology leader with more than 15 years of experience in communications, wireless systems, IoT, embedded platforms, and voice technologies.",
+        about_shlomi_bio2: "Before founding QuickScribe, Shlomi held senior engineering and architecture roles at DSP Group, Altair Semiconductor, and Alvarion Technologies, where he led the development of innovative wireless, IoT, and smart voice solutions. Throughout his career, he has worked on products deployed globally and has contributed to patented technologies in voice systems, IoT platforms, and wireless communications.",
+        about_shlomi_bio3: "At QuickScribe, Shlomi leads product strategy, AI architecture, cloud infrastructure, and the development of language-specific transcription technologies designed to improve accuracy and usability for professional users.",
         // Contact page
         contact_title: "Contact QuickScribe",
-        contact_intro: "Based in Netanya, Israel, we are building the world's most accurate specialized transcriber.",
+        contact_intro: "We are building the world's most accurate specialized transcriber.",
+        sales_contact_title: "Contact Sales",
+        sales_contact_sub: "Tell us what you need and we will get back to you.",
+        sales_contact_message: "Message",
+        sales_contact_email: "Email (optional)",
+        sales_contact_send: "Send",
+        sales_contact_cancel: "Cancel",
+        sales_contact_sent: "Message sent. Thank you!",
+        sales_contact_failed: "Could not send. Try again or email info@getquickscribe.com",
         contact_email: "Email:",
         contact_linkedin: "LinkedIn:",
         contact_linkedin_link: "Follow our Progress",
@@ -430,8 +508,31 @@ window.translations = {
     }
 };
 
-// Default: Hebrew
-window.currentLocale = localStorage.getItem('locale') || 'he';
+function resolveLocale() {
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        const q = String(params.get('lang') || '').toLowerCase().split('-')[0];
+        if (window.translations[q]) return q;
+    } catch (_) {}
+    try {
+        const path = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
+        if (path === '/en') return 'en';
+        if (path === '/') return 'he';
+    } catch (_) {}
+    try {
+        const stored = String(localStorage.getItem('locale') || '').toLowerCase().split('-')[0];
+        if (window.translations[stored]) return stored;
+    } catch (_) {}
+    try {
+        const htmlLang = String(document.documentElement.lang || '').toLowerCase().split('-')[0];
+        if (window.translations[htmlLang]) return htmlLang;
+    } catch (_) {}
+    return 'he';
+}
+
+// Default follows URL / DOM first, then stored preference.
+window.currentLocale = resolveLocale();
+try { localStorage.setItem('locale', window.currentLocale); } catch (_) {}
 
 /** Returns translated string for key; fallback to key if missing. */
 window.t = function(key) {
@@ -460,15 +561,35 @@ window.setLocale = async function(code) {
     } catch (_) {}
     document.documentElement.lang = code === 'he' ? 'he' : 'en';
     document.documentElement.dir = code === 'he' ? 'rtl' : 'ltr';
+    const hadSignedInNav = !!document.getElementById('nav-user-name-trigger');
+    try {
+        if (hadSignedInNav) {
+            window.__QS_UX_USER_SIGNED_IN = true;
+        }
+    } catch (_) {}
+    if (typeof window.setupNavbarAuth === 'function') {
+        try {
+            window.__QS_PRESERVE_NAVBAR_AUTH_ON_LOCALE_SWITCH = hadSignedInNav;
+            await window.setupNavbarAuth();
+        } finally {
+            window.__QS_PRESERVE_NAVBAR_AUTH_ON_LOCALE_SWITCH = false;
+        }
+    }
     if (typeof window.applyTranslations === 'function') window.applyTranslations();
+    if (typeof window.applyMedicalModeUi === 'function') {
+        try { window.applyMedicalModeUi(); } catch (_) {}
+    }
     const initialsEl = document.getElementById('lang-initials');
     if (initialsEl) initialsEl.textContent = code === 'he' ? 'He' : 'En';
-    if (typeof window.setupNavbarAuth === 'function') await window.setupNavbarAuth();
+    if (typeof window.qsSyncNavLogoHref === 'function') window.qsSyncNavLogoHref();
 };
 
 /** Apply translations to all elements with data-i18n. Run after DOM ready and on language change. */
 window.applyTranslations = function() {
     document.querySelectorAll('[data-i18n]').forEach(el => {
+        if (el.id === 'nav-auth-btn' || el.id === 'nav-auth-btn-mobile') {
+            if (window.__QS_UX_USER_SIGNED_IN) return;
+        }
         const key = el.getAttribute('data-i18n');
         if (key) el.textContent = window.t(key);
     });
@@ -479,5 +600,9 @@ window.applyTranslations = function() {
     document.querySelectorAll('[data-i18n-title]').forEach(el => {
         const key = el.getAttribute('data-i18n-title');
         if (key) el.title = window.t(key);
+    });
+    document.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
+        const key = el.getAttribute('data-i18n-aria-label');
+        if (key) el.setAttribute('aria-label', window.t(key));
     });
 };

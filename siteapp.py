@@ -2814,6 +2814,244 @@ def _supabase_rest_config():
     return supabase_url, service_key, _supabase_service_headers(service_key)
 
 
+WELCOME_CREDIT_MINUTES = 60
+
+STRIPE_CREDIT_BUNDLES = {
+    "light": {
+        "name": "QuickScribe Light credit bundle",
+        "credit_minutes": 90,
+        "amount_ils": 19,
+        "amount_usd": 7,
+    },
+    "standard": {
+        "name": "QuickScribe Standard credit bundle",
+        "credit_minutes": 300,
+        "amount_ils": 39,
+        "amount_usd": 13,
+    },
+    "plus": {
+        "name": "QuickScribe Plus credit bundle",
+        "credit_minutes": 720,
+        "amount_ils": 79,
+        "amount_usd": 27,
+    },
+}
+
+
+def _stripe_locale_is_english(locale):
+    return str(locale or "").strip().lower().startswith("en")
+
+
+def _stripe_bundle_checkout(bundle, locale):
+    """Return Stripe currency + unit_amount (smallest currency unit) for the UI locale."""
+    if _stripe_locale_is_english(locale):
+        return {
+            "currency": "usd",
+            "unit_amount": int(bundle["amount_usd"]) * 100,
+        }
+    return {
+        "currency": "ils",
+        "unit_amount": int(bundle["amount_ils"]) * 100,
+    }
+
+
+def _stripe_secret_key():
+    return (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+
+
+def _stripe_api(method, path, **kwargs):
+    secret = _stripe_secret_key()
+    if not secret:
+        raise RuntimeError("Stripe secret key is not configured")
+    url = "https://api.stripe.com/v1/" + str(path or "").lstrip("/")
+    r = requests.request(method, url, auth=(secret, ""), timeout=20, **kwargs)
+    if r.status_code >= 400:
+        raise RuntimeError(r.text or f"Stripe API HTTP {r.status_code}")
+    return r.json() if r.text else {}
+
+
+def _supabase_user_id_from_request():
+    """Return authenticated Supabase user id from Bearer token, or None."""
+    auth_header = request.headers.get('Authorization') or ''
+    token = auth_header.replace('Bearer ', '').strip() if auth_header.startswith('Bearer ') else ''
+    if not token:
+        try:
+            token = str((request.json or {}).get('access_token') or '').strip()
+        except Exception:
+            token = ''
+    if not token:
+        return None
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key:
+        return None
+    r_user = requests.get(
+        f"{supabase_url}/auth/v1/user",
+        headers={"Authorization": f"Bearer {token}", "apikey": service_key},
+        timeout=10,
+    )
+    if r_user.status_code != 200:
+        return None
+    try:
+        user_data = r_user.json()
+        return str(user_data.get('id') or user_data.get('user', {}).get('id') or '').strip() or None
+    except Exception:
+        return None
+
+
+def _user_credits_get(user_id):
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return None
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    uid = quote(user_id, safe='')
+    url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}&select=user_id,credit_minutes,welcome_granted,updated_at&limit=1"
+    r = requests.get(url, headers=headers, timeout=12)
+    if r.status_code != 200:
+        raise RuntimeError(r.text or f"Supabase user_credits lookup HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else None
+
+
+def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES):
+    """Idempotent welcome pack grant (matches DB trigger/backfill logic)."""
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        raise ValueError("userId required")
+    existing = _user_credits_get(user_id)
+    if existing and existing.get('welcome_granted'):
+        return existing
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    if not existing:
+        payload = {
+            "user_id": user_id,
+            "credit_minutes": int(minutes),
+            "welcome_granted": True,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        url = f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id"
+        r = requests.post(
+            url,
+            headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    else:
+        from urllib.parse import quote
+        uid = quote(user_id, safe='')
+        new_balance = int(existing.get('credit_minutes') or 0) + int(minutes)
+        payload = {
+            "credit_minutes": new_balance,
+            "welcome_granted": True,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}"
+        r = requests.patch(
+            url,
+            headers={**headers, "Prefer": "return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"Supabase user_credits upsert HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else payload
+
+
+def _user_credits_add_minutes(user_id, minutes):
+    """Add purchased minutes to the user's wallet."""
+    user_id = str(user_id or '').strip()
+    minutes = int(minutes or 0)
+    if not user_id:
+        raise ValueError("userId required")
+    if minutes <= 0:
+        raise ValueError("minutes must be positive")
+    existing = _user_credits_get(user_id)
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    if not existing:
+        payload = {
+            "user_id": user_id,
+            "credit_minutes": minutes,
+            "welcome_granted": False,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        r = requests.post(
+            f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
+            headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    else:
+        from urllib.parse import quote
+        uid = quote(user_id, safe='')
+        payload = {
+            "credit_minutes": int(existing.get('credit_minutes') or 0) + minutes,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        r = requests.patch(
+            f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
+            headers={**headers, "Prefer": "return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"Supabase user_credits add HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else payload
+
+
+def _stripe_credit_purchase_get(session_id):
+    session_id = str(session_id or '').strip()
+    if not session_id:
+        return None
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    sid = quote(session_id, safe='')
+    r = requests.get(
+        f"{supabase_url}/rest/v1/stripe_credit_purchases?stripe_session_id=eq.{sid}&select=*&limit=1",
+        headers=headers,
+        timeout=12,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(r.text or f"Supabase stripe_credit_purchases lookup HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else None
+
+
+def _stripe_credit_purchase_insert(row):
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    r = requests.post(
+        f"{supabase_url}/rest/v1/stripe_credit_purchases",
+        headers={**headers, "Prefer": "return=representation"},
+        json=row,
+        timeout=15,
+    )
+    if r.status_code == 409:
+        return None
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"Supabase stripe_credit_purchases insert HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else row
+
+
+def _stripe_credit_purchase_mark_credited(session_id):
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    sid = quote(str(session_id or '').strip(), safe='')
+    payload = {"credited_at": datetime.utcnow().isoformat() + "Z"}
+    r = requests.patch(
+        f"{supabase_url}/rest/v1/stripe_credit_purchases?stripe_session_id=eq.{sid}",
+        headers={**headers, "Prefer": "return=representation"},
+        json=payload,
+        timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise RuntimeError(r.text or f"Supabase stripe_credit_purchases patch HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else payload
+
+
 def _doctor_prompt_get_profile(user_id):
     user_id = str(user_id or '').strip()
     if not user_id:
@@ -3092,6 +3330,148 @@ def delete_job():
         return jsonify({"error": str(e), "deleted": False}), 500
 
 
+@app.route('/api/user/credits', methods=['GET'])
+def api_user_credits():
+    """Return the signed-in user's remaining transcription minutes."""
+    try:
+        user_id = _supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        row = _user_credits_get(user_id)
+        credit_minutes = int((row or {}).get('credit_minutes') or 0)
+        welcome_granted = bool((row or {}).get('welcome_granted'))
+        return jsonify({
+            "credit_minutes": credit_minutes,
+            "welcome_granted": welcome_granted,
+        })
+    except Exception as e:
+        logging.exception("api_user_credits failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/user/credits/ensure-welcome', methods=['POST'])
+def api_user_credits_ensure_welcome():
+    """Ensure the one-time welcome credit pack exists for the signed-in user."""
+    try:
+        user_id = _supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        row = _user_credits_ensure_welcome(user_id)
+        return jsonify({
+            "credit_minutes": int((row or {}).get('credit_minutes') or 0),
+            "welcome_granted": bool((row or {}).get('welcome_granted')),
+            "granted_minutes": WELCOME_CREDIT_MINUTES,
+        })
+    except Exception as e:
+        logging.exception("api_user_credits_ensure_welcome failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/stripe/create-checkout-session', methods=['POST'])
+def api_stripe_create_checkout_session():
+    """Create a Stripe Checkout session for pay-as-you-go minute bundles."""
+    try:
+        user_id = _supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        data = request.get_json(silent=True) or {}
+        bundle_id = str(data.get("bundle") or data.get("bundle_id") or "standard").strip().lower()
+        bundle = STRIPE_CREDIT_BUNDLES.get(bundle_id)
+        if not bundle:
+            return jsonify({"error": "Unknown credit bundle"}), 400
+        locale = str(data.get("locale") or "").strip().lower()
+        pricing = _stripe_bundle_checkout(bundle, locale)
+        success_path = "/en" if _stripe_locale_is_english(locale) else "/"
+        base_url = str(request.url_root or "").rstrip("/")
+        success_url = f"{base_url}{success_path}?stripe_success=1&session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{base_url}{success_path}?stripe_cancelled=1"
+        session = _stripe_api(
+            "POST",
+            "checkout/sessions",
+            data={
+                "mode": "payment",
+                "success_url": success_url,
+                "cancel_url": cancel_url,
+                "client_reference_id": user_id,
+                "metadata[user_id]": user_id,
+                "metadata[bundle_id]": bundle_id,
+                "metadata[credit_minutes]": str(bundle["credit_minutes"]),
+                "metadata[currency]": pricing["currency"],
+                "line_items[0][quantity]": "1",
+                "line_items[0][price_data][currency]": pricing["currency"],
+                "line_items[0][price_data][unit_amount]": str(pricing["unit_amount"]),
+                "line_items[0][price_data][product_data][name]": bundle["name"],
+                "line_items[0][price_data][product_data][description]": (
+                    f"{bundle['credit_minutes']} QuickScribe transcription minutes"
+                ),
+            },
+        )
+        return jsonify({"url": session.get("url"), "id": session.get("id")}), 200
+    except Exception as e:
+        logging.exception("api_stripe_create_checkout_session failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/stripe/confirm-checkout-session', methods=['POST'])
+def api_stripe_confirm_checkout_session():
+    """Verify a paid Stripe checkout session and apply purchased minutes once."""
+    try:
+        user_id = _supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        data = request.get_json(silent=True) or {}
+        session_id = str(data.get("session_id") or "").strip()
+        if not session_id:
+            return jsonify({"error": "session_id required"}), 400
+        existing = _stripe_credit_purchase_get(session_id)
+        if existing and existing.get("credited_at"):
+            row = _user_credits_get(user_id)
+            return jsonify({
+                "ok": True,
+                "already_credited": True,
+                "credit_minutes": int((row or {}).get("credit_minutes") or 0),
+            }), 200
+        session = _stripe_api("GET", f"checkout/sessions/{session_id}")
+        metadata = session.get("metadata") or {}
+        session_user_id = str(metadata.get("user_id") or session.get("client_reference_id") or "").strip()
+        if session_user_id != user_id:
+            return jsonify({"error": "Checkout session does not belong to this user"}), 403
+        if session.get("payment_status") != "paid":
+            return jsonify({"error": "Checkout session is not paid"}), 400
+        bundle_id = str(metadata.get("bundle_id") or "").strip().lower()
+        bundle = STRIPE_CREDIT_BUNDLES.get(bundle_id)
+        if not bundle:
+            return jsonify({"error": "Unknown checkout bundle"}), 400
+        minutes = int(bundle["credit_minutes"])
+        purchase = existing or _stripe_credit_purchase_insert({
+            "stripe_session_id": session_id,
+            "stripe_payment_intent": session.get("payment_intent"),
+            "user_id": user_id,
+            "bundle_id": bundle_id,
+            "credit_minutes": minutes,
+            "amount_ils": int(bundle["amount_ils"]),
+        })
+        if purchase is None:
+            purchase = _stripe_credit_purchase_get(session_id)
+            if purchase and purchase.get("credited_at"):
+                row = _user_credits_get(user_id)
+                return jsonify({
+                    "ok": True,
+                    "already_credited": True,
+                    "credit_minutes": int((row or {}).get("credit_minutes") or 0),
+                }), 200
+        row = _user_credits_add_minutes(user_id, minutes)
+        _stripe_credit_purchase_mark_credited(session_id)
+        return jsonify({
+            "ok": True,
+            "added_minutes": minutes,
+            "credit_minutes": int((row or {}).get("credit_minutes") or 0),
+        }), 200
+    except Exception as e:
+        logging.exception("api_stripe_confirm_checkout_session failed")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/delete_account', methods=['POST'])
 def delete_account():
     """Erase the current user's account: delete all their jobs, then delete the user from Auth. Requires Authorization: Bearer <access_token>."""
@@ -3212,6 +3592,10 @@ def favicon_ico():
 
 @app.route('/about')
 def about(): return render_template('about.html')
+
+@app.route('/products')
+def products():
+    return render_template('products.html')
 
 @app.route('/blog')
 def blog(): return render_template('blog.html')
@@ -5397,6 +5781,104 @@ def api_runpod_scale():
 
 
 REGISTRATION_FEEDBACK_RECIPIENT = "shlomi.cohen@getquickscribe.com"
+SALES_INQUIRY_RECIPIENTS = (
+    "shlomi.cohen@getquickscribe.com",
+    "info@getquickscribe.com",
+)
+
+
+def _persist_sales_inquiry(email, message, user_id=None, source="landing"):
+    """Store sales inquiry in Supabase (backup when email fails). Returns True on success."""
+    try:
+        supabase_url, _service_key, headers = _supabase_rest_config()
+    except Exception as e:
+        logging.debug("sales_inquiry persist skipped (supabase unavailable): %s", e)
+        return False
+    payload = {
+        "email": (email or None),
+        "message": message,
+        "source": str(source or "landing").strip()[:80] or "landing",
+    }
+    uid = str(user_id or "").strip()
+    if uid:
+        payload["user_id"] = uid
+    try:
+        r = requests.post(
+            f"{supabase_url}/rest/v1/sales_inquiries",
+            headers={**headers, "Prefer": "return=minimal"},
+            json=payload,
+            timeout=10,
+        )
+        if r.status_code in (200, 201, 204):
+            return True
+        logging.warning(
+            "sales_inquiry persist failed status=%s body=%s",
+            r.status_code,
+            (r.text or "")[:300],
+        )
+    except Exception as e:
+        logging.warning("sales_inquiry persist error: %s", e)
+    return False
+
+
+def _is_local_dev_request():
+    if SIMULATION_MODE:
+        return True
+    host = str(request.host or "").lower()
+    return host.startswith("localhost") or host.startswith("127.0.0.1")
+
+
+@app.route("/api/sales-inquiry", methods=["POST"])
+def api_sales_inquiry():
+    """Landing-page Contact Sales form — emailed and stored in Supabase."""
+    try:
+        data = request.get_json(silent=True) or {}
+        if str(data.get("website") or "").strip():
+            return jsonify({"ok": True}), 200
+        message = str(data.get("message") or "").strip()[:5000]
+        email = str(data.get("email") or "").strip()[:320]
+        if not message:
+            return jsonify({"error": "message required"}), 400
+        user_id = _supabase_user_id_from_request()
+        source = str(data.get("source") or "landing").strip()[:80] or "landing"
+        logging.info(
+            "sales_inquiry received email=%s user_id=%s message_len=%s preview=%s",
+            email or "(none)",
+            user_id or "(anonymous)",
+            len(message),
+            message[:160],
+        )
+        stored = _persist_sales_inquiry(email, message, user_id=user_id, source=source)
+        body = (
+            "QuickScribe sales inquiry (landing page)\n\n"
+            f"Reply-to email: {email or '(not provided)'}\n"
+            f"User id: {user_id or '(anonymous)'}\n"
+            f"Source: {source}\n\n"
+            f"{message}\n"
+        )
+        subj = "QuickScribe — Contact Sales"
+        reply_to = email if email and "@" in email else None
+        emailed = _send_email_via_zoho(
+            SALES_INQUIRY_RECIPIENTS,
+            subj,
+            body,
+            reply_to=reply_to,
+        )
+        if not emailed:
+            logging.warning("api_sales_inquiry: SMTP send failed to %s", SALES_INQUIRY_RECIPIENTS)
+        if emailed or stored:
+            return jsonify({"ok": True, "emailed": emailed, "stored": stored}), 200
+        if _is_local_dev_request():
+            logging.info(
+                "sales_inquiry local simulation (no email/db): email=%s message=%s",
+                email or "(none)",
+                message,
+            )
+            return jsonify({"ok": True, "simulated": True, "note": "local_dev_no_delivery"}), 200
+        return jsonify({"error": "send failed"}), 500
+    except Exception as e:
+        logging.warning("api_sales_inquiry: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/registration-feedback", methods=["POST"])
@@ -7955,7 +8437,7 @@ def _build_ass(segments, style='tiktok', portrait=False, subtitle_color=None):
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 
-def _send_email_via_zoho(to_email, subject, body_text, body_html=None):
+def _send_email_via_zoho(to_email, subject, body_text, body_html=None, reply_to=None):
     """Send email through Zoho SMTP (plain text; optional HTML alternative). Returns True on success."""
     smtp_host = 'smtp.zoho.com'
     smtp_port = 465
@@ -7963,13 +8445,23 @@ def _send_email_via_zoho(to_email, subject, body_text, body_html=None):
     smtp_pass = (os.environ.get('ZOHO_SMTP_PASS') or '').strip()
     from_email = smtp_user
     from_name = 'QuickScribe'
-    if not to_email or not smtp_user or not smtp_pass:
+    if isinstance(to_email, (list, tuple, set)):
+        recipients = [str(x).strip() for x in to_email if str(x).strip()]
+    else:
+        recipients = [str(to_email or '').strip()]
+    recipients = [r for r in recipients if r]
+    if not recipients or not smtp_user:
+        return False
+    if not smtp_pass:
+        logging.warning("Zoho SMTP skipped: ZOHO_SMTP_PASS is not set")
         return False
 
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = f"{from_name} <{from_email}>"
-    msg['To'] = to_email
+    msg['To'] = ', '.join(recipients)
+    if reply_to and '@' in str(reply_to):
+        msg['Reply-To'] = str(reply_to).strip()
     msg.set_content(body_text or "", charset='utf-8')
     if body_html:
         msg.add_alternative(body_html, subtype='html', charset='utf-8')
@@ -7995,7 +8487,7 @@ def _send_email_via_zoho(to_email, subject, body_text, body_html=None):
                 "Zoho SMTP send failed (attempt %s/%s) to=%s subject=%s: %s",
                 attempt,
                 attempts,
-                to_email,
+                recipients,
                 subject,
                 e,
             )

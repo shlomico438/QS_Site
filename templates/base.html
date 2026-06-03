@@ -17,11 +17,11 @@
     <meta name="twitter:title" content="QuickScribe Medical | תיעוד רפואי חכם">
     <meta name="twitter:description" content="תמלול וסיכום ביקורים רפואיים בשניות. מותאם במיוחד לרופאים וצוותים רפואיים.">
     {% else %}
-    <meta name="description" content="QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.">
+    <meta name="description" content="{% block page_description %}QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.{% endblock %}">
     {% endif %}
-    <link rel="alternate" hreflang="he" href="{{ request.url_root.rstrip('/') }}/">
-    <link rel="alternate" hreflang="en" href="{{ request.url_root.rstrip('/') }}/en">
-    <link rel="alternate" hreflang="x-default" href="{{ request.url_root.rstrip('/') }}/">
+    <link rel="alternate" hreflang="he" href="https://www.getquickscribe.com">
+    <link rel="alternate" hreflang="en" href="https://www.getquickscribe.com/en">
+    <link rel="alternate" hreflang="x-default" href="https://www.getquickscribe.com">
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}">
@@ -40,36 +40,77 @@
 
 <body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
 
-    <header class="navbar">
-        <div class="lang-switcher-wrap" id="lang-switcher-wrap">
-            <div class="lang-switcher-trigger" id="lang-switcher-trigger" title="Language">
-                <svg class="lang-globe" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                <span class="lang-initials" id="lang-initials">He</span>
+    <!-- Two-tier site header: utility bar (session/locale) + main marketing navigation -->
+    <header class="site-header navbar" id="site-header" dir="ltr">
+        <!-- Tier 1: utility bar -->
+        <div class="navbar-utility" aria-label="Utility navigation">
+            <div class="navbar-utility-inner" dir="ltr">
+                <div class="navbar-utility-start">
+                    <div class="lang-switcher-wrap" id="lang-switcher-wrap">
+                        <div class="lang-switcher-trigger" id="lang-switcher-trigger" title="Language" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false">
+                            <svg class="lang-globe" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                            <span class="lang-initials" id="lang-initials">He</span>
+                        </div>
+                        <div class="lang-switcher-menu" id="lang-switcher-menu" role="listbox">
+                            <button type="button" class="lang-option" data-lang="he">עברית</button>
+                            <button type="button" class="lang-option" data-lang="en">English</button>
+                        </div>
+                    </div>
+                    <a href="/legal" class="nav-utility-link nav-legal-link" data-i18n="footer_legal">Terms &amp; Policy</a>
+                </div>
+                <div class="navbar-utility-end" id="nav-utility-session">
+                    <span id="nav-credit-balance" class="nav-credit-balance" style="display: none;" aria-live="polite">
+                        <span class="nav-credit-label" data-i18n="nav_minutes_balance">Minutes balance</span>:
+                        <strong id="nav-credit-minutes">0</strong>
+                    </span>
+                    <div id="nav-utility-signed-in" class="nav-utility-signed-in" style="display: none;">
+                        <button type="button" class="nav-utility-user-name" id="nav-user-name-trigger" aria-haspopup="dialog">Account</button>
+                        <button type="button" class="nav-utility-link nav-utility-logout" id="nav-logout-btn" data-i18n="nav_logout">Log Out</button>
+                    </div>
+                    <a href="#" class="nav-utility-link nav-utility-sign-in" id="nav-auth-btn" data-i18n="nav_sign_in">Sign In</a>
+                </div>
             </div>
-            <div class="lang-switcher-menu" id="lang-switcher-menu">
-                <button type="button" class="lang-option" data-lang="he">עברית</button>
-                <button type="button" class="lang-option" data-lang="en">English</button>
-            </div>
-            <a href="/legal" class="nav-legal-link" data-i18n="footer_legal">תנאים ומדיניות</a>
-        </div>
-        <div class="hamburger-menu" onclick="toggleMenu()">
-            <span></span>
-            <span></span>
-            <span></span>
         </div>
 
-        <a href="{% if medical_entry | default(false) %}/medical{% else %}/{% endif %}" class="nav-logo" id="nav-logo-link">
-            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" style="height: 60px; width: auto;">
-        </a>
+        <!-- Tier 2: main navigation bar -->
+        <div class="navbar-main">
+            <div class="navbar-main-inner" dir="ltr">
+                <a href="{% if medical_entry | default(false) %}/medical{% else %}/{% endif %}" class="nav-logo" id="nav-logo-link">
+                    <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="nav-logo-image" width="48" height="48">
+                </a>
 
-        <div class="nav-menu" id="nav-menu">
-            <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
-            <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
-            <a href="/accuracy" class="nav-item nav-hide-on-mobile" data-i18n="nav_accuracy">Accuracy</a>
-            <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
-            <a href="/personal" class="nav-item nav-personal-link" id="nav-personal-link" style="display: none;" data-i18n="nav_personal">איזור אישי</a>
-            <a href="#" class="nav-item nav-new-session-item" id="nav-new-session-btn" data-i18n="new_session">סשן חדש</a>
-            <a href="#" class="nav-item" id="nav-auth-btn" style="color: #5d5dff; font-weight: 800;" data-i18n="nav_sign_in">Sign In</a>
+                <nav class="nav-menu nav-menu-desktop" id="nav-menu-desktop" aria-label="Primary navigation">
+                    <a href="/products" class="nav-item nav-products-link" id="nav-products-link" data-i18n="nav_products">Products</a>
+                    <a href="/accuracy" class="nav-item" data-i18n="nav_accuracy">Accuracy</a>
+                    <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
+                    <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
+                    <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
+                </nav>
+
+                <div class="navbar-main-actions">
+                    <a href="/" class="nav-cta-btn" id="nav-dashboard-cta" data-i18n="nav_cta_transcription">New Transcription</a>
+                    <button type="button" class="hamburger-menu" id="hamburger-menu" aria-label="Open menu" aria-expanded="false" aria-controls="nav-menu-mobile">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Mobile navigation drawer -->
+            <nav class="nav-menu nav-menu-mobile" id="nav-menu" aria-label="Mobile navigation" hidden>
+                <a href="/products" class="nav-item nav-products-link nav-products-link-mobile" data-i18n="nav_products">Products</a>
+                <a href="/accuracy" class="nav-item" data-i18n="nav_accuracy">Accuracy</a>
+                <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
+                <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
+                <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
+                <a href="/" class="nav-item nav-cta-btn nav-cta-btn--mobile" id="nav-new-session-btn" data-i18n="nav_cta_transcription">New Transcription</a>
+                <span id="nav-credit-balance-mobile" class="nav-credit-balance nav-credit-balance--mobile" style="display: none;" aria-live="polite">
+                    <span data-i18n="nav_minutes_balance">Minutes balance</span>:
+                    <strong id="nav-credit-minutes-mobile">0</strong>
+                </span>
+                <a href="#" class="nav-item nav-auth-btn-mobile" id="nav-auth-btn-mobile" data-i18n="nav_sign_in">Sign In</a>
+            </nav>
         </div>
     </header>
 
@@ -79,6 +120,10 @@
             <button type="button" id="user-menu-close" class="user-menu-close-btn" aria-label="Close">×</button>
         </div>
         <div id="user-menu-profile" class="user-menu-profile">
+            <div id="user-menu-credits" class="user-menu-credits" style="display: none;" aria-live="polite">
+                <span data-i18n="nav_credits">יתרת דקות</span>:
+                <strong id="user-menu-credit-minutes">0</strong>
+            </div>
             <div class="user-menu-profile-medical" style="margin-bottom:10px;">
                 <label for="user-menu-medical-mode" style="display:flex; align-items:center; gap:8px; font-weight:600;">
                     <input type="checkbox" id="user-menu-medical-mode">
@@ -135,9 +180,15 @@
         });
     </script>
     <script>
-        function toggleMenu() {
-            document.getElementById('nav-menu').classList.toggle('active');
-            document.querySelector('.hamburger-menu').classList.toggle('open');
+        function toggleMenu(forceOpen) {
+            var menu = document.getElementById('nav-menu');
+            var burger = document.getElementById('hamburger-menu');
+            if (!menu || !burger) return;
+            var open = typeof forceOpen === 'boolean' ? forceOpen : !menu.classList.contains('active');
+            menu.classList.toggle('active', open);
+            menu.hidden = !open;
+            burger.classList.toggle('open', open);
+            burger.setAttribute('aria-expanded', open ? 'true' : 'false');
         }
         (function() {
             var urlLocale = null;
@@ -163,10 +214,15 @@
             var trigger = document.getElementById('lang-switcher-trigger');
             function closeLangMenu() { if (menu) menu.classList.remove('open'); }
             function openLangMenu() { if (menu) menu.classList.toggle('open'); }
+            var burger = document.getElementById('hamburger-menu');
+            if (burger) {
+                burger.addEventListener('click', function() { toggleMenu(); });
+            }
             if (trigger && menu) {
                 trigger.addEventListener('click', function(e) {
                     e.stopPropagation();
                     openLangMenu();
+                    try { trigger.setAttribute('aria-expanded', menu.classList.contains('open') ? 'true' : 'false'); } catch (_) {}
                 });
             }
             document.querySelectorAll('.lang-option').forEach(function(btn) {

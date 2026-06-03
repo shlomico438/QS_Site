@@ -92,6 +92,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
         storage: qsSupabaseAuthStorage
     }
 });
+try { window.supabase = supabase; } catch (_) {}
 
 // Console gate + timestamp prefix on every line:
 // - Default ON for localhost (dev), OFF for non-local hosts (production-like).
@@ -183,6 +184,30 @@ function _qsSetMedicalLanding() {
 function _qsClearMedicalLanding() {
     try { localStorage.removeItem(QS_MEDICAL_LANDING_KEY); } catch (_) {}
 }
+
+/** UI locale resolver for dictionary-based translations (same keys, he/en values). */
+function qsResolveAppLocale() {
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        const q = String(params.get('lang') || '').toLowerCase().split('-')[0];
+        if (q === 'en' || q === 'he') return q;
+    } catch (_) {}
+    try {
+        const path = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
+        if (path === '/en') return 'en';
+        if (path === '/') return 'he';
+    } catch (_) {}
+    const win = String(window.currentLocale || '').toLowerCase().split('-')[0];
+    const dom = String((document.documentElement && document.documentElement.lang) || '').toLowerCase().split('-')[0];
+    if (win === 'en' || win === 'he') return win;
+    try {
+        const stored = String(localStorage.getItem('locale') || '').toLowerCase().split('-')[0];
+        if (stored === 'en' || stored === 'he') return stored;
+    } catch (_) {}
+    if (dom === 'en' || dom === 'he') return dom;
+    return 'he';
+}
+window.qsResolveAppLocale = qsResolveAppLocale;
 /** True if this browser should return to the medical (HIPAA) product surface after sign-out. */
 function _qsWantsPostLogoutMedical() {
     try {
@@ -459,9 +484,9 @@ function qsShowMedicalWarmupProgressDuringRecording() {
     window.__QS_MEDICAL_RECORDING_WARMUP_BAR = true;
     const panel = document.getElementById('processing-state-panel');
     const introEl = document.getElementById('processing-state-intro');
-    const spinner = document.getElementById('processing-state-spinner');
+    const spinnerWrap = document.getElementById('processing-state-spinner-wrap');
     if (introEl) introEl.style.display = 'none';
-    if (spinner) spinner.style.display = 'none';
+    if (spinnerWrap) spinnerWrap.style.display = 'none';
     if (panel) panel.style.display = 'flex';
     if (typeof qsShowUnifiedProgressChrome === 'function') qsShowUnifiedProgressChrome();
     if (typeof qsSetUnifiedProgressPhase === 'function') qsSetUnifiedProgressPhase('warmup', qsWarmupPhasePct());
@@ -1484,7 +1509,12 @@ function qsNavLogoTargetPath() {
     try {
         if (String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1') return '/medical';
     } catch (_) {}
-    return '/';
+    const locale = String(
+        window.currentLocale ||
+        (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
+        'he'
+    ).toLowerCase().split('-')[0];
+    return locale === 'en' ? '/en' : '/';
 }
 
 function qsSyncNavLogoHref() {
@@ -1492,6 +1522,7 @@ function qsSyncNavLogoHref() {
     if (!logoLink) return;
     logoLink.setAttribute('href', qsNavLogoTargetPath());
 }
+window.qsSyncNavLogoHref = qsSyncNavLogoHref;
 
 function qsWireNavLogoMedicalRouting() {
     const logoLink = document.getElementById('nav-logo-link');
@@ -1689,6 +1720,8 @@ window.retryTriggerForActiveJob = async function() {
 // --- AUTH STATE: after email confirmation (magic link) Supabase creates the session; close modal and refresh ---
 supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') {
+        try { window.__QS_USER_CREDIT_MINUTES = null; } catch (_) {}
+        try { qsSyncUserCreditsUi(); } catch (_) {}
         try {
             const p = (window.location && window.location.pathname)
                 ? String(window.location.pathname).replace(/\/+$/, '') || '/'
@@ -1715,6 +1748,7 @@ supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session) {
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
+        try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
         // Warmup is started from setupNavbarAuth / setMedicalMode (avoid duplicate POST on delayed SIGNED_IN).
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
         if (window.location.hash && /access_token/.test(window.location.hash)) {
@@ -2378,6 +2412,146 @@ async function qsGetAuthUserForUi(options = {}) {
     } while (true);
     return null;
 }
+window.qsGetAuthUserForUi = qsGetAuthUserForUi;
+
+async function qsEnsureWelcomeCredits() {
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session && session.access_token ? session.access_token : '';
+        if (!token) return null;
+        const res = await fetch('/api/user/credits/ensure-welcome', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            console.warn('qsEnsureWelcomeCredits:', data.error || res.status);
+            return null;
+        }
+        const minutes = Number(data.credit_minutes);
+        if (Number.isFinite(minutes)) {
+            try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
+        }
+        qsSyncUserCreditsUi();
+        qsApplyDefaultPlanFromCredits();
+        return data;
+    } catch (err) {
+        console.warn('qsEnsureWelcomeCredits failed:', err);
+        return null;
+    }
+}
+
+async function qsRefreshUserCredits(options = {}) {
+    options = options || {};
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session && session.access_token ? session.access_token : '';
+        if (!token) {
+            try { window.__QS_USER_CREDIT_MINUTES = null; } catch (_) {}
+            qsSyncUserCreditsUi();
+            return null;
+        }
+        if (options.ensureWelcome) {
+            const ensured = await qsEnsureWelcomeCredits();
+            if (ensured) return ensured;
+        }
+        const res = await fetch('/api/user/credits', {
+            headers: { 'Authorization': `Bearer ${token}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            console.warn('qsRefreshUserCredits:', data.error || res.status);
+            return null;
+        }
+        const minutes = Number(data.credit_minutes);
+        if (Number.isFinite(minutes)) {
+            try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
+        }
+        qsSyncUserCreditsUi();
+        qsApplyDefaultPlanFromCredits();
+        return data;
+    } catch (err) {
+        console.warn('qsRefreshUserCredits failed:', err);
+        return null;
+    }
+}
+
+function qsShouldShowCreditBalance() {
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+    } catch (_) {}
+    try {
+        if (window.__QS_MEDICAL_URL_ENTRY === true) return false;
+    } catch (_) {}
+    try {
+        const p = (window.location && window.location.pathname)
+            ? String(window.location.pathname).replace(/\/+$/, '') || '/'
+            : '/';
+        if (p === '/medical') return false;
+    } catch (_) {}
+    return true;
+}
+
+function qsSyncUserCreditsUi() {
+    const signedIn = !!window.__QS_UX_USER_SIGNED_IN;
+    const showCredits = signedIn && qsShouldShowCreditBalance();
+    const minutes = Number(window.__QS_USER_CREDIT_MINUTES);
+    const hasValue = Number.isFinite(minutes);
+    const displayMinutes = hasValue ? String(Math.max(0, Math.floor(minutes))) : '0';
+    const navWrap = document.getElementById('nav-credit-balance');
+    const navMinutes = document.getElementById('nav-credit-minutes');
+    const navWrapMobile = document.getElementById('nav-credit-balance-mobile');
+    const navMinutesMobile = document.getElementById('nav-credit-minutes-mobile');
+    const menuWrap = document.getElementById('user-menu-credits');
+    const menuMinutes = document.getElementById('user-menu-credit-minutes');
+    if (navWrap) navWrap.style.display = showCredits ? 'inline-flex' : 'none';
+    if (navMinutes) navMinutes.textContent = displayMinutes;
+    if (navWrapMobile) navWrapMobile.style.display = showCredits ? 'inline-flex' : 'none';
+    if (navMinutesMobile) navMinutesMobile.textContent = displayMinutes;
+    if (menuWrap) menuWrap.style.display = showCredits ? '' : 'none';
+    if (menuMinutes) menuMinutes.textContent = displayMinutes;
+}
+
+const QS_STARTER_PLAN_KEY = 'qs_starter_plan_selected';
+const QS_SELECTED_PLAN_KEY = 'qs_selected_plan';
+
+function qsGetStoredPlan() {
+    try {
+        const current = String(localStorage.getItem(QS_SELECTED_PLAN_KEY) || '').trim();
+        if (current === 'starter' || current === 'pro' || current === 'enterprise') return current;
+        if (localStorage.getItem(QS_STARTER_PLAN_KEY) === '1') return 'starter';
+    } catch (_) {}
+    return 'starter';
+}
+
+function qsGetSelectedPlan() {
+    const stored = qsGetStoredPlan();
+    const minutes = Number(window.__QS_USER_CREDIT_MINUTES);
+    if (Number.isFinite(minutes) && minutes > 0 && stored !== 'pro' && stored !== 'enterprise') {
+        return 'starter';
+    }
+    return stored;
+}
+
+function qsApplyDefaultPlanFromCredits() {
+    try {
+        const minutes = Number(window.__QS_USER_CREDIT_MINUTES);
+        if (!Number.isFinite(minutes) || minutes <= 0) return;
+        const stored = qsGetStoredPlan();
+        if (stored === 'pro' || stored === 'enterprise') return;
+        try { localStorage.setItem(QS_SELECTED_PLAN_KEY, 'starter'); } catch (_) {}
+        if (typeof window.syncPlanCardsUi === 'function') window.syncPlanCardsUi();
+        else if (typeof qsSyncStarterPlanUploadGate === 'function') qsSyncStarterPlanUploadGate();
+    } catch (_) {}
+}
+window.qsEnsureWelcomeCredits = qsEnsureWelcomeCredits;
+window.qsRefreshUserCredits = qsRefreshUserCredits;
+window.qsSyncUserCreditsUi = qsSyncUserCreditsUi;
+window.qsApplyDefaultPlanFromCredits = qsApplyDefaultPlanFromCredits;
+window.qsGetSelectedPlan = qsGetSelectedPlan;
 
 async function maybeShowInitialRegistrationPrompt() {
     try {
@@ -2580,6 +2754,7 @@ function _showToast(message, options = {}) {
     toast.style.opacity = '1';
     toast._hideTimer = setTimeout(() => { toast.style.opacity = '0'; }, duration);
 }
+window.showStatus = showStatus;
 
 function _hideToastNow() {
     const toast = document.getElementById('qs-toast');
@@ -2658,7 +2833,71 @@ function setSeoHomeContentVisibility(visible) {
         return;
     }
     seo.style.display = visible ? '' : 'none';
+    try { if (typeof window.qsSyncStarterPlanUploadGate === 'function') window.qsSyncStarterPlanUploadGate(); } catch (_) {}
 }
+
+function qsIsStarterPlanSelected() {
+    return qsGetSelectedPlan() === 'starter';
+}
+
+function qsRequiresStarterPlanGate() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+    const seo = document.getElementById('seo-home-content');
+    if (!seo) return false;
+    const hidden = seo.style.display === 'none' || window.getComputedStyle(seo).display === 'none';
+    return !hidden;
+}
+
+function qsSyncStarterPlanUploadGate() {
+    const gated = qsRequiresStarterPlanGate() && qsGetSelectedPlan() !== 'starter';
+    document.body.classList.toggle('qs-starter-plan-required', gated);
+    const mainBtn = document.getElementById('main-btn');
+    const regularRecordBtn = document.getElementById('regular-record-btn');
+    if (mainBtn) {
+        if (gated) {
+            mainBtn.disabled = true;
+            mainBtn.setAttribute('data-qs-plan-gated', '1');
+        } else if (mainBtn.getAttribute('data-qs-plan-gated') === '1') {
+            mainBtn.disabled = false;
+            mainBtn.removeAttribute('data-qs-plan-gated');
+        }
+    }
+    if (regularRecordBtn) {
+        regularRecordBtn.disabled = gated;
+        regularRecordBtn.setAttribute('aria-disabled', gated ? 'true' : 'false');
+    }
+}
+
+function qsBlockIfStarterPlanRequired() {
+    if (!qsRequiresStarterPlanGate()) return false;
+    const plan = qsGetSelectedPlan();
+    if (plan === 'starter') return false;
+    const pricing = document.getElementById('pricing-section') || document.getElementById('seo-pricing-starter');
+    if (pricing) {
+        try { pricing.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
+    }
+    const focusCard = document.getElementById(
+        plan === 'pro' ? 'seo-pricing-pro' : (plan === 'enterprise' ? 'seo-pricing-enterprise' : 'seo-pricing-starter')
+    );
+    if (focusCard) {
+        focusCard.classList.add('qs-plan-attention');
+        setTimeout(() => { try { focusCard.classList.remove('qs-plan-attention'); } catch (_) {} }, 1200);
+    }
+    if (typeof showStatus === 'function') {
+        const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+        const msg = !plan
+            ? (isHe ? 'בחרו תוכנית כדי להתחיל.' : 'Select a plan to begin.')
+            : (isHe ? 'לביצוע העלאה בחינם, בחרו את מסלול Starter.' : 'Select the free Starter plan to upload.');
+        showStatus(msg, true, { duration: 4500 });
+    }
+    return true;
+}
+
+window.qsGetSelectedPlan = qsGetSelectedPlan;
+window.qsIsStarterPlanSelected = qsIsStarterPlanSelected;
+window.qsRequiresStarterPlanGate = qsRequiresStarterPlanGate;
+window.qsSyncStarterPlanUploadGate = qsSyncStarterPlanUploadGate;
+window.qsBlockIfStarterPlanRequired = qsBlockIfStarterPlanRequired;
 
 /** Keep marketing SEO block in sync: hide when a job/transcript is active (standard mode), same as after upload. */
 function syncSeoBlockWithAppState() {
@@ -2690,59 +2929,127 @@ function syncSeoBlockWithAppState() {
 }
 /** @param {object} [userOverride] - If provided (e.g. from updateUser), use this user instead of getUser() so the UI shows fresh data. */
 async function setupNavbarAuth(userOverride) {
-    const navBtn = document.getElementById('nav-auth-btn');
-    if (!navBtn) return;
+    const signInBtn = document.getElementById('nav-auth-btn');
+    const signInMobile = document.getElementById('nav-auth-btn-mobile');
+    const signedInWrap = document.getElementById('nav-utility-signed-in');
+    const nameTrigger = document.getElementById('nav-user-name-trigger');
+    const logoutBtn = document.getElementById('nav-logout-btn');
+    const dashboardCta = document.getElementById('nav-dashboard-cta');
+    if (!signInBtn && !signedInWrap) return;
 
+    const hadSignedInNav = !!(nameTrigger && nameTrigger.textContent && nameTrigger.textContent !== 'Account');
     const user = userOverride != null ? userOverride : await qsGetAuthUserForUi({ waitMs: 1500 });
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+
+    if (!user && hadSignedInNav && window.__QS_PRESERVE_NAVBAR_AUTH_ON_LOCALE_SWITCH === true) {
+        try { window.__QS_UX_USER_SIGNED_IN = true; } catch (_) {}
+        if (logoutBtn) logoutBtn.textContent = T('nav_logout');
+        closeUserMenu();
+        return;
+    }
+
     try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
+    if (user) {
+        try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
+    } else {
+        try { window.__QS_USER_CREDIT_MINUTES = null; } catch (_) {}
+        qsSyncUserCreditsUi();
+    }
     if (user && typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
         try { void window.qsRefreshMedicalEndpointStatus(); } catch (_) {}
     }
 
-    const personalLink = document.getElementById('nav-personal-link');
-    if (user) {
-        if (personalLink) personalLink.style.display = '';
-        const { displayName } = getAuthUserDisplayInfo(user);
-        const logoutText = (typeof window.t === 'function' ? window.t('nav_logout') : 'Log Out');
-        navBtn.innerHTML = `<span class="nav-user-name" id="nav-user-name-trigger" role="button" tabindex="0">${escapeHtml(displayName)}</span> <span class="nav-auth-divider">|</span> <span class="nav-logout" id="nav-logout-btn">${escapeHtml(logoutText)}</span>`;
-        navBtn.style.color = "#1e3a8a";
-        navBtn.href = "#";
-        navBtn.onclick = (e) => {
+    const wireSignIn = (btn) => {
+        if (!btn) return;
+        btn.style.display = user ? 'none' : 'inline-flex';
+        btn.onclick = (e) => {
             e.preventDefault();
-            if (e.target.id === 'nav-logout-btn' || e.target.closest('#nav-logout-btn')) {
-                (async () => {
-                    if (typeof _qsSignOutThenMedicalOrReload === 'function') {
-                        await _qsSignOutThenMedicalOrReload();
-                    } else {
-                        await supabase.auth.signOut();
-                        window.location.reload();
-                    }
-                })();
-                return;
-            }
-            toggleUserMenu();
+            if (typeof window.toggleModal === 'function') window.toggleModal(true);
         };
-        const nameTrigger = document.getElementById('nav-user-name-trigger');
-        if (nameTrigger) {
-            nameTrigger.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleUserMenu(); } };
+    };
+
+    const wireLogout = async () => {
+        if (typeof _qsSignOutThenMedicalOrReload === 'function') {
+            await _qsSignOutThenMedicalOrReload();
+        } else {
+            await supabase.auth.signOut();
+            window.location.reload();
         }
+    };
+
+    if (signedInWrap) signedInWrap.style.display = user ? 'inline-flex' : 'none';
+    wireSignIn(signInBtn);
+    wireSignIn(signInMobile);
+
+    if (dashboardCta) {
+        if (user) {
+            dashboardCta.href = '/personal';
+            dashboardCta.textContent = T('nav_cta_dashboard');
+            dashboardCta.removeAttribute('data-i18n');
+            dashboardCta.onclick = null;
+        } else {
+            dashboardCta.href = '/';
+            dashboardCta.setAttribute('data-i18n', 'nav_cta_transcription');
+            dashboardCta.textContent = T('nav_cta_transcription');
+        }
+    }
+
+    if (user) {
+        const { displayName } = getAuthUserDisplayInfo(user);
+        if (nameTrigger) {
+            nameTrigger.textContent = displayName;
+            nameTrigger.onclick = (e) => {
+                e.preventDefault();
+                toggleUserMenu();
+            };
+            nameTrigger.onkeydown = (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggleUserMenu();
+                }
+            };
+        }
+        if (logoutBtn) {
+            logoutBtn.textContent = T('nav_logout');
+            logoutBtn.onclick = (e) => {
+                e.preventDefault();
+                void wireLogout();
+            };
+        }
+        if (signInMobile) signInMobile.style.display = 'none';
     } else {
-        if (personalLink) personalLink.style.display = 'none';
         if (window.__QS_MEDICAL_URL_ENTRY) {
             setMedicalMode(true);
         } else if (isMedicalModeEnabled()) {
             setMedicalMode(false);
         }
-        navBtn.innerHTML = typeof window.t === 'function' ? window.t('nav_sign_in') : 'Sign In';
-        navBtn.style.color = "#5d5dff";
-        navBtn.href = "#";
-        navBtn.onclick = (e) => {
-            e.preventDefault();
-            if (typeof window.toggleModal === 'function') window.toggleModal(true);
-        };
+        if (nameTrigger) nameTrigger.textContent = 'Account';
+        if (signInMobile) {
+            signInMobile.style.display = 'none';
+            signInMobile.textContent = T('nav_sign_in');
+            signInMobile.onclick = (e) => {
+                e.preventDefault();
+                if (typeof window.toggleModal === 'function') window.toggleModal(true);
+            };
+        }
     }
     closeUserMenu();
+    if (typeof window.applyTranslations === 'function') {
+        window.applyTranslations();
+        if (dashboardCta) {
+            if (user) {
+                dashboardCta.textContent = T('nav_cta_dashboard');
+                dashboardCta.removeAttribute('data-i18n');
+            } else {
+                dashboardCta.setAttribute('data-i18n', 'nav_cta_transcription');
+                dashboardCta.textContent = T('nav_cta_transcription');
+            }
+        }
+        if (logoutBtn && user) logoutBtn.textContent = T('nav_logout');
+        if (signInBtn && !user) signInBtn.textContent = T('nav_sign_in');
+    }
 }
+window.setupNavbarAuth = setupNavbarAuth;
 
 function closeUserMenuOnClickOutside(e) {
     const panel = document.getElementById('user-menu-panel');
@@ -7444,10 +7751,10 @@ function qsClearUnifiedProgressTimer() {
 
 function qsShowUnifiedProgressChrome() {
     const wrap = document.getElementById('processing-unified-progress');
-    const spinner = document.getElementById('processing-state-spinner');
+    const spinnerWrap = document.getElementById('processing-state-spinner-wrap');
     const phaseEl = document.getElementById('processing-state-phase');
     if (wrap) wrap.style.display = 'block';
-    if (spinner) spinner.style.display = 'none';
+    if (spinnerWrap) spinnerWrap.style.display = 'none';
     if (phaseEl) phaseEl.style.display = 'none';
 }
 
@@ -7586,7 +7893,7 @@ function startProcessingStateUI() {
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
     const phaseEl = document.getElementById('processing-state-phase');
     const introEl = document.getElementById('processing-state-intro');
-    const spinner = document.getElementById('processing-state-spinner');
+    const spinnerWrap = document.getElementById('processing-state-spinner-wrap');
     if (!panel) return;
 
     if (window.processingStateTimer) {
@@ -7603,7 +7910,7 @@ function startProcessingStateUI() {
     if (controlsRow) controlsRow.style.display = 'none';
 
     if (usePipelineBars) {
-        if (spinner) spinner.style.display = 'none';
+        if (spinnerWrap) spinnerWrap.style.display = 'none';
         if (phaseEl) phaseEl.style.display = 'none';
         const phase = window.__QS_UNIFIED_PROGRESS_PHASE;
         if (phase !== 'transcribe' && phase !== 'summary' && phase !== 'upload' && phase !== 'warmup') {
@@ -7611,7 +7918,7 @@ function startProcessingStateUI() {
         }
     } else if (phaseEl) {
         // Regular mode: show the classic spinner + rotating status lines.
-        if (spinner) spinner.style.display = 'block';
+        if (spinnerWrap) spinnerWrap.style.display = 'flex';
         if (phaseEl) phaseEl.style.display = '';
         // Ensure the unified bar UI is hidden in regular mode.
         try { qsHideUnifiedProgressChrome(); } catch (_) {}
@@ -7707,9 +8014,9 @@ function resetScreenToInitial() {
         statusTxt.innerText = typeof window.t === 'function' ? window.t('ready') : 'Ready';
     }
     if (mainBtn) {
-        mainBtn.disabled = false;
         setMainButtonAction('upload');
     }
+    try { qsSyncStarterPlanUploadGate(); } catch (_) {}
 
     if (transcriptWindow) {
         // Do not render `upload_placeholder` anywhere; keep transcript-window empty.
@@ -8223,6 +8530,8 @@ document.addEventListener('DOMContentLoaded', () => {
         updateMedicalTabUi();
         syncRegularRecordUi();
         try { if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn(); } catch (_) {}
+        try { qsSyncStarterPlanUploadGate(); } catch (_) {}
+        try { qsSyncUserCreditsUi(); } catch (_) {}
     };
 
     function stopMedicalRecordingTimer() {
@@ -8289,7 +8598,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function confirmMedicalDeleteRecording() {
         return new Promise((resolve) => {
             if (!medicalDeleteConfirmModal || !medicalDeleteConfirmYes || !medicalDeleteConfirmNo) {
-                resolve(window.confirm('האם אתה בטוח שברצונך למחוק הקלטה זו?'));
+                const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
+                resolve(window.confirm(T('medical_delete_recording_message') || 'Are you sure you want to delete this recording?'));
                 return;
             }
             medicalDeleteConfirmModal.style.display = 'flex';
@@ -8356,7 +8666,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = showNewSession ? 'none' : '';
         if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = showNewSession ? '' : 'none';
         if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
-        medicalRecordBtn.setAttribute('aria-label', showNewSession ? 'סשן חדש' : 'הקלטה');
+        const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
+        medicalRecordBtn.setAttribute('aria-label', showNewSession
+            ? (T('new_session') || 'New Session')
+            : (T('medical_recording') || 'Recording'));
     }
     window.syncMedicalPrimaryActionBtn = syncMedicalPrimaryActionBtn;
 
@@ -9093,6 +9406,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (regularRecordBtn) {
         regularRecordBtn.addEventListener('click', async () => {
+            if (typeof qsBlockIfStarterPlanRequired === 'function' && qsBlockIfStarterPlanRequired()) return;
             if (isMedicalModeEnabled()) return;
             window._qsRegularRecordVisible = true;
             if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
@@ -9290,24 +9604,57 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mobileSessionBtn) {
         mobileSessionBtn.addEventListener('click', () => {
             if (window.isTriggering) return;
-            openFilePickerAfterDisclaimer();
-        });
-    }
-    if (navNewSessionBtn) {
-        navNewSessionBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            if (window.isTriggering) return;
-            if (!fileInput) {
-                window.location.href = '/';
+            if (isMedicalModeEnabled()) {
+                openFilePickerAfterDisclaimer();
                 return;
             }
-            openFilePickerAfterDisclaimer();
-            const navMenu = document.getElementById('nav-menu');
-            const hamburger = document.querySelector('.hamburger-menu');
-            if (navMenu) navMenu.classList.remove('active');
-            if (hamburger) hamburger.classList.remove('open');
+            resetScreenToInitial();
+            if (typeof window.applyMedicalModeUi === 'function') {
+                try { window.applyMedicalModeUi(); } catch (_) {}
+            }
+            if (typeof syncMedicalPrimaryActionBtn === 'function') {
+                try { syncMedicalPrimaryActionBtn(); } catch (_) {}
+            }
+            try {
+                const mb = document.getElementById('main-btn');
+                if (mb) {
+                    mb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    setTimeout(() => { try { mb.focus(); } catch (_) {} }, 120);
+                }
+            } catch (_) {}
         });
     }
+    const closeMobileNav = () => {
+        if (typeof toggleMenu === 'function') toggleMenu(false);
+        else {
+            const navMenu = document.getElementById('nav-menu');
+            const hamburger = document.getElementById('hamburger-menu') || document.querySelector('.hamburger-menu');
+            if (navMenu) {
+                navMenu.classList.remove('active');
+                navMenu.hidden = true;
+            }
+            if (hamburger) hamburger.classList.remove('open');
+        }
+    };
+    const onNavWorkspaceCta = (e) => {
+        const target = e.currentTarget;
+        const href = target && target.getAttribute ? String(target.getAttribute('href') || '') : '';
+        if (href === '/personal') {
+            closeMobileNav();
+            return;
+        }
+        e.preventDefault();
+        if (window.isTriggering) return;
+        if (!fileInput) {
+            window.location.href = '/';
+            return;
+        }
+        openFilePickerAfterDisclaimer();
+        closeMobileNav();
+    };
+    if (navNewSessionBtn) navNewSessionBtn.addEventListener('click', onNavWorkspaceCta);
+    const navDashboardCta = document.getElementById('nav-dashboard-cta');
+    if (navDashboardCta) navDashboardCta.addEventListener('click', onNavWorkspaceCta);
     if (medicalToolbarNewSessionBtn) {
         medicalToolbarNewSessionBtn.addEventListener('click', (e) => {
             e.preventDefault();
@@ -9316,6 +9663,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     window.addEventListener('resize', syncMobileVideoSessionState);
     syncMobileVideoSessionState();
+    try { qsSyncStarterPlanUploadGate(); } catch (_) {}
     try {
         const videoWrapper = document.getElementById('video-wrapper');
         if (videoWrapper && typeof MutationObserver !== 'undefined') {
@@ -9326,6 +9674,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (mainBtn) {
         mainBtn.addEventListener('click', async () => {
+            if (typeof qsBlockIfStarterPlanRequired === 'function' && qsBlockIfStarterPlanRequired()) return;
             if (window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON) {
                 if (fileInput) {
                     try { window.__QS_FILE_PICKER_PURPOSE = 'attach_local_media'; } catch (_) {}
@@ -12450,22 +12799,39 @@ const QS_MEDICAL_SUMMARY_SECTION_LABELS = {
     rec: 'המלצות למטופל'
 };
 
+function _medicalText(key, fallback) {
+    if (typeof window.t === 'function') {
+        const value = window.t(key);
+        if (value && value !== key) return value;
+    }
+    return fallback;
+}
+
+function _medicalSummarySectionLabel(sectionKey) {
+    const keyMap = {
+        chief: 'medical_summary_chief',
+        exam: 'medical_summary_exam',
+        rec: 'medical_summary_recommendations'
+    };
+    return _medicalText(keyMap[sectionKey], QS_MEDICAL_SUMMARY_SECTION_LABELS[sectionKey] || sectionKey);
+}
+
 function _medicalSummarySectionHeadHtml(title, sectionKey, esc) {
     const t = esc(title);
     const key = esc(sectionKey);
-    const label = esc(QS_MEDICAL_SUMMARY_SECTION_LABELS[sectionKey] || title);
+    const label = esc(_medicalSummarySectionLabel(sectionKey) || title);
+    const copyLabel = esc(_medicalText('medical_copy', 'Copy'));
     return (
         `<div class="medical-summary-section-head" contenteditable="false">` +
         `<span class="medical-summary-section-title">${t}</span>` +
         `<button type="button" class="medical-summary-section-copy" data-medical-copy-section="${key}" ` +
-        `aria-label="העתק ${label}" title="העתק">` +
+        `aria-label="${copyLabel} ${label}" title="${copyLabel}">` +
         `<span class="medical-copy-icon" aria-hidden="true"></span></button></div>`
     );
 }
 
 async function _copyMedicalSummarySection(sectionKey) {
-    const labels = QS_MEDICAL_SUMMARY_SECTION_LABELS;
-    const label = labels[sectionKey] || sectionKey;
+    const label = _medicalSummarySectionLabel(sectionKey) || sectionKey;
     if (typeof requireUserForCopyOrDownload === 'function') {
         const ok = await requireUserForCopyOrDownload();
         if (!ok) return;
@@ -12481,7 +12847,12 @@ async function _copyMedicalSummarySection(sectionKey) {
         const el = win.querySelector(selMap[sectionKey]);
         if (el) text = String(el.innerText || el.textContent || '').trim();
     }
-    const skip = new Set(['לא צוין.', 'אין סיכום רפואי זמין עדיין.']);
+    const skip = new Set([
+        'לא צוין.',
+        'אין סיכום רפואי זמין עדיין.',
+        'Not specified.',
+        'No medical summary is available yet.'
+    ]);
     if (!text || skip.has(text)) {
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
             ? window.currentFormattedDoc : {};
@@ -12494,7 +12865,9 @@ async function _copyMedicalSummarySection(sectionKey) {
         if (fk) text = String(fmt[fk] || '').trim();
     }
     if (!text || skip.has(text)) {
-        if (typeof showStatus === 'function') showStatus(`אין טקסט להעתקה ב־${label}.`, true);
+        if (typeof showStatus === 'function') {
+            showStatus(`${_medicalText('medical_no_text_to_copy', 'No text to copy')}: ${label}.`, true);
+        }
         return;
     }
     try {
@@ -12578,7 +12951,7 @@ function renderMedicalTranscriptMainView() {
         renderTranscriptFromCues(window.currentSegments || []);
         return;
     }
-    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
     const isRtl = locale.startsWith('he') || locale.startsWith('ar');
     const textDirection = isRtl ? 'rtl' : 'ltr';
     const textAlign = isRtl ? 'right' : 'left';
@@ -12618,7 +12991,7 @@ function renderTranscriptFromCues(cues) {
         document.removeEventListener('selectionchange', container._qsSelectionChangeHandler);
         container._qsSelectionChangeHandler = null;
     }
-    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
     const isRtl = locale.startsWith('he') || locale.startsWith('ar');
     const textDirection = isRtl ? 'rtl' : 'ltr';
     const textAlign = isRtl ? 'right' : 'left';
@@ -12634,19 +13007,22 @@ function renderTranscriptFromCues(cues) {
             fmt.medical_examination_transcript != null ||
             fmt.medical_patient_recommendations != null;
         const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const emptyMsg = 'אין סיכום רפואי זמין עדיין.';
+        const emptyMsg = _medicalText('medical_summary_empty', 'No medical summary is available yet.');
+        const notSpecifiedMsg = _medicalText('medical_summary_not_specified', 'Not specified.');
+        const summaryDirection = isRtl ? 'rtl' : 'ltr';
+        const summaryAlign = isRtl ? 'right' : 'left';
         if (hasStructured) {
             const chief = _medicalSummaryFieldBody(fmt.medical_chief_complaint, 'chief');
             const exam = _medicalSummaryFieldBody(fmt.medical_examination_transcript, 'exam');
             const rec = _medicalSummaryFieldBody(fmt.medical_patient_recommendations, 'rec');
             container.innerHTML = `
-            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;" contenteditable="false">
-                ${_medicalSummarySectionHeadHtml('תלונה', 'chief', esc)}
+            <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
+                ${_medicalSummarySectionHeadHtml(_medicalSummarySectionLabel('chief'), 'chief', esc)}
                 <div id="medical-summary-chief" data-medical-section="chief">${esc(chief || emptyMsg)}</div>
-                ${_medicalSummarySectionHeadHtml('ממצאים', 'exam', esc)}
-                <div id="medical-summary-exam" data-medical-section="exam">${esc(exam || 'לא צוין.')}</div>
-                ${_medicalSummarySectionHeadHtml('המלצות למטופל', 'rec', esc)}
-                <div id="medical-summary-rec" data-medical-section="rec">${esc(rec || 'לא צוין.')}</div>
+                ${_medicalSummarySectionHeadHtml(_medicalSummarySectionLabel('exam'), 'exam', esc)}
+                <div id="medical-summary-exam" data-medical-section="exam">${esc(exam || notSpecifiedMsg)}</div>
+                ${_medicalSummarySectionHeadHtml(_medicalSummarySectionLabel('rec'), 'rec', esc)}
+                <div id="medical-summary-rec" data-medical-section="rec">${esc(rec || notSpecifiedMsg)}</div>
             </div>
         `;
         } else {
@@ -12654,12 +13030,12 @@ function renderTranscriptFromCues(cues) {
             const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
             const pointsHtml = points.length
                 ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;" contenteditable="false">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
-                : '<div id="medical-summary-empty" style="color:#6b7280;" contenteditable="false">אין סיכום רפואי זמין עדיין.</div>';
+                : `<div id="medical-summary-empty" style="color:#6b7280;" contenteditable="false">${esc(emptyMsg)}</div>`;
             container.innerHTML = `
-            <div id="medical-summary-content" style="direction:rtl; text-align:right; line-height:1.72;" contenteditable="false">
-                <div style="font-weight:700; margin-bottom:6px;" contenteditable="false">סקירה</div>
+            <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
+                <div style="font-weight:700; margin-bottom:6px;" contenteditable="false">${esc(_medicalText('medical_summary_overview', 'Overview'))}</div>
                 <div id="medical-summary-overview">${esc(overview || emptyMsg)}</div>
-                <div style="font-weight:700; margin:14px 0 6px;" contenteditable="false">נקודות מפתח</div>
+                <div style="font-weight:700; margin:14px 0 6px;" contenteditable="false">${esc(_medicalText('medical_summary_key_points', 'Key points'))}</div>
                 ${pointsHtml}
             </div>
         `;
@@ -12673,24 +13049,16 @@ function renderTranscriptFromCues(cues) {
     if (!_medicalHasTranscriptModel(cues)) {
         if (isMedical) {
             const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
+            const medicalEmptyTitle = T('medical_secure_clinical_session') || 'Secure clinical session';
+            const medicalEmptyHint = T('medical_start_recording_hint') || 'Start recording with the button below. The transcript will appear here after recording and processing finish.';
             container.innerHTML = `
                 <div style="color:#64748b; text-align:center; margin-top:32px; line-height:1.75; font-size:0.95rem; direction:${textDirection};">
-                    <div style="font-weight:600; color:#0f766e;">${T('medical_secure_clinical_session') || 'Secure clinical session'}</div>
-                    <div style="margin-top:12px;">${T('medical_start_recording_hint') || 'Start recording with the button below. The transcript will appear here after recording and processing finish.'}</div>
+                    <div style="font-weight:600; color:#0f766e;">${medicalEmptyTitle}</div>
+                    <div style="margin-top:12px;">${medicalEmptyHint}</div>
                 </div>
             `;
         } else {
-            const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
-            container.innerHTML = `
-                <div style="color:#6b7280; text-align:center; margin-top:40px; line-height:1.9;">
-                    <div style="font-weight:600;">🎥 ${T('upload_video') || 'Video'}</div>
-                    <div style="font-size:0.9em; color:#9ca3af;">MP4, MOV, WEBM, M4V, MKV, AVI</div>
-                    <div style="font-weight:600; margin-top:4px;">🎙️ ${T('upload_audio') || 'Audio'}</div>
-                    <div style="font-size:0.9em; color:#9ca3af;">M4A, MP3, WAV, AAC, OGG, FLAC</div>
-                    <div style="font-weight:600; margin-top:4px;">📁 ${T('upload_file') || 'File'}</div>
-                    <div>${T('upload_prompt_video_or_audio') || 'Choose video or audio to get started'}</div>
-                </div>
-            `;
+            container.innerHTML = '';
         }
         return;
     }

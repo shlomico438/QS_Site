@@ -2,7 +2,10 @@
    ROOT & GLOBAL
 ========================= */
 :root {
-    --nav-height: 80px;
+    --nav-height: 104px;
+    --nav-utility-height: 40px;
+    --nav-main-height: 64px;
+    --nav-total-height: calc(var(--nav-utility-height) + var(--nav-main-height));
 }
 
 * { box-sizing: border-box; }
@@ -28,6 +31,12 @@ html, body {
     align-items: flex-start;
     flex-direction: column;
     padding-bottom: 6px; /* small bridge so mouse can reach dropdown without closing */
+}
+.lang-switcher-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 .lang-switcher-trigger {
     position: relative; /* so dropdown is positioned just below trigger */
@@ -185,7 +194,7 @@ html, body {
 .user-menu-panel {
     display: none;
     position: fixed;
-    top: var(--nav-height);
+    top: var(--nav-total-height, var(--nav-height));
     right: 20px;
     width: min(400px, calc(100vw - 40px));
     max-height: min(70vh, 400px);
@@ -399,6 +408,12 @@ html, body {
     border-radius: 12px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.08);
     border: 1px solid #eee;
+}
+.products-page {
+    max-width: 1120px;
+}
+.products-page .products-section-lead {
+    margin-bottom: 20px;
 }
 
 .blog-post-accuracy-cta {
