@@ -590,6 +590,10 @@ window.applyTranslations = function() {
         if (el.id === 'nav-auth-btn' || el.id === 'nav-auth-btn-mobile') {
             if (window.__QS_UX_USER_SIGNED_IN) return;
         }
+        // #main-btn label is driven by upload/processing state — do not reset to "Start here" mid-job.
+        if (el.id === 'main-btn' && (window.isTriggering || el.getAttribute('data-qs-dynamic-label') === '1')) {
+            return;
+        }
         const key = el.getAttribute('data-i18n');
         if (key) el.textContent = window.t(key);
     });

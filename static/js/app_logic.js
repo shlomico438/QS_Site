@@ -2115,7 +2115,7 @@ async function qsS3MultipartUploadFile(opts) {
             pct = 100;
         }
         qsSetProgressBarPct(pct);
-        if (mainBtn) mainBtn.innerText = uploadLabel + ' ' + pct + '%';
+        if (mainBtn) qsSetMainBtnDynamicLabel(uploadLabel + ' ' + pct + '%');
     };
 
     const partMeta = [];
@@ -7678,10 +7678,24 @@ if (authSubmitBtn) {
     });
 }
 
+function qsSetMainBtnDynamicLabel(text) {
+    const mainBtn = document.getElementById('main-btn');
+    if (!mainBtn || text == null) return;
+    mainBtn.setAttribute('data-qs-dynamic-label', '1');
+    mainBtn.innerText = String(text);
+}
+
+function qsClearMainBtnDynamicLabel() {
+    const mainBtn = document.getElementById('main-btn');
+    if (!mainBtn) return;
+    mainBtn.removeAttribute('data-qs-dynamic-label');
+}
+
 function setMainButtonAction(mode) {
     window.mainBtnAction = mode || 'upload';
     const mainBtn = document.getElementById('main-btn');
     if (!mainBtn) return;
+    qsClearMainBtnDynamicLabel();
     if (window.mainBtnAction === 'transcribe_loaded_file') {
         mainBtn.innerText = (typeof window.t === 'function'
             ? (window.t('transcribe') || window.t('transcribe_btn'))
@@ -8032,6 +8046,7 @@ function resetScreenToInitial() {
     try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
     try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
     window.isTriggering = false;
+    window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
     qsStopFakeProgress('reset_screen_to_initial');
     window.currentSegments = [];
     window.currentWords = null;
@@ -10462,9 +10477,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Finally, restore button + status text after GPT stage completes.
+        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
         if (mainBtn) {
             mainBtn.disabled = false;
-            mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : "Upload";
+            if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
+            else {
+                qsClearMainBtnDynamicLabel();
+                mainBtn.innerText = typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload';
+            }
         }
         if (statusTxt) {
             statusTxt.innerText = typeof window.t === 'function' ? window.t('transcription_complete') : "Transcription Complete";
@@ -12139,8 +12159,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     }
     function startFakeProgress() {
         let current = 0;
+        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
         const processingLabel = ((typeof window.t === 'function' ? window.t('processing') : 'Processing...') || '').replace(/\.\.\.?$/, '');
-        if (mainBtn) mainBtn.innerText = processingLabel + ' 0%';
+        if (mainBtn) qsSetMainBtnDynamicLabel(processingLabel + ' 0%');
         qsStopFakeProgress('startFakeProgress_replace_previous');
         window.fakeProgressInterval = setInterval(() => {
             if (!window.isTriggering) {
@@ -12152,11 +12173,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window.fakeProgressInterval = null;
                 return;
             }
+            if (window.__QS_VOCAL_PREP_LABEL_ACTIVE) return;
             if (current < 95) {
                 current += 0.5;
                 const pct = Math.round(current);
                 if (!qsProcessingPipelineUsesBars()) qsSetProgressBarPct(current);
-                if (mainBtn) mainBtn.innerText = processingLabel + ' ' + pct + '%';
+                if (mainBtn) qsSetMainBtnDynamicLabel(processingLabel + ' ' + pct + '%');
                 if (statusTxt) statusTxt.style.display = 'none';
             }
         }, 1000);
@@ -12374,7 +12396,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // Show progress bar for upload; processing phase uses % in button only
             showProgressBar();
             const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : "Uploading...") || '').replace(/\.\.\.?$/, '');
-            if (mainBtn) { mainBtn.disabled = true; mainBtn.innerText = uploadLabel + " 0%"; }
+            if (mainBtn) { mainBtn.disabled = true; qsSetMainBtnDynamicLabel(uploadLabel + ' 0%'); }
             setDiarizationBusyState(true);
             if (statusTxt) statusTxt.style.display = "none";
             setTranscriptActionButtonsVisible(false);
@@ -12499,7 +12521,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 uploadPhase = 's3_done';
                 qsSetProgressBarPct(100);
-                if (mainBtn) mainBtn.innerText = uploadLabel + " 100%";
+                if (mainBtn) qsSetMainBtnDynamicLabel(uploadLabel + ' 100%');
                 qsUploadTrace('s3_multipart_complete', { jobId, bytes: currentFile && currentFile.size });
                 console.log("✅ File uploaded to S3 (multipart).");
                 setDiarizationBusyState(true);
@@ -12566,7 +12588,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         } else {
                             hideProgressBar(); // from here on, progress is % in button only
                         }
-                        if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' 0%';
+                        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
+                        if (mainBtn) qsSetMainBtnDynamicLabel(processingLabel.replace(/\.\.\.?$/, '') + ' 0%');
                         if (statusTxt) {
                             statusTxt.innerText = '';
                             statusTxt.style.display = 'none';
@@ -12576,6 +12599,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         let waitPct = 0;
                         let ts = skipRunpodHandshake ? { status: 'triggered' } : { status: '' };
                         let httpBadStreak = 0;
+                        const prepLabel = isHebrewUi ? 'מפריד קול מהמוזיקה...' : 'Separating vocals from music...';
                         // If socket delivers completion before /api/trigger_status shows "triggered", handleJobUpdate
                         // sets _lastProcessedJobId — don't block here or restart fake progress on top of GPT.
                         const jobAlreadyHandledBySocket = () => (jobId && window._lastProcessedJobId === jobId);
@@ -12592,9 +12616,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 }
                                 await new Promise(r => setTimeout(r, pollInterval));
                                 if (jobAlreadyHandledBySocket()) break;
-                                // Keep progressing slowly and cap at 95% while we wait.
-                                if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
-                                if (mainBtn) mainBtn.innerText = processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%';
                                 try {
                                     const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
                                     if (!stRes.ok) {
@@ -12611,8 +12632,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     httpBadStreak = 0;
                                     ts = await stRes.json();
                                     if (ts.status === 'preprocessing') {
-                                        const prepLabel = isHebrewUi ? 'מפריד קול מהמוזיקה...' : 'Separating vocals from music...';
-                                        if (mainBtn) mainBtn.innerText = prepLabel;
+                                        window.__QS_VOCAL_PREP_LABEL_ACTIVE = true;
+                                        if (mainBtn) qsSetMainBtnDynamicLabel(prepLabel);
+                                    } else {
+                                        window.__QS_VOCAL_PREP_LABEL_ACTIVE = false;
+                                        if (waitPct < 95) waitPct = Math.min(95, waitPct + 1);
+                                        if (mainBtn) {
+                                            qsSetMainBtnDynamicLabel(processingLabel.replace(/\.\.\.?$/, '') + ' ' + waitPct + '%');
+                                        }
                                     }
                                 } catch (_) {
                                     httpBadStreak++;
