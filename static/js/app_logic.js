@@ -1963,6 +1963,22 @@ function qsUploadTraceErr(phase, detail) {
     } catch (_) {}
 }
 
+/** Duration in seconds from the in-browser preview player (same metadata Windows Explorer shows). */
+function qsClientMediaDurationSecForCredits() {
+    const pick = (el) => {
+        if (!el) return 0;
+        const d = Number(el.duration);
+        return (Number.isFinite(d) && d > 0) ? d : 0;
+    };
+    if (window.uploadWasVideo === true) {
+        const video = document.getElementById('main-video');
+        const fromVideo = pick(video);
+        if (fromVideo > 0) return fromVideo;
+    }
+    const audio = document.getElementById('main-audio');
+    return pick(audio);
+}
+
 /** User-facing message for /api/trigger_processing credit errors. */
 function qsCreditsTriggerErrorMessage(triggerData) {
     const td = triggerData || {};
@@ -12669,13 +12685,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     uploadPhase = 'trigger_processing';
                     // Always runs after S3 upload completes: tells server upload is complete (upload_status for worker).
                     console.log("Upload complete → /api/trigger_processing");
+                    const mediaDurationSec = qsClientMediaDurationSecForCredits();
                     const triggerPayload = {
                         s3Key: s3Key,
                         bucket: bucket,
                         jobId: jobId,
                         diarization: diarizationValue,
                         isMedical: isMedicalModeEnabled(),
-                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
+                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
+                        ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
                     };
                     const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, jobId);
                     if (!triggerRes.ok) {

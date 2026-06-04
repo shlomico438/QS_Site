@@ -3023,13 +3023,144 @@ def _credit_minutes_from_duration(duration_sec):
     return max(1, int(math.ceil(duration / 60.0)))
 
 
-def _media_duration_seconds_from_s3(bucket, s3_key):
+def _subprocess_output_text(blob):
+    if not blob:
+        return ''
+    if isinstance(blob, bytes):
+        return blob.decode('utf-8', errors='replace')
+    return str(blob)
+
+
+def _parse_duration_hms_match(stderr_text):
+    if not stderr_text:
+        return 0.0
+    m = re.search(r'Duration:\s*(\d+):(\d+):(\d+)(?:[.,](\d*))?', stderr_text)
+    if not m:
+        return 0.0
+    h, m_min, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    frac = (m.group(4) or '0')[:3].ljust(3, '0')
+    return float(h * 3600 + m_min * 60 + s + int(frac) / 1000.0)
+
+
+def _client_media_duration_from_request(data):
+    """Optional duration from browser (HTML5 video/audio metadata) before server probe."""
+    if not isinstance(data, dict):
+        return 0.0
+    for key in ('mediaDurationSec', 'media_duration_sec', 'fileDurationSec', 'durationSec'):
+        try:
+            val = float(data.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if 0 < val <= 86400:
+            return val
+    return 0.0
+
+
+def _resolve_ffprobe():
+    """Return ffprobe executable (project bin/, FFMPEG_PATH sibling, or PATH)."""
+    def _ensure_exec(path):
+        if not path or not os.path.isfile(path):
+            return None
+        if sys.platform == 'win32':
+            return path
+        if os.access(path, os.X_OK):
+            return path
+        try:
+            os.chmod(path, 0o755)
+            if os.access(path, os.X_OK):
+                return path
+        except Exception:
+            pass
+        return None
+
+    def _can_run(path):
+        if not path:
+            return False
+        try:
+            result = subprocess.run(
+                [path, '-version'],
+                capture_output=True,
+                timeout=10,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    env_probe = (os.environ.get('FFPROBE_PATH') or '').strip()
+    env_exec = _ensure_exec(env_probe)
+    if env_exec and _can_run(env_exec):
+        return env_exec
+
+    ffmpeg_env = (os.environ.get('FFMPEG_PATH') or '').strip()
+    if ffmpeg_env:
+        base = pathlib.Path(ffmpeg_env)
+        for name in ('ffprobe.exe', 'ffprobe'):
+            candidate = _ensure_exec(str(base.with_name(name)))
+            if candidate and _can_run(candidate):
+                return candidate
+
+    which_probe = shutil.which('ffprobe')
+    if which_probe and _can_run(which_probe):
+        return which_probe
+
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    bin_dir = os.path.join(app_dir, 'bin')
+    for name in ('ffprobe', 'ffprobe.exe'):
+        candidate = _ensure_exec(os.path.join(bin_dir, name))
+        if candidate and _can_run(candidate):
+            return candidate
+    return 'ffprobe'
+
+
+def _probe_media_duration_ffprobe(ffprobe_path, input_path, timeout_sec=120):
+    cmd = [
+        ffprobe_path,
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(input_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout_sec)
+    except Exception:
+        return 0.0
+    if result.returncode != 0:
+        return 0.0
+    out = _subprocess_output_text(result.stdout).strip()
+    try:
+        val = float(out.splitlines()[0].strip() if out else 0)
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+    return val if val > 0 else 0.0
+
+
+def _probe_media_duration_ffmpeg(ffmpeg_path, input_path, timeout_sec=120):
+    cmd = [ffmpeg_path, '-hide_banner', '-i', str(input_path)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout_sec)
+    except Exception:
+        return 0.0
+    stderr = _subprocess_output_text(result.stderr)
+    return _parse_duration_hms_match(stderr)
+
+
+def _probe_media_duration_local(ffmpeg_path, ffprobe_path, input_path, timeout_sec=120):
+    duration = _probe_media_duration_ffprobe(ffprobe_path, input_path, timeout_sec=timeout_sec)
+    if duration > 0:
+        return duration
+    return _probe_media_duration_ffmpeg(ffmpeg_path, input_path, timeout_sec=timeout_sec)
+
+
+def _media_duration_seconds_from_s3(bucket, s3_key, client_duration_sec=0.0):
     """Media length in seconds from the uploaded file (container metadata), not GPU transcript."""
     bucket = str(bucket or '').strip()
     s3_key = str(s3_key or '').strip()
     if not bucket or not s3_key:
         return 0.0
+
     ffmpeg_path = _resolve_ffmpeg()
+    ffprobe_path = _resolve_ffprobe()
+    probe_timeout = max(30, int(os.environ.get('CREDITS_DURATION_PROBE_TIMEOUT_SEC', '120') or 120))
     try:
         s3_client = boto3.client(
             's3',
@@ -3040,40 +3171,81 @@ def _media_duration_seconds_from_s3(bucket, s3_key):
     except Exception as e:
         logging.warning("_media_duration_seconds_from_s3 s3 client failed key=%s err=%s", s3_key[-48:], e)
         return 0.0
+
+    max_bytes = int(
+        os.environ.get('CREDITS_DURATION_PROBE_MAX_BYTES', str(220 * 1024 * 1024))
+        or (220 * 1024 * 1024)
+    )
+    try:
+        ho = s3_client.head_object(Bucket=bucket, Key=s3_key)
+        content_len = int(ho.get('ContentLength') or 0)
+    except Exception:
+        content_len = 0
+
+    # MP4/MOV often store duration in moov at file end — download full object when small enough.
+    if content_len > 0 and content_len <= max_bytes:
+        suffix = pathlib.Path(s3_key).suffix.lower() or '.bin'
+        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        try:
+            os.close(fd)
+            s3_client.download_file(bucket, s3_key, tmp_path)
+            duration = _probe_media_duration_local(
+                ffmpeg_path, ffprobe_path, tmp_path, timeout_sec=probe_timeout
+            )
+            if duration > 0:
+                logging.info(
+                    "credit_duration_probe s3_download ok key_suffix=%s sec=%.1f bytes=%s",
+                    s3_key[-48:],
+                    duration,
+                    content_len,
+                )
+                return float(duration)
+        except Exception as e:
+            logging.warning(
+                "_media_duration_seconds_from_s3 download probe failed key=%s err=%s",
+                s3_key[-48:],
+                e,
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
     try:
         src_url = s3_client.generate_presigned_url(
             'get_object',
             Params={'Bucket': bucket, 'Key': s3_key},
             ExpiresIn=600,
         )
-        duration, _ = _probe_video_with_ffmpeg(ffmpeg_path, src_url)
-        if duration and duration > 0:
+        duration = _probe_media_duration_local(
+            ffmpeg_path, ffprobe_path, src_url, timeout_sec=probe_timeout
+        )
+        if duration > 0:
+            logging.info(
+                "credit_duration_probe presigned ok key_suffix=%s sec=%.1f",
+                s3_key[-48:],
+                duration,
+            )
             return float(duration)
     except Exception as e:
-        logging.warning("_media_duration_seconds_from_s3 presigned probe failed key=%s err=%s", s3_key[-48:], e)
-    try:
-        max_bytes = int(
-            os.environ.get('CREDITS_DURATION_PROBE_MAX_BYTES', str(80 * 1024 * 1024))
-            or (80 * 1024 * 1024)
+        logging.warning(
+            "_media_duration_seconds_from_s3 presigned probe failed key=%s err=%s",
+            s3_key[-48:],
+            e,
         )
-        ho = s3_client.head_object(Bucket=bucket, Key=s3_key)
-        content_len = int(ho.get('ContentLength') or 0)
-        if 0 < content_len <= max_bytes:
-            suffix = pathlib.Path(s3_key).suffix.lower() or '.bin'
-            fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-            try:
-                os.close(fd)
-                s3_client.download_file(bucket, s3_key, tmp_path)
-                duration, _ = _probe_video_with_ffmpeg(ffmpeg_path, tmp_path)
-                if duration and duration > 0:
-                    return float(duration)
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-    except Exception as e:
-        logging.warning("_media_duration_seconds_from_s3 download probe failed key=%s err=%s", s3_key[-48:], e)
+
+    try:
+        client_duration_sec = float(client_duration_sec or 0)
+    except (TypeError, ValueError):
+        client_duration_sec = 0.0
+    if 0 < client_duration_sec <= 86400:
+        logging.info(
+            "credit_duration_probe using client_media_duration key_suffix=%s sec=%.1f",
+            s3_key[-48:],
+            client_duration_sec,
+        )
+        return client_duration_sec
     return 0.0
 
 
@@ -3099,7 +3271,7 @@ def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=
     )
 
 
-def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=False):
+def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=False, request_data=None):
     """
     Probe uploaded file length, verify wallet balance, deduct minutes before GPU work.
     Idempotent per job_id (skips if credit_minutes_used already set).
@@ -3128,7 +3300,12 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
         except (TypeError, ValueError):
             pass
 
-    duration_sec = _media_duration_seconds_from_s3(bucket, s3_key)
+    client_duration_sec = _client_media_duration_from_request(request_data or {})
+    duration_sec = _media_duration_seconds_from_s3(
+        bucket,
+        s3_key,
+        client_duration_sec=client_duration_sec,
+    )
     minutes = _credit_minutes_from_duration(duration_sec)
     prefer_he = True
     try:
@@ -8173,7 +8350,12 @@ def trigger_processing():
             data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key) or ''
         ).strip()
         credit_reserve = _reserve_credits_before_gpu(
-            user_id_credits, job_id, target_bucket, s3_key, is_medical=is_medical
+            user_id_credits,
+            job_id,
+            target_bucket,
+            s3_key,
+            is_medical=is_medical,
+            request_data=data,
         )
         if not credit_reserve.get('ok'):
             return jsonify({
@@ -8544,9 +8726,19 @@ def _resolve_ffmpeg():
             return False
 
     path = os.environ.get('FFMPEG_PATH', '').strip()
-    env_exec = _ensure_exec(path)
-    if env_exec and _can_run(env_exec):
-        return env_exec
+    env_candidates = []
+    if path:
+        env_candidates.append(path)
+        if sys.platform == 'win32':
+            low = path.lower()
+            if low.endswith('.exe'):
+                env_candidates.append(path[:-4])
+            elif '.' not in os.path.basename(path):
+                env_candidates.append(path + '.exe')
+    for candidate in env_candidates:
+        env_exec = _ensure_exec(candidate)
+        if env_exec and _can_run(env_exec):
+            return env_exec
 
     which_ffmpeg = shutil.which('ffmpeg')
     if which_ffmpeg and _can_run(which_ffmpeg):
@@ -8567,19 +8759,15 @@ def _resolve_ffmpeg():
 def _probe_video_with_ffmpeg(ffmpeg_path, video_path):
     """Get (duration_sec, max_width) by running ffmpeg -i and parsing stderr. No ffprobe needed."""
     result = subprocess.run(
-        [ffmpeg_path, '-i', video_path],
-        capture_output=True, text=True, timeout=30
+        [ffmpeg_path, '-hide_banner', '-i', video_path],
+        capture_output=True,
+        timeout=30,
     )
-    stderr = result.stderr or ''
-    duration = 0.0
+    stderr = _subprocess_output_text(result.stderr)
+    duration = _parse_duration_hms_match(stderr)
     width = 0
-    # Duration: 00:01:23.45, start: ...
-    m = re.search(r'Duration:\s*(\d+):(\d+):(\d+)[.,](\d*)', stderr)
-    if m:
-        h, m_min, s, frac = int(m.group(1)), int(m.group(2)), int(m.group(3)), (m.group(4) or '0')[:3].ljust(3, '0')
-        duration = h * 3600 + m_min * 60 + s + int(frac) / 1000.0
     # Video stream: ... 1920x1080 ...
-    for m in re.finditer(r'(\d{3,5})\s*x\s*(\d{3,5})', stderr):
+    for m in re.finditer(r'(\d{3,5})\s*x\s*(\d{3,5})', stderr or ''):
         w, h = int(m.group(1)), int(m.group(2))
         if w > 0 and h > 0:
             width = max(width, w)
