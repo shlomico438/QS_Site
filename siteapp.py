@@ -6897,6 +6897,20 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         (credit_info or {}).get('credit_minutes_used'),
         (credit_info or {}).get('credit_minutes'),
     )
+    try:
+        refreshed = _completed_job_payload_from_db(job_id)
+        if refreshed:
+            refreshed['transcript_persisted'] = True
+            job_results_cache[job_id] = refreshed
+            socketio.emit('job_status_update', refreshed, room=job_id)
+            seg_n = len(refreshed.get('segments') or [])
+            logging.info(
+                "gpu_callback: re-emitted job_status_update after S3 persist job_id=%s segments=%s",
+                job_id,
+                seg_n,
+            )
+    except Exception as emit_err:
+        logging.warning("gpu_callback: post-persist socket emit failed job_id=%s: %s", job_id, emit_err)
 
 
 @app.route('/api/gpu_callback', methods=['POST'])

@@ -1432,38 +1432,126 @@ function qsApplyTranscriptPayloadFromJson(tr) {
     return [];
 }
 
-/** When socket/check_status omits segments, load from outputKey or derived input JSON on S3. */
-async function qsHydrateSegmentsForCompletedJob(rawResult, inputS3Key) {
+/** Jobs row canonical result_s3_key (set after gpu_callback background persist). */
+async function qsFetchJobResultS3KeyFromDb(runpodJobId) {
+    const jid = String(runpodJobId || '').trim();
+    if (!jid || typeof supabase === 'undefined' || !supabase.auth) return '';
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user || !user.id) return '';
+        const { data: row, error } = await supabase
+            .from('jobs')
+            .select('result_s3_key, metadata')
+            .eq('runpod_job_id', jid)
+            .eq('user_id', user.id)
+            .maybeSingle();
+        if (error || !row) return '';
+        const direct = String(row.result_s3_key || '').trim();
+        if (direct) return direct;
+        const md = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+        return String(md.result_s3_key || md.resultS3Key || '').trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+/** Ordered S3 keys for transcript JSON (canonical output/ first; deprioritize worker input/ paths). */
+function qsCollectTranscriptHydrateKeys(rawResult, inputS3Key, dbResultKey) {
     const raw = rawResult || {};
     const nested = raw.result || raw.output || {};
+    const derived = deriveTranscriptJsonKeyFromInputS3Key(inputS3Key);
     const keys = [];
-    for (const k of [
-        raw.outputKey,
-        nested.outputKey,
-        nested.result_s3_key,
-        raw.result_s3_key,
-        deriveTranscriptJsonKeyFromInputS3Key(inputS3Key),
-    ]) {
+    const push = (k) => {
         const s = String(k || '').trim();
-        if (s && !keys.includes(s)) keys.push(s);
+        if (!s || keys.includes(s)) return;
+        keys.push(s);
+    };
+    push(dbResultKey);
+    push(derived);
+    push(nested.result_s3_key);
+    push(raw.result_s3_key);
+    for (const k of [raw.outputKey, nested.outputKey]) {
+        const s = String(k || '').trim();
+        if (!s) continue;
+        if (derived && s.includes('/input/') && s !== derived) continue;
+        push(s);
     }
+    return keys;
+}
+
+/** When socket/check_status omits segments, load transcript JSON from S3 (with retries for post-persist race). */
+async function qsHydrateSegmentsForCompletedJob(rawResult, inputS3Key, opts) {
+    const jobId = rawResult && (rawResult.jobId || (rawResult.result && rawResult.result.jobId));
+    const dbKey = (opts && opts.dbResultKey) || await qsFetchJobResultS3KeyFromDb(jobId);
+    const keys = qsCollectTranscriptHydrateKeys(rawResult, inputS3Key, dbKey);
     for (let i = 0; i < keys.length; i++) {
         const tr = await qsFetchTranscriptJsonFromS3Key(keys[i]);
+        if (!tr) {
+            console.info('[qs] hydrate miss (no JSON)', { resultKey: keys[i] });
+            continue;
+        }
         const segs = qsApplyTranscriptPayloadFromJson(tr);
         if (segs && segs.length) {
             console.info('[qs] hydrated transcript from S3', { resultKey: keys[i], segments: segs.length });
+            return segs;
+        }
+        const segLen = Array.isArray(tr.segments) ? tr.segments.length : 0;
+        const wordLen = Array.isArray(tr.words) ? tr.words.length : 0;
+        console.info('[qs] hydrate JSON empty', { resultKey: keys[i], segments: segLen, words: wordLen });
+    }
+    return [];
+}
+
+/** Site persists transcript to S3 in a background thread after the first socket — retry hydrate. */
+async function qsHydrateSegmentsWithRetry(rawResult, inputS3Key) {
+    const delays = [0, 2500, 6000, 12000, 20000];
+    let dbResultKey = '';
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+        if (delays[attempt] > 0) {
+            await new Promise((r) => setTimeout(r, delays[attempt]));
+        }
+        if (!dbResultKey) {
+            dbResultKey = await qsFetchJobResultS3KeyFromDb(
+                rawResult && (rawResult.jobId || (rawResult.result && rawResult.result.jobId))
+            );
+        }
+        const segs = await qsHydrateSegmentsForCompletedJob(rawResult, inputS3Key, { dbResultKey });
+        if (segs && segs.length) {
+            if (attempt > 0) {
+                console.info('[qs] hydrated transcript after retry', { attempt: attempt + 1, segments: segs.length });
+            }
             return segs;
         }
     }
     return [];
 }
 
+function qsTranslateOr(key, fallback) {
+    if (typeof window.t !== 'function') return fallback;
+    const v = window.t(key);
+    return v && v !== key ? v : fallback;
+}
+
+/** True only after a completed job returned no segments (not on fresh / pre-upload UI). */
+function qsShouldShowEmptyTranscriptNotice() {
+    return !!window._qsShowEmptyTranscriptNotice;
+}
+
+function qsClearTranscriptWindowIdle() {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow) return;
+    transcriptWindow.innerHTML = '';
+    transcriptWindow.contentEditable = 'false';
+}
+
 function qsRenderEmptyTranscriptMessage(reason) {
     const transcriptWindow = document.getElementById('transcript-window');
     if (!transcriptWindow) return;
-    const T = typeof window.t === 'function' ? window.t : (k) => k;
-    const msg = reason || T('transcript_empty_message')
-        || 'No transcript text was returned for this file. Try uploading again or check the server logs for this job.';
+    const isHe = String(window.currentLocale || document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+    const fallback = isHe
+        ? 'לא התקבל טקסט תמלול לקובץ זה. נסה להעלות שוב או בדוק את לוגי השרת לעבודה זו.'
+        : 'No transcript text was returned for this file. Try uploading again or check the server logs for this job.';
+    const msg = reason || qsTranslateOr('transcript_empty_message', fallback);
     transcriptWindow.innerHTML = `<p class="qs-transcript-empty-notice" style="color:#64748b;text-align:center;margin:2rem 1rem;line-height:1.55;white-space:pre-wrap;">${String(msg).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
     transcriptWindow.contentEditable = 'false';
 }
@@ -8676,6 +8764,7 @@ function resetScreenToInitial() {
     window.currentSegments = [];
     window.currentWords = null;
     window.currentCaptions = null;
+    window._qsShowEmptyTranscriptNotice = false;
     window._medicalHasResult = false;
     window.currentFormattedDoc = null;
     window._qsDocPreferSegmentsAfterEdit = false;
@@ -8708,8 +8797,7 @@ function resetScreenToInitial() {
     try { qsSyncStarterPlanUploadGate(); } catch (_) {}
 
     if (transcriptWindow) {
-        // Do not render `upload_placeholder` anywhere; keep transcript-window empty.
-        transcriptWindow.innerHTML = '';
+        qsClearTranscriptWindowIdle();
     }
     if (placeholder) placeholder.style.display = 'none';
 
@@ -10670,10 +10758,23 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
     window.handleJobUpdate = async function(rawResult) {
         const jobId = rawResult.jobId || (rawResult.output && rawResult.output.jobId) || (rawResult.result && rawResult.result.jobId);
+        const incomingSegs = extractSegmentsFromJobPayload(rawResult);
         if (jobId && window._lastProcessedJobId === jobId) {
-            return;
+            const haveUi = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+            if (haveUi || !incomingSegs.length) return;
+            console.info('[qs] handleJobUpdate re-entry (transcript now available)', { jobId, incoming: incomingSegs.length });
         }
-        if (jobId) window._lastProcessedJobId = jobId;
+        if (jobId && window._handleJobUpdateInFlight === jobId) {
+            const persisted = !!(rawResult && rawResult.transcript_persisted);
+            if (!persisted && !incomingSegs.length) return;
+            let spins = 0;
+            while (window._handleJobUpdateInFlight === jobId && spins < 120) {
+                await new Promise((r) => setTimeout(r, 500));
+                spins++;
+            }
+            if (window._handleJobUpdateInFlight === jobId) return;
+        }
+        if (jobId) window._handleJobUpdateInFlight = jobId;
 
         let dbId = localStorage.getItem('lastJobDbId');
         let inputS3KeyForJob = null;
@@ -10814,6 +10915,10 @@ document.addEventListener('DOMContentLoaded', () => {
             setDiarizationBusyState(false);
             window.isTriggering = false;
             stopProcessingStateUI('handle_job_update_job_failed');
+            if (jobId) {
+                window._handleJobUpdateInFlight = null;
+                window._lastProcessedJobId = jobId;
+            }
             return;
         }
 
@@ -10840,13 +10945,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
-        let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
-        if (!Array.isArray(segments)) segments = [];
+        let segments = incomingSegs.length ? incomingSegs.slice() : [];
         if (!segments.length) {
-            const hydrated = await qsHydrateSegmentsForCompletedJob(rawResult, inputS3KeyForJob);
+            const hydrated = await qsHydrateSegmentsWithRetry(rawResult, inputS3KeyForJob);
             if (hydrated && hydrated.length) {
                 segments = hydrated;
             }
+        }
+        if (!segments.length && jobId) {
+            try {
+                const res = await fetch(`/api/check_status/${encodeURIComponent(jobId)}`);
+                if (res.ok) {
+                    const statusData = await res.json();
+                    const polled = extractSegmentsFromJobPayload(statusData);
+                    if (polled.length) {
+                        console.info('[qs] recovered segments from check_status', { jobId, segments: polled.length });
+                        segments = polled;
+                    }
+                }
+            } catch (_) {}
         }
         const flatWordSegments = (output && output.word_segments) || rawResult.word_segments || (rawResult.result && rawResult.result.word_segments);
         // Real word timestamps → word/caption model (coerces numeric strings; optional flat `word_segments`).
@@ -10864,10 +10981,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (!window.currentSegments || !window.currentSegments.length) {
+            window._qsShowEmptyTranscriptNotice = true;
             console.warn('[qs] completed job has no transcript segments after socket + S3 hydrate', {
                 jobId,
                 outputKey: rawResult.outputKey || (output && output.outputKey),
             });
+        } else {
+            window._qsShowEmptyTranscriptNotice = false;
         }
 
         // First, treat these as raw segments (or derived captions).
@@ -11226,6 +11346,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         stopProcessingStateUI('handle_job_update_success_pipeline_done');
+        if (jobId) {
+            window._handleJobUpdateInFlight = null;
+            window._lastProcessedJobId = jobId;
+        }
         try {
             const charged = Number(rawResult.credit_minutes);
             const used = Number(rawResult.credit_minutes_used);
@@ -11351,9 +11475,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const transcriptWindow = document.getElementById('transcript-window');
         if (!transcriptWindow) return;
         if (!window.currentSegments || !window.currentSegments.length) {
-            qsRenderEmptyTranscriptMessage();
+            if (qsShouldShowEmptyTranscriptNotice()) {
+                qsRenderEmptyTranscriptMessage();
+            } else {
+                qsClearTranscriptWindowIdle();
+            }
             return;
         }
+        window._qsShowEmptyTranscriptNotice = false;
 
         // Medical UI uses tabs + formatted views, not the generic segment/subtitle renderer.
         if (isMedicalModeEnabled()) {
@@ -12926,6 +13055,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             const file = this.files[0];
             if (!file) return;
+
+            window._qsShowEmptyTranscriptNotice = false;
+            qsClearTranscriptWindowIdle();
 
             try {
                 // Subtitle file: handle locally and keep existing media state (media + SRT workflow).
