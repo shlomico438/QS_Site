@@ -2260,6 +2260,136 @@ async function qsAwaitClientAudioProfile(timeoutMs) {
     return raced === undefined ? null : raced;
 }
 
+/** User choice from upload confirm modal (overrides Web Audio auto-profile). */
+function qsSetUserAudioProfileChoice(treatAsMusic) {
+    const profile = treatAsMusic ? 'music' : 'speech';
+    window.__QS_CLIENT_AUDIO_PROFILE_PROMISE = Promise.resolve({
+        profile,
+        source: 'client_user',
+        classification_basis: 'user_modal',
+    });
+}
+
+function qsFormatUploadFileSize(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n < 0) return '';
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const units = [
+        { u: 'GB', v: 1024 ** 3 },
+        { u: 'MB', v: 1024 ** 2 },
+        { u: 'KB', v: 1024 },
+    ];
+    for (let i = 0; i < units.length; i++) {
+        if (n >= units[i].v || i === units.length - 1) {
+            const val = n / units[i].v;
+            const rounded = val >= 100 ? Math.round(val) : Math.round(val * 10) / 10;
+            return `${rounded} ${units[i].u}`;
+        }
+    }
+    return `${n} B`;
+}
+
+function qsMountMusicModeContainerInto(slotEl) {
+    if (!slotEl) return null;
+    slotEl.innerHTML = '';
+    const tpl = document.getElementById('qs-music-mode-container-template');
+    if (!tpl || !tpl.content) return null;
+    const frag = tpl.content.cloneNode(true);
+    slotEl.appendChild(frag);
+    return slotEl.querySelector('.qs-music-mode-container');
+}
+
+function qsEnsureUploadConfirmModalInBody() {
+    const backdrop = document.getElementById('upload-confirm-modal');
+    if (backdrop && backdrop.parentNode !== document.body) {
+        document.body.appendChild(backdrop);
+    }
+    return backdrop;
+}
+
+/**
+ * Minimal upload confirmation overlay. Resolves { treatAsMusic } or null (cancel).
+ * @param {File} file
+ */
+function qsShowUploadConfirmModal(file) {
+    return new Promise((resolve) => {
+        const backdrop = qsEnsureUploadConfirmModalInBody();
+        const nameEl = document.getElementById('upload-confirm-filename');
+        const sizeElReal = document.getElementById('upload-confirm-filesize');
+        const musicSlot = document.getElementById('upload-confirm-music-slot');
+        const cancelBtn = document.getElementById('upload-confirm-cancel');
+        const submitBtn = document.getElementById('upload-confirm-submit');
+        if (!backdrop || !nameEl || !sizeElReal || !cancelBtn || !submitBtn) {
+            resolve({ treatAsMusic: false });
+            return;
+        }
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        const titleEl = document.getElementById('upload-confirm-title');
+        if (titleEl) titleEl.textContent = T('upload_confirm_title') || titleEl.textContent || 'Ready to transcribe?';
+        submitBtn.textContent = T('upload_confirm_submit') || submitBtn.textContent || 'Confirm & Transcribe';
+        cancelBtn.textContent = T('cancel') || cancelBtn.textContent || 'Cancel';
+        nameEl.textContent = file && file.name ? file.name : T('upload_confirm_unknown_file') || 'Selected file';
+        sizeElReal.textContent = file && file.size != null
+            ? (T('upload_confirm_size') || 'Size') + ': ' + qsFormatUploadFileSize(file.size)
+            : '';
+        qsMountMusicModeContainerInto(musicSlot);
+        const musicCb = document.getElementById('qs-music-mode-checkbox');
+        if (musicCb) musicCb.checked = false;
+        const musicTitle = musicSlot && musicSlot.querySelector('.qs-music-mode-title');
+        const musicDesc = musicSlot && musicSlot.querySelector('.qs-music-mode-desc');
+        if (musicTitle) musicTitle.textContent = T('upload_music_mode_title') || musicTitle.textContent;
+        if (musicDesc) musicDesc.textContent = T('upload_music_mode_desc') || musicDesc.textContent;
+
+        let settled = false;
+        const finish = (choice) => {
+            if (settled) return;
+            settled = true;
+            backdrop.classList.remove('is-open');
+            backdrop.style.display = 'none';
+            backdrop.setAttribute('hidden', '');
+            backdrop.setAttribute('aria-hidden', 'true');
+            cancelBtn.onclick = null;
+            submitBtn.onclick = null;
+            backdrop.onclick = null;
+            window.removeEventListener('keydown', onKey);
+            document.body.style.overflow = '';
+            document.body.classList.remove('qs-upload-confirm-open');
+            resolve(choice);
+        };
+
+        const onKey = (e) => {
+            if (e.key === 'Escape') finish(null);
+        };
+
+        cancelBtn.onclick = () => finish(null);
+        submitBtn.onclick = () => {
+            finish({ treatAsMusic: !!(musicCb && musicCb.checked) });
+        };
+        backdrop.onclick = (e) => {
+            if (e.target === backdrop) finish(null);
+        };
+        window.addEventListener('keydown', onKey);
+        backdrop.classList.add('is-open');
+        backdrop.removeAttribute('hidden');
+        backdrop.style.display = 'flex';
+        backdrop.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('qs-upload-confirm-open');
+        document.body.style.overflow = 'hidden';
+        try { submitBtn.focus(); } catch (_) {}
+    });
+}
+
+/** Restore landing chrome after user cancels upload confirm. */
+function qsRestoreUiAfterUploadConfirmCancel() {
+    try {
+        setSeoHomeContentVisibility(true);
+    } catch (_) {}
+    const ph = document.getElementById('placeholder');
+    if (ph && typeof initOpenAppHasLoadedTranscriptPayload === 'function' && !initOpenAppHasLoadedTranscriptPayload()) {
+        ph.style.display = '';
+    }
+}
+
 /** Duration in seconds from the in-browser preview player (same metadata Windows Explorer shows). */
 function qsClientMediaDurationSecForCredits() {
     const pick = (el) => {
@@ -8568,6 +8698,7 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    qsEnsureUploadConfirmModalInBody();
     const transcriptWindow = document.getElementById('transcript-window');
     const fileInput = document.getElementById('fileInput');
     const medicalRecordWrap = document.getElementById('medical-recording-wrap');
@@ -12632,11 +12763,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             const file = this.files[0];
             if (!file) return;
-            setSeoHomeContentVisibility(false);
-
-            // Hide "Upload a file to start" placeholder as soon as user selects a file (and during processing)
-            var placeholderEl = document.getElementById('placeholder');
-            if (placeholderEl) placeholderEl.style.display = 'none';
 
             try {
                 // Subtitle file: handle locally and keep existing media state (media + SRT workflow).
@@ -12755,6 +12881,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 }
 
                 try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
+
+                const runUploadPipeline = async () => {
+                setSeoHomeContentVisibility(false);
+                const placeholderElUpload = document.getElementById('placeholder');
+                if (placeholderElUpload) placeholderElUpload.style.display = 'none';
+
                 let isAudio = qsIsAudioMediaFile(file);
                 let isVideo = !isAudio && qsIsVideoMediaFile(file);
                 if (isMedicalModeEnabled()) {
@@ -12762,38 +12894,39 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     isVideo = false;
                 }
                 window.uploadWasVideo = !!isVideo;
-                if (isVideo) {
-                    const url = URL.createObjectURL(file);
-                    window.originalFileName = file.name.replace(/\.[^.]+$/, '');
-                    const src = document.getElementById('video-source');
-                    const video = document.getElementById('main-video');
-                    if (src) {
-                        src.src = url;
-                        // Use video/mp4 for .mov so Chrome/Firefox can play (same as presigned-URL path)
-                        const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
-                        src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+                try {
+                    if (isVideo) {
+                        const url = URL.createObjectURL(file);
+                        window.originalFileName = file.name.replace(/\.[^.]+$/, '');
+                        const src = document.getElementById('video-source');
+                        const video = document.getElementById('main-video');
+                        if (src) {
+                            src.src = url;
+                            // Use video/mp4 for .mov so Chrome/Firefox can play (same as presigned-URL path)
+                            const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
+                            src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+                        }
+                        if (video) {
+                            video.style.position = 'relative';
+                            video.style.zIndex = '1002';
+                            video.controls = true;
+                            video.load();
+                            video.pause();
+                            try { video.focus(); } catch (e) {}
+                        }
+                        // Show video player immediately; do not wait for transcription
+                        const videoWrapper = document.getElementById('video-wrapper');
+                        const videoPlayer = document.getElementById('video-player-container');
+                        const playerContainer = document.getElementById('audio-player-container');
+                        if (playerContainer) playerContainer.style.display = 'none';
+                        if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+                        if (video) video.style.display = '';
+                        if (videoPlayer) videoPlayer.style.display = 'block';
+                        // Continue to upload and process (do not return) so transcription runs for video too
                     }
-                    if (video) {
-                        video.style.position = 'relative';
-                        video.style.zIndex = '1002';
-                        video.controls = true;
-                        video.load();
-                        video.pause();
-                        try { video.focus(); } catch (e) {}
-                    }
-                    // Show video player immediately; do not wait for transcription
-                    const videoWrapper = document.getElementById('video-wrapper');
-                    const videoPlayer = document.getElementById('video-player-container');
-                    const playerContainer = document.getElementById('audio-player-container');
-                    if (playerContainer) playerContainer.style.display = 'none';
-                    if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
-                    if (video) video.style.display = '';
-                    if (videoPlayer) videoPlayer.style.display = 'block';
-                    // Continue to upload and process (do not return) so transcription runs for video too
+                } catch (e) {
+                    console.warn('Video preview failed', e);
                 }
-            } catch (e) {
-                console.warn('Video preview failed', e);
-            }
 
             // CREATE A LOCAL PREVIEW URL
             const objectUrl = URL.createObjectURL(file);
@@ -12829,9 +12962,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const currentFile = file; // Captured for use in the fetch
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
             fileInput.value = ""; // Reset for next selection
-            if (!isMedicalModeEnabled()) {
-                qsStartClientAudioProfile(currentFile);
-            }
 
             // 1. Get the snapshot of the toggle state RIGHT NOW
             const diarizationValue = document.getElementById('diarization-toggle')?.checked || false;
@@ -13200,6 +13330,25 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 hideProgressBar();
                 if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
                 if (typeof showStatus === 'function') showStatus((typeof window.t === 'function' ? window.t('error_starting_upload') : "Error starting upload."), true);
+            }
+                };
+
+                if (isMedicalModeEnabled()) {
+                    await runUploadPipeline();
+                    return;
+                }
+                const uploadChoice = await qsShowUploadConfirmModal(file);
+                if (!uploadChoice) {
+                    fileInput.value = '';
+                    qsRestoreUiAfterUploadConfirmCancel();
+                    return;
+                }
+                qsSetUserAudioProfileChoice(!!uploadChoice.treatAsMusic);
+                await runUploadPipeline();
+                return;
+            } catch (pickerFlowErr) {
+                console.warn('File picker flow failed', pickerFlowErr);
+                fileInput.value = '';
             }
         })
     }

@@ -417,6 +417,29 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 <button type="button" id="medical-wake-choice-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
             </div>
         </div>
+        <template id="qs-music-mode-container-template">
+            <div class="qs-music-mode-container">
+                <label class="qs-music-mode-option" for="qs-music-mode-checkbox">
+                    <input type="checkbox" id="qs-music-mode-checkbox" class="qs-music-mode-checkbox" />
+                    <span class="qs-music-mode-option-copy">
+                        <span class="qs-music-mode-title" data-i18n="upload_music_mode_title">Background music or instruments</span>
+                        <span class="qs-music-mode-desc" data-i18n="upload_music_mode_desc">Separate vocals before transcription (recommended for songs and mixed audio).</span>
+                    </span>
+                </label>
+            </div>
+        </template>
+        <div id="upload-confirm-modal" class="qs-upload-confirm-backdrop" hidden aria-hidden="true">
+            <div class="qs-upload-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="upload-confirm-title">
+                <h3 id="upload-confirm-title" data-i18n="upload_confirm_title">Ready to transcribe?</h3>
+                <p class="qs-upload-confirm-file-name" id="upload-confirm-filename"></p>
+                <p class="qs-upload-confirm-file-size" id="upload-confirm-filesize"></p>
+                <div id="upload-confirm-music-slot" class="qs-upload-confirm-music-slot"></div>
+                <div class="qs-upload-confirm-actions">
+                    <button type="button" id="upload-confirm-cancel" class="qs-upload-confirm-btn secondary" data-i18n="cancel">Cancel</button>
+                    <button type="button" id="upload-confirm-submit" class="qs-upload-confirm-btn primary" data-i18n="upload_confirm_submit">Confirm &amp; Transcribe</button>
+                </div>
+            </div>
+        </div>
         <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
                 <h3 id="translation-modal-title">Translate transcript</h3>
