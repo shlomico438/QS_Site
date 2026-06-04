@@ -326,8 +326,13 @@ def _env_flag_true(name):
 
 
 def _runpod_skip_warmup():
-    """If true, skip RunPod /run warmup at sign-s3 (first /run happens in trigger_processing after upload)."""
+    """If true, skip all RunPod /run at sign-s3/multipart-init (first /run happens in trigger_processing)."""
     return _env_flag_true('RUNPOD_SKIP_WARMUP')
+
+
+def _is_runpod_upload_warmup_job(job_id):
+    """Ephemeral RunPod /run used only to wake GPU during upload; not polled by the UI."""
+    return str(job_id or '').strip().startswith('warmup_pod_')
 
 
 def _aws_skip_warmup():
@@ -3315,16 +3320,23 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
         prefer_he = True
 
     if minutes <= 0:
-        msg = (
-            'לא ניתן לקבוע את אורך הקובץ. נסה שוב או העלה קובץ אחר.'
-            if prefer_he
-            else 'Could not determine the file length. Try again or upload a different file.'
+        # Benefit of the doubt: do not block transcription when file length cannot be probed.
+        wallet = _user_credits_get(user_id)
+        balance = int((wallet or {}).get('credit_minutes') or 0)
+        logging.warning(
+            "credit_reserve fail-open duration_unknown job=%s user=%s key_suffix=%s client_sec=%.1f",
+            job_id,
+            user_id[:8],
+            s3_key[-48:],
+            client_duration_sec,
         )
         return {
-            "ok": False,
-            "error": "duration_unknown",
-            "message": msg,
-            "http_status": 400,
+            "ok": True,
+            "skipped": True,
+            "fail_open": True,
+            "reason": "duration_unknown",
+            "credit_minutes": balance,
+            "credit_minutes_used": 0,
             "file_duration_seconds": duration_sec,
         }
 
@@ -6660,6 +6672,10 @@ def gpu_callback():
     job_id = data.get('jobId')
     if not job_id:
         return jsonify({"ok": False, "error": "jobId required"}), 400
+    if _is_runpod_upload_warmup_job(job_id):
+        logging.info("gpu_callback upload warmup ignored job_id=%s", job_id)
+        pending_job_info.pop(job_id, None)
+        return jsonify({"ok": True, "warmup": True}), 200
     result = data.get('result') or {}
     callback_status = str(data.get('status') or '').strip().lower()
     callback_error = str(data.get('error') or '').strip()
@@ -7174,40 +7190,18 @@ def sign_s3():
             ExpiresIn=3600
         )
 
-        # Warm GPU during upload: RunPod early /run, or SageMaker async at sign-s3 for medical (unless AWS_SKIP_WARMUP).
-        if is_medical and _medical_uses_sagemaker_transcription():
-            _start_medical_sagemaker_warmup_if_configured(
-                job_id,
-                s3_key,
-                request,
-                language=data.get('language', 'he'),
-                bucket=bucket,
-                transcription_options=transcription_options,
-            )
-        elif not (
-            _runpod_skip_warmup()
-            or (_audio_profile_detection_enabled() and not is_medical)
-        ):
-            _start_trigger_if_configured(
-                job_id=job_id,
-                s3_key=s3_key,
-                request=request,
-                task='transcribe',
-                language=data.get('language', 'he'),
-                diarization=data.get('diarization', False),
-                speaker_count=2,
-                is_medical=is_medical,
-                bucket=bucket,
-                transcription_options=transcription_options,
-            )
-        else:
-            logging.info(
-                "Skipping sign-s3 RunPod warmup for %s (RUNPOD_SKIP_WARMUP=%s, AUTO_AUDIO_PROFILE=%s, is_medical=%s)",
-                job_id,
-                _runpod_skip_warmup(),
-                _audio_profile_detection_enabled(),
-                is_medical,
-            )
+        _maybe_start_runpod_at_upload_sign(
+            job_id,
+            s3_key,
+            request,
+            task='transcribe',
+            language=data.get('language', 'he'),
+            diarization=data.get('diarization', False),
+            speaker_count=2,
+            is_medical=is_medical,
+            bucket=bucket,
+            transcription_options=transcription_options,
+        )
 
         return jsonify({
             'data': {
@@ -7347,31 +7341,18 @@ def sign_s3_multipart_init():
         logging.exception("create_multipart_upload failed")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    if is_medical and _medical_uses_sagemaker_transcription():
-        _start_medical_sagemaker_warmup_if_configured(
-            job_id,
-            s3_key,
-            request,
-            language=data.get('language', 'he'),
-            bucket=bucket,
-            transcription_options=transcription_options,
-        )
-    elif not (
-        _runpod_skip_warmup()
-        or (_audio_profile_detection_enabled() and not is_medical)
-    ):
-        _start_trigger_if_configured(
-            job_id=job_id,
-            s3_key=s3_key,
-            request=request,
-            task='transcribe',
-            language=data.get('language', 'he'),
-            diarization=data.get('diarization', False),
-            speaker_count=2,
-            is_medical=is_medical,
-            bucket=bucket,
-            transcription_options=transcription_options,
-        )
+    _maybe_start_runpod_at_upload_sign(
+        job_id,
+        s3_key,
+        request,
+        task='transcribe',
+        language=data.get('language', 'he'),
+        diarization=data.get('diarization', False),
+        speaker_count=2,
+        is_medical=is_medical,
+        bucket=bucket,
+        transcription_options=transcription_options,
+    )
 
     return jsonify({
         'data': {
@@ -7853,6 +7834,120 @@ def medical_warmup_status():
     return _medical_endpoint_status_handler()
 
 
+def _start_runpod_upload_warmup(parent_job_id, s3_key, request, language='he', bucket=None, is_medical=False):
+    """Fire a warmup-only RunPod /run during upload when audio-profile defers the real job to trigger_processing.
+
+    Uses a separate warmup_pod_* job id and speech-default transcription_options so the parent job is not
+    marked queued/triggered and trigger_processing still submits the final /run with detected profile."""
+    if SIMULATION_MODE:
+        return
+    if is_medical and _medical_uses_sagemaker_transcription():
+        return
+    endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
+    api_key = os.environ.get('RUNPOD_API_KEY')
+    if not endpoint_id or not api_key:
+        return
+    warmup_job_id = f"warmup_pod_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    public_base = _public_base_url(request)
+    start_callback_url = f"{public_base}/api/gpu_started" if public_base else None
+    warmup_options = _apply_audio_profile_transcription_options({}, {"profile": "speech"})
+    payload = {
+        "input": {
+            "warmupOnly": True,
+            "jobId": warmup_job_id,
+            "parentJobId": parent_job_id,
+            "s3Key": s3_key,
+            "bucket": bucket,
+            "isMedical": bool(is_medical),
+            "task": "transcribe",
+            "language": language,
+            "transcription_options": warmup_options,
+            "start_callback_url": start_callback_url,
+        }
+    }
+    pending_job_info[warmup_job_id] = {
+        "warmup_only": True,
+        "upload_warmup": True,
+        "parent_job_id": parent_job_id,
+        "input_s3_key": s3_key,
+        "bucket": bucket,
+        "is_medical": bool(is_medical),
+        "task": "transcribe",
+        "language": language,
+        "transcription_options": warmup_options,
+    }
+    t = threading.Thread(
+        target=_trigger_gpu,
+        args=(warmup_job_id, payload, endpoint_id, api_key),
+        kwargs={"warmup_only": True},
+    )
+    t.daemon = True
+    t.start()
+    logging.info(
+        "RunPod upload warmup queued parent_job_id=%s warmup_job_id=%s key_suffix=%s",
+        parent_job_id,
+        warmup_job_id,
+        (s3_key[-64:] if isinstance(s3_key, str) and len(s3_key) > 64 else s3_key),
+    )
+
+
+def _maybe_start_runpod_at_upload_sign(
+    job_id,
+    s3_key,
+    request,
+    *,
+    task='transcribe',
+    language='he',
+    diarization=False,
+    speaker_count=2,
+    is_medical=False,
+    bucket=None,
+    transcription_options=None,
+):
+    """Start GPU during S3 upload: full early /run, or warmup-only when audio-profile runs at trigger_processing."""
+    if SIMULATION_MODE:
+        return
+    if is_medical and _medical_uses_sagemaker_transcription():
+        _start_medical_sagemaker_warmup_if_configured(
+            job_id,
+            s3_key,
+            request,
+            language=language,
+            bucket=bucket,
+            transcription_options=transcription_options,
+        )
+        return
+    if _runpod_skip_warmup():
+        logging.info(
+            "Skipping RunPod upload warmup for %s (RUNPOD_SKIP_WARMUP=true)",
+            job_id,
+        )
+        return
+    defer_real_trigger = _audio_profile_detection_enabled() and not is_medical
+    if defer_real_trigger:
+        _start_runpod_upload_warmup(
+            parent_job_id=job_id,
+            s3_key=s3_key,
+            request=request,
+            language=language,
+            bucket=bucket,
+            is_medical=is_medical,
+        )
+        return
+    _start_trigger_if_configured(
+        job_id=job_id,
+        s3_key=s3_key,
+        request=request,
+        task=task,
+        language=language,
+        diarization=diarization,
+        speaker_count=speaker_count,
+        is_medical=is_medical,
+        bucket=bucket,
+        transcription_options=transcription_options,
+    )
+
+
 def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', language='he', diarization=False, speaker_count=2, is_medical=False, bucket=None, transcription_options=None):
     """Start RunPod trigger in background. Called from sign_s3 / multipart init (before upload) so container warms during upload.
     No-op if RunPod not configured, SIMULATION_MODE, or medical uses SageMaker."""
@@ -7901,10 +7996,11 @@ def _start_trigger_if_configured(job_id, s3_key, request, task='transcribe', lan
     logging.info("Trigger started at sign-s3 (before upload) for %s", job_id)
 
 
-def _trigger_gpu(job_id, payload, endpoint_id, api_key):
+def _trigger_gpu(job_id, payload, endpoint_id, api_key, warmup_only=False):
     """Background: POST /run to wake RunPod from cold and start the job. No polling.
     The trigger itself starts the container; worker downloads from S3 and transcribes."""
     global pending_trigger, job_timings
+    parent_job_id = str((payload.get('input') or {}).get('parentJobId') or '').strip()
     t0 = time.time()
     try:
         clean_id = str(endpoint_id).strip()
@@ -7913,6 +8009,23 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
         trigger_sec = time.time() - t0
         trigger_completed_at = time.time()
+        if warmup_only:
+            if response.status_code in (200, 201, 202):
+                logging.info(
+                    "RunPod upload warmup accepted warmup_job_id=%s parent_job_id=%s trigger_sec=%.2f",
+                    job_id,
+                    parent_job_id or None,
+                    trigger_sec,
+                )
+            else:
+                logging.warning(
+                    "RunPod upload warmup API error warmup_job_id=%s parent_job_id=%s status=%s body=%s",
+                    job_id,
+                    parent_job_id or None,
+                    response.status_code,
+                    (response.text or '')[:300],
+                )
+            return
         job_timings[job_id] = {"trigger_sec": trigger_sec, "trigger_completed_at": trigger_completed_at}
         _update_trigger_timings(job_id, trigger_sec=trigger_sec, trigger_completed_at=trigger_completed_at)
         # Persist to DB immediately (survives multi-instance / ephemeral storage)
@@ -7928,6 +8041,14 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
             _set_trigger_state(job_id, "failed")
             print(f"❌ RunPod API Error ({response.status_code}): {response.text}")
     except Exception as e:
+        if warmup_only:
+            logging.warning(
+                "RunPod upload warmup failed warmup_job_id=%s parent_job_id=%s: %s",
+                job_id,
+                parent_job_id or None,
+                e,
+            )
+            return
         pending_trigger[job_id] = "failed"
         _set_trigger_state(job_id, "failed")
         logging.exception("trigger_gpu failed for %s", job_id)
@@ -8135,6 +8256,9 @@ def gpu_started():
     job_id = data.get('jobId') or data.get('job_id')
     if not job_id:
         return jsonify({"ok": False, "error": "jobId required"}), 400
+    if _is_runpod_upload_warmup_job(job_id):
+        logging.info("gpu_started upload warmup (ignored for parent trigger_status) job_id=%s", job_id)
+        return jsonify({"ok": True, "job_id": job_id, "warmup": True}), 200
     started_at = time.time()
     gpu_started_at[job_id] = started_at
     _update_trigger_timings(job_id, gpu_started_at=started_at)
