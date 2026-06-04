@@ -1963,6 +1963,303 @@ function qsUploadTraceErr(phase, detail) {
     } catch (_) {}
 }
 
+/** Defaults aligned with Site env (AUDIO_PROFILE_*). */
+const QS_AUDIO_PROFILE_DEFAULTS = {
+    thrBase: 0.002,
+    videoMult: 2.5,
+    skipIntroSec: 5,
+    detectSec: 20,
+    decodePrefixBytes: 16 * 1024 * 1024,
+};
+
+function qsFilenameLikelyVideoContainer(filename) {
+    const ext = String(filename || '').split('.').pop().toLowerCase();
+    return ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpeg', 'mpg', 'wmv', 'flv'].includes(ext);
+}
+
+function qsAudioProfileVariance(vals) {
+    if (!vals || !vals.length) return null;
+    let sum = 0;
+    for (let i = 0; i < vals.length; i++) sum += vals[i];
+    const mean = sum / vals.length;
+    let v = 0;
+    for (let i = 0; i < vals.length; i++) {
+        const d = vals[i] - mean;
+        v += d * d;
+    }
+    return v / vals.length;
+}
+
+function qsClassifyAudioProfileFromRms(rmsVals, opts) {
+    const thrBase = opts.thrBase;
+    const videoMult = opts.containerVideoLike ? opts.videoMult : 1.0;
+    const thr = thrBase * videoMult;
+    const skipIntroSec = opts.skipIntroSec;
+    const postIntroStart = Math.min(rmsVals.length, Math.round(skipIntroSec / 0.1));
+    const postIntroVals = rmsVals.slice(postIntroStart);
+    const tailVals = rmsVals.slice(Math.floor(rmsVals.length / 2));
+    const varEv = qsAudioProfileVariance(rmsVals);
+    const postIntroVar = postIntroVals.length >= 4 ? qsAudioProfileVariance(postIntroVals) : null;
+    const tailVar = tailVals.length >= 4 ? qsAudioProfileVariance(tailVals) : null;
+    let profile = 'speech';
+    let basis = 'full_sample';
+    if (varEv != null && varEv < thr) profile = 'music';
+    else if (postIntroVar != null && postIntroVar < thr) {
+        profile = 'music';
+        basis = 'post_intro';
+    } else if (tailVar != null && tailVar < thr) {
+        profile = 'music';
+        basis = 'tail_half';
+    }
+    return {
+        profile,
+        energy_variance: varEv,
+        post_intro_energy_variance: postIntroVar,
+        tail_energy_variance: tailVar,
+        threshold: thr,
+        threshold_base: thrBase,
+        video_threshold_mult: videoMult,
+        skip_intro_seconds: skipIntroSec,
+        classification_basis: basis,
+        container_video_like: !!opts.containerVideoLike,
+        source: 'client_webaudio',
+    };
+}
+
+function qsAudioProfileFromMonoSamples(samples, sampleRate, filename) {
+    const sr = sampleRate;
+    const detectFrames = Math.min(samples.length, Math.floor(QS_AUDIO_PROFILE_DEFAULTS.detectSec * sr));
+    if (detectFrames < 4096) {
+        return { profile: 'unknown', reason: 'audio_too_short', source: 'client_webaudio' };
+    }
+    let peak = 0;
+    for (let i = 0; i < detectFrames; i++) {
+        const ax = Math.abs(samples[i]);
+        if (ax > peak) peak = ax;
+    }
+    if (peak < 1e-10) {
+        return { profile: 'unknown', reason: 'silent_or_near_silent', source: 'client_webaudio' };
+    }
+    const invPeak = 1.0 / peak;
+    const frame = Math.max(800, Math.floor(sr * 0.1));
+    const rmsVals = [];
+    for (let i = 0; i < detectFrames; i += frame) {
+        const end = Math.min(i + frame, detectFrames);
+        let s2 = 0;
+        let n = 0;
+        for (let j = i; j < end; j++) {
+            const fx = samples[j] * invPeak;
+            s2 += fx * fx;
+            n++;
+        }
+        if (n > 0) rmsVals.push(Math.sqrt(s2 / n));
+    }
+    if (rmsVals.length < 4) {
+        return { profile: 'unknown', reason: 'not_enough_frames', source: 'client_webaudio' };
+    }
+    return qsClassifyAudioProfileFromRms(rmsVals, {
+        thrBase: QS_AUDIO_PROFILE_DEFAULTS.thrBase,
+        videoMult: QS_AUDIO_PROFILE_DEFAULTS.videoMult,
+        skipIntroSec: QS_AUDIO_PROFILE_DEFAULTS.skipIntroSec,
+        containerVideoLike: qsFilenameLikelyVideoContainer(filename),
+    });
+}
+
+function qsMixBufferToMono(buffer, maxFrames) {
+    const nCh = buffer.numberOfChannels;
+    const len = Math.min(buffer.length, maxFrames);
+    const out = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+        let s = 0;
+        for (let c = 0; c < nCh; c++) s += buffer.getChannelData(c)[i];
+        out[i] = s / nCh;
+    }
+    return out;
+}
+
+function qsResampleMono(mono, fromSr, toSr, maxOutFrames) {
+    const ratio = fromSr / toSr;
+    const outLen = Math.min(maxOutFrames, Math.floor(mono.length / ratio));
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+        const srcIdx = i * ratio;
+        const i0 = Math.floor(srcIdx);
+        const i1 = Math.min(i0 + 1, mono.length - 1);
+        const frac = srcIdx - i0;
+        out[i] = mono[i0] * (1 - frac) + mono[i1] * frac;
+    }
+    return out;
+}
+
+async function qsDecodeAudioProfileViaWebAudio(file) {
+    const sr = 16000;
+    const maxSec = QS_AUDIO_PROFILE_DEFAULTS.detectSec;
+    const maxFrames = sr * maxSec;
+    const prefixBytes = QS_AUDIO_PROFILE_DEFAULTS.decodePrefixBytes;
+    const slices = [];
+    if (file.size > 0) {
+        slices.push(file.slice(0, Math.min(file.size, prefixBytes)));
+    }
+    if (file.size > prefixBytes) {
+        slices.push(file);
+    } else if (!slices.length) {
+        slices.push(file);
+    }
+    let lastErr = null;
+    for (const blob of slices) {
+        let ctx = null;
+        try {
+            const ab = await blob.arrayBuffer();
+            ctx = new AudioContext();
+            const decoded = await ctx.decodeAudioData(ab.slice(0));
+            const mono = qsMixBufferToMono(decoded, Math.floor(maxSec * decoded.sampleRate));
+            const resampled = qsResampleMono(mono, decoded.sampleRate, sr, maxFrames);
+            await ctx.close();
+            return qsAudioProfileFromMonoSamples(resampled, sr, file.name);
+        } catch (e) {
+            lastErr = e;
+            if (ctx) {
+                try { await ctx.close(); } catch (_) {}
+            }
+        }
+    }
+    throw lastErr || new Error('decodeAudioData failed');
+}
+
+function qsInferAudioProfileViaMediaElement(file) {
+    const detectSec = QS_AUDIO_PROFILE_DEFAULTS.detectSec;
+    const frameSec = 0.1;
+    const sr = 16000;
+    const maxFrames = Math.floor(detectSec * sr);
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const isVideo = qsFilenameLikelyVideoContainer(file.name) || String(file.type || '').startsWith('video/');
+        const el = document.createElement(isVideo ? 'video' : 'audio');
+        el.muted = true;
+        el.playsInline = true;
+        el.preload = 'auto';
+        el.src = url;
+        let ac = null;
+        let closed = false;
+        const cleanup = () => {
+            if (closed) return;
+            closed = true;
+            try { el.pause(); } catch (_) {}
+            URL.revokeObjectURL(url);
+            if (ac) ac.close().catch(() => {});
+        };
+        const fail = (err) => {
+            cleanup();
+            reject(err);
+        };
+        el.addEventListener('error', () => fail(new Error('media element decode error')));
+        el.addEventListener('loadedmetadata', async () => {
+            try {
+                ac = new AudioContext({ sampleRate: sr });
+                const source = ac.createMediaElementSource(el);
+                const analyser = ac.createAnalyser();
+                analyser.fftSize = 2048;
+                const silentGain = ac.createGain();
+                silentGain.gain.value = 0;
+                source.connect(analyser);
+                analyser.connect(silentGain);
+                silentGain.connect(ac.destination);
+                const rmsVals = [];
+                const buf = new Float32Array(analyser.fftSize);
+                await el.play();
+                const startWall = performance.now();
+                const tick = () => {
+                    if (closed) return;
+                    if (el.ended || el.currentTime >= detectSec || rmsVals.length >= detectSec / frameSec) {
+                        cleanup();
+                        if (rmsVals.length < 4) {
+                            resolve({ profile: 'unknown', reason: 'not_enough_frames', source: 'client_webaudio' });
+                            return;
+                        }
+                        resolve(qsClassifyAudioProfileFromRms(rmsVals, {
+                            thrBase: QS_AUDIO_PROFILE_DEFAULTS.thrBase,
+                            videoMult: QS_AUDIO_PROFILE_DEFAULTS.videoMult,
+                            skipIntroSec: QS_AUDIO_PROFILE_DEFAULTS.skipIntroSec,
+                            containerVideoLike: qsFilenameLikelyVideoContainer(file.name),
+                        }));
+                        return;
+                    }
+                    analyser.getFloatTimeDomainData(buf);
+                    let s2 = 0;
+                    for (let i = 0; i < buf.length; i++) s2 += buf[i] * buf[i];
+                    rmsVals.push(Math.sqrt(s2 / buf.length));
+                    if (performance.now() - startWall > (detectSec + 30) * 1000) {
+                        fail(new Error('media element profiling timeout'));
+                        return;
+                    }
+                    setTimeout(tick, frameSec * 1000);
+                };
+                tick();
+            } catch (e) {
+                fail(e);
+            }
+        });
+    });
+}
+
+/** Infer speech vs music during upload (Web Audio API). Mirrors server RMS-variance heuristic. */
+async function qsInferAudioProfileFromFile(file) {
+    if (!file) {
+        return { profile: 'unknown', reason: 'no_file', source: 'client_webaudio' };
+    }
+    if (typeof AudioContext === 'undefined' && typeof webkitAudioContext === 'undefined') {
+        return { profile: 'unknown', reason: 'webaudio_unavailable', source: 'client_webaudio' };
+    }
+    const t0 = performance.now();
+    try {
+        const result = await qsDecodeAudioProfileViaWebAudio(file);
+        qsUploadTrace('audio_profile_client_ok', {
+            profile: result.profile,
+            ms: Math.round(performance.now() - t0),
+            energy_variance: result.energy_variance,
+            threshold: result.threshold,
+            basis: result.classification_basis,
+        });
+        return result;
+    } catch (decodeErr) {
+        qsUploadTrace('audio_profile_client_decode_fallback', { err: String(decodeErr && decodeErr.message || decodeErr) });
+        try {
+            const result = await qsInferAudioProfileViaMediaElement(file);
+            qsUploadTrace('audio_profile_client_ok', {
+                profile: result.profile,
+                ms: Math.round(performance.now() - t0),
+                via: 'media_element',
+                energy_variance: result.energy_variance,
+            });
+            return result;
+        } catch (mediaErr) {
+            qsUploadTraceErr('audio_profile_client_failed', { err: String(mediaErr && mediaErr.message || mediaErr) });
+            return { profile: 'unknown', reason: 'client_decode_failed', source: 'client_webaudio' };
+        }
+    }
+}
+
+function qsStartClientAudioProfile(file) {
+    if (!file || (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+        window.__QS_CLIENT_AUDIO_PROFILE_PROMISE = Promise.resolve(null);
+        return;
+    }
+    window.__QS_CLIENT_AUDIO_PROFILE_PROMISE = qsInferAudioProfileFromFile(file);
+}
+
+async function qsAwaitClientAudioProfile(timeoutMs) {
+    const p = window.__QS_CLIENT_AUDIO_PROFILE_PROMISE;
+    if (!p) return null;
+    if (!timeoutMs || timeoutMs <= 0) {
+        try { return await p; } catch (_) { return null; }
+    }
+    const raced = await Promise.race([
+        p.catch(() => null),
+        new Promise((resolve) => setTimeout(() => resolve(undefined), timeoutMs)),
+    ]);
+    return raced === undefined ? null : raced;
+}
+
 /** Duration in seconds from the in-browser preview player (same metadata Windows Explorer shows). */
 function qsClientMediaDurationSecForCredits() {
     const pick = (el) => {
@@ -2014,6 +2311,7 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
         const td = triggerData || {};
         if (td.audio_profile_skipped_reason === 'medical_mode') return;
         const ap = td.audio_profile;
+        const profileSource = td.audio_profile_source || null;
         const reason = td.audio_profile_reason;
         const varEv = td.audio_profile_energy_variance;
         const postIntroVar = td.audio_profile_post_intro_energy_variance;
@@ -2030,6 +2328,7 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
         // console.log is silenced on non-localhost (__QS_CONSOLE_ENABLED gate); console.error is not patched — stays visible.
         const payload = {
             jobId,
+            audio_profile_source: profileSource,
             transcription_options: topts,
             audio_profile_reason: reason || null,
             energy_variance: varEv != null ? varEv : null,
@@ -2044,6 +2343,7 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
         }
         qsUploadTraceErr('audio_profile', {
             jobId,
+            audio_profile_source: profileSource,
             audio_profile: ap != null ? ap : 'missing',
             audio_profile_reason: reason || null,
             audio_profile_energy_variance: varEv != null ? varEv : null,
@@ -12529,6 +12829,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const currentFile = file; // Captured for use in the fetch
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
             fileInput.value = ""; // Reset for next selection
+            if (!isMedicalModeEnabled()) {
+                qsStartClientAudioProfile(currentFile);
+            }
 
             // 1. Get the snapshot of the toggle state RIGHT NOW
             const diarizationValue = document.getElementById('diarization-toggle')?.checked || false;
@@ -12548,18 +12851,26 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const userId = uploadUser ? uploadUser.id : null;
 
                 // 1. Multipart upload init (presigned parts + server-side complete)
+                let initClientProfile = null;
+                if (!isMedicalModeEnabled()) {
+                    initClientProfile = await qsAwaitClientAudioProfile(2500);
+                }
+                const multipartInitBody = {
+                    filename: currentFile.name,
+                    filetype: qsGuessUploadMimeType(currentFile, currentFile.type),
+                    diarization: diarizationValue,
+                    isMedical: isMedicalModeEnabled(),
+                    userId: userId,
+                    language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
+                    fileSize: currentFile.size,
+                };
+                if (initClientProfile && initClientProfile.profile) {
+                    multipartInitBody.clientAudioProfile = initClientProfile;
+                }
                 const signRes = await fetch('/api/sign-s3-multipart-init', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        filename: currentFile.name,
-                        filetype: qsGuessUploadMimeType(currentFile, currentFile.type),
-                        diarization: diarizationValue,
-                        isMedical: isMedicalModeEnabled(),
-                        userId: userId,
-                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
-                        fileSize: currentFile.size,
-                    })
+                    body: JSON.stringify(multipartInitBody),
                 });
 
                 const result = await signRes.json();
@@ -12695,6 +13006,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
                         ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
                     };
+                    if (!isMedicalUpload) {
+                        const clientProfile = await qsAwaitClientAudioProfile(0);
+                        if (clientProfile && clientProfile.profile) {
+                            triggerPayload.clientAudioProfile = clientProfile;
+                        }
+                    }
                     const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, jobId);
                     if (!triggerRes.ok) {
                         console.log("trigger nack", triggerRes.status, triggerData);

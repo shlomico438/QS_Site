@@ -892,6 +892,142 @@ def _audio_profile_detection_enabled():
     return v in ('1', 'true', 'yes', 'on')
 
 
+def _client_audio_profile_enabled():
+    """Prefer browser Web Audio profile when the client sends clientAudioProfile."""
+    v = (os.environ.get('TRANSCRIBE_CLIENT_AUDIO_PROFILE') or 'true').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
+def _client_audio_profile_require():
+    """If true, do not fall back to server S3/ffmpeg when client profile is missing."""
+    v = (os.environ.get('TRANSCRIBE_CLIENT_AUDIO_PROFILE_REQUIRE') or 'false').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
+def _client_audio_profile_from_request(data):
+    """Parse optional clientAudioProfile from sign-s3 / multipart-init / trigger_processing JSON."""
+    if not data or not isinstance(data, dict):
+        return None
+    raw = data.get('clientAudioProfile') or data.get('client_audio_profile')
+    if not isinstance(raw, dict):
+        return None
+    profile = str(raw.get('profile') or '').strip().lower()
+    if profile not in ('speech', 'music', 'unknown'):
+        return None
+    out = {
+        'profile': profile,
+        'source': str(raw.get('source') or 'client').strip() or 'client',
+    }
+    for key in (
+        'energy_variance',
+        'post_intro_energy_variance',
+        'tail_energy_variance',
+        'threshold',
+        'threshold_base',
+        'video_threshold_mult',
+        'skip_intro_seconds',
+    ):
+        if key in raw and raw[key] is not None:
+            try:
+                out[key] = float(raw[key])
+            except (TypeError, ValueError):
+                pass
+    for key in ('classification_basis', 'reason'):
+        if raw.get(key) is not None:
+            out[key] = str(raw[key])
+    if 'container_video_like' in raw:
+        out['container_video_like'] = bool(raw['container_video_like'])
+    return out
+
+
+def _log_audio_profile_metrics(job_id, audio_profile_info, *, source=None, s3_key=None):
+    ap = audio_profile_info or {}
+    prof = str(ap.get('profile') or '').strip().lower()
+    key_suffix = (s3_key[-80:] if isinstance(s3_key, str) and len(s3_key) > 80 else s3_key)
+    src = f" ({source})" if source else ''
+    if prof == 'music':
+        logging.info(
+            "Music detected (audio-profile%s) job_id=%s key_suffix=%s energy_variance=%s post_intro_var=%s tail_var=%s threshold=%s basis=%s video_container=%s",
+            src,
+            job_id,
+            key_suffix,
+            ap.get('energy_variance'),
+            ap.get('post_intro_energy_variance'),
+            ap.get('tail_energy_variance'),
+            ap.get('threshold'),
+            ap.get('classification_basis'),
+            ap.get('container_video_like'),
+        )
+    elif prof == 'speech':
+        logging.info(
+            "Speech detected (audio-profile%s) job_id=%s key_suffix=%s energy_variance=%s post_intro_var=%s tail_var=%s threshold=%s basis=%s video_container=%s",
+            src,
+            job_id,
+            key_suffix,
+            ap.get('energy_variance'),
+            ap.get('post_intro_energy_variance'),
+            ap.get('tail_energy_variance'),
+            ap.get('threshold'),
+            ap.get('classification_basis'),
+            ap.get('container_video_like'),
+        )
+    elif prof not in ('skipped',):
+        logging.info(
+            "audio-profile inconclusive%s job_id=%s profile=%s energy_variance=%s reason=%s key_suffix=%s",
+            src,
+            job_id,
+            ap.get('profile'),
+            ap.get('energy_variance'),
+            ap.get('reason'),
+            key_suffix,
+        )
+
+
+def _resolve_audio_profile_for_job(data, bucket, s3_key, is_medical):
+    """
+    Prefer client Web Audio profile when present; otherwise S3/ffmpeg probe or disabled.
+    Returns (audio_profile_info, audio_profile_source).
+    """
+    job_id = (data or {}).get('jobId') if isinstance(data, dict) else None
+    if is_medical:
+        return {"profile": "skipped", "reason": "medical_mode"}, "medical_mode"
+    if _client_audio_profile_enabled():
+        client = _client_audio_profile_from_request(data)
+        if client and client.get('profile') in ('speech', 'music', 'unknown'):
+            _log_audio_profile_metrics(job_id, client, source='client', s3_key=s3_key)
+            return client, 'client'
+    if _client_audio_profile_require():
+        return {"profile": "unknown", "reason": "client_profile_required"}, "client_required"
+    if _audio_profile_detection_enabled() and s3_key and bucket:
+        info = _infer_audio_profile_from_s3(
+            bucket,
+            s3_key,
+            seconds=int(os.environ.get('AUDIO_PROFILE_DETECT_SECONDS', '20') or 20),
+        )
+        _log_audio_profile_metrics(job_id, info, source='server_s3', s3_key=s3_key)
+        return info, 'server_s3'
+    return {"profile": "unknown", "reason": "disabled"}, None
+
+
+def _early_transcription_options_for_upload_sign(data, base_transcription_options, is_medical):
+    """Options + defer_final_options for early RunPod /run at sign-s3 / multipart-init."""
+    if is_medical or not _audio_profile_detection_enabled():
+        return (base_transcription_options or {}, False)
+    client = None
+    if _client_audio_profile_enabled():
+        client = _client_audio_profile_from_request(data)
+    if client and client.get('profile') in ('speech', 'music', 'unknown'):
+        opts = _apply_audio_profile_transcription_options(base_transcription_options, client)
+        logging.info(
+            "early RunPod using client audio profile job_id=%s profile=%s basis=%s",
+            (data or {}).get('jobId') if isinstance(data, dict) else None,
+            client.get('profile'),
+            client.get('classification_basis'),
+        )
+        return opts, False
+    return _provisional_transcription_options_for_early_trigger(), True
+
+
 def _force_disable_vad_enabled():
     """Temporary switch: force RunPod transcription to run without VAD."""
     v = (os.environ.get('TRANSCRIBE_FORCE_DISABLE_VAD') or '').strip().lower()
@@ -7288,6 +7424,9 @@ def sign_s3():
             ExpiresIn=3600
         )
 
+        early_opts, defer_final = _early_transcription_options_for_upload_sign(
+            data, transcription_options, is_medical
+        )
         _maybe_start_runpod_at_upload_sign(
             job_id,
             s3_key,
@@ -7298,7 +7437,8 @@ def sign_s3():
             speaker_count=2,
             is_medical=is_medical,
             bucket=bucket,
-            transcription_options=transcription_options,
+            transcription_options=early_opts,
+            defer_final_options=defer_final,
         )
 
         return jsonify({
@@ -7439,6 +7579,9 @@ def sign_s3_multipart_init():
         logging.exception("create_multipart_upload failed")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+    early_opts, defer_final = _early_transcription_options_for_upload_sign(
+        data, transcription_options, is_medical
+    )
     _maybe_start_runpod_at_upload_sign(
         job_id,
         s3_key,
@@ -7449,7 +7592,8 @@ def sign_s3_multipart_init():
         speaker_count=2,
         is_medical=is_medical,
         bucket=bucket,
-        transcription_options=transcription_options,
+        transcription_options=early_opts,
+        defer_final_options=defer_final,
     )
 
     return jsonify({
@@ -7944,6 +8088,7 @@ def _maybe_start_runpod_at_upload_sign(
     is_medical=False,
     bucket=None,
     transcription_options=None,
+    defer_final_options=None,
 ):
     """Start a single early RunPod /run on the real job_id (upload overlap); final VAD options at trigger_processing."""
     if SIMULATION_MODE:
@@ -7965,8 +8110,15 @@ def _maybe_start_runpod_at_upload_sign(
         )
         return
     early_opts = transcription_options
-    if _audio_profile_detection_enabled() and not is_medical:
-        early_opts = _provisional_transcription_options_for_early_trigger()
+    if defer_final_options is None:
+        defer_final = _audio_profile_detection_enabled() and not is_medical
+    else:
+        defer_final = bool(defer_final_options)
+    if early_opts is None:
+        if defer_final and _audio_profile_detection_enabled() and not is_medical:
+            early_opts = _provisional_transcription_options_for_early_trigger()
+        else:
+            early_opts = {}
     _start_trigger_if_configured(
         job_id=job_id,
         s3_key=s3_key,
@@ -7978,7 +8130,7 @@ def _maybe_start_runpod_at_upload_sign(
         is_medical=is_medical,
         bucket=bucket,
         transcription_options=early_opts,
-        defer_final_options=(_audio_profile_detection_enabled() and not is_medical),
+        defer_final_options=defer_final,
     )
 
 
@@ -8449,56 +8601,20 @@ def trigger_processing():
         target_bucket = str(data.get('bucket') or storage_profile.get('bucket') or '').strip() or None
         _require_medical_kms_or_raise(is_medical)
         audio_profile_info = {"profile": "unknown", "reason": "disabled"}
+        audio_profile_source = None
         audio_profile_skipped_reason = None
         if is_medical:
             audio_profile_info = {"profile": "skipped", "reason": "medical_audio_only"}
             audio_profile_skipped_reason = "medical_mode"
+            audio_profile_source = "medical_mode"
             logging.info(
                 "Skipping audio-profile music/speech detection for medical job_id=%s",
                 data.get('jobId'),
             )
-        elif _audio_profile_detection_enabled() and s3_key and target_bucket:
-            audio_profile_info = _infer_audio_profile_from_s3(
-                target_bucket,
-                s3_key,
-                seconds=int(os.environ.get('AUDIO_PROFILE_DETECT_SECONDS', '20') or 20)
+        else:
+            audio_profile_info, audio_profile_source = _resolve_audio_profile_for_job(
+                data, target_bucket, s3_key, is_medical
             )
-            ap = audio_profile_info
-            prof = str(ap.get('profile') or '').strip().lower()
-            key_suffix = (s3_key[-80:] if isinstance(s3_key, str) and len(s3_key) > 80 else s3_key)
-            if prof == 'music':
-                logging.info(
-                    "Music detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s post_intro_var=%s tail_var=%s threshold=%s basis=%s video_container=%s",
-                    data.get('jobId'),
-                    key_suffix,
-                    ap.get('energy_variance'),
-                    ap.get('post_intro_energy_variance'),
-                    ap.get('tail_energy_variance'),
-                    ap.get('threshold'),
-                    ap.get('classification_basis'),
-                    ap.get('container_video_like'),
-                )
-            elif prof == 'speech':
-                logging.info(
-                    "Speech detected (audio-profile) job_id=%s key_suffix=%s energy_variance=%s post_intro_var=%s tail_var=%s threshold=%s basis=%s video_container=%s",
-                    data.get('jobId'),
-                    key_suffix,
-                    ap.get('energy_variance'),
-                    ap.get('post_intro_energy_variance'),
-                    ap.get('tail_energy_variance'),
-                    ap.get('threshold'),
-                    ap.get('classification_basis'),
-                    ap.get('container_video_like'),
-                )
-            else:
-                logging.info(
-                    "audio-profile inconclusive job_id=%s profile=%s energy_variance=%s reason=%s key_suffix=%s",
-                    data.get('jobId'),
-                    ap.get('profile'),
-                    ap.get('energy_variance'),
-                    ap.get('reason'),
-                    key_suffix,
-                )
         if is_medical:
             transcription_options = _apply_medical_audio_transcription_options(transcription_options)
         else:
@@ -8512,6 +8628,8 @@ def trigger_processing():
             "audio_profile_threshold": audio_profile_info.get("threshold"),
             "audio_profile_classification_basis": audio_profile_info.get("classification_basis"),
         }
+        if audio_profile_source:
+            _audio_profile_api_fields["audio_profile_source"] = audio_profile_source
         if audio_profile_skipped_reason:
             _audio_profile_api_fields["audio_profile_skipped_reason"] = audio_profile_skipped_reason
         _fst = audio_profile_info.get("ffmpeg_stderr_tail") or audio_profile_info.get("stderr")
