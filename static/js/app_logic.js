@@ -4103,6 +4103,7 @@ async function initOpenInApp(jobId) {
     if (isMedicalModeEnabled()) {
         window.medicalActiveTab = 'summary';
         window._medicalHasResult = true;
+        try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
     }
     // Prefer transcript from S3 (result_s3_key); fallback to jobs.result
     let segments = [];
@@ -8396,6 +8397,7 @@ document.addEventListener('DOMContentLoaded', () => {
             window.medicalActiveTab = trFmt ? 'summary' : 'transcript';
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
             setTranscriptActionButtonsVisible(true);
+            try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
             if (typeof renderTranscriptFromCues === 'function') {
                 renderTranscriptFromCues(window.currentSegments || []);
             } else if (typeof window.render === 'function') {
@@ -10238,6 +10240,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!medicalDeferToolbarUntilGptDone) {
             setTranscriptActionButtonsVisible(true);
             window._medicalHasResult = true;
+            try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
         } else {
             window._medicalHasResult = false;
@@ -10612,6 +10615,7 @@ document.addEventListener('DOMContentLoaded', () => {
             window._medicalHasResult = true;
             setTranscriptActionButtonsVisible(true);
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+            try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
             try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
