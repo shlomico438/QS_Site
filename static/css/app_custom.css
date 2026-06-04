@@ -37,6 +37,73 @@ header.navbar,
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
 }
 
+/* =========================
+   SITE FOOTER
+========================= */
+.site-footer {
+    flex-shrink: 0;
+    border-top: 1px solid #e5e7eb;
+    background: #f9fafb;
+    padding: 16px 20px;
+}
+.site-footer-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-family: Inter, system-ui, sans-serif;
+    font-size: 14px;
+}
+.site-footer-copy,
+.site-footer-follow {
+    color: #6b7280;
+}
+.site-footer-social {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.site-footer-linkedin {
+    color: #9ca3af;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.2s ease;
+}
+.site-footer-linkedin:hover {
+    color: #0077b5;
+}
+
+/* Transcribe app: footer lives in the fixed bottom upload bar (under Start Here). */
+body:has(#main-app-container) > footer.site-footer {
+    display: none !important;
+}
+.upload-zone-app-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #e5e7eb;
+    font-family: Inter, system-ui, sans-serif;
+    font-size: 12px;
+    line-height: 1.35;
+    width: 100%;
+    box-sizing: border-box;
+}
+.upload-zone-app-footer .site-footer-social {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 /* Tier 1: utility bar */
 .navbar-utility {
     background: #f8fafc;
@@ -612,11 +679,49 @@ html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
 .seo-home-content {
     max-width: 1120px;
     margin: 0 auto 20px;
-    padding: 20px;
+    padding: 0;
     background: #ffffff;
     border: 1px solid #e5e7eb;
     border-radius: 16px;
     box-shadow: 0 14px 40px rgba(15, 23, 42, 0.06);
+    overflow: hidden;
+}
+/* Landing bands: py-12 + alternating backgrounds (Tailwind gray-50 = #f9fafb) */
+.seo-landing-band,
+.seo-landing-section {
+    padding: 48px 0;
+    scroll-margin-top: var(--nav-total-height, 104px);
+}
+.seo-landing-bg-white {
+    background-color: #ffffff;
+}
+.seo-landing-bg-gray {
+    background-color: #f9fafb;
+}
+.seo-landing-inner {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 0 32px;
+    box-sizing: border-box;
+}
+/* Hero: compact bottom so Features is visible above the fold */
+.seo-landing-hero {
+    padding-top: 32px;
+    padding-bottom: 16px;
+}
+#features-section.seo-landing-section {
+    padding-top: 28px;
+}
+.seo-landing-divider {
+    border: none;
+    border-top: 1px solid #f3f4f6;
+    margin: 0;
+}
+.seo-metrics-section-title {
+    margin: 0 0 16px;
+    font-size: 1.5rem;
+    color: #1f2937;
+    text-align: center;
 }
 .seo-home-content h1 {
     margin: 0 0 12px;
@@ -630,11 +735,11 @@ html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
     -webkit-text-fill-color: transparent;
 }
 .seo-home-content .seo-hero-subtitle {
-    margin: 0 0 18px;
+    margin: 0;
     color: #4b5563;
     font-size: 1.05rem;
     text-align: left;
-    line-height: 1.7;
+    line-height: 1.6;
 }
 
 /* Landing state: larger navbar logo until video player is shown */
@@ -643,11 +748,12 @@ body.landing-logo-large .nav-logo img {
     width: auto;
     transition: height 0.22s ease;
 }
-.seo-home-content section {
-    margin-top: 28px;
+.seo-home-content .seo-landing-section h2,
+.seo-home-content .seo-landing-inner > h2 {
+    margin: 0 0 14px;
 }
 .seo-home-content h2 {
-    margin: 0 0 12px;
+    margin: 0 0 14px;
     font-size: 1.5rem;
     color: #1f2937;
 }
@@ -671,14 +777,14 @@ body.landing-logo-large .nav-logo img {
 .seo-hero-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 18px;
+    gap: 12px;
     max-width: 720px;
 }
 .seo-hero-copy {
     background: linear-gradient(170deg, #f8faff 0%, #ffffff 60%);
     border: 1px solid #e6edf9;
     border-radius: 14px;
-    padding: 20px;
+    padding: 16px 18px;
 }
 .seo-btn {
     display: inline-flex;
@@ -826,7 +932,7 @@ html[dir="rtl"] .product-card-features {
 .seo-pricing-grid,
 .seo-format-grid {
     display: grid;
-    gap: 12px;
+    gap: 20px;
 }
 .seo-feature-grid,
 .seo-format-grid {
@@ -838,7 +944,7 @@ html[dir="rtl"] .product-card-features {
 }
 .seo-testimonials-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: 12px;
+    margin-top: 24px;
 }
 .seo-card {
     border: 1px solid #e5e7eb;
@@ -866,10 +972,10 @@ html[dir="rtl"] .product-card-features {
     background: #e0e7ff;
 }
 .seo-metrics-row {
-    margin-top: 12px;
+    margin-top: 0;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
+    gap: 16px;
 }
 .seo-metrics-row div {
     border: 1px solid #e5e7eb;
@@ -990,8 +1096,8 @@ html[dir="rtl"] .product-card-features {
 .seo-pricing-card.is-plan-muted .seo-popular-badge {
     display: none;
 }
-#pricing-section .seo-metrics-row {
-    margin-top: 18px;
+#metrics-section .seo-metrics-row {
+    margin-top: 0;
 }
 .seo-sales-modal-backdrop {
     position: fixed;
@@ -3797,7 +3903,21 @@ html[dir="rtl"] .upload-status {
         max-height: none;
         overflow: visible;
         margin-bottom: 8px;
-        padding: 12px;
+        padding: 0;
+    }
+    .seo-landing-band,
+    .seo-landing-section {
+        padding: 36px 0;
+    }
+    .seo-landing-hero {
+        padding-top: 24px;
+        padding-bottom: 12px;
+    }
+    #features-section.seo-landing-section {
+        padding-top: 20px;
+    }
+    .seo-landing-inner {
+        padding: 0 20px;
     }
     .seo-home-content h1 {
         font-size: 1.5rem;
@@ -4074,7 +4194,7 @@ html[dir="rtl"] .upload-status {
     }
 
     .main-app-container:not(.medical-mode) {
-        padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px)) !important;
+        padding-bottom: calc(152px + env(safe-area-inset-bottom, 0px)) !important;
     }
 
     /* 4. Only #transcript-window scrolls — do NOT put overflow-y on .transcription-wrapper or the toolbar
@@ -4169,11 +4289,11 @@ html[dir="rtl"] .upload-status {
     }
 
     .main-app-container.medical-mode {
-        padding-bottom: calc(118px + env(safe-area-inset-bottom, 0px)) !important;
+        padding-bottom: calc(166px + env(safe-area-inset-bottom, 0px)) !important;
     }
 
     /* 6. HIDE EXTRAS */
-    footer, .footer, .copyright-text {
+    footer:not(.site-footer), .footer, .copyright-text {
         display: none !important;
     }
 
