@@ -2682,7 +2682,7 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
         const tailVar = td.audio_profile_tail_energy_variance;
         const threshold = td.audio_profile_threshold;
         const basis = td.audio_profile_classification_basis;
-        const topts = td.transcription_options;
+        const topts = td.transcription_options && typeof td.transcription_options === 'object' ? td.transcription_options : {};
         const ffStderr = td.audio_profile_ffmpeg_stderr_tail || null;
         let headline = '[audio-profile] ';
         if (ap === 'music') headline += 'Music detected';
@@ -2694,6 +2694,9 @@ function qsLogAudioProfileFromTrigger(jobId, triggerData) {
             jobId,
             audio_profile_source: profileSource,
             transcription_options: topts,
+            use_vad: topts.use_vad,
+            vad_options_source: topts.vad_options_source || null,
+            vad_force_enable_env_active: topts.vad_force_enable_env_active === true,
             audio_profile_reason: reason || null,
             energy_variance: varEv != null ? varEv : null,
             post_intro_energy_variance: postIntroVar != null ? postIntroVar : null,

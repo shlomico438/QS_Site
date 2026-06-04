@@ -1436,6 +1436,18 @@ def _apply_audio_profile_transcription_options(base_options, audio_profile_info)
         out['vad_disabled_by_site_env'] = True
         out['vad_options_source'] = 'site_env_force_disable'
         return out
+    # Music (incl. upload-modal choice) must disable VAD — do not let TRANSCRIBE_FORCE_ENABLE_VAD override.
+    if profile == 'music':
+        if force_enable:
+            logging.info(
+                "audio_profile music: ignoring TRANSCRIBE_FORCE_ENABLE_VAD (use_vad=False) profile_source=%s",
+                (audio_profile_info or {}).get('source'),
+            )
+        out['use_vad'] = False
+        out['no_speech_threshold'] = 1.0
+        out['audio_profile'] = 'music'
+        out['vad_options_source'] = 'audio_profile_music'
+        return out
     if force_enable:
         out['use_vad'] = True
         out['no_speech_threshold'] = 0.6
@@ -1443,16 +1455,10 @@ def _apply_audio_profile_transcription_options(base_options, audio_profile_info)
         out['vad_enabled_by_site_env'] = True
         out['vad_options_source'] = 'site_env_force_enable'
         return out
-    if profile == 'music':
-        out['use_vad'] = False
-        out['no_speech_threshold'] = 1.0
-        out['audio_profile'] = 'music'
-        out['vad_options_source'] = 'audio_profile_music'
-    else:
-        out['use_vad'] = True
-        out['no_speech_threshold'] = 0.6
-        out['audio_profile'] = 'speech'
-        out['vad_options_source'] = 'audio_profile_speech_or_default'
+    out['use_vad'] = True
+    out['no_speech_threshold'] = 0.6
+    out['audio_profile'] = 'speech'
+    out['vad_options_source'] = 'audio_profile_speech_or_default'
     return out
 
 
