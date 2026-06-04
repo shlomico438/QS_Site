@@ -1963,6 +1963,35 @@ function qsUploadTraceErr(phase, detail) {
     } catch (_) {}
 }
 
+/** User-facing message for /api/trigger_processing credit errors. */
+function qsCreditsTriggerErrorMessage(triggerData) {
+    const td = triggerData || {};
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (td.error === 'insufficient_credits') {
+        const req = td.required_minutes;
+        const bal = td.credit_minutes;
+        const tpl = T('insufficient_credits_msg');
+        if (tpl && String(tpl).includes('{required}')) {
+            return String(tpl)
+                .replace('{required}', String(req != null ? req : '?'))
+                .replace('{balance}', String(bal != null ? bal : '0'));
+        }
+        return td.message || tpl || 'Not enough minutes for this file.';
+    }
+    if (td.error === 'duration_unknown') {
+        return td.message || T('credits_duration_unknown') || 'Could not determine file length.';
+    }
+    return td.message || '';
+}
+
+function qsApplyTriggerCreditFields(triggerData) {
+    const td = triggerData || {};
+    const minutes = Number(td.credit_minutes);
+    if (!Number.isFinite(minutes)) return;
+    try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
+    if (typeof qsSyncUserCreditsUi === 'function') qsSyncUserCreditsUi();
+}
+
 /** Server sends audio_profile + transcription_options on /api/trigger_processing — log clearly (browser has no server logging). */
 function qsLogAudioProfileFromTrigger(jobId, triggerData) {
     try {
@@ -8187,6 +8216,7 @@ function setTranscriptActionButtonsVisible(visible) {
             isMedicalModeEnabled()
         );
         medicalNewSessionBtn.style.display = showMedicalNewSession ? 'inline-flex' : 'none';
+        medicalNewSessionBtn.classList.toggle('is-visible', showMedicalNewSession);
     }
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
     if (switchesTopBar) switchesTopBar.classList.toggle('is-visible', !!visible);
@@ -8503,7 +8533,38 @@ document.addEventListener('DOMContentLoaded', () => {
             const rec = window._medicalRecorder;
             const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
             const showRegularRecWrap = (!on && (window._qsRegularRecordVisible || recActive));
-            medicalRecordWrap.style.display = (on || showRegularRecWrap) ? '' : 'none';
+            const showNewSessionOnly = !!(
+                on
+                && window._medicalHasResult === true
+                && !recActive
+                && !window.isTriggering
+            );
+            medicalRecordWrap.style.display = showNewSessionOnly
+                ? 'none'
+                : ((on || showRegularRecWrap) ? '' : 'none');
+        }
+        const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
+        if (medicalUploadNewSessionBtn) {
+            const rec = window._medicalRecorder;
+            const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
+            const showNewSessionOnly = !!(
+                on
+                && window._medicalHasResult === true
+                && !recActive
+                && !window.isTriggering
+            );
+            medicalUploadNewSessionBtn.style.display = showNewSessionOnly ? '' : 'none';
+        }
+        if (mainAppContainer) {
+            const rec = window._medicalRecorder;
+            const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
+            const showNewSessionOnly = !!(
+                on
+                && window._medicalHasResult === true
+                && !recActive
+                && !window.isTriggering
+            );
+            mainAppContainer.classList.toggle('medical-has-session-result', showNewSessionOnly);
         }
         if (mainBtn) {
             const allowMediaAfterLocalJson = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON;
@@ -8734,17 +8795,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (medicalRecordBtn) medicalRecordBtn.classList.remove('is-new-session');
             return;
         }
-        const rec = window._medicalRecorder;
-        const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
-        const showNewSession = window._medicalHasResult === true && !recActive && !window.isTriggering;
-        medicalRecordBtn.classList.toggle('is-new-session', showNewSession);
-        if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = showNewSession ? 'none' : '';
-        if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = showNewSession ? '' : 'none';
+        medicalRecordBtn.classList.remove('is-new-session');
+        if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = '';
+        if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = 'none';
         if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
         const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
-        medicalRecordBtn.setAttribute('aria-label', showNewSession
-            ? (T('new_session') || 'New Session')
-            : (T('medical_recording') || 'Recording'));
+        medicalRecordBtn.setAttribute('aria-label', T('medical_recording') || 'Recording');
     }
     window.syncMedicalPrimaryActionBtn = syncMedicalPrimaryActionBtn;
 
@@ -9473,11 +9529,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (medicalRecordBtn) {
         medicalRecordBtn.addEventListener('click', () => {
-            if (medicalRecordBtn.classList.contains('is-new-session')) {
-                openFilePickerAfterDisclaimer();
-                return;
-            }
             toggleMedicalRecording();
+        });
+    }
+    const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
+    if (medicalUploadNewSessionBtn) {
+        medicalUploadNewSessionBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            void confirmAndStartMedicalNewSession();
         });
     }
     if (regularRecordBtn) {
@@ -9593,8 +9652,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
         if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
             try {
+                const nsBtn = document.getElementById('medical-upload-new-session-btn');
                 const wrap = document.getElementById('medical-recording-wrap');
-                if (wrap) setTimeout(() => { try { wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {} }, 80);
+                const scrollTarget = (nsBtn && nsBtn.offsetParent !== null) ? nsBtn : wrap;
+                if (scrollTarget) {
+                    setTimeout(() => { try { scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {} }, 80);
+                }
             } catch (_) {}
             return;
         }
@@ -9813,8 +9876,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         body: JSON.stringify({ s3Key, jobId: transcribeJobId, task: 'transcribe', language: 'he', isMedical: isMedicalModeEnabled() })
                     });
                     const triggerData = await triggerRes.json().catch(() => ({}));
-                    if (!triggerRes.ok) throw new Error(triggerData.message || triggerData.error || `HTTP ${triggerRes.status}`);
+                    if (!triggerRes.ok) {
+                        const msg = qsCreditsTriggerErrorMessage(triggerData)
+                            || triggerData.message || triggerData.error || `HTTP ${triggerRes.status}`;
+                        if (triggerData && (triggerData.error === 'insufficient_credits' || Number.isFinite(Number(triggerData.credit_minutes)))) {
+                            qsApplyTriggerCreditFields(triggerData);
+                        }
+                        throw new Error(msg);
+                    }
                     qsLogAudioProfileFromTrigger(transcribeJobId, triggerData);
+                    qsApplyTriggerCreditFields(triggerData);
                     if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(transcribeJobId);
                 } catch (e) {
                     stopProcessingStateUI('transcribe_loaded_file_error');
@@ -12606,11 +12677,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     if (!triggerRes.ok) {
                         console.log("trigger nack", triggerRes.status, triggerData);
                         console.log("❌ Triggering processing failed:", triggerRes.status, triggerData);
-                        const msg = triggerData.message || triggerData.error
+                        const msg = qsCreditsTriggerErrorMessage(triggerData)
+                            || triggerData.message || triggerData.error
                             || (triggerRes.status === 502 && !triggerData.status
                                 ? 'Server timed out starting transcription. Please try again.'
                                 : `Server error (${triggerRes.status})`);
                         if (typeof showStatus === 'function') showStatus(msg, true);
+                        if (triggerData && (triggerData.error === 'insufficient_credits' || Number.isFinite(Number(triggerData.credit_minutes)))) {
+                            qsApplyTriggerCreditFields(triggerData);
+                        }
                         const dbId2 = localStorage.getItem('lastJobDbId');
                         if (typeof updateJobStatus === 'function' && dbId2) updateJobStatus(dbId2, 'failed');
                         window.isTriggering = false;
@@ -12621,6 +12696,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (mainBtn) mainBtn.disabled = false;
                         return;
                     }
+
+                    qsApplyTriggerCreditFields(triggerData);
 
                     // Option A: wait for RunPod trigger confirmation before showing "processing"
                     if (triggerRes.status === 202 && (triggerData.status === 'started' || triggerData.status === 'queued')) {

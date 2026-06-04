@@ -3013,44 +3013,6 @@ def _job_is_medical_for_credits(input_s3_key, pending_info=None):
     return '/raw-audio/' in sk or '/summaries/' in sk or sk.startswith('medical/')
 
 
-def _duration_seconds_from_segments(segments):
-    if not isinstance(segments, list):
-        return 0.0
-    max_end = 0.0
-    for seg in segments:
-        if not isinstance(seg, dict):
-            continue
-        try:
-            end = float(seg.get('end') or 0)
-            if end > max_end:
-                max_end = end
-        except (TypeError, ValueError):
-            continue
-    return max_end
-
-
-def _duration_seconds_from_worker_result(result):
-    if not isinstance(result, dict):
-        return 0.0
-    for key in ('source_duration_sec', 'duration_sec', 'media_duration_sec', 'preprocess_source_duration_sec'):
-        try:
-            val = float(result.get(key) or 0)
-            if val > 0:
-                return val
-        except (TypeError, ValueError):
-            continue
-    timing = result.get('timing')
-    if isinstance(timing, dict):
-        for key in ('source_duration_sec', 'duration_sec', 'media_duration_sec'):
-            try:
-                val = float(timing.get(key) or 0)
-                if val > 0:
-                    return val
-            except (TypeError, ValueError):
-                continue
-    return 0.0
-
-
 def _credit_minutes_from_duration(duration_sec):
     try:
         duration = float(duration_sec or 0)
@@ -3059,6 +3021,188 @@ def _credit_minutes_from_duration(duration_sec):
     if duration <= 0:
         return 0
     return max(1, int(math.ceil(duration / 60.0)))
+
+
+def _media_duration_seconds_from_s3(bucket, s3_key):
+    """Media length in seconds from the uploaded file (container metadata), not GPU transcript."""
+    bucket = str(bucket or '').strip()
+    s3_key = str(s3_key or '').strip()
+    if not bucket or not s3_key:
+        return 0.0
+    ffmpeg_path = _resolve_ffmpeg()
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.environ.get('AWS_REGION'),
+        )
+    except Exception as e:
+        logging.warning("_media_duration_seconds_from_s3 s3 client failed key=%s err=%s", s3_key[-48:], e)
+        return 0.0
+    try:
+        src_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': s3_key},
+            ExpiresIn=600,
+        )
+        duration, _ = _probe_video_with_ffmpeg(ffmpeg_path, src_url)
+        if duration and duration > 0:
+            return float(duration)
+    except Exception as e:
+        logging.warning("_media_duration_seconds_from_s3 presigned probe failed key=%s err=%s", s3_key[-48:], e)
+    try:
+        max_bytes = int(
+            os.environ.get('CREDITS_DURATION_PROBE_MAX_BYTES', str(80 * 1024 * 1024))
+            or (80 * 1024 * 1024)
+        )
+        ho = s3_client.head_object(Bucket=bucket, Key=s3_key)
+        content_len = int(ho.get('ContentLength') or 0)
+        if 0 < content_len <= max_bytes:
+            suffix = pathlib.Path(s3_key).suffix.lower() or '.bin'
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+            try:
+                os.close(fd)
+                s3_client.download_file(bucket, s3_key, tmp_path)
+                duration, _ = _probe_video_with_ffmpeg(ffmpeg_path, tmp_path)
+                if duration and duration > 0:
+                    return float(duration)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+    except Exception as e:
+        logging.warning("_media_duration_seconds_from_s3 download probe failed key=%s err=%s", s3_key[-48:], e)
+    return 0.0
+
+
+def _credits_gate_applies(is_medical=False):
+    if not _credits_billing_enabled():
+        return False
+    if is_medical:
+        return False
+    if SIMULATION_MODE:
+        return False
+    return True
+
+
+def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=True):
+    if prefer_hebrew:
+        return (
+            f"אין מספיק דקות בחשבון. הקובץ דורש {minutes} דקות (אורך {int(round(duration_sec))} שניות) "
+            f"ויתרתך היא {balance} דקות."
+        )
+    return (
+        f"Not enough minutes in your account. This file needs {minutes} minutes "
+        f"({int(round(duration_sec))} seconds) and your balance is {balance} minutes."
+    )
+
+
+def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=False):
+    """
+    Probe uploaded file length, verify wallet balance, deduct minutes before GPU work.
+    Idempotent per job_id (skips if credit_minutes_used already set).
+    """
+    if not _credits_gate_applies(is_medical):
+        return {"ok": True, "skipped": True}
+    user_id = str(user_id or '').strip()
+    job_id = str(job_id or '').strip()
+    s3_key = str(s3_key or '').strip()
+    if not user_id or user_id == 'anonymous' or not job_id or not s3_key:
+        return {"ok": True, "skipped": True}
+    if _job_is_medical_for_credits(s3_key):
+        return {"ok": True, "skipped": True}
+
+    row = _get_job_row_by_runpod_job_id(job_id, select="id,credit_minutes_used,input_s3_key")
+    if isinstance(row, dict) and row.get('credit_minutes_used') is not None:
+        try:
+            if float(row.get('credit_minutes_used') or 0) > 0:
+                wallet = _user_credits_get(user_id)
+                return {
+                    "ok": True,
+                    "already_charged": True,
+                    "credit_minutes_used": float(row.get('credit_minutes_used')),
+                    "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+                }
+        except (TypeError, ValueError):
+            pass
+
+    duration_sec = _media_duration_seconds_from_s3(bucket, s3_key)
+    minutes = _credit_minutes_from_duration(duration_sec)
+    prefer_he = True
+    try:
+        lang = (request.headers.get('Accept-Language') or '') if request else ''
+        prefer_he = not lang.lower().startswith('en')
+    except Exception:
+        prefer_he = True
+
+    if minutes <= 0:
+        msg = (
+            'לא ניתן לקבוע את אורך הקובץ. נסה שוב או העלה קובץ אחר.'
+            if prefer_he
+            else 'Could not determine the file length. Try again or upload a different file.'
+        )
+        return {
+            "ok": False,
+            "error": "duration_unknown",
+            "message": msg,
+            "http_status": 400,
+            "file_duration_seconds": duration_sec,
+        }
+
+    wallet = _user_credits_get(user_id)
+    balance = int((wallet or {}).get('credit_minutes') or 0)
+    if balance < minutes:
+        return {
+            "ok": False,
+            "error": "insufficient_credits",
+            "message": _credits_insufficient_message(balance, minutes, duration_sec, prefer_he),
+            "http_status": 402,
+            "credit_minutes": balance,
+            "required_minutes": minutes,
+            "file_duration_seconds": duration_sec,
+        }
+
+    wallet = _user_credits_deduct_minutes(user_id, minutes)
+    _jobs_patch_by_runpod_job_id(
+        job_id,
+        user_id,
+        {"credit_minutes_used": float(minutes)},
+    )
+    new_balance = int((wallet or {}).get('credit_minutes') or 0)
+    logging.info(
+        "credit_reserve_before_gpu job=%s user=%s file_duration_sec=%.1f minutes=%s balance=%s",
+        job_id,
+        user_id[:8],
+        duration_sec,
+        minutes,
+        new_balance,
+    )
+    pinfo = pending_job_info.get(job_id)
+    if isinstance(pinfo, dict):
+        pinfo = dict(pinfo)
+        pinfo['credit_minutes_used'] = float(minutes)
+        pinfo['credit_file_duration_sec'] = float(duration_sec)
+        pending_job_info[job_id] = pinfo
+
+    return {
+        "ok": True,
+        "credit_minutes_used": minutes,
+        "credit_minutes": new_balance,
+        "file_duration_seconds": duration_sec,
+        "required_minutes": minutes,
+    }
+
+
+def _credit_fields_for_api(credit_result):
+    if not isinstance(credit_result, dict):
+        return {}
+    out = {}
+    for key in ('credit_minutes', 'credit_minutes_used', 'file_duration_seconds', 'required_minutes'):
+        if key in credit_result and credit_result[key] is not None:
+            out[key] = credit_result[key]
+    return out
 
 
 def _user_credits_deduct_minutes(user_id, minutes):
@@ -3104,7 +3248,7 @@ def _user_credits_deduct_minutes(user_id, minutes):
 
 
 def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=None, pending_info=None):
-    """Idempotent per job: bill transcription minutes when GPU transcript is ready."""
+    """Return billing info for socket/UI. Minutes are reserved at trigger from file length, not GPU output."""
     if not _credits_billing_enabled():
         return None
     user_id = str(user_id or '').strip()
@@ -3120,19 +3264,24 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
     )
     if isinstance(row, dict) and row.get('credit_minutes_used') is not None:
         try:
-            if float(row.get('credit_minutes_used') or 0) > 0:
+            charged = float(row.get('credit_minutes_used') or 0)
+            if charged > 0:
                 wallet = _user_credits_get(user_id)
                 return {
                     "already_charged": True,
-                    "credit_minutes_used": float(row.get('credit_minutes_used')),
+                    "credit_minutes_used": charged,
                     "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
                 }
         except (TypeError, ValueError):
             pass
 
-    duration_sec = _duration_seconds_from_segments(segments)
-    if duration_sec <= 0:
-        duration_sec = _duration_seconds_from_worker_result(result)
+    # Legacy/fallback: bill from uploaded file duration only (never segment/GPU timing).
+    bucket = None
+    if isinstance(pending_info, dict):
+        bucket = pending_info.get('bucket')
+    duration_sec = 0.0
+    if bucket and input_s3_key:
+        duration_sec = _media_duration_seconds_from_s3(bucket, input_s3_key)
     minutes = _credit_minutes_from_duration(duration_sec)
     if minutes <= 0:
         logging.info("credit_charge skip zero minutes job=%s duration_sec=%s", runpod_job_id, duration_sec)
@@ -3146,7 +3295,7 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
     )
     balance = int((wallet or {}).get('credit_minutes') or 0)
     logging.info(
-        "credit_charge job=%s user=%s duration_sec=%.1f minutes=%s balance=%s",
+        "credit_charge_fallback job=%s user=%s file_duration_sec=%.1f minutes=%s balance=%s",
         runpod_job_id,
         user_id[:8],
         duration_sec,
@@ -3157,6 +3306,7 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         "credit_minutes_used": minutes,
         "credit_minutes": balance,
         "duration_seconds": duration_sec,
+        "charged_at": "gpu_callback_fallback",
     }
 
 
@@ -8019,6 +8169,21 @@ def trigger_processing():
         if not s3_key or not job_id:
             return jsonify({"status": "error", "message": "s3Key and jobId required"}), 400
 
+        user_id_credits = str(
+            data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key) or ''
+        ).strip()
+        credit_reserve = _reserve_credits_before_gpu(
+            user_id_credits, job_id, target_bucket, s3_key, is_medical=is_medical
+        )
+        if not credit_reserve.get('ok'):
+            return jsonify({
+                "status": "error",
+                "error": credit_reserve.get('error'),
+                "message": credit_reserve.get('message'),
+                **_credit_fields_for_api(credit_reserve),
+            }), int(credit_reserve.get('http_status') or 402)
+        _trigger_credit_fields = _credit_fields_for_api(credit_reserve)
+
         if SIMULATION_MODE and _simulation_uses_sagemaker_async():
             task = data.get('task', 'transcribe')
             language = data.get('language', 'he')
@@ -8050,6 +8215,7 @@ def trigger_processing():
                 "engine": "sagemaker_async",
                 "transcription_options": transcription_options,
                 **_audio_profile_api_fields,
+                **_trigger_credit_fields,
             }), 202
 
         if is_medical and _medical_uses_sagemaker_transcription():
@@ -8139,6 +8305,7 @@ def trigger_processing():
                 "engine": engine,
                 "transcription_options": transcription_options,
                 **_audio_profile_api_fields,
+                **_trigger_credit_fields,
             }), 202
 
         endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
@@ -8162,6 +8329,7 @@ def trigger_processing():
                 "runpod_id": "sim_id_123",
                 "transcription_options": transcription_options,
                 **_audio_profile_api_fields,
+                **_trigger_credit_fields,
             }), 202
 
         try:
@@ -8199,12 +8367,16 @@ def trigger_processing():
             "transcription_s3_key": vocals_s3_key or s3_key,
             "bucket": target_bucket,
             "is_medical": bool(is_medical),
-            "user_id": _extract_user_id_from_s3_key(s3_key),
+            "user_id": user_id_credits or _extract_user_id_from_s3_key(s3_key),
             "task": task,
             "language": language,
             "transcription_options": transcription_options or {},
             "preprocess": "vocal_separation" if use_music_vocal_preprocess else None,
         }
+        if credit_reserve.get('credit_minutes_used'):
+            pending_job_info[job_id]['credit_minutes_used'] = float(credit_reserve['credit_minutes_used'])
+        if credit_reserve.get('file_duration_seconds'):
+            pending_job_info[job_id]['credit_file_duration_sec'] = float(credit_reserve['file_duration_seconds'])
         t_queued = time.time()
         pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
         pending_trigger_at[job_id] = t_queued
@@ -8229,6 +8401,7 @@ def trigger_processing():
             "engine": "runpod",
             "transcription_options": transcription_options,
             **_audio_profile_api_fields,
+            **_trigger_credit_fields,
         }), 202
 
     except Exception as e:

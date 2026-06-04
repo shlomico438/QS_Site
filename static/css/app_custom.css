@@ -1757,8 +1757,27 @@ audio {
     white-space: nowrap;
 }
 
-.main-app-container.medical-mode .medical-toolbar-new-session-btn {
+/* Shown via JS when a medical session has finished (setTranscriptActionButtonsVisible). */
+.main-app-container.medical-mode .medical-toolbar-new-session-btn.is-visible {
     display: inline-flex;
+}
+
+.medical-upload-new-session-btn {
+    display: none;
+    width: 100%;
+    max-width: 320px;
+    margin: 8px auto 0;
+    min-height: 48px;
+    font-weight: 800;
+    border-radius: 12px;
+}
+
+.main-app-container.medical-mode.medical-has-session-result > .upload-zone #medical-recording-wrap {
+    display: none !important;
+}
+
+.main-app-container.medical-mode.medical-has-session-result > .upload-zone .medical-upload-new-session-btn {
+    display: block;
 }
 
 .medical-toolbar-new-session-btn:hover {
@@ -4009,6 +4028,17 @@ html[dir="rtl"] .upload-status {
     .main-app-container.medical-mode > .upload-zone #medical-recording-wrap {
         display: block !important;
         margin: 0 !important;
+    }
+
+    .main-app-container.medical-mode.medical-has-session-result > .upload-zone #medical-recording-wrap {
+        display: none !important;
+    }
+
+    .main-app-container.medical-mode.medical-has-session-result > .upload-zone .medical-upload-new-session-btn {
+        display: block !important;
+        width: calc(100% - 24px);
+        max-width: none;
+        margin: 0 auto;
     }
 
     .main-app-container.medical-mode {
