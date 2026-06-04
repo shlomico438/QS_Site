@@ -1377,6 +1377,97 @@ function transcriptResultKeyMatchesInput(inputKey, resultKey) {
     return _s3KeyBasenameStem(r) === _s3KeyBasenameStem(exp);
 }
 
+/** Load transcript JSON from S3 via presigned URL (same path as Personal / ?open=). */
+async function qsFetchTranscriptJsonFromS3Key(resultS3Key) {
+    const key = String(resultS3Key || '').trim();
+    if (!key || typeof supabase === 'undefined' || !supabase.auth) return null;
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user || !user.id) return null;
+        const urlRes = await fetch('/api/get_presigned_url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                s3Key: key,
+                userId: user.id,
+                isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false,
+            }),
+        });
+        const urlJson = await urlRes.json().catch(() => ({}));
+        if (!urlJson.url) return null;
+        return await fetch(urlJson.url).then((r) => r.json()).catch(() => null);
+    } catch (_) {
+        return null;
+    }
+}
+
+/** Apply words/captions/segments from a transcript JSON object; returns segment list used for render. */
+function qsApplyTranscriptPayloadFromJson(tr) {
+    if (!tr || typeof tr !== 'object') return [];
+    const trFmt = typeof pickFormattedFromObject === 'function' ? pickFormattedFromObject(tr) : null;
+    if (trFmt) {
+        window.currentFormattedDoc = trFmt;
+        window._qsDocPreferSegmentsAfterEdit = false;
+    }
+    if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
+        window.currentWords = tr.words;
+        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 54);
+        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+        return window.currentSegments;
+    }
+    let segments = Array.isArray(tr.segments) ? tr.segments : [];
+    if (segments.length) {
+        const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
+        if (model) {
+            window.currentWords = model.words;
+            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 54);
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+            return window.currentSegments;
+        }
+        window.currentWords = null;
+        window.currentCaptions = null;
+        window.currentSegments = splitLongSegments(segments, 40);
+        return window.currentSegments;
+    }
+    return [];
+}
+
+/** When socket/check_status omits segments, load from outputKey or derived input JSON on S3. */
+async function qsHydrateSegmentsForCompletedJob(rawResult, inputS3Key) {
+    const raw = rawResult || {};
+    const nested = raw.result || raw.output || {};
+    const keys = [];
+    for (const k of [
+        raw.outputKey,
+        nested.outputKey,
+        nested.result_s3_key,
+        raw.result_s3_key,
+        deriveTranscriptJsonKeyFromInputS3Key(inputS3Key),
+    ]) {
+        const s = String(k || '').trim();
+        if (s && !keys.includes(s)) keys.push(s);
+    }
+    for (let i = 0; i < keys.length; i++) {
+        const tr = await qsFetchTranscriptJsonFromS3Key(keys[i]);
+        const segs = qsApplyTranscriptPayloadFromJson(tr);
+        if (segs && segs.length) {
+            console.info('[qs] hydrated transcript from S3', { resultKey: keys[i], segments: segs.length });
+            return segs;
+        }
+    }
+    return [];
+}
+
+function qsRenderEmptyTranscriptMessage(reason) {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow) return;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const msg = reason || T('transcript_empty_message')
+        || 'No transcript text was returned for this file. Try uploading again or check the server logs for this job.';
+    transcriptWindow.innerHTML = `<p class="qs-transcript-empty-notice" style="color:#64748b;text-align:center;margin:2rem 1rem;line-height:1.55;white-space:pre-wrap;">${String(msg).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
+    transcriptWindow.contentEditable = 'false';
+}
+
 /** In-memory when HIPAA blocks persisting lastS3Key; also fallback after reading storage. */
 function currentJobInputS3KeyHint() {
     try {
@@ -2273,7 +2364,6 @@ function qsSetUserAudioProfileChoice(treatAsMusic) {
 function qsFormatUploadFileSize(bytes) {
     const n = Number(bytes);
     if (!Number.isFinite(n) || n < 0) return '';
-    const T = typeof window.t === 'function' ? window.t : (k) => k;
     const units = [
         { u: 'GB', v: 1024 ** 3 },
         { u: 'MB', v: 1024 ** 2 },
@@ -2287,6 +2377,52 @@ function qsFormatUploadFileSize(bytes) {
         }
     }
     return `${n} B`;
+}
+
+/** mm:ss or h:mm:ss from media element metadata (Explorer-style length). */
+function qsFormatMediaDurationForConfirm(seconds) {
+    const s = Number(seconds);
+    if (!Number.isFinite(s) || s <= 0) return '';
+    const total = Math.round(s);
+    const hrs = Math.floor(total / 3600);
+    const mins = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    const pad2 = (n) => String(n).padStart(2, '0');
+    if (hrs > 0) return `${hrs}:${pad2(mins)}:${pad2(secs)}`;
+    return `${mins}:${pad2(secs)}`;
+}
+
+/** Read duration from file metadata before upload confirm (hidden audio/video element). */
+function qsProbeFileMediaDurationSec(file, timeoutMs) {
+    const limit = Number.isFinite(timeoutMs) ? timeoutMs : 8000;
+    return new Promise((resolve) => {
+        if (!file) {
+            resolve(0);
+            return;
+        }
+        let settled = false;
+        const url = URL.createObjectURL(file);
+        const isVideo = typeof qsIsVideoMediaFile === 'function' && qsIsVideoMediaFile(file)
+            && !(typeof qsIsAudioMediaFile === 'function' && qsIsAudioMediaFile(file));
+        const el = document.createElement(isVideo ? 'video' : 'audio');
+        el.muted = true;
+        el.preload = 'metadata';
+        el.playsInline = true;
+        const finish = (sec) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { el.pause(); } catch (_) {}
+            try { el.removeAttribute('src'); } catch (_) {}
+            URL.revokeObjectURL(url);
+            const d = Number(sec);
+            resolve(Number.isFinite(d) && d > 0 ? d : 0);
+        };
+        const timer = setTimeout(() => finish(0), limit);
+        el.addEventListener('loadedmetadata', () => finish(el.duration), { once: true });
+        el.addEventListener('error', () => finish(0), { once: true });
+        el.src = url;
+    });
 }
 
 function qsMountMusicModeContainerInto(slotEl) {
@@ -2310,8 +2446,10 @@ function qsEnsureUploadConfirmModalInBody() {
 /**
  * Minimal upload confirmation overlay. Resolves { treatAsMusic } or null (cancel).
  * @param {File} file
+ * @param {{ durationSec?: number }} [opts]
  */
-function qsShowUploadConfirmModal(file) {
+function qsShowUploadConfirmModal(file, opts) {
+    const durationSec = Number((opts && opts.durationSec) || 0);
     return new Promise((resolve) => {
         const backdrop = qsEnsureUploadConfirmModalInBody();
         const nameEl = document.getElementById('upload-confirm-filename');
@@ -2325,13 +2463,15 @@ function qsShowUploadConfirmModal(file) {
         }
         const T = typeof window.t === 'function' ? window.t : (k) => k;
         const titleEl = document.getElementById('upload-confirm-title');
-        if (titleEl) titleEl.textContent = T('upload_confirm_title') || titleEl.textContent || 'Ready to transcribe?';
+        if (titleEl) titleEl.textContent = T('upload_confirm_title') || titleEl.textContent || 'Confirm File Upload';
         submitBtn.textContent = T('upload_confirm_submit') || submitBtn.textContent || 'Confirm & Transcribe';
         cancelBtn.textContent = T('cancel') || cancelBtn.textContent || 'Cancel';
         nameEl.textContent = file && file.name ? file.name : T('upload_confirm_unknown_file') || 'Selected file';
-        sizeElReal.textContent = file && file.size != null
-            ? (T('upload_confirm_size') || 'Size') + ': ' + qsFormatUploadFileSize(file.size)
-            : '';
+        const durLabel = T('upload_confirm_duration') || 'Upload time';
+        const durText = qsFormatMediaDurationForConfirm(durationSec);
+        sizeElReal.textContent = durText
+            ? `${durLabel}: ${durText}`
+            : `${durLabel}: ${T('upload_confirm_duration_unknown') || 'Unknown'}`;
         qsMountMusicModeContainerInto(musicSlot);
         const musicCb = document.getElementById('qs-music-mode-checkbox');
         if (musicCb) musicCb.checked = false;
@@ -8390,6 +8530,10 @@ function stopProcessingStateUI(reason) {
     window.processingPhaseIndex = 0;
     if (panel) panel.style.display = 'none';
     qsSetProcessingOverlayActive(false);
+    const twWrap = document.querySelector('.transcript-area-wrap');
+    const twOuter = document.querySelector('.transcription-wrapper');
+    if (twWrap) twWrap.style.minHeight = '';
+    if (twOuter) twOuter.style.minHeight = '';
     if (controlsRow) controlsRow.style.display = '';
     qsLogProcessingAnimStop('phase_lines_panel', {
         reason: reason != null ? String(reason) : 'unspecified',
@@ -10698,6 +10842,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
         let segments = (output && output.segments) || rawResult.segments || (rawResult.data && rawResult.data.segments) || [];
         if (!Array.isArray(segments)) segments = [];
+        if (!segments.length) {
+            const hydrated = await qsHydrateSegmentsForCompletedJob(rawResult, inputS3KeyForJob);
+            if (hydrated && hydrated.length) {
+                segments = hydrated;
+            }
+        }
         const flatWordSegments = (output && output.word_segments) || rawResult.word_segments || (rawResult.result && rawResult.result.word_segments);
         // Real word timestamps → word/caption model (coerces numeric strings; optional flat `word_segments`).
         const wordModel = _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
@@ -10711,6 +10861,13 @@ document.addEventListener('DOMContentLoaded', () => {
             window.currentCaptions = null;
             segments = splitLongSegments(segments, 40);
             window.currentSegments = segments;
+        }
+
+        if (!window.currentSegments || !window.currentSegments.length) {
+            console.warn('[qs] completed job has no transcript segments after socket + S3 hydrate', {
+                jobId,
+                outputKey: rawResult.outputKey || (output && output.outputKey),
+            });
         }
 
         // First, treat these as raw segments (or derived captions).
@@ -10987,7 +11144,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const transcriptWindow = document.getElementById('transcript-window');
         if (transcriptWindow) {
-            if (isMedicalModeEnabled()) {
+            if (!window.currentSegments || !window.currentSegments.length) {
+                qsRenderEmptyTranscriptMessage();
+            } else if (isMedicalModeEnabled()) {
                 if (String(window.medicalActiveTab || 'summary') === 'summary') {
                     renderTranscriptFromCues(window.currentSegments || []);
                 } else if (typeof renderMedicalTranscriptMainView === 'function') {
@@ -11190,7 +11349,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     // 1. Fixed: Attached to window to solve "ReferenceError"
     window.render = function() {
         const transcriptWindow = document.getElementById('transcript-window');
-        if (!transcriptWindow || !window.currentSegments) return;
+        if (!transcriptWindow) return;
+        if (!window.currentSegments || !window.currentSegments.length) {
+            qsRenderEmptyTranscriptMessage();
+            return;
+        }
 
         // Medical UI uses tabs + formatted views, not the generic segment/subtitle renderer.
         if (isMedicalModeEnabled()) {
@@ -13337,7 +13500,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     await runUploadPipeline();
                     return;
                 }
-                const uploadChoice = await qsShowUploadConfirmModal(file);
+                const durationSec = await qsProbeFileMediaDurationSec(file, 8000);
+                const uploadChoice = await qsShowUploadConfirmModal(file, { durationSec });
                 if (!uploadChoice) {
                     fileInput.value = '';
                     qsRestoreUiAfterUploadConfirmCancel();
