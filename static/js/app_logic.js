@@ -2102,7 +2102,7 @@ async function qsPostTriggerProcessingWithRetry(body, jobId) {
                     transcription_options: lastData.transcription_options,
                 });
                 if (lastData.engine) {
-                    console.info('[medical transcription] trigger_processing engine:', lastData.engine, lastData.endpoint || '');
+                    console.info('[trigger] trigger_processing engine:', lastData.engine, lastData.endpoint || '');
                 }
                 qsLogAudioProfileFromTrigger(jobId, lastData);
                 return { triggerRes: lastRes, triggerData: lastData };

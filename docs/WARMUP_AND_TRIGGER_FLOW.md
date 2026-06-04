@@ -8,11 +8,11 @@
 
 ## Backend flow (step by step)
 
-1. **Frontend** calls `POST /api/sign-s3` to get presigned URL. **Backend** starts the RunPod trigger immediately (before upload) so the container warms during upload.
+1. **Frontend** calls `POST /api/sign-s3` (or multipart-init) to get presigned URL. **Backend** starts **one** RunPod `/run` on the **real `jobId`** immediately (before upload) with speech-safe provisional `transcription_options` when auto audio-profile is enabled.
 
-2. **Frontend** uploads file to S3, then `POST /api/trigger_processing` with `{ s3Key, jobId, ... }`. If trigger was already started at sign-s3, backend returns 202 without re-triggering.
+2. **Frontend** uploads file to S3, then `POST /api/trigger_processing` with `{ s3Key, jobId, ... }`. Backend runs audio-profile detection, stores **final** `transcription_options` in job handoff, sets `upload_complete`, and **does not** send a second `/run` if the early trigger is already queued.
 
-3. **Backend** `sign_s3()` calls `_start_trigger_if_configured()` which starts `_trigger_gpu` in a background thread (or `trigger_processing()` does the same if trigger was not already started at sign-s3).
+3. **RunPod worker** polls `GET /api/upload_status?job_id=...` until `status=complete` and `worker_ready=true`, then reads `transcription_options` and optional `s3Key` (vocals) from that response (or `GET /api/job_transcription_options`).
 
 4. **In the thread** `_trigger_gpu(job_id, payload, endpoint_id, api_key)`:
    - **Trigger:**  
