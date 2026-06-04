@@ -983,6 +983,27 @@ def _log_audio_profile_metrics(job_id, audio_profile_info, *, source=None, s3_ke
         )
 
 
+def _user_audio_profile_from_request(data):
+    """Upload-modal music/speech choice — always honored (not gated on TRANSCRIBE_AUTO_AUDIO_PROFILE)."""
+    if not isinstance(data, dict):
+        return None
+    if 'treatAsMusic' in data and data.get('treatAsMusic') is not None:
+        on = str(data.get('treatAsMusic')).strip().lower() in ('1', 'true', 'yes', 'on')
+        return {
+            'profile': 'music' if on else 'speech',
+            'source': 'client_user',
+            'classification_basis': 'user_modal',
+        }
+    client = _client_audio_profile_from_request(data)
+    if not client:
+        return None
+    if client.get('source') == 'client_user' or client.get('classification_basis') == 'user_modal':
+        return client
+    if _client_audio_profile_enabled():
+        return client
+    return None
+
+
 def _resolve_audio_profile_for_job(data, bucket, s3_key, is_medical):
     """
     Prefer client Web Audio profile when present; otherwise S3/ffmpeg probe or disabled.
@@ -991,6 +1012,10 @@ def _resolve_audio_profile_for_job(data, bucket, s3_key, is_medical):
     job_id = (data or {}).get('jobId') if isinstance(data, dict) else None
     if is_medical:
         return {"profile": "skipped", "reason": "medical_mode"}, "medical_mode"
+    user_choice = _user_audio_profile_from_request(data)
+    if user_choice:
+        _log_audio_profile_metrics(job_id, user_choice, source=user_choice.get('source') or 'client_user', s3_key=s3_key)
+        return user_choice, user_choice.get('source') or 'client_user'
     if _client_audio_profile_enabled():
         client = _client_audio_profile_from_request(data)
         if client and client.get('profile') in ('speech', 'music', 'unknown'):
@@ -1011,8 +1036,21 @@ def _resolve_audio_profile_for_job(data, bucket, s3_key, is_medical):
 
 def _early_transcription_options_for_upload_sign(data, base_transcription_options, is_medical):
     """Options + defer_final_options for early RunPod /run at sign-s3 / multipart-init."""
-    if is_medical or not _audio_profile_detection_enabled():
+    if is_medical:
         return (base_transcription_options or {}, False)
+    user_choice = _user_audio_profile_from_request(data)
+    if user_choice and user_choice.get('profile') in ('speech', 'music'):
+        opts = _apply_audio_profile_transcription_options(base_transcription_options, user_choice)
+        logging.info(
+            "early RunPod using user audio choice job_id=%s profile=%s basis=%s",
+            (data or {}).get('jobId') if isinstance(data, dict) else None,
+            user_choice.get('profile'),
+            user_choice.get('classification_basis'),
+        )
+        return opts, False
+    if not _audio_profile_detection_enabled():
+        # Profiling off: do not lock speech/VAD before trigger_processing (upload modal choice).
+        return _provisional_transcription_options_for_early_trigger(), True
     client = None
     if _client_audio_profile_enabled():
         client = _client_audio_profile_from_request(data)

@@ -2441,12 +2441,18 @@ async function qsAwaitClientAudioProfile(timeoutMs) {
 
 /** User choice from upload confirm modal (overrides Web Audio auto-profile). */
 function qsSetUserAudioProfileChoice(treatAsMusic) {
-    const profile = treatAsMusic ? 'music' : 'speech';
+    const music = !!treatAsMusic;
+    window.__QS_USER_TREAT_AS_MUSIC = music;
+    const profile = music ? 'music' : 'speech';
     window.__QS_CLIENT_AUDIO_PROFILE_PROMISE = Promise.resolve({
         profile,
         source: 'client_user',
         classification_basis: 'user_modal',
     });
+}
+
+function qsUserTreatAsMusicForUpload() {
+    return !!window.__QS_USER_TREAT_AS_MUSIC;
 }
 
 function qsFormatUploadFileSize(bytes) {
@@ -13058,6 +13064,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             window._qsShowEmptyTranscriptNotice = false;
             qsClearTranscriptWindowIdle();
+            try { window.__QS_USER_TREAT_AS_MUSIC = false; } catch (_) {}
 
             try {
                 // Subtitle file: handle locally and keep existing media state (media + SRT workflow).
@@ -13289,6 +13296,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
                     fileSize: currentFile.size,
                 };
+                if (!isMedicalModeEnabled()) {
+                    multipartInitBody.treatAsMusic = qsUserTreatAsMusicForUpload();
+                }
                 if (initClientProfile && initClientProfile.profile) {
                     multipartInitBody.clientAudioProfile = initClientProfile;
                 }
@@ -13432,6 +13442,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
                     };
                     if (!isMedicalUpload) {
+                        triggerPayload.treatAsMusic = qsUserTreatAsMusicForUpload();
                         const clientProfile = await qsAwaitClientAudioProfile(0);
                         if (clientProfile && clientProfile.profile) {
                             triggerPayload.clientAudioProfile = clientProfile;
