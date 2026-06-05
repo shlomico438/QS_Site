@@ -12,7 +12,8 @@
 
 1. **Frontend** selects a file and starts `qsInferAudioProfileFromFile()` in parallel with upload (non-medical only).
 
-2. **Frontend** calls `POST /api/sign-s3` or `POST /api/sign-s3-multipart-init` with optional `clientAudioProfile` (if profiling finished within ~2.5s before init). **Backend** starts **one** RunPod `/run` on the **real `jobId`** immediately (before upload):
+2. **Frontend** calls `POST /api/sign-s3` or `POST /api/sign-s3-multipart-init` with optional `clientAudioProfile` and `treatAsMusic` (upload-modal checkbox). **Backend** usually starts **one** RunPod `/run` on the **real `jobId`** immediately (before upload):
+   - **Music checkbox + vocal separation enabled:** **no** early GPU `/run` (avoids GPU idle billing while CPU Demucs runs). GPU `/run` fires only after vocal separation completes.
    - **Client profile present:** final `transcription_options` from profile (`defer_final_options=false`, `worker_ready=true` on early handoff).
    - **No client profile yet:** provisional speech-safe VAD (`defer_final_options=true`); worker polls `job_transcription_options` until `trigger_processing`.
 
@@ -79,7 +80,7 @@ Remaining weak points: trigger runs in a fire-and-forget thread with no retry in
 ## Manual test checklist
 
 - **Speech interview MP4:** client `speech`, `trigger_processing` fast, logs show `audio-profile (client)`, no ffmpeg stderr on trigger.
-- **Music file:** client `music`, vocal prep path unchanged if enabled.
+- **Music file (checkbox on):** no early GPU warmup at multipart-init; `trigger_status` → `preprocessing` during Demucs; GPU `/run` after separation (`Music vocal separation complete — dispatching GPU /run (no early upload warmup)` in logs).
 - **Client decode fails:** server fallback or `unknown` → speech VAD default.
 - **Medical upload:** no client profile, no regression.
 - **Parallelism:** profile during S3 PUT; trigger wall time dominated by credits reserve, not profile.

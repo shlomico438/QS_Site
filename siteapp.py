@@ -1965,6 +1965,19 @@ def _should_preprocess_music_vocals(is_medical, audio_profile_info):
     return profile == 'music'
 
 
+def _defer_gpu_warmup_for_music_upload(data, is_medical):
+    """Skip sign-s3/multipart early GPU /run when CPU vocal separation will run first (music checkbox)."""
+    if is_medical or not _music_vocal_separation_enabled():
+        return False
+    user_choice = _user_audio_profile_from_request(data)
+    if not user_choice or user_choice.get('profile') != 'music':
+        return False
+    return (
+        user_choice.get('source') == 'client_user'
+        or user_choice.get('classification_basis') == 'user_modal'
+    )
+
+
 def _shift_transcript_segments_times(segments, offset_sec):
     """Shift segment (and nested word) timestamps by offset_sec for vocal-separation timeline fix."""
     try:
@@ -7497,6 +7510,7 @@ def sign_s3():
             bucket=bucket,
             transcription_options=early_opts,
             defer_final_options=defer_final,
+            request_data=data,
         )
 
         return jsonify({
@@ -7652,6 +7666,7 @@ def sign_s3_multipart_init():
         bucket=bucket,
         transcription_options=early_opts,
         defer_final_options=defer_final,
+        request_data=data,
     )
 
     return jsonify({
@@ -8147,9 +8162,16 @@ def _maybe_start_runpod_at_upload_sign(
     bucket=None,
     transcription_options=None,
     defer_final_options=None,
+    request_data=None,
 ):
     """Start a single early RunPod /run on the real job_id (upload overlap); final VAD options at trigger_processing."""
     if SIMULATION_MODE:
+        return
+    if request_data and _defer_gpu_warmup_for_music_upload(request_data, is_medical):
+        logging.info(
+            "Skipping RunPod upload trigger for %s (music upload — defer GPU until after vocal separation)",
+            job_id,
+        )
         return
     if is_medical and _medical_uses_sagemaker_transcription():
         _start_medical_sagemaker_warmup_if_configured(
@@ -8246,6 +8268,7 @@ def _start_trigger_if_configured(
         "transcription_options": transcription_options or {},
         "options_finalized": not defer_final_options,
         "worker_ready": not defer_final_options,
+        "early_gpu_dispatched": True,
     }
     if defer_final_options:
         _set_worker_handoff(
@@ -8411,7 +8434,9 @@ def _finish_vocal_separation_and_trigger_gpu(job_id, trigger_payload, endpoint_i
     global pending_trigger, pending_trigger_at
     trigger_input = (trigger_payload.get('input') or {}) if isinstance(trigger_payload, dict) else {}
     st = str(pending_trigger.get(job_id) or "").strip().lower()
-    if st in ("queued", "run_accepted", "triggered", "preprocessing"):
+    pinfo_early = pending_job_info.get(job_id) or {}
+    early_gpu_dispatched = bool(pinfo_early.get('early_gpu_dispatched'))
+    if early_gpu_dispatched and st in ("queued", "run_accepted", "triggered", "preprocessing"):
         pinfo = dict(pending_job_info.get(job_id) or {})
         pinfo.update({
             "transcription_s3_key": trigger_input.get("s3Key") or pinfo.get("transcription_s3_key"),
@@ -8433,6 +8458,10 @@ def _finish_vocal_separation_and_trigger_gpu(job_id, trigger_payload, endpoint_i
             job_id,
         )
         return
+    logging.info(
+        "Music vocal separation complete — dispatching GPU /run job_id=%s (no early upload warmup)",
+        job_id,
+    )
     pending_trigger[job_id] = "queued"
     pending_trigger_at[job_id] = time.time()
     _set_trigger_state(job_id, "queued", queued_at=pending_trigger_at[job_id])
