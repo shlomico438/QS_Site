@@ -3570,14 +3570,26 @@ function hideTranslationProgressBar() {
     _translationProgressDetail = '';
 }
 
+function qsSyncHomepageScrollMode() {
+    const seo = document.getElementById('seo-home-content');
+    if (!seo) return;
+    let visible = false;
+    try {
+        visible = seo.style.display !== 'none' && window.getComputedStyle(seo).display !== 'none';
+    } catch (_) {}
+    document.body.classList.toggle('qs-homepage-landing', !!visible);
+}
+
 function setSeoHomeContentVisibility(visible) {
     const seo = document.getElementById('seo-home-content');
     if (!seo) return;
     if (isMedicalModeEnabled()) {
         seo.style.display = 'none';
+        qsSyncHomepageScrollMode();
         return;
     }
     seo.style.display = visible ? '' : 'none';
+    qsSyncHomepageScrollMode();
     try { if (typeof window.qsSyncStarterPlanUploadGate === 'function') window.qsSyncStarterPlanUploadGate(); } catch (_) {}
 }
 
@@ -3650,14 +3662,17 @@ function syncSeoBlockWithAppState() {
     if (!seo) return;
     if (isMedicalModeEnabled()) {
         seo.style.display = 'none';
+        qsSyncHomepageScrollMode();
         return;
     }
     if (window.isTriggering) {
         seo.style.display = 'none';
+        qsSyncHomepageScrollMode();
         return;
     }
     if (typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
         seo.style.display = 'none';
+        qsSyncHomepageScrollMode();
         return;
     }
     try {
@@ -3666,11 +3681,14 @@ function syncSeoBlockWithAppState() {
             const st = window.getComputedStyle(pContainer);
             if (st && st.display !== 'none' && pContainer.offsetWidth > 0) {
                 seo.style.display = 'none';
+                qsSyncHomepageScrollMode();
                 return;
             }
         }
     } catch (_) {}
     seo.style.display = '';
+    qsSyncHomepageScrollMode();
+    try { if (typeof window.qsSyncStarterPlanUploadGate === 'function') window.qsSyncStarterPlanUploadGate(); } catch (_) {}
 }
 /** @param {object} [userOverride] - If provided (e.g. from updateUser), use this user instead of getUser() so the UI shows fresh data. */
 async function setupNavbarAuth(userOverride) {
@@ -8973,6 +8991,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const speakerToggle = document.getElementById('toggle-speaker');
     const mainAudio = document.getElementById('main-audio');
     setTranscriptActionButtonsVisible(false);
+    if (typeof syncSeoBlockWithAppState === 'function') {
+        syncSeoBlockWithAppState();
+    }
     if (translateBtn) {
         translateBtn.addEventListener('click', (event) => {
             event.preventDefault();
