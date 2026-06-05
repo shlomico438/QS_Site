@@ -8429,6 +8429,34 @@ def _queue_vocal_separation_on_runpod(job_id, bucket, source_s3_key, vocals_s3_k
             logging.warning("RunPod CPU scale-on-vocal-separation skipped: %s", e)
 
 
+def _publish_vocal_separation_worker_handoff(job_id, trigger_payload):
+    """Tell RunPod GPU worker upload_status/job_options are final (vocals S3 key + options)."""
+    trigger_input = (trigger_payload.get('input') or {}) if isinstance(trigger_payload, dict) else {}
+    pinfo = dict(pending_job_info.get(job_id) or {})
+    tx_opts = trigger_input.get("transcription_options") or pinfo.get("transcription_options") or {}
+    vocals_key = (
+        trigger_input.get("s3Key")
+        or pinfo.get("transcription_s3_key")
+        or pinfo.get("input_s3_key")
+    )
+    pinfo.update({
+        "transcription_s3_key": vocals_key,
+        "transcription_options": tx_opts,
+        "preprocess": None,
+        "options_finalized": True,
+        "worker_ready": True,
+    })
+    pending_job_info[job_id] = pinfo
+    _set_worker_handoff(
+        job_id,
+        options_finalized=True,
+        worker_ready=True,
+        worker_pending_reason=None,
+        transcription_options=tx_opts,
+        transcription_s3_key=vocals_key,
+    )
+
+
 def _finish_vocal_separation_and_trigger_gpu(job_id, trigger_payload, endpoint_id, api_key):
     """After vocal separation: second GPU /run only if early /run was not already dispatched."""
     global pending_trigger, pending_trigger_at
@@ -8437,30 +8465,18 @@ def _finish_vocal_separation_and_trigger_gpu(job_id, trigger_payload, endpoint_i
     pinfo_early = pending_job_info.get(job_id) or {}
     early_gpu_dispatched = bool(pinfo_early.get('early_gpu_dispatched'))
     if early_gpu_dispatched and st in ("queued", "run_accepted", "triggered", "preprocessing"):
-        pinfo = dict(pending_job_info.get(job_id) or {})
-        pinfo.update({
-            "transcription_s3_key": trigger_input.get("s3Key") or pinfo.get("transcription_s3_key"),
-            "transcription_options": trigger_input.get("transcription_options")
-            or pinfo.get("transcription_options")
-            or {},
-            "preprocess": None,
-        })
-        pending_job_info[job_id] = pinfo
-        _set_worker_handoff(
-            job_id,
-            worker_ready=True,
-            worker_pending_reason=None,
-            transcription_options=pinfo.get("transcription_options"),
-            transcription_s3_key=pinfo.get("transcription_s3_key"),
-        )
+        _publish_vocal_separation_worker_handoff(job_id, trigger_payload)
         logging.info(
             "Music vocal separation handoff for early RunPod job_id=%s (no second GPU /run)",
             job_id,
         )
         return
+    # No early upload warmup: publish handoff before /run so the new GPU worker does not poll forever.
+    _publish_vocal_separation_worker_handoff(job_id, trigger_payload)
     logging.info(
-        "Music vocal separation complete — dispatching GPU /run job_id=%s (no early upload warmup)",
+        "Music vocal separation complete — dispatching GPU /run job_id=%s (no early upload warmup) vocals_key_suffix=%s",
         job_id,
+        (str(trigger_input.get("s3Key") or "")[-80:]),
     )
     pending_trigger[job_id] = "queued"
     pending_trigger_at[job_id] = time.time()
