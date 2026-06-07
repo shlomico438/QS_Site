@@ -183,6 +183,45 @@ body.mobile-video-session .upload-zone-app-footer {
     color: #64748b;
 }
 
+/* Nav visibility toggles (inline display:none loses to .nav-item { display:inline-flex !important }) */
+.qs-nav-auth-hidden,
+.site-header .qs-nav-auth-hidden,
+.site-header .nav-item.qs-nav-auth-hidden,
+#nav-auth-btn.qs-nav-auth-hidden,
+#nav-auth-btn-mobile.qs-nav-auth-hidden {
+    display: none !important;
+}
+
+.nav-mobile-signed-in {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+}
+.nav-mobile-signed-in.qs-nav-auth-hidden {
+    display: none !important;
+}
+.nav-mobile-signed-in .nav-mobile-user-name {
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-weight: 800;
+    font-size: 1rem;
+    color: #1e3a8a;
+    cursor: pointer;
+    width: 100%;
+}
+.nav-mobile-signed-in .nav-mobile-logout {
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #64748b;
+    cursor: pointer;
+    width: 100%;
+}
+
 /* Language switcher inside utility bar (no absolute positioning) */
 .site-header .lang-switcher-wrap {
     position: relative;
@@ -318,6 +357,13 @@ body.mobile-video-session .upload-zone-app-footer {
         border: none;
         background: transparent;
         cursor: pointer;
+        /* Stay in the top bar row — absolute + top:50% centers on the full open drawer height */
+        position: static !important;
+        right: auto !important;
+        top: auto !important;
+        transform: none !important;
+        flex-shrink: 0;
+        z-index: 3;
     }
     .site-header .hamburger-menu span {
         display: block;
@@ -370,6 +416,19 @@ body.mobile-video-session .upload-zone-app-footer {
     .navbar-utility-end .nav-personal-link,
     .navbar-utility-end .nav-utility-signed-in {
         display: none !important;
+    }
+    body.qs-user-signed-in #nav-auth-btn,
+    body.qs-user-signed-in #nav-auth-btn-mobile {
+        display: none !important;
+    }
+    body.qs-user-signed-in #nav-mobile-signed-in:not(.qs-nav-auth-hidden) {
+        display: flex !important;
+    }
+    .user-menu-panel {
+        left: 10px;
+        right: 10px;
+        width: auto;
+        max-height: calc(100dvh - var(--nav-total-height, 72px) - 12px);
     }
 }
 @media screen and (max-width: 520px) {
@@ -629,6 +688,10 @@ header.site-header.navbar {
     }
     .site-header .hamburger-menu {
         display: flex !important;
+        position: static !important;
+        right: auto !important;
+        top: auto !important;
+        transform: none !important;
     }
     .site-header .navbar-main-actions .nav-cta-btn {
         display: none !important;
@@ -4335,7 +4398,7 @@ html[dir="rtl"] .upload-status {
         width: auto;
     }
 
-    /* 2. Show the Hamburger Icon (3 Lines) */
+    /* 2. Show the Hamburger Icon (3 Lines) — legacy pages only; site-header uses flex row */
     .hamburger-menu {
         display: flex;
         flex-direction: column;
@@ -4347,6 +4410,12 @@ html[dir="rtl"] .upload-status {
         right: 20px; /* Place it on the right */
         top: 50%;
         transform: translateY(-50%);
+    }
+    .site-header .hamburger-menu {
+        position: static !important;
+        right: auto !important;
+        top: auto !important;
+        transform: none !important;
     }
 
     .hamburger-menu span {

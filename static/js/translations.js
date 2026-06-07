@@ -84,6 +84,10 @@ window.translations = {
         reg_feedback_not_required: "אפשר להשאיר ריק ורק לשלוח קישור התחברות.",
         auth_skip_later: "אמשיך בלי להירשם עכשיו",
         auth_skipped_hint: "אפשר להמשיך בלי חשבון. להעלאה, העתקה, ייצוא ואזור אישי — לחצו ״התחבר״ בראש המסך.",
+        auth_ios_private_sign_in: "התחברות לא עובדת בגלישה בסתר ב-Safari באייפון. פתחו טאב רגיל (לא גלישה בסתר) והתחברו משם.",
+        auth_oauth_callback_failed: "ההתחברות לא הושלמה. נסו שוב.",
+        auth_oauth_callback_failed_private: "ההתחברות נכשלה בגלישה בסתר. השתמשו בטאב Safari רגיל (לא גלישה בסתר).",
+        auth_oauth_error: "שגיאת התחברות",
         post_export_feedback_title: "רגע משוב?",
         post_export_feedback_sub: "אופציונלי — נשמח לשמוע מה אפשר לשפר (אחרי הייצוא).",
         post_export_feedback_stars: "דירוג (אופציונלי)",
@@ -369,6 +373,10 @@ window.translations = {
         reg_feedback_not_required: "You can leave feedback blank and only request the sign-in link.",
         auth_skip_later: "Skip for now",
         auth_skipped_hint: "You can continue without an account. To upload, copy, export, or use your list — use Sign in at the top.",
+        auth_ios_private_sign_in: "Sign-in does not work in iPhone Safari private browsing. Use a normal Safari tab (not private) to sign in.",
+        auth_oauth_callback_failed: "Sign-in could not be completed. Please try again.",
+        auth_oauth_callback_failed_private: "Sign-in failed in private browsing. Use a normal Safari tab (not private).",
+        auth_oauth_error: "Sign-in error",
         post_export_feedback_title: "Quick feedback?",
         post_export_feedback_sub: "Optional — tell us what to improve (after your export).",
         post_export_feedback_stars: "Rating (optional)",
@@ -654,6 +662,7 @@ window.applyTranslations = function() {
         if (el.id === 'nav-auth-btn' || el.id === 'nav-auth-btn-mobile') {
             if (window.__QS_UX_USER_SIGNED_IN) return;
         }
+        if (el.id === 'nav-user-name-trigger-mobile') return;
         // #main-btn label is driven by upload/processing state — do not reset to "Start here" mid-job.
         if (el.id === 'main-btn' && (window.isTriggering || el.getAttribute('data-qs-dynamic-label') === '1')) {
             return;

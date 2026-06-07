@@ -86,6 +86,7 @@ const qsSupabaseAuthStorage = {
 // Semicolon required: next line starts with `(` — without it, ASI parses `createClient(...)(() => { ... })`.
 const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
+        flowType: 'pkce',
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
@@ -1246,13 +1247,139 @@ window.qsRefreshMedicalEndpointStatus = function qsRefreshMedicalEndpointStatus(
     return window.__QS_MEDICAL_STATUS_REFRESH_PROMISE;
 };
 
-function _isLikelyIOSInAppBrowser() {
+function _isLikelyIOSDevice() {
     const ua = String(navigator.userAgent || navigator.vendor || '').toLowerCase();
-    const isIOS = /iphone|ipad|ipod/.test(ua) || (/macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1);
-    if (!isIOS) return false;
+    return /iphone|ipad|ipod/.test(ua) || (/macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1);
+}
+
+function _isLikelyIOSSafariBrowser() {
+    if (!_isLikelyIOSDevice()) return false;
+    const ua = String(navigator.userAgent || navigator.vendor || '').toLowerCase();
     const isKnownIOSBrowser = /safari/.test(ua) && !/crios|fxios|edgios|opios|opr\//.test(ua);
     const isKnownInApp = /fban|fbav|instagram|line\/|micromessenger|gsa\//.test(ua);
+    return isKnownIOSBrowser && !isKnownInApp;
+}
+
+function _isLikelyIOSInAppBrowser() {
+    if (!_isLikelyIOSDevice()) return false;
+    const ua = String(navigator.userAgent || navigator.vendor || '').toLowerCase();
+    const isKnownIOSBrowser = /safari/.test(ua) && !/crios|fxios|edgios|opr\//.test(ua);
+    const isKnownInApp = /fban|fbav|instagram|line\/|micromessenger|gsa\//.test(ua);
     return isKnownInApp || !isKnownIOSBrowser;
+}
+
+/** iOS Safari private browsing — OAuth session cannot be persisted reliably. */
+function qsIsIOSPrivateSafari() {
+    if (!_isLikelyIOSSafariBrowser()) return Promise.resolve(false);
+    if (typeof window.webkitRequestFileSystem === 'function') {
+        return new Promise((resolve) => {
+            try {
+                window.webkitRequestFileSystem(
+                    window.TEMPORARY,
+                    1,
+                    () => resolve(false),
+                    () => resolve(true)
+                );
+            } catch (_) {
+                resolve(false);
+            }
+        });
+    }
+    return Promise.resolve(false);
+}
+
+function qsOAuthRedirectTo() {
+    try {
+        const loc = window.location;
+        const origin = String(loc.origin || '').trim();
+        let path = String(loc.pathname || '/');
+        if (!path.startsWith('/')) path = '/' + path;
+        return origin ? (origin + path) : path;
+    } catch (_) {
+        return String(window.location.origin || '/');
+    }
+}
+
+function qsCleanOAuthUrlFromHistory() {
+    try {
+        const u = new URL(window.location.href);
+        ['code', 'error', 'error_description', 'state'].forEach((k) => u.searchParams.delete(k));
+        const q = u.searchParams.toString();
+        const clean = u.pathname + (q ? '?' + q : '');
+        window.history.replaceState({}, document.title, clean || '/');
+    } catch (_) {
+        try {
+            if (window.location.hash && /(?:access_token|refresh_token|error)/.test(window.location.hash)) {
+                window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+            }
+        } catch (__) {}
+    }
+}
+
+function qsShowOAuthMessage(message, isError) {
+    if (typeof showStatus === 'function') {
+        showStatus(message, !!isError, { duration: isError ? 10000 : 6000, toastPosition: 'center' });
+    }
+}
+
+function qsShowOAuthCallbackFailedMessage(isIosPrivate) {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const msg = isIosPrivate
+        ? T('auth_oauth_callback_failed_private')
+        : T('auth_oauth_callback_failed');
+    qsShowOAuthMessage(msg || (isIosPrivate
+        ? 'Sign-in failed in iPhone private browsing. Use a normal Safari tab.'
+        : 'Sign-in could not be completed. Please try again.'), true);
+}
+
+/** @returns {Promise<boolean>} false = block OAuth redirect */
+async function qsMaybeWarnIOSPrivateBeforeOAuth() {
+    const isPrivate = await qsIsIOSPrivateSafari();
+    if (!isPrivate) return true;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    qsShowOAuthMessage(
+        T('auth_ios_private_sign_in') || 'Sign-in does not work in iPhone Safari private browsing. Use a normal Safari tab.',
+        true
+    );
+    return false;
+}
+
+async function qsHandleOAuthReturnIfNeeded() {
+    if (!qsCurrentUrlLooksLikeAuthCallback()) return;
+    let oauthErr = '';
+    try {
+        const search = new URLSearchParams(window.location.search || '');
+        oauthErr = String(search.get('error_description') || search.get('error') || '').trim();
+    } catch (_) {}
+    if (oauthErr) {
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        qsShowOAuthMessage(
+            (T('auth_oauth_error') || 'Sign-in error') + ': ' + oauthErr,
+            true
+        );
+        qsCleanOAuthUrlFromHistory();
+        return;
+    }
+    const pollSession = async (totalMs) => {
+        const started = Date.now();
+        while (Date.now() - started < totalMs) {
+            try {
+                if (window.__QS_UX_USER_SIGNED_IN) return true;
+                const { data: { session } } = await supabase.auth.getSession();
+                if (session && session.user) return true;
+            } catch (_) {}
+            await new Promise((r) => setTimeout(r, 300));
+        }
+        return false;
+    };
+    if (await pollSession(4500)) {
+        qsCleanOAuthUrlFromHistory();
+        return;
+    }
+    if (!qsCurrentUrlLooksLikeAuthCallback()) return;
+    const isPrivate = await qsIsIOSPrivateSafari();
+    qsShowOAuthCallbackFailedMessage(isPrivate);
+    qsCleanOAuthUrlFromHistory();
 }
 
 async function maybeShowIOSOpenInSafariHintAfterSignIn() {
@@ -1941,6 +2068,7 @@ supabase.auth.onAuthStateChange((event, session) => {
         try {
             window.__QS_UX_USER_SIGNED_IN = false;
         } catch (_) {}
+        try { document.body.classList.remove('qs-user-signed-in'); } catch (_) {}
         try {
             if (window.__QS_MEDICAL_URL_ENTRY) {
                 setMedicalMode(true);
@@ -1958,16 +2086,7 @@ supabase.auth.onAuthStateChange((event, session) => {
         try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
         // Warmup is started from setupNavbarAuth / setMedicalMode (avoid duplicate POST on delayed SIGNED_IN).
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
-        if (window.location.hash && /access_token/.test(window.location.hash)) {
-            // Keep the current in-memory transcript/video UI state.
-            // Remove auth hash from URL without forcing a page reload.
-            try {
-                window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
-            } catch (_) {
-                // Fallback only if History API is unavailable.
-                window.location.hash = '';
-            }
-        }
+        try { qsCleanOAuthUrlFromHistory(); } catch (_) {}
         try { restoreMedicalAuthSnapshotAfterSignIn(); } catch (_) {}
         try {
             const signForCopy = String(sessionStorage.getItem('qs_medical_sign_in_for_copy') || '').trim() === '1';
@@ -3690,13 +3809,38 @@ function syncSeoBlockWithAppState() {
     qsSyncHomepageScrollMode();
     try { if (typeof window.qsSyncStarterPlanUploadGate === 'function') window.qsSyncStarterPlanUploadGate(); } catch (_) {}
 }
+/** Toggle nav auth elements (inline display loses to .nav-item { display:inline-flex !important }). */
+function qsSetNavAuthVisible(el, visible) {
+    if (!el) return;
+    el.classList.toggle('qs-nav-auth-hidden', !visible);
+    if (visible) el.removeAttribute('hidden');
+    else el.setAttribute('hidden', '');
+}
+
+function wireUserMenuTrigger(btn) {
+    if (!btn) return;
+    btn.onclick = (e) => {
+        e.preventDefault();
+        toggleUserMenu();
+    };
+    btn.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleUserMenu();
+        }
+    };
+}
+
 /** @param {object} [userOverride] - If provided (e.g. from updateUser), use this user instead of getUser() so the UI shows fresh data. */
 async function setupNavbarAuth(userOverride) {
     const signInBtn = document.getElementById('nav-auth-btn');
     const signInMobile = document.getElementById('nav-auth-btn-mobile');
     const signedInWrap = document.getElementById('nav-utility-signed-in');
+    const mobileSignedInWrap = document.getElementById('nav-mobile-signed-in');
     const nameTrigger = document.getElementById('nav-user-name-trigger');
+    const nameTriggerMobile = document.getElementById('nav-user-name-trigger-mobile');
     const logoutBtn = document.getElementById('nav-logout-btn');
+    const logoutBtnMobile = document.getElementById('nav-logout-btn-mobile');
     const dashboardCta = document.getElementById('nav-dashboard-cta');
     if (!signInBtn && !signedInWrap) return;
 
@@ -3712,6 +3856,7 @@ async function setupNavbarAuth(userOverride) {
     }
 
     try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
+    try { document.body.classList.toggle('qs-user-signed-in', !!user); } catch (_) {}
     if (user) {
         try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
     } else {
@@ -3724,7 +3869,7 @@ async function setupNavbarAuth(userOverride) {
 
     const wireSignIn = (btn) => {
         if (!btn) return;
-        btn.style.display = user ? 'none' : 'inline-flex';
+        qsSetNavAuthVisible(btn, !user);
         btn.onclick = (e) => {
             e.preventDefault();
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -3759,18 +3904,12 @@ async function setupNavbarAuth(userOverride) {
 
     if (user) {
         const { displayName } = getAuthUserDisplayInfo(user);
-        if (nameTrigger) {
-            nameTrigger.textContent = displayName;
-            nameTrigger.onclick = (e) => {
-                e.preventDefault();
-                toggleUserMenu();
-            };
-            nameTrigger.onkeydown = (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggleUserMenu();
-                }
-            };
+        wireUserMenuTrigger(nameTrigger);
+        wireUserMenuTrigger(nameTriggerMobile);
+        if (nameTrigger) nameTrigger.textContent = displayName;
+        if (nameTriggerMobile) {
+            nameTriggerMobile.textContent = displayName;
+            nameTriggerMobile.removeAttribute('data-i18n');
         }
         if (logoutBtn) {
             logoutBtn.textContent = T('nav_logout');
@@ -3779,7 +3918,17 @@ async function setupNavbarAuth(userOverride) {
                 void wireLogout();
             };
         }
-        if (signInMobile) signInMobile.style.display = 'none';
+        if (logoutBtnMobile) {
+            logoutBtnMobile.textContent = T('nav_logout');
+            logoutBtnMobile.onclick = (e) => {
+                e.preventDefault();
+                void wireLogout();
+            };
+        }
+        qsSetNavAuthVisible(signInBtn, false);
+        qsSetNavAuthVisible(signInMobile, false);
+        qsSetNavAuthVisible(mobileSignedInWrap, true);
+        if (signInMobile) signInMobile.removeAttribute('data-i18n');
     } else {
         if (window.__QS_MEDICAL_URL_ENTRY) {
             setMedicalMode(true);
@@ -3787,13 +3936,12 @@ async function setupNavbarAuth(userOverride) {
             setMedicalMode(false);
         }
         if (nameTrigger) nameTrigger.textContent = 'Account';
-        if (signInMobile) {
-            signInMobile.style.display = 'none';
-            signInMobile.textContent = T('nav_sign_in');
-            signInMobile.onclick = (e) => {
-                e.preventDefault();
-                if (typeof window.toggleModal === 'function') window.toggleModal(true);
-            };
+        if (nameTriggerMobile) nameTriggerMobile.textContent = 'Account';
+        qsSetNavAuthVisible(signInBtn, true);
+        qsSetNavAuthVisible(mobileSignedInWrap, false);
+        qsSetNavAuthVisible(signInMobile, true);
+        if (signInMobile && !signInMobile.getAttribute('data-i18n')) {
+            signInMobile.setAttribute('data-i18n', 'nav_sign_in');
         }
     }
     closeUserMenu();
@@ -3817,8 +3965,11 @@ window.setupNavbarAuth = setupNavbarAuth;
 function closeUserMenuOnClickOutside(e) {
     const panel = document.getElementById('user-menu-panel');
     const trigger = document.getElementById('nav-user-name-trigger');
+    const triggerMobile = document.getElementById('nav-user-name-trigger-mobile');
     if (!panel || !panel.classList.contains('is-open')) return;
-    if (panel.contains(e.target) || (trigger && trigger.contains(e.target))) return;
+    if (panel.contains(e.target)
+        || (trigger && trigger.contains(e.target))
+        || (triggerMobile && triggerMobile.contains(e.target))) return;
     closeUserMenu();
 }
 
@@ -7544,6 +7695,9 @@ const googleLoginBtn = document.getElementById('google-login');
 if (googleLoginBtn) {
     googleLoginBtn.addEventListener('click', async () => {
         try {
+            if (!(await qsMaybeWarnIOSPrivateBeforeOAuth())) return;
+        } catch (_) {}
+        try {
             if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
                 saveMedicalAuthSnapshotForPendingSignIn();
             }
@@ -7553,7 +7707,7 @@ if (googleLoginBtn) {
         }
         const { error } = await supabase.auth.signInWithOAuth({
             provider: 'google',
-            options: { redirectTo: window.location.origin }
+            options: { redirectTo: qsOAuthRedirectTo() }
         });
         if (error) {
             if (typeof showStatus === 'function') showStatus("Google Login Error: " + error.message, true);
@@ -7675,6 +7829,7 @@ if (toggleAuthBtn) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     if (typeof window.applyTranslations === 'function') window.applyTranslations();
+    try { void qsHandleOAuthReturnIfNeeded(); } catch (_) {}
     // 1. Always setup the Navbar first
     await setupNavbarAuth();
 
@@ -8377,10 +8532,15 @@ if (authSubmitBtn) {
 
         try {
             const fullName = document.getElementById('auth-name')?.value?.trim();
+            if (!(await qsMaybeWarnIOSPrivateBeforeOAuth())) {
+                authSubmitBtn.disabled = false;
+                authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('send_magic_link') : 'Send me a link';
+                return;
+            }
             const { data, error } = await supabase.auth.signInWithOtp({
                 email,
                 options: {
-                    emailRedirectTo: window.location.origin + (window.location.pathname || '/'),
+                    emailRedirectTo: qsOAuthRedirectTo(),
                     data: fullName ? { full_name: fullName } : undefined
                 }
             });
