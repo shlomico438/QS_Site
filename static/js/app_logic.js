@@ -2322,6 +2322,21 @@ const QS_AUDIO_PROFILE_DEFAULTS = {
     decodePrefixBytes: 16 * 1024 * 1024,
 };
 
+/** Align with server RUNPOD_DEFER_WARMUP_FILE_BYTES — avoid loading whole File in the browser. */
+const QS_LARGE_UPLOAD_BYTES = 200 * 1024 * 1024;
+
+function qsIsLargeUploadFile(fileOrBytes) {
+    const n = typeof fileOrBytes === 'number' ? fileOrBytes : (fileOrBytes && fileOrBytes.size);
+    return Number.isFinite(n) && n >= QS_LARGE_UPLOAD_BYTES;
+}
+
+/** First N bytes only — never pass the full File to arrayBuffer/decodeAudioData. */
+function qsClientDecodePrefixBlob(file) {
+    if (!file || file.size <= 0) return file;
+    const prefixBytes = QS_AUDIO_PROFILE_DEFAULTS.decodePrefixBytes;
+    return file.size <= prefixBytes ? file : file.slice(0, prefixBytes);
+}
+
 function qsFilenameLikelyVideoContainer(filename) {
     const ext = String(filename || '').split('.').pop().toLowerCase();
     return ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpeg', 'mpg', 'wmv', 'flv'].includes(ext);
@@ -2445,35 +2460,25 @@ async function qsDecodeAudioProfileViaWebAudio(file) {
     const sr = 16000;
     const maxSec = QS_AUDIO_PROFILE_DEFAULTS.detectSec;
     const maxFrames = sr * maxSec;
-    const prefixBytes = QS_AUDIO_PROFILE_DEFAULTS.decodePrefixBytes;
-    const slices = [];
-    if (file.size > 0) {
-        slices.push(file.slice(0, Math.min(file.size, prefixBytes)));
+    const blob = qsClientDecodePrefixBlob(file);
+    if (!blob || blob.size <= 0) {
+        throw new Error('empty file');
     }
-    if (file.size > prefixBytes) {
-        slices.push(file);
-    } else if (!slices.length) {
-        slices.push(file);
-    }
-    let lastErr = null;
-    for (const blob of slices) {
-        let ctx = null;
-        try {
-            const ab = await blob.arrayBuffer();
-            ctx = new AudioContext();
-            const decoded = await ctx.decodeAudioData(ab.slice(0));
-            const mono = qsMixBufferToMono(decoded, Math.floor(maxSec * decoded.sampleRate));
-            const resampled = qsResampleMono(mono, decoded.sampleRate, sr, maxFrames);
-            await ctx.close();
-            return qsAudioProfileFromMonoSamples(resampled, sr, file.name);
-        } catch (e) {
-            lastErr = e;
-            if (ctx) {
-                try { await ctx.close(); } catch (_) {}
-            }
+    let ctx = null;
+    try {
+        const ab = await blob.arrayBuffer();
+        ctx = new AudioContext();
+        const decoded = await ctx.decodeAudioData(ab.slice(0));
+        const mono = qsMixBufferToMono(decoded, Math.floor(maxSec * decoded.sampleRate));
+        const resampled = qsResampleMono(mono, decoded.sampleRate, sr, maxFrames);
+        await ctx.close();
+        return qsAudioProfileFromMonoSamples(resampled, sr, file.name);
+    } catch (e) {
+        if (ctx) {
+            try { await ctx.close(); } catch (_) {}
         }
+        throw e;
     }
-    throw lastErr || new Error('decodeAudioData failed');
 }
 
 function qsInferAudioProfileViaMediaElement(file) {
@@ -2482,12 +2487,12 @@ function qsInferAudioProfileViaMediaElement(file) {
     const sr = 16000;
     const maxFrames = Math.floor(detectSec * sr);
     return new Promise((resolve, reject) => {
-        const url = URL.createObjectURL(file);
+        const url = URL.createObjectURL(qsClientDecodePrefixBlob(file));
         const isVideo = qsFilenameLikelyVideoContainer(file.name) || String(file.type || '').startsWith('video/');
         const el = document.createElement(isVideo ? 'video' : 'audio');
         el.muted = true;
         el.playsInline = true;
-        el.preload = 'auto';
+        el.preload = 'metadata';
         el.src = url;
         let ac = null;
         let closed = false;
@@ -2557,6 +2562,9 @@ async function qsInferAudioProfileFromFile(file) {
     if (!file) {
         return { profile: 'unknown', reason: 'no_file', source: 'client_webaudio' };
     }
+    if (qsIsLargeUploadFile(file)) {
+        return { profile: 'unknown', reason: 'file_too_large', source: 'client_webaudio' };
+    }
     if (typeof AudioContext === 'undefined' && typeof webkitAudioContext === 'undefined') {
         return { profile: 'unknown', reason: 'webaudio_unavailable', source: 'client_webaudio' };
     }
@@ -2590,7 +2598,7 @@ async function qsInferAudioProfileFromFile(file) {
 }
 
 function qsStartClientAudioProfile(file) {
-    if (!file || (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+    if (!file || qsIsLargeUploadFile(file) || (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
         window.__QS_CLIENT_AUDIO_PROFILE_PROMISE = Promise.resolve(null);
         return;
     }
@@ -2795,8 +2803,86 @@ function qsRestoreUiAfterUploadConfirmCancel() {
     }
 }
 
+/** Attach uploaded media from S3 (presigned URL) instead of holding a blob: URL for the whole File. */
+async function qsAttachS3MediaPreview(s3Key, userId, opts) {
+    opts = opts || {};
+    if (!s3Key || !userId) return false;
+    const isMedical = opts.isMedical != null
+        ? opts.isMedical
+        : (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled());
+    const res = await fetch('/api/get_presigned_url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ s3Key, userId, isMedical }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!json.url) return false;
+
+    const filename = opts.filename || decodeURIComponent(String(s3Key).split('/').pop() || 'file');
+    let isAudio = opts.isAudio;
+    let isVideo = opts.isVideo;
+    if (isAudio == null) isAudio = qsIsAudioMediaFile(filename);
+    if (isVideo == null) isVideo = !isAudio && qsIsVideoMediaFile(filename);
+    if (isMedical) {
+        isAudio = true;
+        isVideo = false;
+    }
+    const url = json.url;
+    const videoWrapper = document.getElementById('video-wrapper');
+    const videoPlayer = document.getElementById('video-player-container');
+    const playerContainer = document.getElementById('audio-player-container');
+    const videoSrc = document.getElementById('video-source');
+    const video = document.getElementById('main-video');
+    const audioSource = document.getElementById('audio-source');
+    const mainAudio = document.getElementById('main-audio');
+
+    if (isVideo) {
+        if (playerContainer && videoWrapper && playerContainer.parentNode === videoPlayer) {
+            videoWrapper.parentNode.insertBefore(playerContainer, videoWrapper);
+        }
+        if (playerContainer) playerContainer.style.display = 'none';
+        if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+        if (video) video.style.display = '';
+        if (videoSrc) {
+            videoSrc.src = url;
+            const mimeMap = { '.mp4': 'video/mp4', '.mov': 'video/mp4', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
+            const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+            videoSrc.type = opts.mime || mimeMap[ext] || 'video/mp4';
+        }
+        if (video) {
+            video.controls = true;
+            video.load();
+            video.pause();
+        }
+        if (videoPlayer) videoPlayer.style.display = 'block';
+        setLocalPreviewAudio(url, opts.mime || videoSrc?.type || 'video/mp4');
+    } else {
+        if (videoWrapper) {
+            videoWrapper.style.display = 'none';
+            videoWrapper.classList.remove('visible');
+        }
+        try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
+        if (video) video.style.display = 'none';
+        if (playerContainer && videoWrapper && videoPlayer && playerContainer.parentNode === videoPlayer) {
+            videoWrapper.parentNode.insertBefore(playerContainer, videoWrapper);
+        }
+        if (playerContainer) playerContainer.style.display = 'block';
+        if (audioSource && mainAudio) {
+            audioSource.src = url;
+            audioSource.type = opts.mime || qsMimeForAudioElement({ name: filename, type: opts.mime || '' });
+            mainAudio.load();
+        }
+        if (videoPlayer) videoPlayer.style.display = 'block';
+        setLocalPreviewAudio(url, opts.mime || audioSource?.type || 'audio/mp4');
+    }
+    if (typeof syncMobileVideoSessionState === 'function') syncMobileVideoSessionState();
+    return true;
+}
+
 /** Duration in seconds from the in-browser preview player (same metadata Windows Explorer shows). */
 function qsClientMediaDurationSecForCredits() {
+    const stored = Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC);
+    if (Number.isFinite(stored) && stored > 0) return stored;
     const pick = (el) => {
         if (!el) return 0;
         const d = Number(el.duration);
@@ -3010,7 +3096,9 @@ async function qsS3MultipartUploadFile(opts) {
 
     const partMeta = [];
     const BATCH = 24;
-    const PARALLEL = 4;
+    let PARALLEL = 4;
+    if (fileSize >= QS_LARGE_UPLOAD_BYTES) PARALLEL = 2;
+    else if (fileSize >= 100 * 1024 * 1024) PARALLEL = 3;
 
     for (let startPn = 1; startPn <= partCount; startPn += BATCH) {
         const batch = [];
@@ -11202,6 +11290,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const mainAudio = document.getElementById('main-audio');
         const savedUrl = getLocalPreviewAudioUrl();
 
+        if (!savedUrl) {
+            try {
+                const s3KeyForPreview = localStorage.getItem('lastS3Key') || localStorage.getItem('pendingS3Key');
+                if (s3KeyForPreview && typeof supabase !== 'undefined' && supabase.auth) {
+                    const { data: { user: previewUser } } = await supabase.auth.getUser();
+                    if (previewUser && previewUser.id) {
+                        await qsAttachS3MediaPreview(s3KeyForPreview, previewUser.id, {
+                            filename: window.originalFileName || undefined,
+                        });
+                    }
+                }
+            } catch (_) {}
+        }
+        const previewUrl = getLocalPreviewAudioUrl();
+
         if (window.uploadWasVideo === true) {
             // Video: show mp4 viewer immediately so user can edit transcript (no separate "edit video" step)
             if (playerContainer && videoWrapper && videoPlayer && playerContainer.parentNode === videoPlayer) {
@@ -11211,10 +11314,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
             if (mainVideo) mainVideo.style.display = '';
             const videoSrc = document.getElementById('video-source');
-            if (videoSrc && savedUrl) {
-                videoSrc.src = savedUrl;
+            if (videoSrc && previewUrl) {
+                videoSrc.src = previewUrl;
                 let mime = getLocalPreviewAudioMime() || 'video/mp4';
-                if (mime.toLowerCase().includes('quicktime') || (savedUrl + '').toLowerCase().includes('.mov')) mime = 'video/mp4';
+                if (mime.toLowerCase().includes('quicktime') || (previewUrl + '').toLowerCase().includes('.mov')) mime = 'video/mp4';
                 videoSrc.type = mime;
             }
             if (mainVideo) {
@@ -11239,8 +11342,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (playerContainer) playerContainer.style.display = 'block';
             if (videoWrapper) { videoWrapper.style.display = 'none'; videoWrapper.classList.remove('visible'); }
             if (mainVideo) mainVideo.style.display = 'none';
-            if (audioSource && mainAudio && savedUrl) {
-                audioSource.src = savedUrl;
+            if (audioSource && mainAudio && previewUrl) {
+                audioSource.src = previewUrl;
                 const mime = getLocalPreviewAudioMime() || '';
                 if (mime) audioSource.type = mime;
                 else audioSource.type = 'audio/mp4';
@@ -13552,14 +13655,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     isVideo = false;
                 }
                 window.uploadWasVideo = !!isVideo;
+                const skipLocalBlobPreview = qsIsLargeUploadFile(file);
+                let objectUrl = null;
+                if (!skipLocalBlobPreview) {
+                    objectUrl = URL.createObjectURL(file);
+                }
                 try {
-                    if (isVideo) {
-                        const url = URL.createObjectURL(file);
+                    if (isVideo && objectUrl) {
                         window.originalFileName = file.name.replace(/\.[^.]+$/, '');
                         const src = document.getElementById('video-source');
                         const video = document.getElementById('main-video');
                         if (src) {
-                            src.src = url;
+                            src.src = objectUrl;
                             // Use video/mp4 for .mov so Chrome/Firefox can play (same as presigned-URL path)
                             const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
                             src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
@@ -13581,41 +13688,51 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (video) video.style.display = '';
                         if (videoPlayer) videoPlayer.style.display = 'block';
                         // Continue to upload and process (do not return) so transcription runs for video too
+                    } else if (isVideo && skipLocalBlobPreview) {
+                        window.originalFileName = file.name.replace(/\.[^.]+$/, '');
+                        const videoWrapper = document.getElementById('video-wrapper');
+                        const videoPlayer = document.getElementById('video-player-container');
+                        const playerContainer = document.getElementById('audio-player-container');
+                        if (playerContainer) playerContainer.style.display = 'none';
+                        if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+                        const video = document.getElementById('main-video');
+                        if (video) video.style.display = '';
+                        if (videoPlayer) videoPlayer.style.display = 'block';
                     }
                 } catch (e) {
                     console.warn('Video preview failed', e);
                 }
 
-            // CREATE A LOCAL PREVIEW URL
-            const objectUrl = URL.createObjectURL(file);
-            if (isMedicalModeEnabled()) {
-                const audioContainer = document.getElementById('audio-player-container');
-                const videoWrapper = document.getElementById('video-wrapper');
-                const videoPlayer = document.getElementById('video-player-container');
-                const video = document.getElementById('main-video');
-                const audioSource = document.getElementById('audio-source');
-                const mainAudio = document.getElementById('main-audio');
-                if (videoWrapper) {
-                    videoWrapper.style.display = 'none';
-                    videoWrapper.classList.remove('visible');
-                }
-                try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
-                if (video) video.style.display = 'none';
-                if (audioContainer && videoWrapper && videoPlayer && audioContainer.parentNode === videoPlayer) {
-                    videoWrapper.parentNode.insertBefore(audioContainer, videoWrapper);
-                }
-                if (audioContainer) audioContainer.style.display = 'block';
-                if (audioSource && mainAudio) {
-                    audioSource.src = objectUrl;
-                    audioSource.type = qsMimeForAudioElement(file);
-                    mainAudio.load();
-                }
-                if (videoPlayer) videoPlayer.style.display = 'block';
-            }
             const mimeForMov = isMedicalModeEnabled()
                 ? qsGuessUploadMimeType(file, 'audio/webm')
                 : ((/\.mov$/i.test(file.name) || String(file.type || '').toLowerCase().includes('quicktime')) ? 'video/mp4' : (file.type || ''));
-            setLocalPreviewAudio(objectUrl, mimeForMov);
+            if (objectUrl) {
+                if (isMedicalModeEnabled()) {
+                    const audioContainer = document.getElementById('audio-player-container');
+                    const videoWrapper = document.getElementById('video-wrapper');
+                    const videoPlayer = document.getElementById('video-player-container');
+                    const video = document.getElementById('main-video');
+                    const audioSource = document.getElementById('audio-source');
+                    const mainAudio = document.getElementById('main-audio');
+                    if (videoWrapper) {
+                        videoWrapper.style.display = 'none';
+                        videoWrapper.classList.remove('visible');
+                    }
+                    try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
+                    if (video) video.style.display = 'none';
+                    if (audioContainer && videoWrapper && videoPlayer && audioContainer.parentNode === videoPlayer) {
+                        videoWrapper.parentNode.insertBefore(audioContainer, videoWrapper);
+                    }
+                    if (audioContainer) audioContainer.style.display = 'block';
+                    if (audioSource && mainAudio) {
+                        audioSource.src = objectUrl;
+                        audioSource.type = qsMimeForAudioElement(file);
+                        mainAudio.load();
+                    }
+                    if (videoPlayer) videoPlayer.style.display = 'block';
+                }
+                setLocalPreviewAudio(objectUrl, mimeForMov);
+            }
 
             const currentFile = file; // Captured for use in the fetch
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
@@ -13766,6 +13883,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (mainBtn) qsSetMainBtnDynamicLabel(uploadLabel + ' 100%');
                 qsUploadTrace('s3_multipart_complete', { jobId, bytes: currentFile && currentFile.size });
                 console.log("✅ File uploaded to S3 (multipart).");
+                if (skipLocalBlobPreview && userId && s3Key) {
+                    try {
+                        await qsAttachS3MediaPreview(s3Key, userId, {
+                            filename: currentFile.name,
+                            isAudio,
+                            isVideo,
+                            mime: mimeForMov,
+                        });
+                    } catch (previewErr) {
+                        console.warn('S3 media preview attach failed', previewErr);
+                    }
+                }
                 setDiarizationBusyState(true);
                 window._triggerRetriedForJobId = null; // allow one auto-retry if trigger gets stuck
                 const dbId = localStorage.getItem('lastJobDbId');
@@ -13999,7 +14128,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     await runUploadPipeline();
                     return;
                 }
+                qsStartClientAudioProfile(file);
                 const durationSec = await qsProbeFileMediaDurationSec(file, 8000);
+                window.__QS_UPLOAD_MEDIA_DURATION_SEC = durationSec > 0 ? durationSec : null;
                 const uploadChoice = await qsShowUploadConfirmModal(file, { durationSec });
                 if (!uploadChoice) {
                     fileInput.value = '';
