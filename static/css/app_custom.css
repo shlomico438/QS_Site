@@ -102,16 +102,19 @@ body:has(#main-app-container) > footer.site-footer {
     width: 100%;
     box-sizing: border-box;
 }
-/* Footer only on idle landing — hide during transcript/video so the action bar stays compact */
+/* Footer only on idle landing — hide during upload, processing, and transcript session */
+body.qs-app-busy .upload-zone-app-footer,
 body.has-transcript-actions .upload-zone-app-footer,
 body.mobile-video-session .upload-zone-app-footer,
 body.qs-transcript-present .upload-zone-app-footer {
     display: none !important;
 }
-.upload-zone-app-footer .site-footer-social {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+/* Legacy markup: never show LinkedIn/social in the fixed upload bar */
+.upload-zone-app-footer .site-footer-social,
+.upload-zone-app-footer .site-footer-follow,
+.upload-zone-app-footer .site-footer-linkedin,
+.upload-zone-app-footer a[href*="linkedin.com"] {
+    display: none !important;
 }
 
 /* Tier 1: utility bar */
@@ -3630,6 +3633,17 @@ body.qs-upload-confirm-open {
     display: none !important;
 }
 
+/* After transcript is ready, always show export toolbar (overrides stuck qs-processing-active) */
+body.has-transcript-actions .transcription-wrapper .switches-top-bar.is-visible {
+    display: block !important;
+}
+body.has-transcript-actions .transcription-wrapper .controls-bar.is-visible {
+    display: flex !important;
+}
+body.has-transcript-actions .transcription-wrapper.qs-processing-active .controls-bar.is-visible {
+    display: flex !important;
+}
+
 body:not(.has-transcript-actions) #subtitle-style-selector {
     display: none !important;
 }
@@ -4186,6 +4200,12 @@ html[dir="rtl"] .upload-status {
     }
     .controls-bar.is-visible {
         display: grid;
+    }
+    body.has-transcript-actions .transcription-wrapper .switches-top-bar.is-visible {
+        display: grid !important;
+    }
+    body.has-transcript-actions .transcription-wrapper .controls-bar.is-visible {
+        display: grid !important;
     }
     .toggles-group {
         flex-direction: row;

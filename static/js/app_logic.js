@@ -8897,6 +8897,7 @@ function stopProcessingStateUI(reason) {
         phaseIndexWhenStopped,
         panelWasVisible
     });
+    qsSyncAppChromeBodyClasses();
 }
 
 function qsSetProcessingOverlayActive(active) {
@@ -8950,6 +8951,7 @@ function startProcessingStateUI() {
     if (phaseEl) phaseEl.textContent = PROCESSING_PHASES_HE[0];
     panel.style.display = 'flex';
     qsSetProcessingOverlayActive(true);
+    qsSyncAppChromeBodyClasses();
     if (controlsRow) controlsRow.style.display = 'none';
     const legacyPc = document.getElementById('p-container');
     if (legacyPc) legacyPc.style.display = 'none';
@@ -9093,6 +9095,8 @@ function resetScreenToInitial() {
     if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
     if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
     try { document.body.classList.remove('qs-transcript-present'); } catch (_) {}
+    try { document.body.classList.remove('qs-app-busy'); } catch (_) {}
+    qsSyncAppChromeBodyClasses();
     try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
     try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
@@ -9150,10 +9154,19 @@ function qsHasTranscriptResult() {
     );
 }
 
+function qsSyncAppChromeBodyClasses() {
+    try {
+        const hasTranscript = qsHasTranscriptResult() || document.body.classList.contains('has-transcript-actions');
+        document.body.classList.toggle('qs-app-busy', !!window.isTriggering);
+        document.body.classList.toggle('qs-transcript-present', !!hasTranscript);
+    } catch (_) {}
+}
+
 /** Idempotent: show export/format toolbar whenever transcript data exists (guards intermittent races). */
-function qsEnsureTranscriptToolbarVisible(reason) {
+function qsEnsureTranscriptToolbarVisible(reason, opts) {
+    opts = opts || {};
     if (!qsHasTranscriptResult()) return false;
-    if (window.isTriggering) return false;
+    if (!opts.force && window.isTriggering) return false;
     try { qsSetProcessingOverlayActive(false); } catch (_) {}
     try {
         if (typeof setTranscriptActionButtonsVisible === 'function') {
@@ -9161,19 +9174,28 @@ function qsEnsureTranscriptToolbarVisible(reason) {
         }
     } catch (_) {}
     try { document.body.classList.add('qs-transcript-present'); } catch (_) {}
+    qsSyncAppChromeBodyClasses();
     if (reason) {
         console.info('[qs-transcript-toolbar] ensured visible', { reason: String(reason) });
     }
+    try {
+        const bar = document.querySelector('.transcription-wrapper .controls-bar.is-visible');
+        if (bar && typeof bar.scrollIntoView === 'function') {
+            bar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    } catch (_) {}
     return true;
 }
 
-function qsScheduleTranscriptToolbarEnsure(reason) {
-    const run = () => { qsEnsureTranscriptToolbarVisible(reason); };
+function qsScheduleTranscriptToolbarEnsure(reason, opts) {
+    const run = () => { qsEnsureTranscriptToolbarVisible(reason, opts); };
     try {
         requestAnimationFrame(() => requestAnimationFrame(run));
     } catch (_) {
         setTimeout(run, 0);
     }
+    setTimeout(() => { qsEnsureTranscriptToolbarVisible(reason, Object.assign({ force: true }, opts || {})); }, 400);
+    setTimeout(() => { qsEnsureTranscriptToolbarVisible(reason, Object.assign({ force: true }, opts || {})); }, 2000);
 }
 
 function qsInvokeHandleJobUpdate(data) {
@@ -9187,8 +9209,8 @@ function qsInvokeHandleJobUpdate(data) {
             }
         } catch (_) {}
         if (qsHasTranscriptResult()) {
-            qsEnsureTranscriptToolbarVisible('handleJobUpdate_unhandled_error');
-            qsScheduleTranscriptToolbarEnsure('handleJobUpdate_unhandled_error_deferred');
+            qsEnsureTranscriptToolbarVisible('handleJobUpdate_unhandled_error', { force: true });
+            qsScheduleTranscriptToolbarEnsure('handleJobUpdate_unhandled_error_deferred', { force: true });
             const mainBtn = document.getElementById('main-btn');
             if (mainBtn) {
                 mainBtn.disabled = false;
@@ -9231,6 +9253,9 @@ function setTranscriptActionButtonsVisible(visible) {
         controlsBar.style.display = '';
         controlsBar.classList.toggle('is-visible', !!visible);
     }
+    if (visible) {
+        try { qsSetProcessingOverlayActive(false); } catch (_) {}
+    }
     if (!visible) {
         if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
         if (editActions) editActions.style.display = 'none';
@@ -9241,6 +9266,7 @@ function setTranscriptActionButtonsVisible(visible) {
         document.body.classList.toggle('has-transcript-actions', !!visible);
         document.body.classList.toggle('qs-transcript-present', !!visible || qsHasTranscriptResult());
     } catch (_) {}
+    qsSyncAppChromeBodyClasses();
 }
 
 /** While the export menu is open, disable other transcript toolbar controls. */
@@ -11085,7 +11111,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (jobId && window._lastProcessedJobId === jobId) {
             const haveUi = qsHasTranscriptResult();
             if (haveUi || !incomingSegs.length) {
-                if (haveUi) qsEnsureTranscriptToolbarVisible('handleJobUpdate_duplicate_socket');
+                if (haveUi) qsEnsureTranscriptToolbarVisible('handleJobUpdate_duplicate_socket', { force: true });
                 return;
             }
             console.info('[qs] handleJobUpdate re-entry (transcript now available)', { jobId, incoming: incomingSegs.length });
@@ -11675,8 +11701,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         stopProcessingStateUI('handle_job_update_success_pipeline_done');
-        qsEnsureTranscriptToolbarVisible('handle_job_update_success');
-        qsScheduleTranscriptToolbarEnsure('handle_job_update_success_deferred');
+        setTranscriptActionButtonsVisible(true);
+        qsEnsureTranscriptToolbarVisible('handle_job_update_success', { force: true });
+        qsScheduleTranscriptToolbarEnsure('handle_job_update_success_deferred', { force: true });
         if (jobId) {
             window._handleJobUpdateInFlight = null;
             window._lastProcessedJobId = jobId;
@@ -13511,6 +13538,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 const runUploadPipeline = async () => {
                 setSeoHomeContentVisibility(false);
+                try {
+                    document.body.classList.add('qs-app-busy');
+                    if (typeof qsSyncAppChromeBodyClasses === 'function') qsSyncAppChromeBodyClasses();
+                } catch (_) {}
                 const placeholderElUpload = document.getElementById('placeholder');
                 if (placeholderElUpload) placeholderElUpload.style.display = 'none';
 
