@@ -104,7 +104,8 @@ body:has(#main-app-container) > footer.site-footer {
 }
 /* Footer only on idle landing — hide during transcript/video so the action bar stays compact */
 body.has-transcript-actions .upload-zone-app-footer,
-body.mobile-video-session .upload-zone-app-footer {
+body.mobile-video-session .upload-zone-app-footer,
+body.qs-transcript-present .upload-zone-app-footer {
     display: none !important;
 }
 .upload-zone-app-footer .site-footer-social {

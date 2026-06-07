@@ -1962,7 +1962,7 @@ async function qsPollCheckStatusOnce(jobId) {
             clearInterval(window._checkStatusPollInterval);
             window._checkStatusPollInterval = null;
         }
-        window.handleJobUpdate(data);
+        qsInvokeHandleJobUpdate(data);
         return true;
     } catch (_) {
         return false;
@@ -2067,7 +2067,7 @@ window.startJobStatusPolling = function(jobId) {
                 if (data.status === 'failed') {
                     console.warn('[check_status] job failed', jobId, data.error || data);
                 }
-                window.handleJobUpdate(data);
+                qsInvokeHandleJobUpdate(data);
             }
         } catch (_) {
             consecutiveSeverePollFailures++;
@@ -2834,10 +2834,17 @@ function qsCreditsTriggerErrorMessage(triggerData) {
 
 function qsApplyTriggerCreditFields(triggerData) {
     const td = triggerData || {};
-    const minutes = Number(td.credit_minutes);
-    if (!Number.isFinite(minutes)) return;
-    try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
-    if (typeof qsSyncUserCreditsUi === 'function') qsSyncUserCreditsUi();
+    const used = Number(td.credit_minutes_used);
+    if (Number.isFinite(used) && used > 0) {
+        const minutes = Number(td.credit_minutes);
+        if (!Number.isFinite(minutes)) return;
+        try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
+        if (typeof qsSyncUserCreditsUi === 'function') qsSyncUserCreditsUi();
+        return;
+    }
+    if (typeof qsRefreshUserCredits === 'function') {
+        void qsRefreshUserCredits();
+    }
 }
 
 /** Server sends audio_profile + transcription_options on /api/trigger_processing — log clearly (browser has no server logging). */
@@ -3173,7 +3180,7 @@ if (typeof socket !== 'undefined') {
             const dt = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0;
             console.info('[qs-processing-ui] handleJobUpdate starting', { delay_ms: Math.round(dt) });
             if (typeof window.handleJobUpdate === 'function') {
-                window.handleJobUpdate(data);
+                qsInvokeHandleJobUpdate(data);
             }
         }, 0);
     });
@@ -3233,8 +3240,26 @@ const formatSpeaker = (raw) => {
 };
 
 
+window.qsCloseMobileNav = function qsCloseMobileNav() {
+    if (typeof toggleMenu === 'function') {
+        toggleMenu(false);
+        return;
+    }
+    const navMenu = document.getElementById('nav-menu');
+    const hamburger = document.getElementById('hamburger-menu') || document.querySelector('.hamburger-menu');
+    if (navMenu) {
+        navMenu.classList.remove('active');
+        navMenu.hidden = true;
+    }
+    if (hamburger) {
+        hamburger.classList.remove('open');
+        try { hamburger.setAttribute('aria-expanded', 'false'); } catch (_) {}
+    }
+};
+
 window.toggleModal = function(show) {
     if (show) {
+        try { window.qsCloseMobileNav(); } catch (_) {}
         // Save the key before the user starts logging in
         const currentKey = localStorage.getItem('lastS3Key');
         if (currentKey) localStorage.setItem('pendingS3Key', currentKey);
@@ -4101,6 +4126,7 @@ async function toggleUserMenu() {
     const isOpen = panel.classList.toggle('is-open');
     panel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
     if (isOpen) {
+        try { window.qsCloseMobileNav(); } catch (_) {}
         const { data: { user } } = await supabase.auth.getUser();
         if (user) loadUserMenuProfile(user);
         document.addEventListener('click', closeUserMenuOnClickOutside);
@@ -9066,6 +9092,7 @@ function resetScreenToInitial() {
 
     if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
     if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
+    try { document.body.classList.remove('qs-transcript-present'); } catch (_) {}
     try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
     try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
@@ -9116,6 +9143,65 @@ function hideProgressBar() {
     qsSetProgressBarPct(0);
 }
 
+function qsHasTranscriptResult() {
+    return !!(
+        (Array.isArray(window.currentSegments) && window.currentSegments.length > 0)
+        || (Array.isArray(window.currentWords) && window.currentWords.length > 0)
+    );
+}
+
+/** Idempotent: show export/format toolbar whenever transcript data exists (guards intermittent races). */
+function qsEnsureTranscriptToolbarVisible(reason) {
+    if (!qsHasTranscriptResult()) return false;
+    if (window.isTriggering) return false;
+    try { qsSetProcessingOverlayActive(false); } catch (_) {}
+    try {
+        if (typeof setTranscriptActionButtonsVisible === 'function') {
+            setTranscriptActionButtonsVisible(true);
+        }
+    } catch (_) {}
+    try { document.body.classList.add('qs-transcript-present'); } catch (_) {}
+    if (reason) {
+        console.info('[qs-transcript-toolbar] ensured visible', { reason: String(reason) });
+    }
+    return true;
+}
+
+function qsScheduleTranscriptToolbarEnsure(reason) {
+    const run = () => { qsEnsureTranscriptToolbarVisible(reason); };
+    try {
+        requestAnimationFrame(() => requestAnimationFrame(run));
+    } catch (_) {
+        setTimeout(run, 0);
+    }
+}
+
+function qsInvokeHandleJobUpdate(data) {
+    if (typeof window.handleJobUpdate !== 'function') return Promise.resolve();
+    return Promise.resolve(window.handleJobUpdate(data)).catch((err) => {
+        console.error('[qs] handleJobUpdate unhandled error', err);
+        try { window.isTriggering = false; } catch (_) {}
+        try {
+            if (typeof stopProcessingStateUI === 'function') {
+                stopProcessingStateUI('handle_job_update_unhandled_error');
+            }
+        } catch (_) {}
+        if (qsHasTranscriptResult()) {
+            qsEnsureTranscriptToolbarVisible('handleJobUpdate_unhandled_error');
+            qsScheduleTranscriptToolbarEnsure('handleJobUpdate_unhandled_error_deferred');
+            const mainBtn = document.getElementById('main-btn');
+            if (mainBtn) {
+                mainBtn.disabled = false;
+                if (typeof setMainButtonAction === 'function') setMainButtonAction('new_session');
+            }
+        }
+        try {
+            const jobId = data && (data.jobId || (data.result && data.result.jobId));
+            if (jobId) window._handleJobUpdateInFlight = null;
+        } catch (_) {}
+    });
+}
+
 function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
@@ -9153,6 +9239,7 @@ function setTranscriptActionButtonsVisible(visible) {
     }
     try {
         document.body.classList.toggle('has-transcript-actions', !!visible);
+        document.body.classList.toggle('qs-transcript-present', !!visible || qsHasTranscriptResult());
     } catch (_) {}
 }
 
@@ -10713,16 +10800,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     const closeMobileNav = () => {
-        if (typeof toggleMenu === 'function') toggleMenu(false);
-        else {
-            const navMenu = document.getElementById('nav-menu');
-            const hamburger = document.getElementById('hamburger-menu') || document.querySelector('.hamburger-menu');
-            if (navMenu) {
-                navMenu.classList.remove('active');
-                navMenu.hidden = true;
-            }
-            if (hamburger) hamburger.classList.remove('open');
-        }
+        try { window.qsCloseMobileNav(); } catch (_) {}
     };
     const onNavWorkspaceCta = (e) => {
         const target = e.currentTarget;
@@ -11005,8 +11083,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const jobId = rawResult.jobId || (rawResult.output && rawResult.output.jobId) || (rawResult.result && rawResult.result.jobId);
         const incomingSegs = extractSegmentsFromJobPayload(rawResult);
         if (jobId && window._lastProcessedJobId === jobId) {
-            const haveUi = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
-            if (haveUi || !incomingSegs.length) return;
+            const haveUi = qsHasTranscriptResult();
+            if (haveUi || !incomingSegs.length) {
+                if (haveUi) qsEnsureTranscriptToolbarVisible('handleJobUpdate_duplicate_socket');
+                return;
+            }
             console.info('[qs] handleJobUpdate re-entry (transcript now available)', { jobId, incoming: incomingSegs.length });
         }
         if (jobId && window._handleJobUpdateInFlight === jobId) {
@@ -11522,10 +11603,14 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 // Library ?open= puts summary in a host above #transcript-window; clear it on a fresh transcribe result.
                 try { clearOpenJobStandardSummaryHost(); } catch (_) {}
-                if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
-                    renderWordCaptionEditor();
-                } else {
-                    window.render();
+                try {
+                    if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
+                        renderWordCaptionEditor();
+                    } else {
+                        window.render();
+                    }
+                } catch (renderErr) {
+                    console.error('[qs] transcript render failed; keeping export toolbar available', renderErr);
                 }
             }
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
@@ -11584,13 +11669,14 @@ document.addEventListener('DOMContentLoaded', () => {
         window.isTriggering = false;
         if (medicalDeferToolbarUntilGptDone) {
             window._medicalHasResult = true;
-            setTranscriptActionButtonsVisible(true);
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
             try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
             try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         stopProcessingStateUI('handle_job_update_success_pipeline_done');
+        qsEnsureTranscriptToolbarVisible('handle_job_update_success');
+        qsScheduleTranscriptToolbarEnsure('handle_job_update_success_deferred');
         if (jobId) {
             window._handleJobUpdateInFlight = null;
             window._lastProcessedJobId = jobId;

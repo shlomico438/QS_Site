@@ -1978,6 +1978,33 @@ def _defer_gpu_warmup_for_music_upload(data, is_medical):
     )
 
 
+def _upload_file_size_bytes(data):
+    try:
+        return max(0, int((data or {}).get('fileSize') or (data or {}).get('file_size') or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _runpod_defer_warmup_file_bytes():
+    """Skip early GPU /run at upload sign when file exceeds this size (default 200 MiB)."""
+    try:
+        raw = os.environ.get('RUNPOD_DEFER_WARMUP_FILE_BYTES', str(200 * 1024 * 1024))
+        return max(0, int(raw or 0))
+    except (TypeError, ValueError):
+        return 200 * 1024 * 1024
+
+
+def _defer_gpu_warmup_for_large_upload(data, is_medical):
+    """Skip early RunPod warmup for large uploads; GPU /run fires at trigger_processing after S3 upload."""
+    if is_medical:
+        return False
+    threshold = _runpod_defer_warmup_file_bytes()
+    if threshold <= 0:
+        return False
+    size = _upload_file_size_bytes(data)
+    return size > threshold
+
+
 def _shift_transcript_segments_times(segments, offset_sec):
     """Shift segment (and nested word) timestamps by offset_sec for vocal-separation timeline fix."""
     try:
@@ -3569,8 +3596,9 @@ def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=
 
 def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=False, request_data=None):
     """
-    Probe uploaded file length, verify wallet balance, deduct minutes before GPU work.
-    Idempotent per job_id (skips if credit_minutes_used already set).
+    Probe uploaded file length and verify wallet balance before GPU work.
+    Does not deduct — minutes are charged in _charge_job_credits after success.
+    Idempotent per job_id (skips re-check if credit_minutes_used already set on job).
     """
     if not _credits_gate_applies(is_medical):
         return {"ok": True, "skipped": True}
@@ -3644,32 +3672,24 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
             "file_duration_seconds": duration_sec,
         }
 
-    wallet = _user_credits_deduct_minutes(user_id, minutes)
-    _jobs_patch_by_runpod_job_id(
-        job_id,
-        user_id,
-        {"credit_minutes_used": float(minutes)},
-    )
-    new_balance = int((wallet or {}).get('credit_minutes') or 0)
     logging.info(
-        "credit_reserve_before_gpu job=%s user=%s file_duration_sec=%.1f minutes=%s balance=%s",
+        "credit_verify_before_gpu job=%s user=%s file_duration_sec=%.1f required_minutes=%s balance=%s",
         job_id,
         user_id[:8],
         duration_sec,
         minutes,
-        new_balance,
+        balance,
     )
     pinfo = pending_job_info.get(job_id)
     if isinstance(pinfo, dict):
         pinfo = dict(pinfo)
-        pinfo['credit_minutes_used'] = float(minutes)
+        pinfo['credit_required_minutes'] = float(minutes)
         pinfo['credit_file_duration_sec'] = float(duration_sec)
         pending_job_info[job_id] = pinfo
 
     return {
         "ok": True,
-        "credit_minutes_used": minutes,
-        "credit_minutes": new_balance,
+        "credit_minutes": balance,
         "file_duration_seconds": duration_sec,
         "required_minutes": minutes,
     }
@@ -3728,7 +3748,7 @@ def _user_credits_deduct_minutes(user_id, minutes):
 
 
 def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=None, pending_info=None):
-    """Return billing info for socket/UI. Minutes are reserved at trigger from file length, not GPU output."""
+    """Deduct minutes after successful transcription (file length, not GPU segment timing)."""
     if not _credits_billing_enabled():
         return None
     user_id = str(user_id or '').strip()
@@ -3755,17 +3775,40 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         except (TypeError, ValueError):
             pass
 
-    # Legacy/fallback: bill from uploaded file duration only (never segment/GPU timing).
+    duration_sec = 0.0
     bucket = None
     if isinstance(pending_info, dict):
         bucket = pending_info.get('bucket')
-    duration_sec = 0.0
-    if bucket and input_s3_key:
+        try:
+            stored_sec = pending_info.get('credit_file_duration_sec')
+            if stored_sec is not None:
+                duration_sec = float(stored_sec)
+        except (TypeError, ValueError):
+            duration_sec = 0.0
+        if duration_sec <= 0:
+            try:
+                stored_min = pending_info.get('credit_required_minutes')
+                if stored_min is not None and float(stored_min) > 0:
+                    duration_sec = float(stored_min) * 60.0
+            except (TypeError, ValueError):
+                pass
+    if duration_sec <= 0 and bucket and input_s3_key:
         duration_sec = _media_duration_seconds_from_s3(bucket, input_s3_key)
     minutes = _credit_minutes_from_duration(duration_sec)
     if minutes <= 0:
         logging.info("credit_charge skip zero minutes job=%s duration_sec=%s", runpod_job_id, duration_sec)
         return None
+
+    wallet = _user_credits_get(user_id)
+    balance = int((wallet or {}).get('credit_minutes') or 0)
+    if balance < minutes:
+        logging.warning(
+            "credit_charge insufficient_at_success job=%s user=%s required=%s balance=%s",
+            runpod_job_id,
+            user_id[:8],
+            minutes,
+            balance,
+        )
 
     wallet = _user_credits_deduct_minutes(user_id, minutes)
     _jobs_patch_by_runpod_job_id(
@@ -3775,7 +3818,7 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
     )
     balance = int((wallet or {}).get('credit_minutes') or 0)
     logging.info(
-        "credit_charge_fallback job=%s user=%s file_duration_sec=%.1f minutes=%s balance=%s",
+        "credit_charge_on_success job=%s user=%s file_duration_sec=%.1f minutes=%s balance=%s",
         runpod_job_id,
         user_id[:8],
         duration_sec,
@@ -3786,7 +3829,7 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         "credit_minutes_used": minutes,
         "credit_minutes": balance,
         "duration_seconds": duration_sec,
-        "charged_at": "gpu_callback_fallback",
+        "charged_at": "gpu_callback_success",
     }
 
 
@@ -8173,6 +8216,14 @@ def _maybe_start_runpod_at_upload_sign(
             job_id,
         )
         return
+    if request_data and _defer_gpu_warmup_for_large_upload(request_data, is_medical):
+        logging.info(
+            "Skipping RunPod upload trigger for %s (large upload file_size=%s defer_threshold=%s — GPU at trigger_processing)",
+            job_id,
+            _upload_file_size_bytes(request_data),
+            _runpod_defer_warmup_file_bytes(),
+        )
+        return
     if is_medical and _medical_uses_sagemaker_transcription():
         _start_medical_sagemaker_warmup_if_configured(
             job_id,
@@ -8911,8 +8962,8 @@ def trigger_processing():
                 "transcription_options": transcription_options or {},
                 "preprocess": "vocal_separation" if use_music_vocal_preprocess else None,
             })
-            if credit_reserve.get('credit_minutes_used'):
-                pinfo['credit_minutes_used'] = float(credit_reserve['credit_minutes_used'])
+            if credit_reserve.get('required_minutes'):
+                pinfo['credit_required_minutes'] = float(credit_reserve['required_minutes'])
             if credit_reserve.get('file_duration_seconds'):
                 pinfo['credit_file_duration_sec'] = float(credit_reserve['file_duration_seconds'])
             pending_job_info[job_id] = pinfo
@@ -9040,8 +9091,8 @@ def trigger_processing():
             "transcription_options": transcription_options or {},
             "preprocess": "vocal_separation" if use_music_vocal_preprocess else None,
         }
-        if credit_reserve.get('credit_minutes_used'):
-            pending_job_info[job_id]['credit_minutes_used'] = float(credit_reserve['credit_minutes_used'])
+        if credit_reserve.get('required_minutes'):
+            pending_job_info[job_id]['credit_required_minutes'] = float(credit_reserve['required_minutes'])
         if credit_reserve.get('file_duration_seconds'):
             pending_job_info[job_id]['credit_file_duration_sec'] = float(credit_reserve['file_duration_seconds'])
         _set_worker_handoff(

@@ -14,6 +14,7 @@
 
 2. **Frontend** calls `POST /api/sign-s3` or `POST /api/sign-s3-multipart-init` with optional `clientAudioProfile` and `treatAsMusic` (upload-modal checkbox). **Backend** usually starts **one** RunPod `/run` on the **real `jobId`** immediately (before upload):
    - **Music checkbox + vocal separation enabled:** **no** early GPU `/run` (avoids GPU idle billing while CPU Demucs runs). GPU `/run` fires only after vocal separation completes.
+   - **Large files (>200 MiB by default, `RUNPOD_DEFER_WARMUP_FILE_BYTES`):** **no** early GPU `/run` during long S3 upload. GPU `/run` fires at `trigger_processing` when upload is complete.
    - **Client profile present:** final `transcription_options` from profile (`defer_final_options=false`, `worker_ready=true` on early handoff).
    - **No client profile yet:** provisional speech-safe VAD (`defer_final_options=true`); worker polls `job_transcription_options` until `trigger_processing`.
 
