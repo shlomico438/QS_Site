@@ -1344,6 +1344,57 @@ async function qsMaybeWarnIOSPrivateBeforeOAuth() {
     return false;
 }
 
+/** Wait for Supabase to finish PKCE / detectSessionInUrl (iOS private can be slow). */
+async function qsWaitForOAuthSessionAfterRedirect(timeoutMs) {
+    const limit = Math.max(3000, Number(timeoutMs) || 8000);
+    return new Promise((resolve) => {
+        let settled = false;
+        let sub = null;
+        const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            try { sub?.unsubscribe(); } catch (_) {}
+            clearTimeout(timer);
+            resolve(!!ok);
+        };
+        const timer = setTimeout(async () => {
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                finish(!!(session && session.user));
+            } catch (_) {
+                finish(false);
+            }
+        }, limit);
+        try {
+            const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+                if (!session || !session.user) return;
+                if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') {
+                    finish(true);
+                }
+            });
+            sub = subscription;
+        } catch (_) {}
+        void supabase.auth.getSession().then(({ data: { session } }) => {
+            if (session && session.user) finish(true);
+        }).catch(() => {});
+    });
+}
+
+/** If OAuth already completed (e.g. slow callback), finish UI without another redirect. */
+async function qsCompleteAuthIfAlreadySignedIn() {
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session || !session.user) return false;
+        try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
+        if (typeof setupNavbarAuth === 'function') await setupNavbarAuth(session.user);
+        if (typeof window.toggleModal === 'function') window.toggleModal(false);
+        qsCleanOAuthUrlFromHistory();
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 async function qsHandleOAuthReturnIfNeeded() {
     if (!qsCurrentUrlLooksLikeAuthCallback()) return;
     let oauthErr = '';
@@ -1360,23 +1411,23 @@ async function qsHandleOAuthReturnIfNeeded() {
         qsCleanOAuthUrlFromHistory();
         return;
     }
-    const pollSession = async (totalMs) => {
-        const started = Date.now();
-        while (Date.now() - started < totalMs) {
-            try {
-                if (window.__QS_UX_USER_SIGNED_IN) return true;
-                const { data: { session } } = await supabase.auth.getSession();
-                if (session && session.user) return true;
-            } catch (_) {}
-            await new Promise((r) => setTimeout(r, 300));
-        }
-        return false;
-    };
-    if (await pollSession(4500)) {
+    const waitMs = _isLikelyIOSDevice() ? 14000 : 9000;
+    const ok = await qsWaitForOAuthSessionAfterRedirect(waitMs);
+    if (ok || window.__QS_OAUTH_CALLBACK_RESOLVED) {
         qsCleanOAuthUrlFromHistory();
+        if (ok && typeof setupNavbarAuth === 'function') {
+            try { await setupNavbarAuth(); } catch (_) {}
+        }
         return;
     }
     if (!qsCurrentUrlLooksLikeAuthCallback()) return;
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session && session.user) {
+            qsCleanOAuthUrlFromHistory();
+            return;
+        }
+    } catch (_) {}
     const isPrivate = await qsIsIOSPrivateSafari();
     qsShowOAuthCallbackFailedMessage(isPrivate);
     qsCleanOAuthUrlFromHistory();
@@ -2081,6 +2132,7 @@ supabase.auth.onAuthStateChange((event, session) => {
         }
     }
     if (event === 'SIGNED_IN' && session) {
+        try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
         try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
@@ -7694,6 +7746,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
 const googleLoginBtn = document.getElementById('google-login');
 if (googleLoginBtn) {
     googleLoginBtn.addEventListener('click', async () => {
+        try {
+            if (await qsCompleteAuthIfAlreadySignedIn()) return;
+        } catch (_) {}
         try {
             if (!(await qsMaybeWarnIOSPrivateBeforeOAuth())) return;
         } catch (_) {}
