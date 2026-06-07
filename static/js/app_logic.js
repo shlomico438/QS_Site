@@ -1268,7 +1268,7 @@ function _isLikelyIOSInAppBrowser() {
     return isKnownInApp || !isKnownIOSBrowser;
 }
 
-/** iOS Safari private browsing — OAuth session cannot be persisted reliably. */
+/** iOS Safari private browsing — session/cookies can be slower but still work in-tab. */
 function qsIsIOSPrivateSafari() {
     if (!_isLikelyIOSSafariBrowser()) return Promise.resolve(false);
     if (typeof window.webkitRequestFileSystem === 'function') {
@@ -1285,7 +1285,57 @@ function qsIsIOSPrivateSafari() {
             }
         });
     }
-    return Promise.resolve(false);
+    try {
+        localStorage.setItem('__qs_private_probe__', '1');
+        localStorage.removeItem('__qs_private_probe__');
+        return Promise.resolve(false);
+    } catch (_) {
+        return Promise.resolve(true);
+    }
+}
+
+function qsOAuthCodeFromCurrentUrl() {
+    try {
+        const search = new URLSearchParams(window.location.search || '');
+        const code = String(search.get('code') || '').trim();
+        if (code) return code;
+    } catch (_) {}
+    try {
+        const hash = String(window.location.hash || '').replace(/^#/, '');
+        if (!hash) return '';
+        const params = new URLSearchParams(hash);
+        return String(params.get('code') || '').trim();
+    } catch (_) {}
+    return '';
+}
+
+/** PKCE exchange can lag behind detectSessionInUrl on iOS private — exchange explicitly when ?code= is present. */
+async function qsTryExchangeOAuthCodeFromUrl() {
+    const code = qsOAuthCodeFromCurrentUrl();
+    if (!code) return false;
+    try {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error || !data || !data.session || !data.session.user) return false;
+        try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function qsPollForOAuthSession(maxMs, intervalMs) {
+    const limit = Math.max(0, Number(maxMs) || 0);
+    const step = Math.max(150, Number(intervalMs) || 400);
+    const deadline = Date.now() + limit;
+    while (Date.now() < deadline) {
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session && session.user) return true;
+        } catch (_) {}
+        if (window.__QS_OAUTH_CALLBACK_RESOLVED) return true;
+        await new Promise((resolve) => setTimeout(resolve, step));
+    }
+    return false;
 }
 
 function qsOAuthRedirectTo() {
@@ -1332,16 +1382,16 @@ function qsShowOAuthCallbackFailedMessage(isIosPrivate) {
         : 'Sign-in could not be completed. Please try again.'), true);
 }
 
-/** @returns {Promise<boolean>} false = block OAuth redirect */
+/** @returns {Promise<boolean>} always true — private Safari works but may be slower */
 async function qsMaybeWarnIOSPrivateBeforeOAuth() {
     const isPrivate = await qsIsIOSPrivateSafari();
     if (!isPrivate) return true;
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     qsShowOAuthMessage(
-        T('auth_ios_private_sign_in') || 'Sign-in does not work in iPhone Safari private browsing. Use a normal Safari tab.',
-        true
+        T('auth_ios_private_sign_in') || 'Private browsing can be slower to sign in. After Google, wait on this page until the modal closes.',
+        false
     );
-    return false;
+    return true;
 }
 
 /** Wait for Supabase to finish PKCE / detectSessionInUrl (iOS private can be slow). */
@@ -1411,15 +1461,51 @@ async function qsHandleOAuthReturnIfNeeded() {
         qsCleanOAuthUrlFromHistory();
         return;
     }
-    const waitMs = _isLikelyIOSDevice() ? 14000 : 9000;
-    const ok = await qsWaitForOAuthSessionAfterRedirect(waitMs);
-    if (ok || window.__QS_OAUTH_CALLBACK_RESOLVED) {
+
+    const isPrivate = await qsIsIOSPrivateSafari();
+    const isIos = _isLikelyIOSDevice();
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (isIos || isPrivate) {
+        qsShowOAuthMessage(
+            T('auth_oauth_completing') || 'Completing sign-in…',
+            false
+        );
+    }
+
+    const finishOAuthSuccess = async () => {
         qsCleanOAuthUrlFromHistory();
-        if (ok && typeof setupNavbarAuth === 'function') {
+        if (typeof setupNavbarAuth === 'function') {
             try { await setupNavbarAuth(); } catch (_) {}
         }
+    };
+
+    if (await qsTryExchangeOAuthCodeFromUrl()) {
+        await finishOAuthSuccess();
         return;
     }
+
+    const waitMs = isPrivate ? 32000 : (isIos ? 20000 : 9000);
+    let ok = await qsWaitForOAuthSessionAfterRedirect(waitMs);
+    if (ok || window.__QS_OAUTH_CALLBACK_RESOLVED) {
+        await finishOAuthSuccess();
+        return;
+    }
+
+    if (await qsTryExchangeOAuthCodeFromUrl()) {
+        await finishOAuthSuccess();
+        return;
+    }
+
+    if (isIos || isPrivate) {
+        ok = await qsPollForOAuthSession(isPrivate ? 18000 : 12000, 400);
+        if (ok || window.__QS_OAUTH_CALLBACK_RESOLVED) {
+            await finishOAuthSuccess();
+            return;
+        }
+    }
+
+    if (await qsCompleteAuthIfAlreadySignedIn()) return;
+
     if (!qsCurrentUrlLooksLikeAuthCallback()) return;
     try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -1428,7 +1514,7 @@ async function qsHandleOAuthReturnIfNeeded() {
             return;
         }
     } catch (_) {}
-    const isPrivate = await qsIsIOSPrivateSafari();
+
     qsShowOAuthCallbackFailedMessage(isPrivate);
     qsCleanOAuthUrlFromHistory();
 }
