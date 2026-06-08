@@ -410,6 +410,8 @@ const QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY = QS_MEDICAL_ENDPOINT_WARMUP_SUBMI
 const QS_MEDICAL_WARMUP_SESSION_MS = 12 * 60 * 60 * 1000;
 /** While banner shows ready, re-check server every 5 min (TTL / endpoint down). */
 const QS_MEDICAL_ENDPOINT_EVENTS_ROOM = 'medical_endpoint_events';
+/** AWS still cap=0 after this — treat ghost 'starting' as cold (must match server MEDICAL_WARMUP_STARTING_GRACE_SEC). */
+const QS_MEDICAL_WARMUP_STARTING_GRACE_SEC = 300;
 const QS_MEDICAL_WARMUP_PREPARING_MSG = 'המערכת מתכוננת ליום העבודה... (משוער: כ-10 דקות)';
 const QS_MEDICAL_WARMUP_PREPARING_SUBMSG = 'ניתן להתחיל להקליט, אך הסיכום הראשון עשוי לקחת מספר דקות';
 const QS_MEDICAL_WARMUP_COLD_TITLE = 'סשן קליני חדש';
@@ -1018,7 +1020,43 @@ function qsMedicalWarmupConfidentlyInFlight(statusData) {
     const st = String(statusData.warmup_status || statusData.status || '').toLowerCase();
     if (st === 'off' || st === 'scaled_out' || statusData.endpoint_scaled_down) return false;
     if (st !== 'starting' && st !== 'preparing') return false;
-    return !!statusData.warmup_job_id;
+    if (!statusData.warmup_job_id) return false;
+    const cap = statusData.endpoint_desired_capacity;
+    const current = Number(statusData.current_instance_count || 0);
+    const awsCold = (cap === 0 || cap === null) && current <= 0 && !statusData.in_service;
+    if (awsCold) {
+        const elapsed = Number(statusData.elapsed_sec || 0);
+        if (elapsed > QS_MEDICAL_WARMUP_STARTING_GRACE_SEC) return false;
+    }
+    return true;
+}
+
+function qsMedicalResetSessionWarmupForNewSession() {
+    qsClearMedicalSessionWarmupSubmitted();
+    window.__QS_MEDICAL_WARMUP_STALE_RETRY = false;
+    window.__QS_MEDICAL_WARMUP_STATE = 'off';
+    window.__QS_MEDICAL_WARMUP_READY_LOGGED = false;
+    window.__QS_MEDICAL_SCALED_OUT_LOGGED = false;
+    qsSetMedicalWarmupBanner('off');
+}
+
+/** Full fresh medical entry — same as clicking the logo (reload /medical, all in-memory state cleared). */
+function qsMedicalHardResetToEntry() {
+    qsStopMedicalWarmupPoll();
+    qsClearMedicalWarmupWaitTimer();
+    qsStopMedicalWarmupPhaseTick();
+    window.__QS_MEDICAL_RECORDING_WARMUP_BAR = false;
+    window.__QS_MEDICAL_SESSION_WARMUP_PROMISE = null;
+    window.__QS_MEDICAL_STATUS_REFRESH_PROMISE = null;
+    window._medicalWarmupSession = null;
+    window._medicalWarmupPromise = null;
+    window._medicalWarmupToken = Number(window._medicalWarmupToken || 0) + 1;
+    if (typeof window.qsDismissActiveJob === 'function') {
+        window.qsDismissActiveJob();
+    }
+    try { sessionStorage.removeItem(QS_MEDICAL_ENDPOINT_WARMUP_SUBMITTED_KEY); } catch (_) {}
+    try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+    window.location.assign('/medical');
 }
 
 function qsLogMedicalSessionWarmup(msg, detail) {
@@ -11045,20 +11083,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function openFilePickerAfterDisclaimer() {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            qsMedicalHardResetToEntry();
+            return;
+        }
         resetScreenToInitial();
         if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
         if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
-        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
-            try {
-                const nsBtn = document.getElementById('medical-upload-new-session-btn');
-                const wrap = document.getElementById('medical-recording-wrap');
-                const scrollTarget = (nsBtn && nsBtn.offsetParent !== null) ? nsBtn : wrap;
-                if (scrollTarget) {
-                    setTimeout(() => { try { scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {} }, 80);
-                }
-            } catch (_) {}
-            return;
-        }
         if (fileInput) {
             try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
             fileInput.click();

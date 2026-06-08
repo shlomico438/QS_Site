@@ -476,6 +476,11 @@ def _medical_starting_window_sec():
     return _medical_warmup_stale_sec()
 
 
+def _medical_starting_grace_sec():
+    """How long cap=0 may show 'starting' from warmup hint alone before treating endpoint as off."""
+    return max(60, int(os.environ.get('MEDICAL_WARMUP_STARTING_GRACE_SEC', '300') or 300))
+
+
 def _fetch_medical_endpoint_desired_capacity():
     """Live DesiredCapacity from Application Auto Scaling (source of truth)."""
     rid = _medical_sagemaker_scalable_resource_id()
@@ -803,9 +808,12 @@ def _medical_endpoint_clinic_status(snapshot=None):
     if ep_st in ('Updating', 'Creating'):
         return 'starting'
 
-    # Scale-up requested but ASG desired count not updated yet — show preparing, not "server off"
-    if _medical_warmup_requested_recently():
-        return 'starting'
+    # Scale-up just requested — brief grace while ASG desired count catches up (not the full stale window).
+    submitted_at = _medical_global_warmup_submitted_at()
+    if submitted_at is not None:
+        elapsed = time.time() - float(submitted_at)
+        if elapsed <= _medical_starting_grace_sec():
+            return 'starting'
 
     return 'off'
 
@@ -4747,7 +4755,7 @@ def _medical_endpoint_status_payload():
         status == 'starting'
         and submitted_at is not None
         and elapsed is not None
-        and elapsed > _medical_starting_window_sec()
+        and elapsed > _medical_starting_grace_sec()
     )
     endpoint_scaled_down = status == 'off'
     with _medical_aws_cache_lock:
@@ -4767,7 +4775,7 @@ def _medical_endpoint_status_payload():
         'warmup_submitted_at': submitted_at,
         'elapsed_sec': elapsed,
         'stale': stale,
-        'stale_after_sec': _medical_starting_window_sec(),
+        'stale_after_sec': _medical_starting_grace_sec(),
         'capacity_source': cache_source,
         'aws_updated_at': snap.get('updated_at'),
         'endpoint': _sagemaker_medical_endpoint_name(),
