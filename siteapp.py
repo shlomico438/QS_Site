@@ -3582,6 +3582,55 @@ def _credits_gate_applies(is_medical=False):
     return True
 
 
+def _credits_prefer_hebrew_from_request():
+    try:
+        lang = (request.headers.get('Accept-Language') or '') if request else ''
+        return not lang.lower().startswith('en')
+    except Exception:
+        return True
+
+
+def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
+    """Verify wallet balance for media length; does not deduct."""
+    user_id = str(user_id or '').strip()
+    if not user_id or user_id == 'anonymous':
+        return {"ok": True, "skipped": True}
+    try:
+        duration_sec = float(duration_sec or 0)
+    except (TypeError, ValueError):
+        duration_sec = 0.0
+    minutes = _credit_minutes_from_duration(duration_sec)
+    if minutes <= 0:
+        if prefer_hebrew:
+            msg = "לא ניתן לזהות את אורך הקובץ. לא ניתן לאמת שיש מספיק דקות — נסו שוב."
+        else:
+            msg = "Could not determine file length. Cannot verify you have enough minutes — please try again."
+        return {
+            "ok": False,
+            "error": "duration_unknown",
+            "message": msg,
+            "http_status": 400,
+        }
+    wallet = _user_credits_get(user_id)
+    balance = int((wallet or {}).get('credit_minutes') or 0)
+    if balance < minutes:
+        return {
+            "ok": False,
+            "error": "insufficient_credits",
+            "message": _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew),
+            "http_status": 402,
+            "credit_minutes": balance,
+            "required_minutes": minutes,
+            "file_duration_seconds": duration_sec,
+        }
+    return {
+        "ok": True,
+        "credit_minutes": balance,
+        "required_minutes": minutes,
+        "file_duration_seconds": duration_sec,
+    }
+
+
 def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=True):
     if prefer_hebrew:
         return (
@@ -3630,47 +3679,13 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
         s3_key,
         client_duration_sec=client_duration_sec,
     )
-    minutes = _credit_minutes_from_duration(duration_sec)
-    prefer_he = True
-    try:
-        lang = (request.headers.get('Accept-Language') or '') if request else ''
-        prefer_he = not lang.lower().startswith('en')
-    except Exception:
-        prefer_he = True
+    prefer_he = _credits_prefer_hebrew_from_request()
+    check = _check_credits_for_duration(user_id, duration_sec, prefer_he)
+    if not check.get('ok'):
+        return check
 
-    if minutes <= 0:
-        # Benefit of the doubt: do not block transcription when file length cannot be probed.
-        wallet = _user_credits_get(user_id)
-        balance = int((wallet or {}).get('credit_minutes') or 0)
-        logging.warning(
-            "credit_reserve fail-open duration_unknown job=%s user=%s key_suffix=%s client_sec=%.1f",
-            job_id,
-            user_id[:8],
-            s3_key[-48:],
-            client_duration_sec,
-        )
-        return {
-            "ok": True,
-            "skipped": True,
-            "fail_open": True,
-            "reason": "duration_unknown",
-            "credit_minutes": balance,
-            "credit_minutes_used": 0,
-            "file_duration_seconds": duration_sec,
-        }
-
-    wallet = _user_credits_get(user_id)
-    balance = int((wallet or {}).get('credit_minutes') or 0)
-    if balance < minutes:
-        return {
-            "ok": False,
-            "error": "insufficient_credits",
-            "message": _credits_insufficient_message(balance, minutes, duration_sec, prefer_he),
-            "http_status": 402,
-            "credit_minutes": balance,
-            "required_minutes": minutes,
-            "file_duration_seconds": duration_sec,
-        }
+    minutes = int(check.get('required_minutes') or _credit_minutes_from_duration(duration_sec))
+    balance = int(check.get('credit_minutes') or 0)
 
     logging.info(
         "credit_verify_before_gpu job=%s user=%s file_duration_sec=%.1f required_minutes=%s balance=%s",
@@ -3809,6 +3824,13 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
             minutes,
             balance,
         )
+        return {
+            "ok": False,
+            "error": "insufficient_credits",
+            "credit_minutes": balance,
+            "required_minutes": minutes,
+            "credit_minutes_used": 0,
+        }
 
     wallet = _user_credits_deduct_minutes(user_id, minutes)
     _jobs_patch_by_runpod_job_id(
@@ -4160,6 +4182,35 @@ def delete_job():
     except Exception as e:
         logging.exception("delete_job failed")
         return jsonify({"error": str(e), "deleted": False}), 500
+
+
+@app.route('/api/user/credits/check-upload', methods=['POST'])
+def api_user_credits_check_upload():
+    """Verify the signed-in user has enough minutes before upload starts."""
+    try:
+        user_id = _supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        data = request.get_json(silent=True) or {}
+        is_medical = bool(data.get('isMedical'))
+        if not _credits_gate_applies(is_medical):
+            return jsonify({"status": "ok", "skipped": True}), 200
+        duration_sec = _client_media_duration_from_request(data)
+        check = _check_credits_for_duration(user_id, duration_sec, _credits_prefer_hebrew_from_request())
+        if not check.get('ok'):
+            return jsonify({
+                "status": "error",
+                "error": check.get('error'),
+                "message": check.get('message'),
+                **_credit_fields_for_api(check),
+            }), int(check.get('http_status') or 402)
+        return jsonify({
+            "status": "ok",
+            **_credit_fields_for_api(check),
+        }), 200
+    except Exception as e:
+        logging.exception("api_user_credits_check_upload failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/user/credits', methods=['GET'])
@@ -7618,6 +7669,17 @@ def sign_s3_multipart_init():
         validated_kms_arn = _require_medical_kms_or_raise(is_medical)
     except Exception as e:
         return jsonify({"status": "error", "message": str(e), "isMedical": is_medical}), 400
+
+    if _credits_gate_applies(is_medical):
+        duration_sec = _client_media_duration_from_request(data)
+        credit_check = _check_credits_for_duration(user_id, duration_sec, _credits_prefer_hebrew_from_request())
+        if not credit_check.get('ok'):
+            return jsonify({
+                "status": "error",
+                "error": credit_check.get('error'),
+                "message": credit_check.get('message'),
+                **_credit_fields_for_api(credit_check),
+            }), int(credit_check.get('http_status') or 402)
 
     part_bytes_env = int(os.environ.get('S3_MULTIPART_PART_BYTES', str(8 * 1024 * 1024)))
     part_count, part_bytes = _multipart_part_count(file_size, part_bytes_env)

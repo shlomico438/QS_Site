@@ -165,6 +165,7 @@ window.translations = {
         upload_disclaimer_text: "התמלולים שלכם מעובדים בצורה מאובטחת, אך עשויים לעבור דרך שרתי פיתוח של צד שלישי.\n\nאנו מבקשים: אנא הימנעו מהעלאת חומרים בעלי רגישות גבוהה (כגון חסיון עורך דין-לקוח, סודיות רפואית, או פרטים מזהים רגישים).\n\nעם סיום תקופת הבטא והמעבר לשירות בתשלום, המערכת תעבור למודל פרטיות סגור ומחמיר לחלוטין.",
         // Status / toasts
         transcription_complete: "התמלול הושלם",
+        transcription_saved_toast: "התמלול נשמר בהצלחה! הקובץ זמין תמיד באזור האישי שלך.",
         downloading_video_srt: "מוריד וידאו וכתוביות...",
         video_srt_downloaded: "הוידאו והכתוביות הורדו",
         burning_subtitles: "שורף כתוביות (דפדפן)...",
@@ -450,6 +451,7 @@ window.translations = {
         upload_disclaimer_accept: "I understand",
         upload_disclaimer_text: "Your transcripts are processed securely but may pass through third-party development servers.\n\nWe ask that you avoid uploading highly sensitive material (e.g. attorney-client privilege, medical confidentiality, or sensitive personal data).\n\nWhen the beta period ends and we move to a paid service, the system will switch to a fully closed, strict privacy model.",
         transcription_complete: "Transcription Complete",
+        transcription_saved_toast: "Transcript saved successfully! Your file is always available in your personal area.",
         downloading_video_srt: "Downloading video and subtitles...",
         video_srt_downloaded: "Video and SRT downloaded",
         burning_subtitles: "Burning subtitles (browser)...",

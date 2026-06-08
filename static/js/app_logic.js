@@ -2410,6 +2410,13 @@ const QS_AUDIO_PROFILE_DEFAULTS = {
 
 /** Align with server RUNPOD_DEFER_WARMUP_FILE_BYTES — avoid loading whole File in the browser. */
 const QS_LARGE_UPLOAD_BYTES = 200 * 1024 * 1024;
+/** Music-mode confirm popup only for short clips (long/large files skip — probe + modal are slow). */
+const QS_UPLOAD_MUSIC_CONFIRM_MAX_SEC = 300;
+
+function qsShouldShowUploadMusicConfirm(durationSec) {
+    const d = Number(durationSec);
+    return Number.isFinite(d) && d > 0 && d < QS_UPLOAD_MUSIC_CONFIRM_MAX_SEC;
+}
 
 function qsIsLargeUploadFile(fileOrBytes) {
     const n = typeof fileOrBytes === 'number' ? fileOrBytes : (fileOrBytes && fileOrBytes.size);
@@ -3017,6 +3024,69 @@ function qsApplyTriggerCreditFields(triggerData) {
     if (typeof qsRefreshUserCredits === 'function') {
         void qsRefreshUserCredits();
     }
+}
+
+/** Block upload when signed-in user lacks minutes for file length (check before S3 upload). */
+async function qsEnsureCreditsForUpload(durationSec) {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        return true;
+    }
+    let user = null;
+    try {
+        const { data: { user: u } } = await supabase.auth.getUser();
+        user = u;
+    } catch (_) {}
+    if (!user || !user.id) return true;
+
+    const d = Number(durationSec);
+    if (!Number.isFinite(d) || d <= 0) {
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        if (typeof showStatus === 'function') {
+            showStatus(
+                T('credits_duration_unknown') || 'Could not determine the file length. Try again or upload a different file.',
+                true,
+                { duration: 10000, toastPosition: 'above', toastAnchorId: 'main-btn' }
+            );
+        }
+        return false;
+    }
+
+    try {
+        if (typeof qsRefreshUserCredits === 'function') {
+            await qsRefreshUserCredits();
+        }
+        const res = await fetch('/api/user/credits/check-upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mediaDurationSec: d, isMedical: false }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.status !== 'error') return true;
+        const msg = qsCreditsTriggerErrorMessage(data) || data.message
+            || (typeof window.t === 'function' ? window.t('insufficient_credits_msg') : 'Not enough minutes for this file.');
+        if (typeof showStatus === 'function') {
+            showStatus(msg, true, { duration: 12000, toastPosition: 'above', toastAnchorId: 'main-btn' });
+        }
+        if (data && (data.error === 'insufficient_credits' || Number.isFinite(Number(data.credit_minutes)))) {
+            qsApplyTriggerCreditFields(data);
+        }
+        return false;
+    } catch (err) {
+        console.warn('qsEnsureCreditsForUpload failed:', err);
+        if (typeof showStatus === 'function') {
+            showStatus(
+                typeof window.t === 'function' ? window.t('error_starting_upload') : 'Error starting upload.',
+                true
+            );
+        }
+        return false;
+    }
+}
+
+function qsUploadMediaDurationForApi() {
+    const stored = Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC);
+    if (Number.isFinite(stored) && stored > 0) return stored;
+    return qsClientMediaDurationSecForCredits();
 }
 
 /** Server sends audio_profile + transcription_options on /api/trigger_processing — log clearly (browser has no server logging). */
@@ -3860,6 +3930,20 @@ function _showToast(message, options = {}) {
         toast.style.top = `${Math.round(cy)}px`;
         toast.style.bottom = 'auto';
         toast.style.transform = 'translate(-50%, -50%)';
+    } else if (position === 'above' && anchorId) {
+        const anchor = document.getElementById(anchorId);
+        if (anchor) {
+            const r = anchor.getBoundingClientRect();
+            toast.style.left = `${Math.round(r.left + (r.width / 2))}px`;
+            toast.style.top = `${Math.round(Math.max(12, r.top - 10))}px`;
+            toast.style.bottom = 'auto';
+            toast.style.transform = 'translate(-50%, -100%)';
+        } else {
+            toast.style.top = 'auto';
+            toast.style.bottom = '28px';
+            toast.style.left = '50%';
+            toast.style.transform = 'translateX(-50%)';
+        }
     } else {
         toast.style.top = 'auto';
         toast.style.bottom = '28px';
@@ -11893,6 +11977,22 @@ document.addEventListener('DOMContentLoaded', () => {
         setTranscriptActionButtonsVisible(true);
         qsEnsureTranscriptToolbarVisible('handle_job_update_success', { force: true });
         qsScheduleTranscriptToolbarEnsure('handle_job_update_success_deferred', { force: true });
+        try {
+            const hasTranscript = !!(window.currentSegments && window.currentSegments.length);
+            const alreadyShown = jobId && window._qsSavedToastJobId === jobId;
+            if (hasTranscript && !alreadyShown) {
+                const { data: { user: savedToastUser } } = await supabase.auth.getUser();
+                if (savedToastUser && typeof showStatus === 'function') {
+                    if (jobId) window._qsSavedToastJobId = jobId;
+                    const T = typeof window.t === 'function' ? window.t : (k) => k;
+                    showStatus(
+                        T('transcription_saved_toast') || 'התמלול נשמר בהצלחה! הקובץ זמין תמיד באזור האישי שלך.',
+                        false,
+                        { duration: 8000, toastPosition: 'above', toastAnchorId: 'main-btn' }
+                    );
+                }
+            }
+        } catch (_) {}
         if (jobId) {
             window._handleJobUpdateInFlight = null;
             window._lastProcessedJobId = jobId;
@@ -13861,6 +13961,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (initClientProfile && initClientProfile.profile) {
                     multipartInitBody.clientAudioProfile = initClientProfile;
                 }
+                const uploadDurationSec = qsUploadMediaDurationForApi();
+                if (uploadDurationSec > 0) {
+                    multipartInitBody.mediaDurationSec = uploadDurationSec;
+                }
                 const signRes = await fetch('/api/sign-s3-multipart-init', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -13869,7 +13973,24 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 const result = await signRes.json();
 
-                if (!result.data) {
+                if (!signRes.ok || result.status === 'error' || !result.data) {
+                    const creditMsg = qsCreditsTriggerErrorMessage(result);
+                    if (creditMsg || result.error === 'insufficient_credits' || result.error === 'duration_unknown') {
+                        if (typeof showStatus === 'function') {
+                            showStatus(creditMsg || result.message || 'Not enough minutes for this file.', true, {
+                                duration: 12000,
+                                toastPosition: 'above',
+                                toastAnchorId: 'main-btn',
+                            });
+                        }
+                        qsApplyTriggerCreditFields(result);
+                        window.isTriggering = false;
+                        setDiarizationBusyState(false);
+                        stopProcessingStateUI('multipart_init_insufficient_credits');
+                        hideProgressBar();
+                        if (typeof mainBtn !== 'undefined') mainBtn.disabled = false;
+                        return;
+                    }
                     throw new Error(result.message || result.error || "Failed to start multipart upload.");
                 }
 
@@ -14002,7 +14123,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     uploadPhase = 'trigger_processing';
                     // Always runs after S3 upload completes: tells server upload is complete (upload_status for worker).
                     console.log("Upload complete → /api/trigger_processing");
-                    const mediaDurationSec = qsClientMediaDurationSecForCredits();
+                    const mediaDurationSec = qsUploadMediaDurationForApi();
                     const triggerPayload = {
                         s3Key: s3Key,
                         bucket: bucket,
@@ -14215,15 +14336,25 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     return;
                 }
                 qsStartClientAudioProfile(file);
-                const durationSec = await qsProbeFileMediaDurationSec(file, 8000);
+                const durationProbeMs = qsIsLargeUploadFile(file) ? 12000 : 8000;
+                let durationSec = await qsProbeFileMediaDurationSec(file, durationProbeMs);
                 window.__QS_UPLOAD_MEDIA_DURATION_SEC = durationSec > 0 ? durationSec : null;
-                const uploadChoice = await qsShowUploadConfirmModal(file, { durationSec });
-                if (!uploadChoice) {
+                if (qsShouldShowUploadMusicConfirm(durationSec)) {
+                    const uploadChoice = await qsShowUploadConfirmModal(file, { durationSec });
+                    if (!uploadChoice) {
+                        fileInput.value = '';
+                        qsRestoreUiAfterUploadConfirmCancel();
+                        return;
+                    }
+                    qsSetUserAudioProfileChoice(!!uploadChoice.treatAsMusic);
+                } else {
+                    qsSetUserAudioProfileChoice(false);
+                }
+                if (!(await qsEnsureCreditsForUpload(durationSec))) {
                     fileInput.value = '';
                     qsRestoreUiAfterUploadConfirmCancel();
                     return;
                 }
-                qsSetUserAudioProfileChoice(!!uploadChoice.treatAsMusic);
                 await runUploadPipeline();
                 return;
             } catch (pickerFlowErr) {
