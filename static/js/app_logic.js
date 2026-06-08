@@ -10388,15 +10388,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function beginMedicalRecordingWarmup(mimeRaw) {
         if (!isMedicalModeEnabled()) return null;
-        if (typeof window.qsDismissActiveJob === 'function') {
-            window.qsDismissActiveJob();
-        }
         if (window._medicalWarmupPromise) return window._medicalWarmupPromise;
         const warmupToken = (Number(window._medicalWarmupToken || 0) + 1);
         window._medicalWarmupToken = warmupToken;
         const mime = String(mimeRaw || 'audio/webm').trim() || 'audio/webm';
         const ext = medicalBlobExtensionFromMime(mime);
         window._medicalWarmupPromise = (async () => {
+            if (typeof window.qsDismissActiveJob === 'function') {
+                window.qsDismissActiveJob();
+            }
             const { data: { user } } = await supabase.auth.getUser();
             const userId = user ? user.id : null;
             const filename = `medical_recording_${Date.now()}.${ext}`;
@@ -10437,7 +10437,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return session;
         })();
         window._medicalWarmupPromise.catch((err) => {
-            qsUploadTraceErr('medical_recording_warmup_failed', { err: String((err && err.message) || err) });
+            const msg = String((err && err.message) || err);
+            if (msg === 'medical_warmup_cancelled') return;
+            qsUploadTraceErr('medical_recording_warmup_failed', { err: msg });
             window._medicalWarmupPromise = null;
             window._medicalWarmupSession = null;
         });
@@ -10772,19 +10774,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function startMedicalRecording(options = {}) {
+        if (window._medicalStartRecordingInFlight || (window._medicalRecorder && window._medicalRecorder.state !== 'inactive')) {
+            return;
+        }
+        window._medicalStartRecordingInFlight = true;
         const preserveChunks = !!(options && options.preserveChunks);
         const resumeFromInterruption = !!(options && options.resumeFromInterruption);
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        if (resumeFromInterruption) {
-            // iOS can hand back a stream while the phone call still owns the mic. Do not accept muted/ended tracks.
-            await new Promise((resolve) => setTimeout(resolve, 220));
-            const tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
-            const hasUsableTrack = tracks.some((t) => t && t.readyState === 'live' && t.muted !== true && t.enabled !== false);
-            if (!hasUsableTrack) {
-                (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
-                throw new Error('microphone_not_ready_after_call');
+        let stream = null;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            if (resumeFromInterruption) {
+                // iOS can hand back a stream while the phone call still owns the mic. Do not accept muted/ended tracks.
+                await new Promise((resolve) => setTimeout(resolve, 220));
+                const tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+                const hasUsableTrack = tracks.some((t) => t && t.readyState === 'live' && t.muted !== true && t.enabled !== false);
+                if (!hasUsableTrack) {
+                    (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
+                    throw new Error('microphone_not_ready_after_call');
+                }
             }
-        }
         const recOpts = pickMedicalMediaRecorderOptions();
         const rec = Object.keys(recOpts).length ? new MediaRecorder(stream, recOpts) : new MediaRecorder(stream);
         if (isMedicalModeEnabled() && !preserveChunks) {
@@ -10894,7 +10902,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
             }
         };
-        try {
             attachMedicalRecordingTimerSlot();
             const sliceMs = typeof isMobileClient === 'function' && isMobileClient() ? 250 : 1000;
             try {
@@ -10905,12 +10912,13 @@ document.addEventListener('DOMContentLoaded', () => {
             window._medicalRecorder = rec;
             startMedicalWaveform(stream, { preserveExistingWave: resumeFromInterruption });
         } catch (e) {
+            if (stream) (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
             detachMedicalRecordingTimerSlot();
             setMedicalTimerVisibility(false);
-            try { if (rec.state !== 'inactive') rec.stop(); } catch (_) {}
-            (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
             window._medicalRecorder = null;
             throw e;
+        } finally {
+            window._medicalStartRecordingInFlight = false;
         }
         if (!preserveChunks) window._medicalRecordingAccumMs = 0;
         window._medicalRecorderPaused = false;
@@ -10928,6 +10936,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function toggleMedicalRecording() {
+        if (window._medicalRecordingToggleBusy) return;
         const rec = window._medicalRecorder;
         if (rec && rec.state === 'recording') {
             window._medicalPauseUserIntent = true;
@@ -10953,6 +10962,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (stream) startMedicalWaveform(stream);
             return;
         }
+        window._medicalRecordingToggleBusy = true;
+        if (medicalRecordBtn) medicalRecordBtn.disabled = true;
         try {
             if (isMedicalModeEnabled() && typeof window.qsMaybeMedicalSessionWarmup === 'function') {
                 await window.qsMaybeMedicalSessionWarmup();
@@ -10960,6 +10971,11 @@ document.addEventListener('DOMContentLoaded', () => {
             await startMedicalRecording();
         } catch (e) {
             if (typeof showStatus === 'function') showStatus(`Microphone access failed: ${e.message || e}`, true);
+        } finally {
+            window._medicalRecordingToggleBusy = false;
+            if (medicalRecordBtn && (!window._medicalRecorder || window._medicalRecorder.state === 'inactive')) {
+                medicalRecordBtn.disabled = false;
+            }
         }
     }
 
