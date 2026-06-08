@@ -1002,13 +1002,23 @@ function qsClearMedicalSessionWarmupSubmitted() {
 }
 
 function qsMedicalServerNeedsSessionWarmup(data) {
-    if (!data) return false;
+    if (!data) return true;
     if (qsMedicalEndpointReadyFromData(data)) return false;
     const st = String(data.warmup_status || data.status || '').toLowerCase();
     if (st === 'off' || st === 'scaled_out' || data.endpoint_scaled_down) return true;
     if (data.stale === true) return true;
     if (st === 'starting' || st === 'preparing') return false;
     return true;
+}
+
+/** Server says scale-up is in progress (not stale/off) — safe to poll without re-POST. */
+function qsMedicalWarmupConfidentlyInFlight(statusData) {
+    if (!statusData || qsMedicalEndpointReadyFromData(statusData)) return false;
+    if (statusData.stale === true) return false;
+    const st = String(statusData.warmup_status || statusData.status || '').toLowerCase();
+    if (st === 'off' || st === 'scaled_out' || statusData.endpoint_scaled_down) return false;
+    if (st !== 'starting' && st !== 'preparing') return false;
+    return !!statusData.warmup_job_id;
 }
 
 function qsLogMedicalSessionWarmup(msg, detail) {
@@ -1056,45 +1066,10 @@ async function qsMaybeMedicalSessionWarmupOnce() {
         return;
     }
 
-    const serverNeedsWarmup = qsMedicalServerNeedsSessionWarmup(statusData);
-    let alreadySubmitted = qsMedicalSessionWarmupSubmittedForUser(user.id);
-    if (alreadySubmitted && serverNeedsWarmup) {
-        const stRe = statusData
-            ? String(statusData.warmup_status || statusData.status || '').toLowerCase()
-            : '';
-        if (stRe === 'off' || stRe === 'scaled_out' || (statusData && statusData.endpoint_scaled_down)) {
-            qsClearMedicalSessionWarmupSubmitted();
-            alreadySubmitted = false;
-        } else if (statusData && statusData.stale === true) {
-            qsClearMedicalSessionWarmupSubmitted();
-            alreadySubmitted = false;
-            qsLogMedicalSessionWarmup('re-warm — stale starting window', {
-                status: statusData.status,
-                elapsed_sec: statusData.elapsed_sec,
-            });
-        } else if (stRe === 'starting' || stRe === 'preparing') {
-            try {
-                const subRaw = sessionStorage.getItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY);
-                if (subRaw) {
-                    const parsed = JSON.parse(subRaw);
-                    if (parsed && parsed.at) window.__QS_MEDICAL_WARMUP_STARTED_AT = Number(parsed.at);
-                    if (parsed && parsed.jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = parsed.jobId;
-                }
-            } catch (_) {}
-            window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
-            qsSetMedicalWarmupBanner('preparing');
-            qsStartMedicalWarmupPoll(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID, { intervalMs: 15000 });
-            return;
-        } else {
-            qsClearMedicalSessionWarmupSubmitted();
-            alreadySubmitted = false;
-            qsLogMedicalSessionWarmup('re-warm — endpoint not ready', {
-                status: statusData && statusData.status,
-                capacity: statusData && statusData.endpoint_desired_capacity,
-            });
-        }
-    }
-    if (alreadySubmitted) {
+    const warmupInFlight = qsMedicalWarmupConfidentlyInFlight(statusData);
+    const locallySubmitted = qsMedicalSessionWarmupSubmittedForUser(user.id);
+
+    if (warmupInFlight) {
         try {
             const subRaw = sessionStorage.getItem(QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY);
             if (subRaw) {
@@ -1103,26 +1078,35 @@ async function qsMaybeMedicalSessionWarmupOnce() {
                 if (parsed && parsed.jobId) window.__QS_MEDICAL_WARMUP_JOB_ID = parsed.jobId;
             }
         } catch (_) {}
-        if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
-            window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
-            qsSetMedicalWarmupBanner('preparing');
+        if (statusData && statusData.warmup_job_id) {
+            window.__QS_MEDICAL_WARMUP_JOB_ID = statusData.warmup_job_id;
         }
-        qsStartMedicalWarmupPoll(
-            user.id,
-            window.__QS_MEDICAL_WARMUP_JOB_ID,
-            { intervalMs: window.__QS_MEDICAL_WARMUP_STATE === 'ready' ? 60000 : 15000 }
-        );
+        window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
+        qsSetMedicalWarmupBanner('preparing');
+        qsStartMedicalWarmupPoll(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID, { intervalMs: 15000 });
+        qsLogMedicalSessionWarmup('poll only — warmup in flight', {
+            status: statusData && statusData.status,
+            warmupJobId: statusData && statusData.warmup_job_id,
+        });
         return;
+    }
+
+    if (locallySubmitted) {
+        qsClearMedicalSessionWarmupSubmitted();
+        qsLogMedicalSessionWarmup('re-warm — local marker without server in-flight', {
+            status: statusData && statusData.status,
+            capacity: statusData && statusData.endpoint_desired_capacity,
+        });
     }
 
     window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
     qsSetMedicalWarmupBanner('preparing');
-    qsMarkMedicalSessionWarmupSubmitted(user.id, window.__QS_MEDICAL_WARMUP_JOB_ID || null, Date.now());
     qsLogMedicalSessionWarmup('POST /api/medical_session_warmup', { userId: user.id });
     try {
         const stPre = statusData
             ? String(statusData.warmup_status || statusData.status || '').toLowerCase()
             : '';
+        const serverNeedsWarmup = qsMedicalServerNeedsSessionWarmup(statusData);
         const forceWarmup = serverNeedsWarmup && (
             stPre === 'off' || stPre === 'scaled_out' || !!(statusData && statusData.endpoint_scaled_down)
         );
@@ -1225,18 +1209,6 @@ window.qsMaybeMedicalSessionWarmup = function qsMaybeMedicalSessionWarmup() {
     }
     if (window.__QS_MEDICAL_SESSION_WARMUP_PROMISE) {
         return window.__QS_MEDICAL_SESSION_WARMUP_PROMISE;
-    }
-    if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') {
-        const uid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
-        if (uid) {
-            return qsPollMedicalWarmupStatus(uid, window.__QS_MEDICAL_WARMUP_JOB_ID).then((data) => {
-                if (data && typeof qsApplyMedicalWarmupStatusFromServer === 'function') {
-                    qsApplyMedicalWarmupStatusFromServer(data, { playChime: false });
-                }
-            });
-        }
-        qsSetMedicalWarmupBanner('ready');
-        return Promise.resolve();
     }
     window.__QS_MEDICAL_SESSION_WARMUP_PROMISE = qsMaybeMedicalSessionWarmupOnce().finally(() => {
         window.__QS_MEDICAL_SESSION_WARMUP_PROMISE = null;
@@ -2420,6 +2392,8 @@ const QS_AUDIO_PROFILE_DEFAULTS = {
 
 /** Align with server RUNPOD_DEFER_WARMUP_FILE_BYTES — avoid loading whole File in the browser. */
 const QS_LARGE_UPLOAD_BYTES = 200 * 1024 * 1024;
+/** S3 multipart minimum part size (all parts except the last). Must match siteapp.py. */
+const QS_S3_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
 /** Music-mode confirm popup only for short clips (long/large files skip — probe + modal are slow). */
 const QS_UPLOAD_MUSIC_CONFIRM_MAX_SEC = 300;
 
@@ -3320,6 +3294,26 @@ async function qsS3MultipartUploadFile(opts) {
     } = opts;
 
     const fileSize = currentFile.size;
+    const rawPartBytes = Number(partSizeBytes);
+    const effectivePartBytes = (
+        Number.isFinite(rawPartBytes) && rawPartBytes >= QS_S3_MULTIPART_MIN_PART_BYTES
+    ) ? rawPartBytes : QS_S3_MULTIPART_MIN_PART_BYTES;
+    const computedPartCount = Math.max(1, Math.ceil(fileSize / effectivePartBytes));
+    const rawPartCount = Number(partCount);
+    let effectivePartCount = (
+        Number.isFinite(rawPartCount) && rawPartCount >= 1
+    ) ? rawPartCount : computedPartCount;
+    if (Math.abs(effectivePartCount - computedPartCount) > 1) {
+        effectivePartCount = computedPartCount;
+    }
+    qsUploadTraceErr('s3_multipart_plan', {
+        fileSize,
+        partSizeBytes: effectivePartBytes,
+        partCount: effectivePartCount,
+        serverPartSizeBytes: partSizeBytes,
+        serverPartCount: partCount,
+    });
+
     let uploadedSoFar = 0;
 
     const updateProgress = () => {
@@ -3335,13 +3329,13 @@ async function qsS3MultipartUploadFile(opts) {
 
     const partMeta = [];
     const BATCH = 24;
-    let PARALLEL = 4;
-    if (fileSize >= QS_LARGE_UPLOAD_BYTES) PARALLEL = 2;
-    else if (fileSize >= 100 * 1024 * 1024) PARALLEL = 3;
+    let PARALLEL = 6;
+    if (fileSize >= QS_LARGE_UPLOAD_BYTES) PARALLEL = 4;
+    else if (fileSize >= 100 * 1024 * 1024) PARALLEL = 5;
 
-    for (let startPn = 1; startPn <= partCount; startPn += BATCH) {
+    for (let startPn = 1; startPn <= effectivePartCount; startPn += BATCH) {
         const batch = [];
-        for (let p = startPn; p < startPn + BATCH && p <= partCount; p++) batch.push(p);
+        for (let p = startPn; p < startPn + BATCH && p <= effectivePartCount; p++) batch.push(p);
 
         const urlRes = await fetch('/api/sign-s3-multipart-part-urls', {
             method: 'POST',
@@ -3365,9 +3359,20 @@ async function qsS3MultipartUploadFile(opts) {
         });
 
         const uploadOne = async (pn) => {
-            const start = (pn - 1) * partSizeBytes;
-            const end = Math.min(fileSize, pn * partSizeBytes);
+            const start = (pn - 1) * effectivePartBytes;
+            const end = Math.min(fileSize, pn * effectivePartBytes);
             const blob = currentFile.slice(start, end);
+            if (pn === 1 || pn === effectivePartCount) {
+                qsUploadTraceErr('s3_multipart_part_bytes', {
+                    partNumber: pn,
+                    blobBytes: blob.size,
+                    rangeStart: start,
+                    rangeEnd: end,
+                });
+            }
+            if (blob.size <= 0 && fileSize > 0) {
+                throw new Error('Part ' + pn + ' is empty (partSizeBytes=' + effectivePartBytes + ')');
+            }
             const url = urlByPart[pn];
             if (!url) throw new Error('Missing presigned URL for part ' + pn);
             const putRes = await fetch(url, { method: 'PUT', body: blob });
@@ -10465,9 +10470,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (wu && wu.id) warmUserId = wu.id;
         } catch (_) {}
         if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
-            qsShowMedicalFirstWakeupWaitNotice(window.__QS_MEDICAL_LAST_RECORDING_MS || 0);
-            qsShowMedicalWarmupProgressDuringRecording();
-            await qsAwaitMedicalWarmupReady(warmUserId);
+            if (typeof window.qsMaybeMedicalSessionWarmup === 'function') {
+                await window.qsMaybeMedicalSessionWarmup();
+            }
+            if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready') {
+                qsShowMedicalFirstWakeupWaitNotice(window.__QS_MEDICAL_LAST_RECORDING_MS || 0);
+                qsShowMedicalWarmupProgressDuringRecording();
+                await qsAwaitMedicalWarmupReady(warmUserId);
+            }
         }
         qsStartUnifiedProgressPhase('transcribe');
         startProcessingStateUI();
@@ -10907,11 +10917,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         try {
             if (isMedicalModeEnabled() && typeof window.qsMaybeMedicalSessionWarmup === 'function') {
-                try {
-                    void window.qsMaybeMedicalSessionWarmup();
-                } catch (warmErr) {
-                    console.warn('[medical] session warmup on mic failed', warmErr);
-                }
+                await window.qsMaybeMedicalSessionWarmup();
             }
             await startMedicalRecording();
         } catch (e) {
