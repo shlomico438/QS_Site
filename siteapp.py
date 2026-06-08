@@ -7882,10 +7882,14 @@ def sign_s3():
         })
 
 
+S3_MULTIPART_DEFAULT_PART_BYTES = 5 * 1024 * 1024  # 5 MiB — S3 minimum for all parts except the last
+S3_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024
+
+
 def _multipart_part_count(file_size, part_bytes):
     """Plan S3 multipart parts (fixed part size except last). Last part may be < 5 MiB; all prior parts are part_bytes."""
     fs = max(0, int(file_size or 0))
-    pb = max(5 * 1024 * 1024, int(part_bytes))  # S3 minimum part size (except last)
+    pb = max(S3_MULTIPART_MIN_PART_BYTES, int(part_bytes))
     if fs == 0:
         return 1, pb
     if fs <= pb:
@@ -7938,8 +7942,14 @@ def sign_s3_multipart_init():
                 **_credit_fields_for_api(credit_check),
             }), int(credit_check.get('http_status') or 402)
 
-    part_bytes_env = int(os.environ.get('S3_MULTIPART_PART_BYTES', str(8 * 1024 * 1024)))
+    part_bytes_env = int(os.environ.get('S3_MULTIPART_PART_BYTES', str(S3_MULTIPART_DEFAULT_PART_BYTES)))
     part_count, part_bytes = _multipart_part_count(file_size, part_bytes_env)
+    if part_bytes_env < S3_MULTIPART_MIN_PART_BYTES:
+        logging.info(
+            "S3_MULTIPART_PART_BYTES=%s below S3 minimum; using %s bytes per part",
+            part_bytes_env,
+            part_bytes,
+        )
 
     if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
         job_id = f"job_sim_{int(time.time())}"
