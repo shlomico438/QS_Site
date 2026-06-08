@@ -3026,6 +3026,15 @@ function qsApplyTriggerCreditFields(triggerData) {
     }
 }
 
+async function qsSupabaseAccessToken() {
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        return session && session.access_token ? session.access_token : '';
+    } catch (_) {
+        return '';
+    }
+}
+
 /** Block upload when signed-in user lacks minutes for file length (check before S3 upload). */
 async function qsEnsureCreditsForUpload(durationSec) {
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
@@ -3052,16 +3061,42 @@ async function qsEnsureCreditsForUpload(durationSec) {
     }
 
     try {
+        const token = await qsSupabaseAccessToken();
+        if (!token) {
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            if (typeof showStatus === 'function') {
+                showStatus(
+                    T('sign_in_to_save') || 'Sign in to save your transcription history.',
+                    true,
+                    { duration: 10000, toastPosition: 'above', toastAnchorId: 'main-btn' }
+                );
+            }
+            return false;
+        }
         if (typeof qsRefreshUserCredits === 'function') {
             await qsRefreshUserCredits();
         }
         const res = await fetch('/api/user/credits/check-upload', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+            },
             body: JSON.stringify({ mediaDurationSec: d, isMedical: false }),
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.status !== 'error') return true;
+        if (res.status === 401) {
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            if (typeof showStatus === 'function') {
+                showStatus(
+                    T('sign_in_to_save') || 'Please sign in again to continue.',
+                    true,
+                    { duration: 10000, toastPosition: 'above', toastAnchorId: 'main-btn' }
+                );
+            }
+            return false;
+        }
         const msg = qsCreditsTriggerErrorMessage(data) || data.message
             || (typeof window.t === 'function' ? window.t('insufficient_credits_msg') : 'Not enough minutes for this file.');
         if (typeof showStatus === 'function') {
