@@ -20,14 +20,13 @@ Ensure these are set in Koyeb:
 - `SIMULATION_MODE` = `0` or `false` (production)
 - `PORT` is set by Koyeb automatically
 - `S3_BUCKET`, `AWS_*`, `SUPABASE_*`, `RUNPOD_*` as needed
-- Optional faster uploads / media delivery (standard bucket only — not medical HIPAA bucket):
+- Optional CloudFront for **media playback** (GET only — uploads always use direct S3 presigned URLs):
   ```env
   S3_CDN_URL=https://d1cqu238yrcgr7.cloudfront.net
-  S3_CDN_UPLOAD=true
   S3_CDN_MEDIA_GET=true
   ```
-  CloudFront must use the **same S3 bucket** as `S3_BUCKET` as origin, with **PUT/POST** allowed on the behavior, query strings forwarded, and OAC/origin access configured. Medical uploads still go direct to S3.
-  Fallback without CDN upload: `S3_UPLOAD_ACCELERATE=true` (enable **S3 Transfer Acceleration** on the bucket in AWS).
+  CloudFront origin must be the same bucket as `S3_BUCKET` with OAC configured. Do **not** set `S3_CDN_UPLOAD` — multipart presigned PUTs cannot go through CloudFront.
+  Optional faster uploads: `S3_UPLOAD_ACCELERATE=true` (enable **S3 Transfer Acceleration** on the bucket in AWS).
 
 ### 4. Buildpack / runtime
 - Python buildpack should install from `requirements.txt`

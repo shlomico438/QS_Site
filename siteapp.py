@@ -61,20 +61,8 @@ def _standard_s3_bucket_name():
     return (os.environ.get('S3_BUCKET') or '').strip()
 
 
-def _s3_cdn_upload_enabled_for_bucket(bucket):
-    """CloudFront upload presigns — standard media bucket only (not HIPAA medical bucket)."""
-    if not _s3_cdn_base_url():
-        return False
-    if (str(bucket or '').strip() or '') != _standard_s3_bucket_name():
-        return False
-    v = (os.environ.get('S3_CDN_UPLOAD') or 'true').strip().lower()
-    return v not in ('0', 'false', 'no', 'off')
-
-
 def _s3_upload_accelerate_enabled_for_bucket(bucket):
-    """S3 Transfer Acceleration fallback when CDN upload is off (enable on bucket in AWS)."""
-    if _s3_cdn_upload_enabled_for_bucket(bucket):
-        return False
+    """S3 Transfer Acceleration for upload presigns (enable on bucket in AWS)."""
     if (str(bucket or '').strip() or '') != _standard_s3_bucket_name():
         return False
     v = (os.environ.get('S3_UPLOAD_ACCELERATE') or '').strip().lower()
@@ -82,21 +70,16 @@ def _s3_upload_accelerate_enabled_for_bucket(bucket):
 
 
 def _s3_boto_client(for_upload=False, bucket=None):
-    """S3 client; upload presigns may use CloudFront endpoint or Transfer Acceleration."""
+    """S3 client. Upload presigns must use S3 (or Transfer Acceleration) — not CloudFront."""
     region = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
-    endpoint_url = None
     config_kw = {'signature_version': 's3v4'}
-    if for_upload and bucket:
-        if _s3_cdn_upload_enabled_for_bucket(bucket):
-            endpoint_url = _s3_cdn_base_url()
-        elif _s3_upload_accelerate_enabled_for_bucket(bucket):
-            config_kw['s3'] = {'use_accelerate_endpoint': True}
+    if for_upload and bucket and _s3_upload_accelerate_enabled_for_bucket(bucket):
+        config_kw['s3'] = {'use_accelerate_endpoint': True}
     return boto3.client(
         's3',
         aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
         region_name=region,
-        endpoint_url=endpoint_url,
         config=Config(**config_kw),
     )
 
@@ -7678,9 +7661,7 @@ def sign_s3():
             params['SSEKMSKeyId'] = kms_arn
 
         s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
-        if _s3_cdn_upload_enabled_for_bucket(bucket):
-            logging.info("sign_s3 upload presign via CDN %s", _s3_cdn_base_url())
-        elif _s3_upload_accelerate_enabled_for_bucket(bucket):
+        if _s3_upload_accelerate_enabled_for_bucket(bucket):
             logging.info("sign_s3 upload presign via S3 Transfer Acceleration")
 
         presigned_url = s3_client.generate_presigned_url(
@@ -7940,9 +7921,7 @@ def sign_s3_multipart_part_urls():
 
     bucket = prof['bucket']
     s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
-    if _s3_cdn_upload_enabled_for_bucket(bucket):
-        logging.info("multipart part presign via CDN %s job_key_suffix=%s", _s3_cdn_base_url(), s3_key[-48:])
-    elif _s3_upload_accelerate_enabled_for_bucket(bucket):
+    if _s3_upload_accelerate_enabled_for_bucket(bucket):
         logging.info("multipart part presign via S3 Transfer Acceleration key_suffix=%s", s3_key[-48:])
 
     parts_out = []
@@ -7965,8 +7944,8 @@ def sign_s3_multipart_part_urls():
                 ExpiresIn=3600,
                 HttpMethod='PUT',
             )
-        except ClientError as e:
-            logging.exception("presign upload_part failed")
+        except Exception as e:
+            logging.exception("presign upload_part failed part=%s key_suffix=%s", pni, s3_key[-48:])
             return jsonify({"status": "error", "message": str(e)}), 500
         parts_out.append({'partNumber': pni, 'url': url})
 
