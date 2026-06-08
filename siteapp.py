@@ -1629,7 +1629,28 @@ def _worker_upload_status_response(job_id):
     if not upload_done:
         file_timings = _get_trigger_timings(job_id, db_timeout=_worker_handoff_db_timeout_sec())
         upload_done = bool(file_timings.get("upload_complete"))
+    pinfo = dict(pending_job_info.get(job_id) or {})
+    input_key = str(pinfo.get('input_s3_key') or '')
+    is_medical_job = bool(pinfo.get('is_medical')) or ('/raw-audio/' in input_key)
     handoff = _get_worker_handoff(job_id)
+
+    # SageMaker medical: no RunPod handoff — once upload is done, status must be "complete" immediately.
+    if is_medical_job and upload_done:
+        out = {
+            "job_id": job_id,
+            "upload_complete": True,
+            "status": "complete",
+            "worker_ready": True,
+            "options_finalized": True,
+        }
+        sk = handoff.get('transcription_s3_key') or handoff.get('input_s3_key') or input_key
+        if sk:
+            out["s3Key"] = sk
+        tx_opts = handoff.get('transcription_options') or pinfo.get('transcription_options')
+        if isinstance(tx_opts, dict) and tx_opts:
+            out["transcription_options"] = tx_opts
+        return out
+
     out = {
         "job_id": job_id,
         "upload_complete": bool(upload_done),
@@ -4972,9 +4993,16 @@ def _update_trigger_timings(job_id, **updates):
 def _mark_upload_complete(job_id):
     """Persist upload-complete signal so worker polling survives process/instance changes."""
     try:
+        upload_complete[job_id] = True
         status, _ = _get_trigger_state(job_id)
         current_status = status or pending_trigger.get(job_id, "queued")
-        _set_trigger_state(job_id, current_status, upload_complete=True, upload_complete_at=time.time())
+        _set_trigger_state(
+            job_id,
+            current_status,
+            async_persist=False,
+            upload_complete=True,
+            upload_complete_at=time.time(),
+        )
     except Exception as e:
         logging.warning("Could not persist upload_complete for %s: %s", job_id, e)
 
@@ -7566,6 +7594,7 @@ def _submit_sagemaker_async_job(
     *,
     for_simulation=False,
     warmup_only=False,
+    upload_already_complete=False,
 ):
     """Submit async SageMaker inference (simulation or production medical)."""
     endpoint_name = _sagemaker_sim_endpoint_name() if for_simulation else _sagemaker_medical_endpoint_name()
@@ -7594,12 +7623,15 @@ def _submit_sagemaker_async_job(
             "transcription_options": transcription_options or {},
             "warmupOnly": bool(warmup_only),
         }
+        if upload_already_complete:
+            payload["uploadComplete"] = True
         if warmup_only:
             payload["start_callback_url"] = f"{base}/api/gpu_started" if base else None
         else:
             payload["callback_url"] = f"{base}/api/gpu_callback" if base else None
             payload["start_callback_url"] = f"{base}/api/gpu_started" if base else None
-            payload["upload_status_url"] = f"{base}/api/upload_status?job_id={job_id}" if base else None
+            if not upload_already_complete:
+                payload["upload_status_url"] = f"{base}/api/upload_status?job_id={job_id}" if base else None
         payload_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
 
         s3_client = boto3.client(
@@ -8212,16 +8244,9 @@ def sign_s3_multipart_abort():
 
 
 def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, language='he', bucket=None, transcription_options=None):
-    """Queue SageMaker async at sign-s3 (during recording) so endpoint scales before upload finishes."""
+    """Reserve job metadata at sign-s3 only — do NOT invoke SageMaker until audio is uploaded."""
     if SIMULATION_MODE or not _medical_uses_sagemaker_transcription():
         return
-    if _aws_skip_warmup():
-        logging.info(
-            "Skipping sign-s3 SageMaker warmup for %s (AWS_SKIP_WARMUP defers invoke to trigger_processing)",
-            job_id,
-        )
-        return
-    public_base = _public_base_url(request)
     pending_job_info[job_id] = {
         "input_s3_key": s3_key,
         "bucket": bucket,
@@ -8231,31 +8256,11 @@ def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, langu
         "language": language,
         "transcription_options": transcription_options or {},
         "engine": "sagemaker_async",
-        "sagemaker_submitted": False,
     }
-    pending_trigger[job_id] = "queued"
-    pending_trigger_at[job_id] = time.time()
-    _set_trigger_state(job_id, "queued", queued_at=pending_trigger_at[job_id])
-
-    def _run():
-        _submit_sagemaker_async_job(
-            job_id,
-            s3_key,
-            task='transcribe',
-            language=language,
-            diarization=False,
-            is_medical=True,
-            bucket=bucket,
-            public_base=public_base,
-            transcription_options=transcription_options,
-            for_simulation=False,
-            warmup_only=True,
-        )
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.daemon = True
-    t.start()
-    logging.info("Medical SageMaker endpoint warmup queued at sign-s3 (warmup_only) job_id=%s", job_id)
+    logging.info(
+        "Medical sign-s3 reserved job_id=%s (SageMaker invoke deferred to trigger_processing after PUT)",
+        job_id,
+    )
 
 
 def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=False):
@@ -9167,6 +9172,15 @@ def trigger_processing():
             task = data.get('task', 'transcribe')
             language = data.get('language', 'he')
             upload_complete[job_id] = True
+            _mark_upload_complete(job_id)
+            _set_worker_handoff(
+                job_id,
+                options_finalized=True,
+                worker_ready=True,
+                worker_pending_reason=None,
+                transcription_options=transcription_options or {},
+                transcription_s3_key=s3_key,
+            )
             pinfo = pending_job_info.get(job_id) or {}
             pinfo.update({
                 "input_s3_key": s3_key,
@@ -9187,7 +9201,6 @@ def trigger_processing():
                 )
                 pinfo.pop('sagemaker_error', None)
             pending_job_info[job_id] = pinfo
-            # sign-s3 may have run warmup_only before audio existed — real job runs only after upload.
             already_submitted = bool(
                 pinfo.get('sagemaker_submitted') and pinfo.get('sagemaker_post_upload')
             )
@@ -9208,13 +9221,14 @@ def trigger_processing():
                         "transcription_options": transcription_options,
                         "for_simulation": False,
                         "warmup_only": False,
+                        "upload_already_complete": True,
                     },
                     daemon=True,
                 )
                 t.start()
             pending_trigger[job_id] = "triggered"
             pending_trigger_at[job_id] = time.time()
-            _persist_upload_and_trigger_async(job_id, "triggered")
+            _set_trigger_state(job_id, "triggered", async_persist=False, queued_at=pending_trigger_at[job_id])
             logging.info(
                 "trigger_processing medical sagemaker job_id=%s upload_complete=True already_submitted=%s",
                 job_id,
