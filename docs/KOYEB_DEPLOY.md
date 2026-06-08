@@ -25,7 +25,7 @@ Ensure these are set in Koyeb:
   S3_CDN_URL=https://d1cqu238yrcgr7.cloudfront.net
   S3_CDN_MEDIA_GET=true
   ```
-  CloudFront origin must be the same bucket as `S3_BUCKET` with OAC configured. Do **not** set `S3_CDN_UPLOAD` — multipart presigned PUTs cannot go through CloudFront.
+  `S3_CDN_URL` **must** include `https://` (a bare hostname is auto-fixed on the server, but set it explicitly). CloudFront origin must be the same bucket as `S3_BUCKET` with OAC configured. Until OAC works, leave `S3_CDN_MEDIA_GET` unset — playback uses presigned S3 URLs. Do **not** set `S3_CDN_UPLOAD` — multipart presigned PUTs cannot go through CloudFront.
   Optional faster uploads: `S3_UPLOAD_ACCELERATE=true` (enable **S3 Transfer Acceleration** on the bucket in AWS).
 
 ### 4. Buildpack / runtime

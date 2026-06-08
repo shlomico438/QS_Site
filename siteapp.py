@@ -54,7 +54,13 @@ MEDICAL_S3_BUCKET = os.environ.get("MEDICAL_S3_BUCKET") or "quickscribe-hippa-ba
 
 
 def _s3_cdn_base_url():
-    return (os.environ.get('S3_CDN_URL') or '').strip().rstrip('/')
+    """Normalized absolute CDN origin (https://host — required for browser media src)."""
+    raw = (os.environ.get('S3_CDN_URL') or '').strip().rstrip('/')
+    if not raw:
+        return ''
+    if not re.match(r'^https?://', raw, re.I):
+        raw = 'https://' + raw.lstrip('/')
+    return raw
 
 
 def _standard_s3_bucket_name():
@@ -85,10 +91,11 @@ def _s3_boto_client(for_upload=False, bucket=None):
 
 
 def _s3_cdn_media_get_enabled():
-    if not _s3_cdn_base_url():
+    cdn = _s3_cdn_base_url()
+    if not cdn or not cdn.lower().startswith('https://'):
         return False
-    v = (os.environ.get('S3_CDN_MEDIA_GET') or 'true').strip().lower()
-    return v not in ('0', 'false', 'no', 'off')
+    v = (os.environ.get('S3_CDN_MEDIA_GET') or 'false').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
 
 
 def _s3_key_eligible_for_cdn_get(s3_key):
@@ -2750,9 +2757,14 @@ def get_presigned_url():
             url = f"{base}/api/stream_s3_media/{tok}"
             return jsonify({"url": url, "via": "app_proxy"})
 
-        if _s3_cdn_media_get_enabled() and _s3_key_eligible_for_cdn_get(s3_key):
+        force_presigned = bool(data.get('forcePresigned') or data.get('force_presigned'))
+        if (
+            not force_presigned
+            and _s3_cdn_media_get_enabled()
+            and _s3_key_eligible_for_cdn_get(s3_key)
+        ):
             cdn_url = _cdn_url_for_s3_key(s3_key)
-            if cdn_url:
+            if cdn_url and cdn_url.lower().startswith('https://'):
                 return jsonify({"url": cdn_url, "via": "cdn"})
 
         s3_client = _s3_boto_client(for_upload=False)

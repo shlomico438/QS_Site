@@ -2896,6 +2896,15 @@ function qsRestoreUiAfterUploadConfirmCancel() {
     }
 }
 
+/** Ensure media src is absolute (CDN env without https:// must not become a site-relative path). */
+function qsNormalizeAbsoluteMediaUrl(url) {
+    const u = String(url || '').trim();
+    if (!u) return u;
+    if (/^https?:\/\//i.test(u)) return u;
+    if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/i.test(u)) return 'https://' + u.replace(/^\/+/, '');
+    return u;
+}
+
 /** Attach uploaded media from S3 (presigned URL) instead of holding a blob: URL for the whole File. */
 async function qsAttachS3MediaPreview(s3Key, userId, opts) {
     opts = opts || {};
@@ -2911,6 +2920,36 @@ async function qsAttachS3MediaPreview(s3Key, userId, opts) {
     const json = await res.json().catch(() => ({}));
     if (!json.url) return false;
 
+    let url = qsNormalizeAbsoluteMediaUrl(json.url);
+    if (json.via === 'cdn' && url) {
+        const videoProbe = document.createElement('video');
+        videoProbe.muted = true;
+        videoProbe.preload = 'metadata';
+        const cdnOk = await new Promise((resolve) => {
+            let settled = false;
+            const finish = (ok) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                try { videoProbe.removeAttribute('src'); } catch (_) {}
+                resolve(ok);
+            };
+            const timer = setTimeout(() => finish(false), 4000);
+            videoProbe.addEventListener('loadedmetadata', () => finish(true), { once: true });
+            videoProbe.addEventListener('error', () => finish(false), { once: true });
+            videoProbe.src = url;
+        });
+        if (!cdnOk) {
+            const retry = await fetch('/api/get_presigned_url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ s3Key, userId, isMedical, forcePresigned: true }),
+            });
+            const retryJson = await retry.json().catch(() => ({}));
+            if (retryJson.url) url = qsNormalizeAbsoluteMediaUrl(retryJson.url);
+        }
+    }
+
     const filename = opts.filename || decodeURIComponent(String(s3Key).split('/').pop() || 'file');
     let isAudio = opts.isAudio;
     let isVideo = opts.isVideo;
@@ -2920,7 +2959,6 @@ async function qsAttachS3MediaPreview(s3Key, userId, opts) {
         isAudio = true;
         isVideo = false;
     }
-    const url = json.url;
     const videoWrapper = document.getElementById('video-wrapper');
     const videoPlayer = document.getElementById('video-player-container');
     const playerContainer = document.getElementById('audio-player-container');
@@ -5465,6 +5503,7 @@ async function initOpenInApp(jobId) {
         if (typeof showStatus === 'function') showStatus(json.error || 'Failed to get file link', true);
         return;
     }
+    const mediaUrl = qsNormalizeAbsoluteMediaUrl(json.url);
     const filename = decodeURIComponent((job.input_s3_key || '').split('/').pop() || 'file');
     window.originalFileName = filename.replace(/\.[^.]+$/, '') || 'file';
     const forceMedicalAudio =
@@ -5500,7 +5539,7 @@ async function initOpenInApp(jobId) {
             if (isMobile) document.body.classList.add('mobile-video-session');
         } catch (_) {}
         if (src) {
-            src.src = json.url;
+            src.src = mediaUrl;
             // Use video/mp4 for .mov so Chrome/Firefox use MP4 decoder (many .mov are H.264 in QuickTime container)
             const mime = { '.mp4': 'video/mp4', '.mov': 'video/mp4', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
             const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
@@ -5545,7 +5584,7 @@ async function initOpenInApp(jobId) {
         }
         if (audioContainer) audioContainer.style.display = 'block';
         if (audioSource && mainAudio) {
-            audioSource.src = json.url;
+            audioSource.src = mediaUrl;
             audioSource.type = qsMimeForAudioElement(filename);
             mainAudio.load();
         }
