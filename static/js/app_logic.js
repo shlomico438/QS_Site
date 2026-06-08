@@ -10985,7 +10985,6 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         window._medicalRecordingToggleBusy = true;
-        if (medicalRecordBtn) medicalRecordBtn.disabled = true;
         try {
             if (isMedicalModeEnabled() && typeof window.qsMaybeMedicalSessionWarmup === 'function') {
                 await window.qsMaybeMedicalSessionWarmup();
@@ -10995,9 +10994,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (typeof showStatus === 'function') showStatus(`Microphone access failed: ${e.message || e}`, true);
         } finally {
             window._medicalRecordingToggleBusy = false;
-            if (medicalRecordBtn && (!window._medicalRecorder || window._medicalRecorder.state === 'inactive')) {
-                medicalRecordBtn.disabled = false;
-            }
         }
     }
 
