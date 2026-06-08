@@ -679,6 +679,18 @@ window.qsApplyMedicalWarmupStatusFromServer = function qsApplyMedicalWarmupStatu
             window.__QS_MEDICAL_SCALED_OUT_LOGGED = true;
             console.info('[medical] endpoint off (AWS)', { capacity: cap, status: st });
         }
+        const waitersActive = Array.isArray(window.__QS_MEDICAL_WARMUP_WAITERS)
+            && window.__QS_MEDICAL_WARMUP_WAITERS.length > 0;
+        if (
+            uid
+            && (waitersActive || window.isTriggering)
+            && !window.__QS_MEDICAL_OFF_REWARM_IN_FLIGHT
+        ) {
+            window.__QS_MEDICAL_OFF_REWARM_IN_FLIGHT = true;
+            void qsForceMedicalSessionWarmup(uid).finally(() => {
+                window.__QS_MEDICAL_OFF_REWARM_IN_FLIGHT = false;
+            });
+        }
         return;
     }
 
@@ -839,6 +851,7 @@ window.qsForceMedicalSessionWarmup = async function qsForceMedicalSessionWarmup(
     const uid = String(userId || window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
     if (!uid) return null;
     window.__QS_MEDICAL_SESSION_WARMUP_ATTEMPTED = false;
+    window.__QS_MEDICAL_WARMUP_STALE_RETRY = false;
     qsLogMedicalSessionWarmup('POST /api/medical_session_warmup (force)', { userId: uid });
     try {
         const res = await fetch('/api/medical_session_warmup', {
@@ -905,11 +918,20 @@ window.qsPollMedicalWarmupStatus = async function qsPollMedicalWarmupStatus(user
                 return { status: 'unavailable', http_status: res.status, error: data.error || data.message || '' };
             }
             window.__QS_MEDICAL_WARMUP_STATUS_FAILS = 0;
-            if (res.ok && data.stale && (st === 'starting' || st === 'preparing') && !window.__QS_MEDICAL_WARMUP_STALE_RETRY) {
+            const elapsed = Number(data.elapsed_sec || 0);
+            const awsCold = (data.endpoint_desired_capacity === 0 || data.endpoint_desired_capacity == null)
+                && Number(data.current_instance_count || 0) <= 0
+                && !data.in_service;
+            const staleWarmup = res.ok && (
+                (data.stale && (st === 'starting' || st === 'preparing'))
+                || (st === 'off' && awsCold && elapsed > QS_MEDICAL_WARMUP_STARTING_GRACE_SEC)
+            );
+            if (staleWarmup && !window.__QS_MEDICAL_WARMUP_STALE_RETRY) {
                 window.__QS_MEDICAL_WARMUP_STALE_RETRY = true;
-                qsLogMedicalSessionWarmup('stale preparing — forcing new SageMaker warmup', {
+                qsLogMedicalSessionWarmup('stale/off — forcing new SageMaker warmup', {
                     jobId: data.warmup_job_id || data.job_id || jobId,
                     elapsed_sec: data.elapsed_sec,
+                    status: st,
                 });
                 if (uid) await qsForceMedicalSessionWarmup(uid);
                 return data;

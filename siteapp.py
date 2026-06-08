@@ -822,6 +822,51 @@ def _medical_endpoint_is_ready():
     return _medical_endpoint_clinic_status() == 'ready'
 
 
+def _medical_scale_out_endpoint(desired_instances=1):
+    """Set variant DesiredInstanceCount when clinic endpoint is cold (wake from 0).
+
+    InvokeEndpointAsync alone may not raise capacity if autoscaling is not tied to backlog.
+    Requires IAM: sagemaker:UpdateEndpointWeightsAndCapacities on the Site role.
+    """
+    ep = (_sagemaker_medical_endpoint_name() or '').strip()
+    if not ep or not _medical_uses_sagemaker_transcription():
+        return False, 'not_configured'
+    if _medical_endpoint_is_ready():
+        return True, 'already_ready'
+    variant = (os.environ.get('MEDICAL_SAGEMAKER_VARIANT_NAME') or 'AllTraffic').strip() or 'AllTraffic'
+    want = max(1, int(desired_instances or 1))
+    try:
+        sm = boto3.client(
+            'sagemaker',
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
+            config=_medical_aws_client_config(),
+        )
+        sm.update_endpoint_weights_and_capacities(
+            EndpointName=ep,
+            DesiredWeightsAndCapacities=[{
+                'VariantName': variant,
+                'DesiredInstanceCount': want,
+            }],
+        )
+        now = time.time()
+        with _medical_aws_cache_lock:
+            _medical_aws_cache['desired_capacity'] = want
+            _medical_aws_cache['updated_at'] = now
+            _medical_aws_cache['source'] = 'scale_out_request'
+        logging.info(
+            "Medical endpoint scale-out endpoint=%s variant=%s desired_instances=%s",
+            ep,
+            variant,
+            want,
+        )
+        return True, 'scaled_out'
+    except Exception as e:
+        logging.warning("Medical endpoint scale-out failed endpoint=%s: %s", ep, e)
+        return False, str(e)[:240]
+
+
 def _medical_sagemaker_scalable_resource_id():
     """Application Auto Scaling resourceId for the medical endpoint variant."""
     ep = (_sagemaker_medical_endpoint_name() or '').strip()
@@ -8334,6 +8379,14 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=Fa
             )
             return True, 'skipped_recent', prev_job or None
         _medical_session_warmup_last_at = now
+
+    scaled_ok, scale_reason = _medical_scale_out_endpoint(1)
+    if not scaled_ok and scale_reason not in ('already_ready',):
+        logging.warning(
+            "medical_session_warmup user=%s scale-out before invoke failed: %s",
+            safe_user[:12],
+            scale_reason,
+        )
 
     prof = _resolve_storage_profile(safe_user, is_medical=True)
     job_id = f"warmup_{int(now)}_{uuid.uuid4().hex[:8]}"
