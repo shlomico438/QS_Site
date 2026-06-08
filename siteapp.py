@@ -52,6 +52,81 @@ TRANSLATE_SCRIPT = APP_ROOT / 'scripts' / 'translate.js'
 S3_BUCKET = os.environ.get("S3_BUCKET")
 MEDICAL_S3_BUCKET = os.environ.get("MEDICAL_S3_BUCKET") or "quickscribe-hippa-backet"
 
+
+def _s3_cdn_base_url():
+    return (os.environ.get('S3_CDN_URL') or '').strip().rstrip('/')
+
+
+def _standard_s3_bucket_name():
+    return (os.environ.get('S3_BUCKET') or '').strip()
+
+
+def _s3_cdn_upload_enabled_for_bucket(bucket):
+    """CloudFront upload presigns — standard media bucket only (not HIPAA medical bucket)."""
+    if not _s3_cdn_base_url():
+        return False
+    if (str(bucket or '').strip() or '') != _standard_s3_bucket_name():
+        return False
+    v = (os.environ.get('S3_CDN_UPLOAD') or 'true').strip().lower()
+    return v not in ('0', 'false', 'no', 'off')
+
+
+def _s3_upload_accelerate_enabled_for_bucket(bucket):
+    """S3 Transfer Acceleration fallback when CDN upload is off (enable on bucket in AWS)."""
+    if _s3_cdn_upload_enabled_for_bucket(bucket):
+        return False
+    if (str(bucket or '').strip() or '') != _standard_s3_bucket_name():
+        return False
+    v = (os.environ.get('S3_UPLOAD_ACCELERATE') or '').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
+def _s3_boto_client(for_upload=False, bucket=None):
+    """S3 client; upload presigns may use CloudFront endpoint or Transfer Acceleration."""
+    region = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+    endpoint_url = None
+    config_kw = {'signature_version': 's3v4'}
+    if for_upload and bucket:
+        if _s3_cdn_upload_enabled_for_bucket(bucket):
+            endpoint_url = _s3_cdn_base_url()
+        elif _s3_upload_accelerate_enabled_for_bucket(bucket):
+            config_kw['s3'] = {'use_accelerate_endpoint': True}
+    return boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        region_name=region,
+        endpoint_url=endpoint_url,
+        config=Config(**config_kw),
+    )
+
+
+def _s3_cdn_media_get_enabled():
+    if not _s3_cdn_base_url():
+        return False
+    v = (os.environ.get('S3_CDN_MEDIA_GET') or 'true').strip().lower()
+    return v not in ('0', 'false', 'no', 'off')
+
+
+def _s3_key_eligible_for_cdn_get(s3_key):
+    k = str(s3_key or '').strip()
+    if not k or _s3_key_needs_same_origin_stream(k):
+        return False
+    if not k.startswith('users/'):
+        return False
+    return ('/input/' in k) or ('/output/' in k)
+
+
+def _cdn_url_for_s3_key(s3_key):
+    cdn = _s3_cdn_base_url()
+    if not cdn:
+        return None
+    from urllib.parse import quote
+    key = str(s3_key or '').lstrip('/')
+    if not key:
+        return None
+    return f"{cdn}/{quote(key, safe='/')}"
+
 # Medical training practice flow (learn + preview); production jobs still use GPT_MODEL.
 _DEFAULT_DOCTOR_PROMPT_OPTIMIZER_MODEL = "gpt-5.5"
 _DEFAULT_DOCTOR_PROMPT_PREVIEW_MODEL = "gpt-5.5"
@@ -2692,12 +2767,12 @@ def get_presigned_url():
             url = f"{base}/api/stream_s3_media/{tok}"
             return jsonify({"url": url, "via": "app_proxy"})
 
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
+        if _s3_cdn_media_get_enabled() and _s3_key_eligible_for_cdn_get(s3_key):
+            cdn_url = _cdn_url_for_s3_key(s3_key)
+            if cdn_url:
+                return jsonify({"url": cdn_url, "via": "cdn"})
+
+        s3_client = _s3_boto_client(for_upload=False)
         params = {
             'Bucket': bucket,
             'Key': s3_key
@@ -7558,13 +7633,6 @@ def sign_s3():
         if not key_id or not secret:
             return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
 
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=key_id,
-            aws_secret_access_key=secret,
-            region_name=region
-        )
-
         base_name, extension = os.path.splitext(filename)
         job_id = _build_transcription_job_id(filename)
         if base_name != _ascii_safe_job_suffix(base_name):
@@ -7582,6 +7650,12 @@ def sign_s3():
         if is_medical:
             params['ServerSideEncryption'] = 'aws:kms'
             params['SSEKMSKeyId'] = kms_arn
+
+        s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
+        if _s3_cdn_upload_enabled_for_bucket(bucket):
+            logging.info("sign_s3 upload presign via CDN %s", _s3_cdn_base_url())
+        elif _s3_upload_accelerate_enabled_for_bucket(bucket):
+            logging.info("sign_s3 upload presign via S3 Transfer Acceleration")
 
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
@@ -7838,14 +7912,13 @@ def sign_s3_multipart_part_urls():
     if not key_id or not secret:
         return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
 
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=key_id,
-        aws_secret_access_key=secret,
-        region_name=region
-    )
-
     bucket = prof['bucket']
+    s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
+    if _s3_cdn_upload_enabled_for_bucket(bucket):
+        logging.info("multipart part presign via CDN %s job_key_suffix=%s", _s3_cdn_base_url(), s3_key[-48:])
+    elif _s3_upload_accelerate_enabled_for_bucket(bucket):
+        logging.info("multipart part presign via S3 Transfer Acceleration key_suffix=%s", s3_key[-48:])
+
     parts_out = []
     for pn in part_numbers:
         try:
