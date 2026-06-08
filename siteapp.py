@@ -434,6 +434,7 @@ _medical_warmup_requested_at = 0.0
 _medical_warmup_hint_s3_key = 'users/_global/medical_warmup_session_hint.json'
 _medical_warmup_hint_cache_lock = threading.Lock()
 _medical_warmup_hint_cache = {'submitted_at': 0.0, 'job_id': None, 'fetched_at': 0.0}
+_medical_aws_poll_busy = False
 
 
 def _medical_endpoint_status_cache_ttl_sec():
@@ -542,6 +543,7 @@ def _fetch_medical_sagemaker_endpoint_status():
 
 def _medical_aws_endpoint_snapshot():
     """Clinic endpoint state from AWS, bounded by short timeouts and a small cache."""
+    global _medical_aws_poll_busy
     now = time.time()
     cached = _medical_cached_endpoint_snapshot('')
     if cached:
@@ -550,59 +552,71 @@ def _medical_aws_endpoint_snapshot():
             cached['source'] = cached.get('source') or 'cache'
             return cached
 
-    cap_result = [None]
-    ep_result = [None, False, 0]
-
-    def _fetch_cap():
-        cap_result[0] = _fetch_medical_endpoint_desired_capacity()
-
-    def _fetch_ep():
-        ep_result[0], ep_result[1], ep_result[2] = _fetch_medical_sagemaker_endpoint_status()
-
-    t_cap = threading.Thread(target=_fetch_cap, daemon=True)
-    t_ep = threading.Thread(target=_fetch_ep, daemon=True)
-    t_cap.start()
-    t_ep.start()
-    timeout = _medical_endpoint_status_aws_timeout_sec()
-    t_cap.join(timeout=timeout)
-    t_ep.join(timeout=timeout)
-    cap = cap_result[0]
-    ep_status, in_service, current = ep_result[0], ep_result[1], ep_result[2]
-    now = time.time()
-    source = 'aws_poll'
-    if t_cap.is_alive() or t_ep.is_alive():
-        source = 'aws_poll_timeout'
-    elif cap is None or ep_status is None:
-        source = 'aws_poll_partial'
-
-    if cached:
-        if cap is None:
-            cap = cached.get('desired_capacity')
-        if ep_status is None:
-            ep_status = cached.get('endpoint_status')
-            in_service = bool(cached.get('in_service'))
-            current = int(cached.get('current_instance_count') or 0)
-        if source != 'aws_poll':
-            source = f"{source}_with_cache"
-
-    snap = {
-        'desired_capacity': cap,
-        'endpoint_status': ep_status,
-        'in_service': in_service,
-        'current_instance_count': current,
-        'updated_at': now,
-        'source': source,
-    }
     with _medical_aws_cache_lock:
-        if cap is not None:
-            _medical_aws_cache['desired_capacity'] = cap
-        if ep_status is not None:
-            _medical_aws_cache['endpoint_status'] = ep_status
-        _medical_aws_cache['in_service'] = in_service
-        _medical_aws_cache['current_instance_count'] = current
-        _medical_aws_cache['updated_at'] = now
-        _medical_aws_cache['source'] = source
-    return snap
+        if _medical_aws_poll_busy:
+            stale = dict(cached) if cached else _medical_cached_endpoint_snapshot('')
+            if stale:
+                stale['source'] = 'cache_while_poll'
+                return stale
+        _medical_aws_poll_busy = True
+
+    try:
+        cap_result = [None]
+        ep_result = [None, False, 0]
+
+        def _fetch_cap():
+            cap_result[0] = _fetch_medical_endpoint_desired_capacity()
+
+        def _fetch_ep():
+            ep_result[0], ep_result[1], ep_result[2] = _fetch_medical_sagemaker_endpoint_status()
+
+        t_cap = threading.Thread(target=_fetch_cap, daemon=True)
+        t_ep = threading.Thread(target=_fetch_ep, daemon=True)
+        t_cap.start()
+        t_ep.start()
+        timeout = _medical_endpoint_status_aws_timeout_sec()
+        t_cap.join(timeout=timeout)
+        t_ep.join(timeout=timeout)
+        cap = cap_result[0]
+        ep_status, in_service, current = ep_result[0], ep_result[1], ep_result[2]
+        now = time.time()
+        source = 'aws_poll'
+        if t_cap.is_alive() or t_ep.is_alive():
+            source = 'aws_poll_timeout'
+        elif cap is None or ep_status is None:
+            source = 'aws_poll_partial'
+
+        if cached:
+            if cap is None:
+                cap = cached.get('desired_capacity')
+            if ep_status is None:
+                ep_status = cached.get('endpoint_status')
+                in_service = bool(cached.get('in_service'))
+                current = int(cached.get('current_instance_count') or 0)
+            if source != 'aws_poll':
+                source = f"{source}_with_cache"
+
+        snap = {
+            'desired_capacity': cap,
+            'endpoint_status': ep_status,
+            'in_service': in_service,
+            'current_instance_count': current,
+            'updated_at': now,
+            'source': source,
+        }
+        with _medical_aws_cache_lock:
+            if cap is not None:
+                _medical_aws_cache['desired_capacity'] = cap
+            if ep_status is not None:
+                _medical_aws_cache['endpoint_status'] = ep_status
+            _medical_aws_cache['in_service'] = in_service
+            _medical_aws_cache['current_instance_count'] = current
+            _medical_aws_cache['updated_at'] = now
+            _medical_aws_cache['source'] = source
+        return snap
+    finally:
+        with _medical_aws_cache_lock:
+            _medical_aws_poll_busy = False
 
 
 def _medical_apply_sns_capacity(capacity, source_payload=None):
@@ -1532,9 +1546,16 @@ def _provisional_transcription_options_for_early_trigger():
     return _apply_audio_profile_transcription_options({}, {"profile": "speech"})
 
 
-def _read_qs_trigger_meta(job_id):
+def _worker_handoff_db_timeout_sec():
     try:
-        row = _get_job_poll_row(job_id)
+        return max(2.0, float(os.environ.get('WORKER_HANDOFF_DB_TIMEOUT_SEC', '4') or 4))
+    except (TypeError, ValueError):
+        return 4.0
+
+
+def _read_qs_trigger_meta(job_id, db_timeout=None):
+    try:
+        row = _get_job_poll_row(job_id, db_timeout=db_timeout)
         if not row:
             return {}
         md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -1548,7 +1569,9 @@ def _read_qs_trigger_meta(job_id):
 def _get_worker_handoff(job_id):
     """Merged in-memory + Supabase handoff for RunPod worker polling after upload."""
     pinfo = dict(pending_job_info.get(job_id) or {})
-    qt = _read_qs_trigger_meta(job_id)
+    qt = {}
+    if 'options_finalized' not in pinfo and 'worker_ready' not in pinfo:
+        qt = _read_qs_trigger_meta(job_id, db_timeout=_worker_handoff_db_timeout_sec())
 
     def _pick(key):
         if key in pinfo and pinfo.get(key) is not None:
@@ -1591,13 +1614,21 @@ def _set_worker_handoff(job_id, **fields):
         if key in fields and fields[key] is not None:
             persist[key] = fields[key]
     if persist:
-        _merge_job_qs_trigger(job_id, persist, update_job_status=None)
+        def _run():
+            try:
+                _merge_job_qs_trigger(job_id, persist, update_job_status=None)
+            except Exception as e:
+                logging.warning("_set_worker_handoff persist failed job_id=%s: %s", job_id, e)
+
+        threading.Thread(target=_run, daemon=True).start()
 
 
 def _worker_upload_status_response(job_id):
     """Payload for RunPod worker upload_status polling (upload done + final options + optional vocal prep)."""
-    file_timings = _get_trigger_timings(job_id)
-    upload_done = (job_id in upload_complete) or bool(file_timings.get("upload_complete"))
+    upload_done = bool(upload_complete.get(job_id))
+    if not upload_done:
+        file_timings = _get_trigger_timings(job_id, db_timeout=_worker_handoff_db_timeout_sec())
+        upload_done = bool(file_timings.get("upload_complete"))
     handoff = _get_worker_handoff(job_id)
     out = {
         "job_id": job_id,
@@ -3207,6 +3238,49 @@ def _supabase_rest_config():
     return supabase_url, service_key, _supabase_service_headers(service_key)
 
 
+_supabase_http_session = None
+_supabase_http_session_lock = threading.Lock()
+
+
+def _supabase_http_session_get():
+    global _supabase_http_session
+    with _supabase_http_session_lock:
+        if _supabase_http_session is None:
+            s = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=0)
+            s.mount('https://', adapter)
+            s.mount('http://', adapter)
+            _supabase_http_session = s
+        return _supabase_http_session
+
+
+def _supabase_http_timeout_sec():
+    try:
+        return max(2.0, float(os.environ.get('SUPABASE_HTTP_TIMEOUT_SEC', '6') or 6))
+    except (TypeError, ValueError):
+        return 6.0
+
+
+def _supabase_http_request(method, url, *, timeout=None, retries=2, **kwargs):
+    """Fail-fast Supabase REST with short timeouts so gevent workers are not blocked for 50s+."""
+    req_timeout = timeout if timeout is not None else _supabase_http_timeout_sec()
+    session = _supabase_http_session_get()
+    last_err = None
+    attempts = max(1, int(retries or 1))
+    for attempt in range(attempts):
+        try:
+            return session.request(method, url, timeout=req_timeout, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_err = e
+            if attempt + 1 < attempts:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            raise
+    if last_err:
+        raise last_err
+    raise RuntimeError("Supabase HTTP request failed")
+
+
 WELCOME_CREDIT_MINUTES = 60
 
 STRIPE_CREDIT_BUNDLES = {
@@ -3300,7 +3374,7 @@ def _user_credits_get(user_id):
     supabase_url, _service_key, headers = _supabase_rest_config()
     uid = quote(user_id, safe='')
     url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}&select=user_id,credit_minutes,welcome_granted,updated_at&limit=1"
-    r = requests.get(url, headers=headers, timeout=12)
+    r = _supabase_http_request('GET', url, headers=headers)
     if r.status_code != 200:
         raise RuntimeError(r.text or f"Supabase user_credits lookup HTTP {r.status_code}")
     rows = r.json() if r.text else []
@@ -3426,13 +3500,6 @@ def _file_duration_seconds_for_credits(bucket, s3_key, pending_info=None, client
                 stored_sec = float(stored)
         except (TypeError, ValueError):
             stored_sec = 0.0
-    probed_sec = 0.0
-    if bucket and s3_key:
-        probed_sec = _media_duration_seconds_from_s3(
-            bucket,
-            s3_key,
-            client_duration_sec=client_duration_sec,
-        )
     client_sec = 0.0
     try:
         client_val = float(client_duration_sec or 0)
@@ -3440,6 +3507,16 @@ def _file_duration_seconds_for_credits(bucket, s3_key, pending_info=None, client
             client_sec = client_val
     except (TypeError, ValueError):
         client_sec = 0.0
+    # Browser already probed duration for credits gate — skip slow S3/ffmpeg download on large files.
+    if client_sec > 0:
+        return max(stored_sec, client_sec)
+    probed_sec = 0.0
+    if bucket and s3_key:
+        probed_sec = _media_duration_seconds_from_s3(
+            bucket,
+            s3_key,
+            client_duration_sec=client_duration_sec,
+        )
     # Prefer the longest reliable duration so large files are not under-billed (e.g. 49 min file vs 10 min speech).
     return max(stored_sec, probed_sec, client_sec)
 
@@ -4697,19 +4774,19 @@ def _invalidate_job_poll_row_cache(runpod_job_id):
         _job_poll_row_cache.pop(str(runpod_job_id), None)
 
 
-def _get_job_poll_row(runpod_job_id):
+def _get_job_poll_row(runpod_job_id, db_timeout=None):
     """Cached `select=status,metadata` row for hot polling paths (_get_trigger_state / _get_trigger_timings)."""
     if not runpod_job_id:
         return None
     jid = str(runpod_job_id)
     ttl = _job_poll_row_cache_ttl_sec()
     if ttl <= 0:
-        return _get_job_row_by_runpod_job_id(jid, select="status,metadata")
+        return _get_job_row_by_runpod_job_id(jid, select="status,metadata", timeout=db_timeout)
     now = time.time()
     hit = _job_poll_row_cache.get(jid)
     if hit and (now - hit[0]) < ttl:
         return hit[1]
-    row = _get_job_row_by_runpod_job_id(jid, select="status,metadata")
+    row = _get_job_row_by_runpod_job_id(jid, select="status,metadata", timeout=db_timeout)
     if row:
         _job_poll_row_cache[jid] = (now, row)
     return row
@@ -4720,7 +4797,7 @@ def _last_callback_gpt_path():
     return os.path.join(tempfile.gettempdir(), "qs_last_callback_gpt.json")
 
 
-def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata"):
+def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata", timeout=None):
     """Fetch one jobs row by runpod_job_id. Best-effort; returns None if missing or misconfigured."""
     from urllib.parse import quote
 
@@ -4728,6 +4805,7 @@ def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata"):
     service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_key or not runpod_job_id:
         return None
+    req_timeout = timeout if timeout is not None else 6
     rj = quote(str(runpod_job_id), safe="")
     rj_quoted = quote(f'"{runpod_job_id}"', safe="")
     headers = {
@@ -4738,7 +4816,7 @@ def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata"):
     for rj_try in (rj, rj_quoted):
         url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_try}&select={select}&limit=1"
         try:
-            r = requests.get(url, headers=headers, timeout=6)
+            r = _supabase_http_request('GET', url, headers=headers, timeout=req_timeout)
             if r.status_code == 200 and r.text:
                 rows = r.json()
                 if isinstance(rows, list) and rows and isinstance(rows[0], dict):
@@ -4773,7 +4851,7 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
         headers = {**_supabase_service_headers(service_key), "Prefer": "return=representation"}
         payload = {"metadata": md, "updated_at": datetime.utcnow().isoformat() + "Z"}
         patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{row['id']}"
-        r = requests.patch(patch_url, json=payload, headers=headers, timeout=10)
+        r = _supabase_http_request('PATCH', patch_url, json=payload, headers=headers)
         if r.status_code in (200, 204):
             _invalidate_job_poll_row_cache(runpod_job_id)
         else:
@@ -4790,8 +4868,25 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
 def _resolve_trigger_status_for_poll(job_id):
     """Merge in-memory and Supabase trigger status for /api/trigger_status polling."""
     mem = pending_trigger.get(job_id)
-    persisted_status, persisted_at = _get_trigger_state(job_id)
-    timings = _get_trigger_timings(job_id)
+    at_mem = pending_trigger_at.get(job_id)
+    gpu_at = gpu_started_at.get(job_id)
+
+    if mem == "failed":
+        return "failed", at_mem
+    if mem == "preprocessing":
+        return "preprocessing", at_mem
+    if gpu_at and mem != "failed":
+        return "triggered", gpu_at
+    if mem == "triggered":
+        return "triggered", at_mem or gpu_at
+    if mem == "run_accepted":
+        return ("triggered", gpu_at) if gpu_at else ("queued", at_mem)
+    if mem == "queued":
+        return "queued", at_mem
+
+    row = _get_job_poll_row(job_id, db_timeout=_worker_handoff_db_timeout_sec())
+    persisted_status, persisted_at = _get_trigger_state(job_id, row=row)
+    timings = _get_trigger_timings(job_id, row=row)
     upload_done = (job_id in upload_complete) or bool(timings.get("upload_complete"))
     pinfo = pending_job_info.get(job_id) or {}
     if upload_done and pinfo.get("sagemaker_submitted"):
@@ -4804,14 +4899,15 @@ def _resolve_trigger_status_for_poll(job_id):
     return mem or "unknown", persisted_at
 
 
-def _get_trigger_state(job_id):
+def _get_trigger_state(job_id, row=None):
     """Return (trigger_status, at_ts) from Supabase (metadata.qs_trigger), or (None, None) if missing.
 
     Never return jobs.status enum values (e.g. processing) as trigger_status: the browser only treats
     triggered/failed as terminal for the RunPod handshake; leaking DB status caused endless polling."""
     _past_gpu_trigger = frozenset(("processing", "processed", "completed", "exported"))
     try:
-        row = _get_job_poll_row(job_id)
+        if row is None:
+            row = _get_job_poll_row(job_id)
         if not row:
             return (None, None)
         md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -4831,15 +4927,26 @@ def _get_trigger_state(job_id):
     return (None, None)
 
 
-def _set_trigger_state(job_id, status, **extra):
+def _set_trigger_state(job_id, status, async_persist=True, **extra):
     """Persist trigger pipeline to metadata.qs_trigger (cross-worker). pending_* remains in-memory cache."""
-    _merge_job_qs_trigger(job_id, dict(extra), update_job_status=status)
+    payload = dict(extra)
+    if async_persist:
+        def _run():
+            try:
+                _merge_job_qs_trigger(job_id, payload, update_job_status=status)
+            except Exception as e:
+                logging.warning("_set_trigger_state persist failed job_id=%s: %s", job_id, e)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return
+    _merge_job_qs_trigger(job_id, payload, update_job_status=status)
 
 
-def _get_trigger_timings(job_id):
+def _get_trigger_timings(job_id, db_timeout=None, row=None):
     """Read timing fields from jobs.metadata.qs_trigger (for multi-worker)."""
     try:
-        row = _get_job_poll_row(job_id)
+        if row is None:
+            row = _get_job_poll_row(job_id, db_timeout=db_timeout)
         if not row:
             return {}
         md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -4887,6 +4994,26 @@ def _persist_upload_complete_async(job_id):
         _mark_upload_complete(job_id)
     t = threading.Thread(target=_run, daemon=True)
     t.start()
+
+
+def _persist_gpu_started_async(job_id, started_at, user_id=None, trigger_completed_at=None):
+    """RunPod worker callback must return in <10s; persist timings + trigger state off-thread."""
+    def _run():
+        try:
+            _update_trigger_timings(job_id, gpu_started_at=started_at)
+            if trigger_completed_at is not None and not _is_medical_session_warmup_job(job_id):
+                wakeup_sec = started_at - float(trigger_completed_at)
+                _update_job_timings(
+                    job_id,
+                    user_id=user_id,
+                    runpod_wakeup_sec=wakeup_sec,
+                    gpu_started_at=started_at,
+                )
+            _set_trigger_state(job_id, "triggered")
+        except Exception as e:
+            logging.warning("_persist_gpu_started_async job_id=%s: %s", job_id, e)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _set_last_callback_for_gpt(job_id: str, at: float, user_id: str = None) -> None:
@@ -8778,24 +8905,23 @@ def gpu_started():
         return jsonify({"ok": True, "job_id": job_id, "warmup": True}), 200
     started_at = time.time()
     gpu_started_at[job_id] = started_at
-    _update_trigger_timings(job_id, gpu_started_at=started_at)
-    # Persist runpod_wakeup_sec and gpu_started_at to DB (survives multi-instance)
-    pending = pending_job_info.get(job_id, {})
-    user_id = pending.get("user_id") or _extract_user_id_from_s3_key((pending.get("input_s3_key") or ""))
-    trigger_completed_at = _get_trigger_timings(job_id).get("trigger_completed_at")
-    if trigger_completed_at is None:
-        db_timings = _get_job_timings_from_db(job_id, user_id)
-        trigger_completed_at = db_timings.get("trigger_completed_at")
-    if trigger_completed_at is not None and not _is_medical_session_warmup_job(job_id):
-        wakeup_sec = started_at - trigger_completed_at
-        _update_job_timings(job_id, user_id=user_id, runpod_wakeup_sec=wakeup_sec, gpu_started_at=started_at)
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
-    _set_trigger_state(job_id, "triggered")
+    pending = pending_job_info.get(job_id, {})
+    user_id = pending.get("user_id") or _extract_user_id_from_s3_key((pending.get("input_s3_key") or ""))
+    mem_timings = job_timings.get(job_id) or {}
+    trigger_completed_at = mem_timings.get("trigger_completed_at")
+    _persist_gpu_started_async(job_id, started_at, user_id=user_id, trigger_completed_at=trigger_completed_at)
     if job_id not in pending_trigger or pending_trigger.get(job_id) == "failed":
         logging.warning("gpu_started for unknown or failed job_id %s", job_id)
     if _is_medical_session_warmup_job(job_id):
         logging.debug("gpu_started warmup job=%s (UI uses AWS poll only)", job_id)
+    else:
+        logging.info(
+            "gpu_started job_id=%s mem_trigger=%s",
+            job_id,
+            pending_trigger.get(job_id),
+        )
     return jsonify({"ok": True, "job_id": job_id}), 200
 
 
@@ -8822,7 +8948,9 @@ def upload_status():
                 "Authorization": f"Bearer {service_key}",
                 "Accept": "application/json",
             }
-            r = requests.get(url, headers=headers, timeout=6)
+            r = _supabase_http_request(
+                'GET', url, headers=headers, timeout=_worker_handoff_db_timeout_sec(),
+            )
             if r.status_code != 200:
                 return False
             rows = r.json() if r.content else []
@@ -8844,15 +8972,22 @@ def upload_status():
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
-    file_timings = _get_trigger_timings(job_id)
-    is_complete = (job_id in upload_complete) or bool(file_timings.get("upload_complete"))
+    is_complete = bool(upload_complete.get(job_id))
     # Multi-instance safety: worker polling may hit a different app instance.
     # If in-memory / qs_trigger flag is missing, infer from jobs.status / metadata.
     if not is_complete and _is_upload_complete_in_db(job_id):
         upload_complete[job_id] = True
-        _mark_upload_complete(job_id)
+        _persist_upload_complete_async(job_id)
         is_complete = True
-    return jsonify(_worker_upload_status_response(job_id)), 200
+    payload = _worker_upload_status_response(job_id)
+    logging.info(
+        "upload_status job_id=%s upload_complete=%s worker_status=%s worker_ready=%s",
+        job_id,
+        is_complete,
+        payload.get("status"),
+        payload.get("worker_ready"),
+    )
+    return jsonify(payload), 200
 
 
 @app.route('/api/job_transcription_options', methods=['GET'])
@@ -8862,8 +8997,12 @@ def job_transcription_options():
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
     payload = _worker_upload_status_response(job_id)
-    if payload.get("status") != "complete":
-        return jsonify(payload), 200
+    logging.info(
+        "job_transcription_options job_id=%s status=%s worker_ready=%s",
+        job_id,
+        payload.get("status"),
+        payload.get("worker_ready"),
+    )
     return jsonify(payload), 200
 
 
