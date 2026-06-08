@@ -3421,6 +3421,41 @@ def _credit_minutes_from_duration(duration_sec):
     return max(1, int(math.ceil(duration / 60.0)))
 
 
+def _file_duration_seconds_for_credits(bucket, s3_key, pending_info=None, client_duration_sec=0.0):
+    """Billable media length from uploaded file metadata (not transcribed segment spans)."""
+    stored_sec = 0.0
+    if isinstance(pending_info, dict):
+        try:
+            stored = pending_info.get('credit_file_duration_sec')
+            if stored is not None and float(stored) > 0:
+                stored_sec = float(stored)
+        except (TypeError, ValueError):
+            stored_sec = 0.0
+    probed_sec = 0.0
+    if bucket and s3_key:
+        probed_sec = _media_duration_seconds_from_s3(
+            bucket,
+            s3_key,
+            client_duration_sec=client_duration_sec,
+        )
+    client_sec = 0.0
+    try:
+        client_val = float(client_duration_sec or 0)
+        if 0 < client_val <= 86400:
+            client_sec = client_val
+    except (TypeError, ValueError):
+        client_sec = 0.0
+    # Prefer the longest reliable duration so large files are not under-billed (e.g. 49 min file vs 10 min speech).
+    return max(stored_sec, probed_sec, client_sec)
+
+
+def _min_credit_minutes_for_upload():
+    try:
+        return max(1, int(os.environ.get('TRANSCRIBE_MIN_CREDIT_MINUTES', '1') or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _subprocess_output_text(blob):
     if not blob:
         return ''
@@ -3666,7 +3701,7 @@ def _credits_prefer_hebrew_from_request():
 
 
 def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
-    """Verify wallet balance for media length; does not deduct."""
+    """Verify wallet balance for file length; does not deduct."""
     user_id = str(user_id or '').strip()
     if not user_id or user_id == 'anonymous':
         return {"ok": True, "skipped": True}
@@ -3721,7 +3756,7 @@ def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=
 def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=False, request_data=None):
     """
     Probe uploaded file length and verify wallet balance before GPU work.
-    Does not deduct — minutes are charged in _charge_job_credits after success.
+    Does not deduct — minutes are charged in _charge_job_credits after success (same file length).
     Idempotent per job_id (skips re-check if credit_minutes_used already set on job).
     """
     if not _credits_gate_applies(is_medical):
@@ -3749,10 +3784,8 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
             pass
 
     client_duration_sec = _client_media_duration_from_request(request_data or {})
-    duration_sec = _media_duration_seconds_from_s3(
-        bucket,
-        s3_key,
-        client_duration_sec=client_duration_sec,
+    duration_sec = _file_duration_seconds_for_credits(
+        bucket, s3_key, pending_info=None, client_duration_sec=client_duration_sec,
     )
     prefer_he = _credits_prefer_hebrew_from_request()
     check = _check_credits_for_duration(user_id, duration_sec, prefer_he)
@@ -3761,7 +3794,6 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
 
     minutes = int(check.get('required_minutes') or _credit_minutes_from_duration(duration_sec))
     balance = int(check.get('credit_minutes') or 0)
-
     logging.info(
         "credit_verify_before_gpu job=%s user=%s file_duration_sec=%.1f required_minutes=%s balance=%s",
         job_id,
@@ -3789,7 +3821,7 @@ def _credit_fields_for_api(credit_result):
     if not isinstance(credit_result, dict):
         return {}
     out = {}
-    for key in ('credit_minutes', 'credit_minutes_used', 'file_duration_seconds', 'required_minutes'):
+    for key in ('credit_minutes', 'credit_minutes_used', 'file_duration_seconds', 'transcription_duration_seconds', 'required_minutes'):
         if key in credit_result and credit_result[key] is not None:
             out[key] = credit_result[key]
     return out
@@ -3838,7 +3870,7 @@ def _user_credits_deduct_minutes(user_id, minutes):
 
 
 def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=None, pending_info=None):
-    """Deduct minutes after successful transcription (file length, not GPU segment timing)."""
+    """Deduct minutes after successful transcription (uploaded file length, not segment speech spans)."""
     if not _credits_billing_enabled():
         return None
     user_id = str(user_id or '').strip()
@@ -3865,46 +3897,39 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         except (TypeError, ValueError):
             pass
 
-    duration_sec = 0.0
     bucket = None
     if isinstance(pending_info, dict):
         bucket = pending_info.get('bucket')
-        try:
-            stored_sec = pending_info.get('credit_file_duration_sec')
-            if stored_sec is not None:
-                duration_sec = float(stored_sec)
-        except (TypeError, ValueError):
-            duration_sec = 0.0
-        if duration_sec <= 0:
-            try:
-                stored_min = pending_info.get('credit_required_minutes')
-                if stored_min is not None and float(stored_min) > 0:
-                    duration_sec = float(stored_min) * 60.0
-            except (TypeError, ValueError):
-                pass
-    if duration_sec <= 0 and bucket and input_s3_key:
-        duration_sec = _media_duration_seconds_from_s3(bucket, input_s3_key)
+    duration_sec = _file_duration_seconds_for_credits(bucket, input_s3_key, pending_info=pending_info)
     minutes = _credit_minutes_from_duration(duration_sec)
     if minutes <= 0:
-        logging.info("credit_charge skip zero minutes job=%s duration_sec=%s", runpod_job_id, duration_sec)
+        logging.info(
+            "credit_charge skip zero file minutes job=%s file_duration_sec=%s",
+            runpod_job_id,
+            duration_sec,
+        )
         return None
 
     wallet = _user_credits_get(user_id)
     balance = int((wallet or {}).get('credit_minutes') or 0)
+    prefer_he = True
     if balance < minutes:
         logging.warning(
-            "credit_charge insufficient_at_success job=%s user=%s required=%s balance=%s",
+            "credit_charge insufficient_at_success job=%s user=%s required=%s balance=%s file_duration_sec=%.1f",
             runpod_job_id,
             user_id[:8],
             minutes,
             balance,
+            duration_sec,
         )
         return {
             "ok": False,
             "error": "insufficient_credits",
+            "message": _credits_insufficient_message(balance, minutes, duration_sec, prefer_he),
             "credit_minutes": balance,
             "required_minutes": minutes,
             "credit_minutes_used": 0,
+            "file_duration_seconds": duration_sec,
         }
 
     wallet = _user_credits_deduct_minutes(user_id, minutes)
@@ -3925,6 +3950,7 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
     return {
         "credit_minutes_used": minutes,
         "credit_minutes": balance,
+        "file_duration_seconds": duration_sec,
         "duration_seconds": duration_sec,
         "charged_at": "gpu_callback_success",
     }
@@ -4261,7 +4287,7 @@ def delete_job():
 
 @app.route('/api/user/credits/check-upload', methods=['POST'])
 def api_user_credits_check_upload():
-    """Verify the signed-in user has enough minutes before upload starts."""
+    """Verify the signed-in user has enough minutes for file length before upload starts."""
     try:
         user_id = _supabase_user_id_from_request()
         if not user_id:
