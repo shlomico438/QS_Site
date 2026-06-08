@@ -3704,6 +3704,7 @@ async function qsEnsureWelcomeCredits() {
 
 async function qsRefreshUserCredits(options = {}) {
     options = options || {};
+    const silent = !!options.silent;
     try {
         const { data: { session } } = await supabase.auth.getSession();
         const token = session && session.access_token ? session.access_token : '';
@@ -3712,7 +3713,7 @@ async function qsRefreshUserCredits(options = {}) {
             qsSyncUserCreditsUi();
             return null;
         }
-        if (options.ensureWelcome) {
+        if (options.ensureWelcome && !silent) {
             const ensured = await qsEnsureWelcomeCredits();
             if (ensured) return ensured;
         }
@@ -3721,7 +3722,7 @@ async function qsRefreshUserCredits(options = {}) {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-            console.warn('qsRefreshUserCredits:', data.error || res.status);
+            if (!silent) console.warn('qsRefreshUserCredits:', data.error || res.status);
             return null;
         }
         const minutes = Number(data.credit_minutes);
@@ -3729,10 +3730,12 @@ async function qsRefreshUserCredits(options = {}) {
             try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
         }
         qsSyncUserCreditsUi();
-        qsApplyDefaultPlanFromCredits();
+        if (!silent) {
+            qsApplyDefaultPlanFromCredits();
+        }
         return data;
     } catch (err) {
-        console.warn('qsRefreshUserCredits failed:', err);
+        if (!silent) console.warn('qsRefreshUserCredits failed:', err);
         return null;
     }
 }
@@ -10470,12 +10473,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!triggerRes.ok) {
             throw new Error(triggerData.message || triggerData.error || `Server error (${triggerRes.status})`);
         }
+        if (triggerData.sagemaker_already_submitted) {
+            console.warn('[medical] trigger reported sagemaker_already_submitted — if transcription stalls, redeploy server fix');
+        }
         if (typeof window.qsSetActiveJob === 'function') {
             window.qsSetActiveJob(session.jobId);
         } else {
-            if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(session.jobId);
-            else localStorage.setItem('activeJobId', session.jobId);
+            localStorage.setItem('activeJobId', session.jobId);
         }
+        try {
+            if (typeof socket !== 'undefined') socket.emit('join', { room: session.jobId });
+        } catch (_) {}
         if (typeof startFakeProgress === 'function') startFakeProgress();
         if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(session.jobId);
         window._medicalWarmupSession = null;
@@ -11436,6 +11444,46 @@ document.addEventListener('DOMContentLoaded', () => {
     // Set initial state
     syncSpeakerControls();
     setDiarizationBusyState(!!window.isTriggering);
+
+    /** Late check_status/socket with segments after an empty first completion — render only, no second GPT pass. */
+    async function qsHandleJobUpdateLateSegmentsOnly(rawResult, incomingSegs, jobId) {
+        const output = rawResult.result || rawResult.output || rawResult;
+        let segments = incomingSegs.length ? incomingSegs.slice() : [];
+        const flatWordSegments = (output && output.word_segments) || rawResult.word_segments || (rawResult.result && rawResult.result.word_segments);
+        const wordModel = _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
+        if (wordModel) {
+            window.currentWords = wordModel.words;
+            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, wordModel.captions, 54);
+            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+        } else {
+            window.currentWords = null;
+            window.currentCaptions = null;
+            segments = splitLongSegments(segments, 40);
+            window.currentSegments = segments;
+        }
+        window._qsShowEmptyTranscriptNotice = !(window.currentSegments && window.currentSegments.length);
+        const transcriptWindow = document.getElementById('transcript-window');
+        if (transcriptWindow && window.currentSegments && window.currentSegments.length) {
+            try {
+                if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
+                    renderWordCaptionEditor();
+                } else if (typeof window.render === 'function') {
+                    window.render();
+                }
+            } catch (e) {
+                console.warn('[qs] late segments render failed', e);
+            }
+        }
+        const mainBtn = document.getElementById('main-btn');
+        if (mainBtn) {
+            mainBtn.disabled = false;
+            if (typeof setMainButtonAction === 'function') setMainButtonAction('new_session');
+        }
+        setTranscriptActionButtonsVisible(true);
+        qsEnsureTranscriptToolbarVisible('handleJobUpdate_late_segments', { force: true });
+        console.info('[qs] handleJobUpdate late segments merged (skipped GPT re-run)', { jobId, segments: (window.currentSegments || []).length });
+    }
+
     // --- 2. THE HANDLER (Hides overlay and turns switch Blue) ---
     window.handleJobUpdate = async function(rawResult) {
         const jobId = rawResult.jobId || (rawResult.output && rawResult.output.jobId) || (rawResult.result && rawResult.result.jobId);
@@ -11446,7 +11494,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (haveUi) qsEnsureTranscriptToolbarVisible('handleJobUpdate_duplicate_socket', { force: true });
                 return;
             }
-            console.info('[qs] handleJobUpdate re-entry (transcript now available)', { jobId, incoming: incomingSegs.length });
+            await qsHandleJobUpdateLateSegmentsOnly(rawResult, incomingSegs, jobId);
+            return;
         }
         if (jobId && window._handleJobUpdateInFlight === jobId) {
             const persisted = !!(rawResult && rawResult.transcript_persisted);
@@ -11691,12 +11740,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // First, treat these as raw segments (or derived captions).
 
-        const GPT_PHASE_BASE_PCT = 70;
         let translationMeta = null;
         let userLang = 'he';
         try {
             userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
         } catch (_) {}
+
+        // Post-GPU GPT polish runs under the hood — no spinner / main-button % during polish.
+        if (!medicalDeferToolbarUntilGptDone) {
+            stopProcessingStateUI('handle_job_update_post_gpu_gpt');
+        }
 
         // Medical: one GPT call (clean transcript + clinical summary). Skip per-segment translate_segments.
         if (!medicalDeferToolbarUntilGptDone) {
@@ -11705,11 +11758,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let changedCount = 0;
             try {
                 const T = typeof window.t === 'function' ? window.t : (k) => k;
-                const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
-                if (mainBtn) {
-                    mainBtn.disabled = true;
-                    mainBtn.innerText = processingLabel + ' ' + GPT_PHASE_BASE_PCT + '%';
-                }
+                if (mainBtn) mainBtn.disabled = true;
                 const phaseElGpt = document.getElementById('processing-state-phase');
                 if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
                     window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
@@ -11727,10 +11776,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 var completedCount = 0;
                 function onChunkDone() {
                     completedCount++;
-                    var pct = chunks.length > 1
-                        ? GPT_PHASE_BASE_PCT + Math.round(30 * completedCount / chunks.length)
-                        : GPT_PHASE_BASE_PCT;
-                    if (mainBtn) mainBtn.innerText = processingLabel + ' ' + Math.min(100, pct) + '%';
                 }
                 const chunkPromises = chunks.map(function (chunk, c) {
                     return fetch('/api/translate_segments', {
@@ -11793,14 +11838,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
             }
         } else {
-            try {
-                const T = typeof window.t === 'function' ? window.t : (k) => k;
-                const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
-                if (mainBtn) {
-                    mainBtn.disabled = true;
-                    mainBtn.innerText = processingLabel + ' ' + GPT_PHASE_BASE_PCT + '%';
-                }
-            } catch (_) {}
+            if (mainBtn) mainBtn.disabled = true;
             console.info('[medical] skipping translate_segments; single format_transcript_summary (clean + summary)');
         }
 
@@ -11876,13 +11914,6 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         if (medicalDeferToolbarUntilGptDone) {
-            if (!qsProcessingPipelineUsesBars()) {
-                try {
-                    const T = typeof window.t === 'function' ? window.t : (k) => k;
-                    const processingLabel = (T('processing') || 'Processing...').replace(/\.\.\.?$/, '');
-                    if (mainBtn) mainBtn.innerText = processingLabel + ' — מייצר סיכום רפואי…';
-                } catch (_) {}
-            }
             await runPostTranscriptionFormatting();
             if (qsProcessingPipelineUsesBars()) qsCompleteSummaryPipelineProgress();
         } else {
@@ -11951,11 +11982,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Large word/caption + renderWordCaptionEditor blocks the main thread for seconds; without a yield the
         // UI looks frozen between translate finishing and format/save network chatter.
-        const tUi = typeof window.t === 'function' ? window.t : (k) => k;
-        const plUi = (tUi('processing') || 'Processing...').replace(/\.\.\.?$/, '');
-        if (mainBtn) {
-            mainBtn.innerText = plUi + ' — ' + (tUi('building_transcript_preview') || 'building preview') + '…';
-        }
+        if (mainBtn) mainBtn.disabled = true;
         await new Promise((resolve) => {
             requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
         });
@@ -12047,7 +12074,9 @@ document.addEventListener('DOMContentLoaded', () => {
             try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
-        stopProcessingStateUI('handle_job_update_success_pipeline_done');
+        if (medicalDeferToolbarUntilGptDone) {
+            stopProcessingStateUI('handle_job_update_success_pipeline_done');
+        }
         setTranscriptActionButtonsVisible(true);
         qsEnsureTranscriptToolbarVisible('handle_job_update_success', { force: true });
         qsScheduleTranscriptToolbarEnsure('handle_job_update_success_deferred', { force: true });
@@ -12079,7 +12108,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 qsSyncUserCreditsUi();
             }
             if (typeof qsRefreshUserCredits === 'function') {
-                void qsRefreshUserCredits();
+                void qsRefreshUserCredits({ silent: true });
             }
             if (Number.isFinite(used) && used > 0) {
                 console.info('[qs-credits] charged for job', { jobId, credit_minutes_used: used, credit_minutes: charged });

@@ -7665,14 +7665,19 @@ def _submit_sagemaker_async_job(
         )
         if job_id:
             pinfo = pending_job_info.get(job_id) or {}
-            pinfo['sagemaker_submitted'] = True
+            if warmup_only:
+                pinfo['sagemaker_preupload_warmup'] = True
+            else:
+                pinfo['sagemaker_submitted'] = True
+                pinfo['sagemaker_post_upload'] = True
             pinfo['engine'] = 'sagemaker_async'
             if output_uri:
                 pinfo['sagemaker_output_uri'] = output_uri
             pinfo.pop('sagemaker_error', None)
             pending_job_info[job_id] = pinfo
-            pending_trigger[job_id] = "triggered"
-            _set_trigger_state(job_id, "triggered")
+            if not warmup_only:
+                pending_trigger[job_id] = "triggered"
+                _set_trigger_state(job_id, "triggered")
         return True
     except Exception as e:
         if job_id:
@@ -8244,12 +8249,13 @@ def _start_medical_sagemaker_warmup_if_configured(job_id, s3_key, request, langu
             public_base=public_base,
             transcription_options=transcription_options,
             for_simulation=False,
+            warmup_only=True,
         )
 
     t = threading.Thread(target=_run, daemon=True)
     t.daemon = True
     t.start()
-    logging.info("Medical SageMaker warmup queued at sign-s3 for job_id=%s", job_id)
+    logging.info("Medical SageMaker endpoint warmup queued at sign-s3 (warmup_only) job_id=%s", job_id)
 
 
 def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=False):
@@ -9181,7 +9187,10 @@ def trigger_processing():
                 )
                 pinfo.pop('sagemaker_error', None)
             pending_job_info[job_id] = pinfo
-            already_submitted = bool(pinfo.get('sagemaker_submitted'))
+            # sign-s3 may have run warmup_only before audio existed — real job runs only after upload.
+            already_submitted = bool(
+                pinfo.get('sagemaker_submitted') and pinfo.get('sagemaker_post_upload')
+            )
             if not already_submitted:
                 public_base = _public_base_url(request)
                 diarization = data.get('diarization', False)
@@ -9198,6 +9207,7 @@ def trigger_processing():
                         "public_base": public_base,
                         "transcription_options": transcription_options,
                         "for_simulation": False,
+                        "warmup_only": False,
                     },
                     daemon=True,
                 )
