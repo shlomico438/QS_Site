@@ -6,9 +6,9 @@ The medical UI should match **real endpoint capacity** (Application Auto Scaling
 
 **UI state (poll only):** `GET /api/medical_endpoint_status` reads AWS live (`DescribeScalableTargets` + `DescribeEndpoint`):
 
-- `newDesiredCapacity == 0` → `status: off`
-- `newDesiredCapacity >= 1` and endpoint `InService` → `status: ready`
-- After `POST /api/medical_session_warmup` while still at 0 → `status: starting`
+- `CurrentInstanceCount == 0` and `DesiredCapacity == 0` → `status: off`
+- `DesiredCapacity >= 1` but `CurrentInstanceCount == 0` → `status: starting`
+- `CurrentInstanceCount >= 1` and endpoint `InService` → `status: ready`
 
 No shared S3 JSON file. `gpu_started` does not drive the medical banner.
 

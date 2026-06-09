@@ -6,9 +6,9 @@ Clinic-wide transcription GPU status comes **only from AWS**, not from a shared 
 
 | `status` | Meaning |
 |----------|---------|
-| `off` | Application Auto Scaling `DesiredCapacity == 0` |
-| `starting` | Capacity still 0 but `POST /api/medical_session_warmup` was sent recently (scale-up in progress) |
-| `ready` | `DesiredCapacity >= 1` and SageMaker `EndpointStatus == InService` |
+| `off` | `DesiredCapacity == 0`, `CurrentInstanceCount == 0`, no recent warmup request |
+| `starting` | Scale-up in progress: `DesiredCapacity >= 1` but `CurrentInstanceCount == 0`, or warmup POST within grace window |
+| `ready` | `CurrentInstanceCount >= 1` and SageMaker `EndpointStatus == InService` |
 
 **Green banner:** `endpoint_ready === true` (same as `status === 'ready'`).
 

@@ -788,7 +788,7 @@ def _medical_global_warmup_submitted_at():
 
 
 def _medical_endpoint_clinic_status(snapshot=None):
-    """off | starting | ready — AWS capacity + live instance count (not desired_capacity alone)."""
+    """off | starting | ready — ready only when instances are actually running."""
     snap = snapshot if snapshot is not None else _medical_aws_endpoint_snapshot()
     cap = snap.get('desired_capacity')
     ep_st = str(snap.get('endpoint_status') or '')
@@ -798,17 +798,17 @@ def _medical_endpoint_clinic_status(snapshot=None):
         current = 0
     in_service = bool(snap.get('in_service'))
 
-    # DescribeEndpoint: instances running even when autoscaling DesiredCapacity still 0
     if current > 0:
         return 'ready' if in_service else 'starting'
 
+    # Desired capacity raised but no instance yet (scale-out in progress).
     if cap is not None and cap > 0:
-        return 'ready' if in_service else 'starting'
+        return 'starting'
 
     if ep_st in ('Updating', 'Creating'):
         return 'starting'
 
-    # Scale-up just requested — brief grace while ASG desired count catches up (not the full stale window).
+    # Scale-up requested — grace while ASG desired count catches up (not the full stale window).
     submitted_at = _medical_global_warmup_submitted_at()
     if submitted_at is not None:
         elapsed = time.time() - float(submitted_at)
@@ -8467,6 +8467,7 @@ def medical_session_warmup():
         'endpoint_ready': ep.get('endpoint_ready'),
         'endpoint_warm': ep.get('endpoint_warm'),
         'endpoint_desired_capacity': ep.get('endpoint_desired_capacity'),
+        'current_instance_count': ep.get('current_instance_count'),
         'endpoint_scaled_down': ep.get('endpoint_scaled_down'),
         'endpoint': ep.get('endpoint'),
         'engine': ep.get('engine'),

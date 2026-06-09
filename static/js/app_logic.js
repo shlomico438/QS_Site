@@ -637,6 +637,11 @@ window.qsSetMedicalWarmupBanner = function qsSetMedicalWarmupBanner(state) {
 
 function qsMedicalEndpointReadyFromData(data) {
     if (!data) return false;
+    const st = String(data.warmup_status || data.status || '').toLowerCase();
+    const flaggedReady = data.endpoint_ready === true || st === 'ready';
+    if (!flaggedReady) return false;
+    const current = Number(data.current_instance_count);
+    if (Number.isFinite(current)) return current > 0;
     return data.endpoint_ready === true;
 }
 
@@ -659,7 +664,7 @@ window.qsApplyMedicalWarmupStatusFromServer = function qsApplyMedicalWarmupStatu
         st = 'starting';
     }
 
-    if (st === 'ready' || qsMedicalEndpointReadyFromData(data)) {
+    if (qsMedicalEndpointReadyFromData(data)) {
         qsMedicalWarmupOnReady(
             { userId: uid, jobId: jid, status: 'ready', endpoint_ready: true },
             { playChime: opts.playChime !== false }
@@ -1181,11 +1186,17 @@ async function qsMaybeMedicalSessionWarmupOnce() {
             qsMarkMedicalSessionWarmupSubmitted(user.id, jobId, Date.now());
             if (data.reason === 'already_ready' || qsMedicalEndpointReadyFromData(data)) {
                 qsMedicalWarmupOnReady(
-                    { userId: user.id, jobId, status: 'ready', endpoint_ready: true },
+                    {
+                        userId: user.id,
+                        jobId,
+                        status: 'ready',
+                        endpoint_ready: true,
+                        current_instance_count: data.current_instance_count,
+                    },
                     { playChime: false }
                 );
                 qsLogMedicalSessionWarmup('ready', { reason: data.reason, jobId });
-            } else if (window.__QS_MEDICAL_WARMUP_STATE !== 'ready' && (data.reason === 'started' || data.reason === 'skipped_recent')) {
+            } else if (data.reason === 'started' || data.reason === 'skipped_recent') {
                 window.__QS_MEDICAL_WARMUP_STATE = 'preparing';
                 qsSetMedicalWarmupBanner('preparing');
                 qsStartMedicalWarmupPoll(user.id, jobId);
@@ -10986,10 +10997,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         window._medicalRecordingToggleBusy = true;
         try {
-            if (isMedicalModeEnabled() && typeof window.qsMaybeMedicalSessionWarmup === 'function') {
-                await window.qsMaybeMedicalSessionWarmup();
-            }
             await startMedicalRecording();
+            if (isMedicalModeEnabled() && typeof window.qsMaybeMedicalSessionWarmup === 'function') {
+                void window.qsMaybeMedicalSessionWarmup();
+            }
         } catch (e) {
             if (typeof showStatus === 'function') showStatus(`Microphone access failed: ${e.message || e}`, true);
         } finally {
