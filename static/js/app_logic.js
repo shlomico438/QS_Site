@@ -6049,6 +6049,35 @@ function _medicalSummaryFieldBody(text, sectionKey) {
     return t;
 }
 
+/** Client safety net when server guardrail missed a short-transcript GPT hallucination. */
+function _medicalFormatLooksHallucinated(sourceText, fmt) {
+    const src = String(sourceText || '').trim();
+    if (!src || src.length > 120 || !fmt || typeof fmt !== 'object') return false;
+    const parts = [
+        fmt.clean_transcript,
+        fmt.medical_chief_complaint,
+        fmt.overview,
+        fmt.medical_examination_transcript,
+        fmt.medical_patient_recommendations,
+    ].map((p) => String(p || '').trim());
+    const maxOut = Math.max(0, ...parts.map((p) => p.length));
+    return maxOut > Math.max(src.length * 2.5, src.length + 80);
+}
+
+function _medicalMinimalFormattedDocFromTranscript(sourceText) {
+    const clean = String(sourceText || '').trim();
+    const notStated = 'לא צוין (תמלול קצר מאוד).';
+    const recTail = 'יש לוודא את התוכן מול ההקלטה והרופא האחראי.';
+    return normalizeFormattedFields({
+        clean_transcript: clean,
+        overview: clean || notStated,
+        key_points: clean ? [clean] : [],
+        medical_chief_complaint: clean || notStated,
+        medical_examination_transcript: notStated,
+        medical_patient_recommendations: recTail,
+    });
+}
+
 function normalizeFormattedFields(f) {
     if (!f || typeof f !== 'object') return null;
     const out = {
@@ -7035,15 +7064,20 @@ async function ensureFormattedViaApiForExport() {
             }
             return false;
         }
+        let safeFmt = fmt;
+        if (medFmt && _medicalFormatLooksHallucinated(fullText, fmt)) {
+            console.warn('[export] medical format guardrail: rejecting hallucinated summary for short transcript');
+            safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
+        }
         const rawFmt = {
-            clean_transcript: String(fmt.clean_transcript || '').trim(),
-            overview: String(fmt.overview || '').trim(),
-            key_points: Array.isArray(fmt.key_points)
-                ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+            clean_transcript: String(safeFmt.clean_transcript || '').trim(),
+            overview: String(safeFmt.overview || '').trim(),
+            key_points: Array.isArray(safeFmt.key_points)
+                ? safeFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                 : []
         };
         for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
-            if (fmt[k] != null) rawFmt[k] = fmt[k];
+            if (safeFmt[k] != null) rawFmt[k] = safeFmt[k];
         }
         window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
         window._qsDocPreferSegmentsAfterEdit = false;
@@ -11952,15 +11986,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId);
                 if (!ok || !fmt || typeof fmt !== 'object') return false;
+                    let safeFmt = fmt;
+                    if (_medicalFormatLooksHallucinated(fullText, fmt)) {
+                        console.warn('[medical] format guardrail: rejecting hallucinated summary for short transcript');
+                        safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
+                    }
                     const rawFmt = {
-                        clean_transcript: String(fmt.clean_transcript || '').trim(),
-                        overview: String(fmt.overview || '').trim(),
-                        key_points: Array.isArray(fmt.key_points)
-                            ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                        clean_transcript: String(safeFmt.clean_transcript || '').trim(),
+                        overview: String(safeFmt.overview || '').trim(),
+                        key_points: Array.isArray(safeFmt.key_points)
+                            ? safeFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                             : []
                     };
                     for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
-                        if (fmt[k] != null) rawFmt[k] = fmt[k];
+                        if (safeFmt[k] != null) rawFmt[k] = safeFmt[k];
                     }
                     window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
                     window._qsDocPreferSegmentsAfterEdit = false;

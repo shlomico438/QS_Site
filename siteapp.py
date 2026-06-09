@@ -173,7 +173,9 @@ _GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE = (
     "first/second person, bedside phrasing, oral rhythm, and typical spoken connectors (e.g. Hebrew אז) when they "
     "reflect real speech. Task 1 rules: light grammar, spelling, and punctuation only—same as non-clinical clean "
     "transcript. Do NOT rewrite clean_transcript into passive third person, chart/protocol prose, or formal clinical "
-    "documentation; that style is ONLY for Task 2 (chief_complaint, examination_transcript, patient_recommendations).\n\n"
+    "documentation; that style is ONLY for Task 2 (chief_complaint, examination_transcript, patient_recommendations). "
+    "CRITICAL: If the transcript is very short, a test utterance (e.g. ניסיון/בדיקה/test/counting), or lacks clinical "
+    "content, clean_transcript must stay faithful to those exact words—never invent dialogue, symptoms, or exam Q&A.\n\n"
 )
 
 _GPT_MUSIC_CLEAN_TRANSCRIPT_NOTE = (
@@ -5999,7 +6001,9 @@ def _format_unified_transcript_openai(
             "clean_transcript must read as spoken encounter dialogue; chart/protocol style applies only to the three summary fields. "
             "CRITICAL: Do NOT include any section title or label (such as 'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
             "or any English equivalent) inside the JSON string values. "
-            "Start each summary field value directly with the clinical content, without any heading prefix."
+            "Start each summary field value directly with the clinical content, without any heading prefix. "
+            "CRITICAL: Never invent symptoms, exam findings, dialogue, or recommendations that are not supported by the transcript. "
+            "For short or test utterances, keep clean_transcript faithful and use explicit not-stated phrases in summary fields."
         )
         task2 = _resolve_medical_task2_prompt(
             output_lang_label,
@@ -6048,14 +6052,18 @@ def _format_unified_transcript_openai(
     clean_transcript = _wrap_text_to_max_chars(str((parsed or {}).get("clean_transcript") or "").strip())
     if is_medical:
         summary_block = _medical_summary_from_parsed(parsed, want_hebrew)
-        return {
-            "clean_transcript": clean_transcript,
-            "overview": summary_block["overview"],
-            "key_points": summary_block["key_points"],
-            "medical_chief_complaint": summary_block["medical_chief_complaint"],
-            "medical_examination_transcript": summary_block["medical_examination_transcript"],
-            "medical_patient_recommendations": summary_block["medical_patient_recommendations"],
-        }
+        return _medical_apply_format_guardrail(
+            transcript_text,
+            {
+                "clean_transcript": clean_transcript,
+                "overview": summary_block["overview"],
+                "key_points": summary_block["key_points"],
+                "medical_chief_complaint": summary_block["medical_chief_complaint"],
+                "medical_examination_transcript": summary_block["medical_examination_transcript"],
+                "medical_patient_recommendations": summary_block["medical_patient_recommendations"],
+            },
+            target_lang=target_lang,
+        )
     overview = str((parsed or {}).get("overview") or "").strip()
     key_points = (parsed or {}).get("key_points")
     if not isinstance(key_points, list):
@@ -6471,21 +6479,72 @@ def api_transcript_format_chunks_plan():
     return jsonify({"chunks": chunks, "count": len(chunks)}), 200
 
 
+def _medical_transcript_tokens(raw_text: str):
+    return [t for t in re.split(r'[\s,;]+', str(raw_text or '').strip()) if t]
+
+
 def _should_bypass_medical_gpt_format(raw_text: str) -> bool:
-    """Guardrail for ultra-short / non-linguistic transcripts (e.g. '1 2 3')."""
+    """Guardrail for ultra-short / non-clinical / test transcripts (e.g. 'ניסיון 1, 2, 3')."""
     s = str(raw_text or '').strip()
     if not s:
         return True
-    # Very short utterances are high-risk for hallucinated clinical narratives.
+    tokens = _medical_transcript_tokens(s)
+    max_chars = max(40, int(os.environ.get('MEDICAL_GPT_BYPASS_MAX_CHARS', '100') or 100))
+    max_tokens = max(3, int(os.environ.get('MEDICAL_GPT_BYPASS_MAX_TOKENS', '8') or 8))
+    if len(s) <= max_chars and len(tokens) <= max_tokens:
+        return True
+    # Legacy tight thresholds (digits-only counting, etc.)
     if len(s) <= 12:
         return True
-    tokens = [t for t in re.split(r'\s+', s) if t]
     if len(tokens) <= 3:
         return True
-    # If there's no alphabetic language signal, do not run medical summarization.
     if not re.search(r'[A-Za-z\u0590-\u05FF]', s):
         return True
+    lower = s.lower()
+    test_markers = (
+        'ניסיון', 'בדיקה', 'מבחן', 'hello', 'testing', 'test ', 'הלו', 'counting',
+        'one two three', '1 2 3', '1, 2, 3',
+    )
+    if any(m in lower for m in test_markers) and len(s) < 160:
+        return True
     return False
+
+
+def _medical_format_output_hallucinated(raw_text: str, out: dict) -> bool:
+    """True when GPT expanded a short transcript into a long fabricated clinical narrative."""
+    raw = str(raw_text or '').strip()
+    if not raw or not isinstance(out, dict):
+        return False
+    raw_len = len(raw)
+    raw_tokens = len(_medical_transcript_tokens(raw))
+    min_chars = max(60, int(os.environ.get('MEDICAL_GPT_GUARDRAIL_MAX_INPUT_CHARS', '120') or 120))
+    if raw_len > min_chars and raw_tokens > 12:
+        return False
+    parts = [
+        str(out.get('clean_transcript') or ''),
+        str(out.get('medical_chief_complaint') or out.get('overview') or ''),
+        str(out.get('medical_examination_transcript') or ''),
+        str(out.get('medical_patient_recommendations') or ''),
+    ]
+    max_out = max((len(p.strip()) for p in parts), default=0)
+    ratio_limit = float(os.environ.get('MEDICAL_GPT_GUARDRAIL_MAX_OUTPUT_RATIO', '2.5') or 2.5)
+    abs_pad = max(60, int(os.environ.get('MEDICAL_GPT_GUARDRAIL_ABS_PAD', '80') or 80))
+    if max_out > max(int(raw_len * ratio_limit), raw_len + abs_pad):
+        return True
+    return False
+
+
+def _medical_apply_format_guardrail(raw_text: str, out: dict, target_lang: str = 'he') -> dict:
+    if not _medical_format_output_hallucinated(raw_text, out):
+        return out
+    logging.warning(
+        "medical format guardrail: GPT output too long vs short input (raw_chars=%s tokens=%s)",
+        len(str(raw_text or '').strip()),
+        len(_medical_transcript_tokens(raw_text)),
+    )
+    safe = _medical_minimal_format_payload(raw_text, target_lang=target_lang)
+    safe['format_guardrail'] = 'medical_short_transcript_hallucination_rejected'
+    return safe
 
 
 def _medical_minimal_format_payload(raw_text: str, target_lang: str = 'he') -> dict:
@@ -6497,11 +6556,12 @@ def _medical_minimal_format_payload(raw_text: str, target_lang: str = 'he') -> d
         if is_he else
         'Verify this content against the recording and the responsible clinician.'
     )
+    chief_body = clean if clean else not_stated
     return {
         "clean_transcript": clean,
-        "overview": clean,
+        "overview": chief_body,
         "key_points": [clean] if clean else [],
-        "medical_chief_complaint": not_stated,
+        "medical_chief_complaint": chief_body,
         "medical_examination_transcript": not_stated,
         "medical_patient_recommendations": rec_tail,
     }
