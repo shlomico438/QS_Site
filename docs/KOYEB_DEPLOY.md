@@ -20,6 +20,17 @@ Ensure these are set in Koyeb:
 - `SIMULATION_MODE` = `0` or `false` (production)
 - `PORT` is set by Koyeb automatically
 - `S3_BUCKET`, `AWS_*`, `SUPABASE_*`, `RUNPOD_*` as needed
+- Cardcom (Hebrew / ILS) — **sandbox on production** (recommended until go-live):
+  ```env
+  SIMULATION_MODE=false
+  CARDCOM_ENABLED=true
+  CARDCOM_SIMULATION=false
+  CARDCOM_SANDBOX=true
+  CARDCOM_TERMINAL_NUMBER=1000
+  CARDCOM_API_NAME=<sandbox api name from Cardcom>
+  PUBLIC_BASE_URL=https://www.getquickscribe.com
+  ```
+  Webhook: `https://www.getquickscribe.com/api/cardcom/webhook`. See [cardcom-payments.md](cardcom-payments.md) and `env.cardcom.example`.
 - Optional CloudFront for **media playback** (GET only — uploads always use direct S3 presigned URLs):
   ```env
   S3_CDN_URL=https://d1cqu238yrcgr7.cloudfront.net

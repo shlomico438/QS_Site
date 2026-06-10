@@ -10833,6 +10833,21 @@ def upload_full_file_legacy():
     return jsonify(payload), 410
 
 # --- WEBSOCKET EVENT HANDLERS ---
+try:
+    from aws_transcribe_stream import register_transcribe_websocket_routes
+    register_transcribe_websocket_routes(app)
+except ImportError as _transcribe_stream_import_err:
+    logging.warning(
+        "aws_transcribe_stream not loaded (pip install amazon-transcribe): %s",
+        _transcribe_stream_import_err,
+    )
+
+try:
+    from cardcom_payments import register_cardcom_routes
+    register_cardcom_routes(app)
+except ImportError as _cardcom_import_err:
+    logging.warning("cardcom_payments not loaded: %s", _cardcom_import_err)
+
 @socketio.on('connect')
 def handle_connect():
     job_id = request.args.get('jobId')

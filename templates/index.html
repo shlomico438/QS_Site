@@ -768,6 +768,10 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             } catch (_) {}
             return headers.Authorization ? headers : null;
         };
+        const creditCheckoutUsesStripe = () => {
+            const loc = String(window.currentLocale || document.documentElement.lang || 'he').toLowerCase();
+            return loc.startsWith('en');
+        };
         const startCreditCheckout = async (bundleId, sourceBtn) => {
             const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
             const headers = await getAuthedJsonHeaders();
@@ -776,14 +780,19 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 try { if (typeof window.toggleModal === 'function') window.toggleModal(true); } catch (_) {}
                 return;
             }
+            const locale = (window.currentLocale || document.documentElement.lang || 'he');
+            const useStripe = creditCheckoutUsesStripe();
+            const endpoint = useStripe
+                ? '/api/stripe/create-checkout-session'
+                : '/api/cardcom/create-payment';
             if (sourceBtn) sourceBtn.disabled = true;
             try {
-                const res = await fetch('/api/stripe/create-checkout-session', {
+                const res = await fetch(endpoint, {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({
                         bundle: bundleId || 'standard',
-                        locale: (window.currentLocale || document.documentElement.lang || 'he'),
+                        locale: locale,
                     }),
                 });
                 const data = await res.json().catch(() => ({}));
@@ -831,7 +840,43 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 }
             }
         };
+        const confirmReturnedCardcomCheckout = async () => {
+            const params = new URLSearchParams(window.location.search || '');
+            const orderId = params.get('order_id');
+            if (!orderId || params.get('cardcom_success') !== '1') return;
+            const headers = await getAuthedJsonHeaders();
+            if (!headers) return;
+            try {
+                const res = await fetch('/api/cardcom/confirm-payment', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ order_id: orderId }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
+                try {
+                    if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
+                } catch (_) {}
+                if (typeof showStatus === 'function') {
+                    const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+                    const added = Number(data.added_minutes || 0);
+                    const msg = added > 0
+                        ? (isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`)
+                        : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
+                    showStatus(msg, false, { duration: 6000 });
+                }
+                params.delete('cardcom_success');
+                params.delete('order_id');
+                const cleanQuery = params.toString();
+                history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
+            } catch (err) {
+                if (typeof showStatus === 'function') {
+                    showStatus((err && err.message) || 'Could not confirm checkout.', true, { duration: 8000 });
+                }
+            }
+        };
         void confirmReturnedStripeCheckout();
+        void confirmReturnedCardcomCheckout();
         const creditBundleIds = ['light', 'standard', 'plus'];
         const creditBundleStorageKey = 'qs_selected_credit_bundle';
         const buyCreditsBtn = document.getElementById('seo-buy-credits-btn');
