@@ -840,17 +840,36 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 }
             }
         };
+        const cardcomReturnQueryKeys = [
+            'cardcom_success', 'cardcom_cancelled', 'order_id', 'terminalnumber',
+            'lowprofilecode', 'LowProfileCode', 'ResponeCode', 'ResponseCode',
+            'Operation', 'Status', 'internalDealNumber', 'IssuerAuthCodeDescription', 'traceid',
+        ];
+        const cleanCardcomReturnQuery = (params) => {
+            cardcomReturnQueryKeys.forEach((key) => params.delete(key));
+            return params.toString();
+        };
         const confirmReturnedCardcomCheckout = async () => {
             const params = new URLSearchParams(window.location.search || '');
             const orderId = params.get('order_id');
             if (!orderId || params.get('cardcom_success') !== '1') return;
             const headers = await getAuthedJsonHeaders();
             if (!headers) return;
+            const lowProfileId = (
+                params.get('lowprofilecode')
+                || params.get('LowProfileCode')
+                || params.get('low_profile_id')
+                || ''
+            ).trim();
             try {
                 const res = await fetch('/api/cardcom/confirm-payment', {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ order_id: orderId }),
+                    body: JSON.stringify({
+                        order_id: orderId,
+                        low_profile_id: lowProfileId || undefined,
+                        lowprofilecode: lowProfileId || undefined,
+                    }),
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
@@ -865,9 +884,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                         : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
                     showStatus(msg, false, { duration: 6000 });
                 }
-                params.delete('cardcom_success');
-                params.delete('order_id');
-                const cleanQuery = params.toString();
+                const cleanQuery = cleanCardcomReturnQuery(params);
                 history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
             } catch (err) {
                 if (typeof showStatus === 'function') {

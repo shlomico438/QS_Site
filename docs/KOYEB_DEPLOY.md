@@ -26,8 +26,9 @@ Ensure these are set in Koyeb:
   CARDCOM_ENABLED=true
   CARDCOM_SIMULATION=false
   CARDCOM_SANDBOX=true
-  CARDCOM_TERMINAL_NUMBER=1000
-  CARDCOM_API_NAME=<sandbox api name from Cardcom>
+  CARDCOM_TERMINAL_NUMBER=<terminal from Cardcom API user>
+  CARDCOM_API_NAME=<api username from Cardcom>
+  CARDCOM_API_PASSWORD=<api password from Cardcom>
   PUBLIC_BASE_URL=https://www.getquickscribe.com
   ```
   Webhook: `https://www.getquickscribe.com/api/cardcom/webhook`. See [cardcom-payments.md](cardcom-payments.md) and `env.cardcom.example`.

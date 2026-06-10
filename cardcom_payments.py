@@ -121,6 +121,44 @@ def _cardcom_api_name():
     return str(os.environ.get('CARDCOM_API_NAME') or '').strip()
 
 
+def _cardcom_api_password():
+    return str(os.environ.get('CARDCOM_API_PASSWORD') or '').strip()
+
+
+def _cardcom_auth_fields() -> dict:
+    """TerminalNumber + ApiName (+ ApiPassword when configured)."""
+    fields: Dict[str, Any] = {
+        'TerminalNumber': _cardcom_terminal_number(),
+        'ApiName': _cardcom_api_name(),
+    }
+    pwd = _cardcom_api_password()
+    if pwd:
+        fields['ApiPassword'] = pwd
+    return fields
+
+
+def _cardcom_auth_error_message(exc: Exception) -> Optional[str]:
+    msg = str(exc or '').strip()
+    if not msg:
+        return None
+    needles = (
+        'שם משתמש',
+        'סיסמה',
+        'username',
+        'password',
+        'unauthorized',
+        'authentication',
+    )
+    lower = msg.lower()
+    if any(n in msg or n in lower for n in needles):
+        return (
+            'Cardcom rejected the API credentials. In Koyeb, verify CARDCOM_TERMINAL_NUMBER, '
+            'CARDCOM_API_NAME, and CARDCOM_API_PASSWORD match the API user Cardcom issued '
+            'for that terminal (merchant portal → API / interfaces).'
+        )
+    return None
+
+
 def checkout_provider_for_locale(locale: str) -> str:
     """Cardcom for Hebrew/ILS; Stripe for English/USD."""
     if not _cardcom_enabled():
@@ -351,8 +389,7 @@ def _cardcom_create_low_profile(user_id: str, bundle_id: str, locale: str, req) 
         }
 
     payload = {
-        'TerminalNumber': _cardcom_terminal_number(),
-        'ApiName': _cardcom_api_name(),
+        **_cardcom_auth_fields(),
         'Operation': 'ChargeOnly',
         'ReturnValue': order_id,
         'Amount': amount_ils,
@@ -380,10 +417,45 @@ def _cardcom_create_low_profile(user_id: str, bundle_id: str, locale: str, req) 
 
 def _cardcom_get_lp_result(low_profile_id: str) -> dict:
     return _cardcom_api_post('LowProfile/GetLpResult', {
-        'TerminalNumber': _cardcom_terminal_number(),
-        'ApiName': _cardcom_api_name(),
+        **_cardcom_auth_fields(),
         'LowProfileId': low_profile_id,
     })
+
+
+def _cardcom_low_profile_from_mapping(data: Optional[dict]) -> str:
+    if not isinstance(data, dict):
+        return ''
+    for key in (
+        'LowProfileId',
+        'LowProfileCode',
+        'lowprofilecode',
+        'low_profile_id',
+        'lowProfileCode',
+    ):
+        val = str(data.get(key) or '').strip()
+        if val:
+            return val
+    return ''
+
+
+def _cardcom_purchase_already_settled(purchase: Optional[dict]) -> bool:
+    if not purchase:
+        return False
+    if purchase.get('credited_at'):
+        return True
+    return str(purchase.get('status') or '').strip().lower() == 'paid'
+
+
+def _cardcom_already_credited_result(order_id: str, purchase: dict) -> dict:
+    import siteapp as sa
+    row = sa._user_credits_get(purchase['user_id'])
+    return {
+        'ok': True,
+        'already_credited': True,
+        'added_minutes': 0,
+        'order_id': order_id,
+        'credit_minutes': int((row or {}).get('credit_minutes') or 0),
+    }
 
 
 def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = None) -> dict:
@@ -398,14 +470,8 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
     if not purchase:
         raise ValueError('Unknown order')
 
-    if purchase.get('credited_at'):
-        row = sa._user_credits_get(purchase['user_id'])
-        return {
-            'ok': True,
-            'already_credited': True,
-            'order_id': order_id,
-            'credit_minutes': int((row or {}).get('credit_minutes') or 0),
-        }
+    if _cardcom_purchase_already_settled(purchase):
+        return _cardcom_already_credited_result(order_id, purchase)
 
     lp_id = str(low_profile_id or purchase.get('low_profile_id') or '').strip()
     user_id = str(purchase.get('user_id') or '').strip()
@@ -433,8 +499,19 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
     if not lp_id:
         raise ValueError('Missing LowProfileId')
 
-    result = _cardcom_get_lp_result(lp_id)
-    if int(result.get('ResponseCode') or -1) != 0:
+    try:
+        result = _cardcom_get_lp_result(lp_id)
+    except (RuntimeError, ValueError) as e:
+        purchase_retry = _cardcom_purchase_get(order_id)
+        if _cardcom_purchase_already_settled(purchase_retry):
+            return _cardcom_already_credited_result(order_id, purchase_retry)
+        raise ValueError(str(e)) from e
+
+    top_rc = int(result.get('ResponseCode') if result.get('ResponseCode') is not None else -1)
+    if top_rc != 0:
+        purchase_retry = _cardcom_purchase_get(order_id)
+        if _cardcom_purchase_already_settled(purchase_retry):
+            return _cardcom_already_credited_result(order_id, purchase_retry)
         _cardcom_purchase_update(order_id, {'status': 'failed'})
         raise ValueError(str(result.get('Description') or 'Cardcom payment not successful'))
 
@@ -443,9 +520,19 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         raise ValueError('ReturnValue mismatch')
 
     tranz_info = result.get('TranzactionInfo') or {}
-    if isinstance(tranz_info, dict) and int(tranz_info.get('ResponseCode') or 0) != 0:
+    nested_rc = (
+        int(tranz_info.get('ResponseCode') or 0)
+        if isinstance(tranz_info, dict) else 0
+    )
+    # Top-level ResponseCode=0 is authoritative; nested J2/J5 codes can differ in sandbox.
+    if nested_rc != 0 and top_rc != 0:
         _cardcom_purchase_update(order_id, {'status': 'failed'})
         raise ValueError(str(tranz_info.get('Description') or 'Transaction failed'))
+    if nested_rc != 0 and top_rc == 0:
+        logger.info(
+            'cardcom nested TranzactionInfo ResponseCode=%s with top-level ok order=%s',
+            nested_rc, order_id,
+        )
 
     try:
         paid_amount = float(tranz_info.get('Amount') if isinstance(tranz_info, dict) else 0)
@@ -502,6 +589,13 @@ def register_cardcom_routes(app: Flask) -> None:
             return jsonify(out), 200
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
+        except RuntimeError as e:
+            auth_msg = _cardcom_auth_error_message(e)
+            if auth_msg:
+                logger.error('api_cardcom_create_payment auth failed: %s', e)
+                return jsonify({'error': auth_msg, 'cardcom': str(e)}), 401
+            logger.exception('api_cardcom_create_payment cardcom error')
+            return jsonify({'error': str(e)}), 502
         except Exception as e:
             logger.exception('api_cardcom_create_payment failed')
             return jsonify({'error': str(e)}), 500
@@ -513,9 +607,7 @@ def register_cardcom_routes(app: Flask) -> None:
             data = request.get_json(silent=True) or {}
             if not data and request.form:
                 data = request.form.to_dict()
-            low_profile_id = str(
-                data.get('LowProfileId') or data.get('low_profile_id') or ''
-            ).strip()
+            low_profile_id = _cardcom_low_profile_from_mapping(data)
             order_id = str(data.get('ReturnValue') or data.get('return_value') or '').strip()
             if not order_id and low_profile_id:
                 purchase = _cardcom_purchase_get_by_low_profile(low_profile_id)
@@ -550,12 +642,23 @@ def register_cardcom_routes(app: Flask) -> None:
                 return jsonify({'error': 'Unknown order'}), 404
             if str(purchase.get('user_id') or '') != user_id:
                 return jsonify({'error': 'Order does not belong to this user'}), 403
-            result = _cardcom_verify_and_credit(
-                order_id,
-                str(purchase.get('low_profile_id') or '').strip() or None,
-            )
+            lp_id = _cardcom_low_profile_from_mapping(data) or str(
+                purchase.get('low_profile_id') or ''
+            ).strip()
+            if lp_id and lp_id != str(purchase.get('low_profile_id') or '').strip():
+                _cardcom_purchase_update(order_id, {'low_profile_id': lp_id})
+            if _cardcom_purchase_already_settled(purchase):
+                return jsonify(_cardcom_already_credited_result(order_id, purchase)), 200
+            result = _cardcom_verify_and_credit(order_id, lp_id or None)
             return jsonify(result), 200
         except ValueError as e:
+            purchase = _cardcom_purchase_get(
+                str((request.get_json(silent=True) or {}).get('order_id') or '').strip()
+            )
+            if purchase and _cardcom_purchase_already_settled(purchase):
+                return jsonify(_cardcom_already_credited_result(
+                    str(purchase.get('order_id') or ''), purchase
+                )), 200
             return jsonify({'error': str(e)}), 400
         except Exception as e:
             logger.exception('api_cardcom_confirm_payment failed')

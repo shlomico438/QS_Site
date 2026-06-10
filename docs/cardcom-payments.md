@@ -40,7 +40,13 @@ CARDCOM_ENABLED=true
 Deploy with **`SIMULATION_MODE=false`** (real transcription, etc.) but keep **Cardcom test environment** — users see the real Cardcom payment page; only test cards are charged.
 
 1. Apply `migrations/add_cardcom_credit_purchases.sql` in Supabase.
-2. Get **sandbox** `TerminalNumber` + `ApiName` from Cardcom (often terminal `1000` for API tests).
+2. In the **Cardcom merchant portal**, create or open an **API interface user** (ממשקים / API). Cardcom gives you a matched set:
+   - `TerminalNumber` (מסוף)
+   - `ApiName` (שם משתמש)
+   - `ApiPassword` (סיסמה)
+   
+   These three must belong to the **same** interface. Do not mix terminal `1000` from docs with your own username unless Cardcom explicitly issued that pair to you.
+
 3. Set on Koyeb:
 
 ```env
@@ -48,10 +54,19 @@ SIMULATION_MODE=false
 CARDCOM_ENABLED=true
 CARDCOM_SIMULATION=false
 CARDCOM_SANDBOX=true
-CARDCOM_TERMINAL_NUMBER=1000
-CARDCOM_API_NAME=<your sandbox api name>
+CARDCOM_TERMINAL_NUMBER=<your terminal>
+CARDCOM_API_NAME=<your api username>
+CARDCOM_API_PASSWORD=<your api password>
 PUBLIC_BASE_URL=https://www.getquickscribe.com
 ```
+
+### Troubleshooting: `שם משתמש או סיסמה שגויים`
+
+Cardcom returned **wrong username or password** — the app reached Cardcom, but credentials are wrong or mismatched. Fix env vars in Koyeb (redeploy after save). Common mistakes:
+
+- `CARDCOM_API_NAME` typo or portal login password used instead of **API interface** password
+- `CARDCOM_TERMINAL_NUMBER` does not match the terminal tied to that API user
+- `CARDCOM_API_PASSWORD` missing (add it — see [Cardcom Low Profile docs](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514))
 
 4. Register webhook in Cardcom: `https://www.getquickscribe.com/api/cardcom/webhook`
 5. Test with Cardcom test card `4580000000000000` (expiry/CVV per [Cardcom docs](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514)).
