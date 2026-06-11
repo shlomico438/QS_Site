@@ -1237,9 +1237,22 @@ html[dir="ltr"] .seo-landing-hero {
     padding-top: 14px;
     padding-bottom: 8px;
 }
+html[dir="ltr"] .seo-hero-grid {
+    max-width: min(980px, 96vw);
+}
+html[dir="ltr"] .seo-home-content h1 {
+    font-size: clamp(1.48rem, 1.05rem + 1.35vw, 1.82rem);
+    line-height: 1.14;
+    letter-spacing: -0.015em;
+}
 html[dir="ltr"] .seo-home-content .seo-hero-subtitle {
-    font-size: 0.94rem;
-    line-height: 1.45;
+    font-size: clamp(0.88rem, 0.82rem + 0.28vw, 0.96rem);
+    line-height: 1.38;
+}
+@media (max-width: 520px) {
+    html[dir="ltr"] .seo-hero-linebreak {
+        display: none;
+    }
 }
 html[dir="ltr"] #features-section.seo-landing-section {
     padding-top: 12px;

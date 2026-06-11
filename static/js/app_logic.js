@@ -4230,13 +4230,44 @@ function qsRequiresStarterPlanGate() {
     return !hidden;
 }
 
+function qsSyncNavWorkspaceCta(isSignedIn) {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const desktop = document.getElementById('nav-dashboard-cta');
+    const mobile = document.getElementById('nav-new-session-btn');
+    [desktop, mobile].forEach((el) => {
+        if (!el) return;
+        if (isSignedIn) {
+            el.style.display = '';
+            el.hidden = false;
+            el.href = '/personal';
+            el.setAttribute('data-i18n', 'nav_personal');
+            el.textContent = T('nav_personal');
+        } else {
+            el.style.display = 'none';
+            el.hidden = true;
+        }
+    });
+}
+window.qsSyncNavWorkspaceCta = qsSyncNavWorkspaceCta;
+
 function qsSyncStarterPlanUploadGate() {
-    const gated = qsRequiresStarterPlanGate()
-        && qsGetSelectedPlan() !== 'starter'
-        && !qsUserHasUploadCredits();
-    document.body.classList.toggle('qs-starter-plan-required', gated);
     const mainBtn = document.getElementById('main-btn');
     const regularRecordBtn = document.getElementById('regular-record-btn');
+    if (qsUserHasUploadCredits()) {
+        document.body.classList.remove('qs-starter-plan-required');
+        if (mainBtn && mainBtn.getAttribute('data-qs-plan-gated') === '1') {
+            mainBtn.disabled = false;
+            mainBtn.removeAttribute('data-qs-plan-gated');
+        }
+        if (regularRecordBtn) {
+            regularRecordBtn.disabled = false;
+            regularRecordBtn.setAttribute('aria-disabled', 'false');
+        }
+        return;
+    }
+    const gated = qsRequiresStarterPlanGate()
+        && qsGetSelectedPlan() !== 'starter';
+    document.body.classList.toggle('qs-starter-plan-required', gated);
     if (mainBtn) {
         if (gated) {
             mainBtn.disabled = true;
@@ -4350,7 +4381,6 @@ async function setupNavbarAuth(userOverride) {
     const nameTriggerMobile = document.getElementById('nav-user-name-trigger-mobile');
     const logoutBtn = document.getElementById('nav-logout-btn');
     const logoutBtnMobile = document.getElementById('nav-logout-btn-mobile');
-    const dashboardCta = document.getElementById('nav-dashboard-cta');
     if (!signInBtn && !signedInWrap) return;
 
     const hadSignedInNav = !!(nameTrigger && nameTrigger.textContent && nameTrigger.textContent !== 'Account');
@@ -4360,6 +4390,7 @@ async function setupNavbarAuth(userOverride) {
     if (!user && hadSignedInNav && window.__QS_PRESERVE_NAVBAR_AUTH_ON_LOCALE_SWITCH === true) {
         try { window.__QS_UX_USER_SIGNED_IN = true; } catch (_) {}
         if (logoutBtn) logoutBtn.textContent = T('nav_logout');
+        qsSyncNavWorkspaceCta(true);
         closeUserMenu();
         return;
     }
@@ -4398,18 +4429,7 @@ async function setupNavbarAuth(userOverride) {
     wireSignIn(signInBtn);
     wireSignIn(signInMobile);
 
-    if (dashboardCta) {
-        if (user) {
-            dashboardCta.href = '/personal';
-            dashboardCta.textContent = T('nav_cta_dashboard');
-            dashboardCta.removeAttribute('data-i18n');
-            dashboardCta.onclick = null;
-        } else {
-            dashboardCta.href = '/';
-            dashboardCta.setAttribute('data-i18n', 'nav_cta_transcription');
-            dashboardCta.textContent = T('nav_cta_transcription');
-        }
-    }
+    qsSyncNavWorkspaceCta(!!user);
 
     if (user) {
         const { displayName } = getAuthUserDisplayInfo(user);
@@ -4456,14 +4476,8 @@ async function setupNavbarAuth(userOverride) {
     closeUserMenu();
     if (typeof window.applyTranslations === 'function') {
         window.applyTranslations();
-        if (dashboardCta) {
-            if (user) {
-                dashboardCta.textContent = T('nav_cta_dashboard');
-                dashboardCta.removeAttribute('data-i18n');
-            } else {
-                dashboardCta.setAttribute('data-i18n', 'nav_cta_transcription');
-                dashboardCta.textContent = T('nav_cta_transcription');
-            }
+        if (user) {
+            qsSyncNavWorkspaceCta(true);
         }
         if (logoutBtn && user) logoutBtn.textContent = T('nav_logout');
         if (signInBtn && !user) signInBtn.textContent = T('nav_sign_in');
@@ -5704,13 +5718,20 @@ async function initOpenInApp(jobId) {
     if (typeof syncSpeakerControls === 'function') syncSpeakerControls();
     if (!isMedicalModeEnabled()) {
         try { clearOpenJobStandardSummaryHost(); } catch (_) {}
-        const hasWordModel =
-            Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
-            window.currentWords.length > 0 && window.currentCaptions.length > 0;
-        if (hasTranscriptForOpen && hasWordModel && typeof renderWordCaptionEditor === 'function') {
-            renderWordCaptionEditor();
-        } else if (hasTranscriptForOpen && typeof window.render === 'function') {
-            window.render();
+        try { syncStandardFormatTabs(); } catch (_) {}
+        const hasSummary = hasStandardFormattedSummary();
+        if (hasTranscriptForOpen && hasSummary) {
+            setFormatViewMode('summary');
+            renderStandardSummaryView();
+        } else if (hasTranscriptForOpen) {
+            const hasWordModel =
+                Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
+                window.currentWords.length > 0 && window.currentCaptions.length > 0;
+            if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
+                renderWordCaptionEditor();
+            } else if (typeof window.render === 'function') {
+                window.render();
+            }
         }
     } else if (typeof window.render === 'function') {
         window.render();
@@ -6094,6 +6115,9 @@ function normalizeFormattedFields(f) {
         overview: String(f.overview || '').trim(),
         key_points: Array.isArray(f.key_points)
             ? f.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+            : [],
+        action_items: Array.isArray(f.action_items)
+            ? f.action_items.map((p) => String(p || '').trim()).filter(Boolean)
             : []
     };
     if (
@@ -6117,6 +6141,7 @@ function pickFormattedFromObject(obj, depth = 0) {
         obj.clean_transcript != null ||
         obj.overview != null ||
         Array.isArray(obj.key_points) ||
+        Array.isArray(obj.action_items) ||
         obj.medical_chief_complaint != null ||
         obj.medical_examination_transcript != null ||
         obj.medical_patient_recommendations != null
@@ -6287,9 +6312,13 @@ function getMedicalActiveTabTextForCopy() {
         lines.push('סקירה:');
         lines.push(overview || 'אין סיכום רפואי זמין עדיין.');
         lines.push('');
-        lines.push('נקודות מפתח:');
-        (points.length ? points : ['לא הוחזרו נקודות מפתח.']).forEach((p) => lines.push(p));
-        return lines.join('\n').trim();
+                lines.push('נקודות מפתח:');
+                (points.length ? points : ['לא הוחזרו נקודות מפתח.']).forEach((p) => lines.push(p));
+                const actions = Array.isArray(fmt.action_items) ? fmt.action_items.map((p) => String(p || '').trim()).filter(Boolean) : [];
+                lines.push('');
+                lines.push('פריטי פעולה:');
+                (actions.length ? actions : ['לא הוחזרו פריטי פעולה.']).forEach((p) => lines.push(p));
+                return lines.join('\n').trim();
     }
     return String(buildTranscriptPlainBodyForExport() || '').trim();
 }
@@ -7036,6 +7065,9 @@ function syncFormattedDocWithCurrentSegments() {
         overview: String(prev.overview || '').trim(),
         key_points: Array.isArray(prev.key_points)
             ? prev.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+            : [],
+        action_items: Array.isArray(prev.action_items)
+            ? prev.action_items.map((p) => String(p || '').trim()).filter(Boolean)
             : []
     };
     if (
@@ -7083,6 +7115,9 @@ async function ensureFormattedViaApiForExport() {
             overview: String(safeFmt.overview || '').trim(),
             key_points: Array.isArray(safeFmt.key_points)
                 ? safeFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                : [],
+            action_items: Array.isArray(safeFmt.action_items)
+                ? safeFmt.action_items.map((p) => String(p || '').trim()).filter(Boolean)
                 : []
         };
         for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
@@ -7137,7 +7172,10 @@ async function ensureFormattedViaApiForExport() {
             if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
                 window.medicalActiveTab = 'summary';
                 if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
-                if (typeof window.render === 'function') window.render();
+                if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
+            } else if (hasStandardFormattedSummary()) {
+                setFormatViewMode('summary');
+                renderStandardSummaryView();
             }
         } catch (_) {}
         if (typeof showStatus === 'function') {
@@ -8014,6 +8052,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             fmtDoc &&
             (String(fmtDoc.overview || '').trim() ||
                 (Array.isArray(fmtDoc.key_points) && fmtDoc.key_points.length) ||
+                (Array.isArray(fmtDoc.action_items) && fmtDoc.action_items.length) ||
                 String(fmtDoc.medical_chief_complaint || '').trim() ||
                 String(fmtDoc.medical_examination_transcript || '').trim() ||
                 String(fmtDoc.medical_patient_recommendations || '').trim())
@@ -8034,15 +8073,18 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             // Source of truth for transcript export is edited segments/captions.
             const fromSegments = String(buildTranscriptPlainBodyForExport() || '').trim();
             const fromFmt = String((fmt && fmt.clean_transcript) || '').trim();
-            const clean = (fromSegments || fromFmt || segmentFlowFallback).trim();
+            const clean = ((!window._qsDocPreferSegmentsAfterEdit && fromFmt) ? fromFmt : (fromSegments || fromFmt || segmentFlowFallback)).trim();
             const overview = String((fmt && fmt.overview) || '').trim();
             const keyPoints = Array.isArray(fmt && fmt.key_points)
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                 : [];
+            const actionItems = Array.isArray(fmt && fmt.action_items)
+                ? fmt.action_items.map((p) => String(p || '').trim()).filter(Boolean)
+                : [];
             const mc = String((fmt && fmt.medical_chief_complaint) || '').trim();
             const me = String((fmt && fmt.medical_examination_transcript) || '').trim();
             const mr = String((fmt && fmt.medical_patient_recommendations) || '').trim();
-            return { clean, overview, keyPoints, mc, me, mr };
+            return { clean, overview, keyPoints, actionItems, mc, me, mr };
         };
         const _buildKindText = (kind, payload) => {
             if (kind === 'summary') {
@@ -8064,6 +8106,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 lines.push('');
                 lines.push('נקודות מפתח:');
                 (payload.keyPoints.length ? payload.keyPoints : ['לא הוחזרו נקודות מפתח.']).forEach((p) => lines.push(p));
+                lines.push('');
+                lines.push('פריטי פעולה:');
+                (payload.actionItems.length ? payload.actionItems : ['לא הוחזרו פריטי פעולה.']).forEach((p) => lines.push(p));
                 return lines.join('\n').trim();
             }
             return payload.clean;
@@ -8109,7 +8154,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     ? textForServer
                     : String(baseFmt.clean_transcript || ''),
                 overview: String(baseFmt.overview || ''),
-                key_points: Array.isArray(baseFmt.key_points) ? baseFmt.key_points : []
+                key_points: Array.isArray(baseFmt.key_points) ? baseFmt.key_points : [],
+                action_items: Array.isArray(baseFmt.action_items) ? baseFmt.action_items : []
             };
             for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
                 if (baseFmt[k] != null) formattedForServer[k] = String(baseFmt[k] || '');
@@ -8376,10 +8422,13 @@ if (toggleAuthBtn) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    if (typeof window.applyTranslations === 'function') window.applyTranslations();
-    try { void qsHandleOAuthReturnIfNeeded(); } catch (_) {}
-    // 1. Always setup the Navbar first
+    // 1. Navbar auth first so signed-in CTA → Personal Area before i18n pass
     await setupNavbarAuth();
+    if (typeof window.applyTranslations === 'function') window.applyTranslations();
+    if (typeof window.qsSyncNavWorkspaceCta === 'function') {
+        qsSyncNavWorkspaceCta(!!window.__QS_UX_USER_SIGNED_IN);
+    }
+    try { void qsHandleOAuthReturnIfNeeded(); } catch (_) {}
 
     try {
         if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
@@ -9155,12 +9204,83 @@ function isTimeToggleVisible() {
 }
 
 function isDocumentFormatEnabled() {
+    if (isSummaryViewEnabled()) return false;
     const docBtn = document.getElementById('format-mode-doc');
     if (docBtn && docBtn.classList.contains('is-active')) return true;
     const subBtn = document.getElementById('format-mode-subtitle');
     if (subBtn && subBtn.classList.contains('is-active')) return false;
     // Buttons not in DOM yet, or no active class: match default (subtitle-first in setFormatMode).
     return false;
+}
+
+function isSummaryViewEnabled() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+    const summaryBtn = document.getElementById('format-mode-summary');
+    return !!(summaryBtn && summaryBtn.classList.contains('is-active'));
+}
+
+function hasStandardFormattedSummary() {
+    const fmt = window.currentFormattedDoc;
+    if (!fmt || typeof fmt !== 'object') return false;
+    if (String(fmt.overview || '').trim()) return true;
+    if (Array.isArray(fmt.key_points) && fmt.key_points.some((p) => String(p || '').trim())) return true;
+    if (Array.isArray(fmt.action_items) && fmt.action_items.some((p) => String(p || '').trim())) return true;
+    return false;
+}
+
+function syncStandardFormatTabs() {
+    const summaryBtn = document.getElementById('format-mode-summary');
+    const switchWrap = document.getElementById('format-mode-switch');
+    if (!summaryBtn || !switchWrap) return;
+    const showSummary = !(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled());
+    summaryBtn.style.display = showSummary ? '' : 'none';
+}
+
+function setFormatViewMode(mode) {
+    const subtitleBtn = document.getElementById('format-mode-subtitle');
+    const docBtn = document.getElementById('format-mode-doc');
+    const summaryBtn = document.getElementById('format-mode-summary');
+    const next = String(mode || 'subtitle').toLowerCase();
+    if (subtitleBtn) subtitleBtn.classList.toggle('is-active', next === 'subtitle');
+    if (docBtn) docBtn.classList.toggle('is-active', next === 'doc');
+    if (summaryBtn) summaryBtn.classList.toggle('is-active', next === 'summary');
+    window.qsFormatViewMode = next;
+    syncStandardFormatTabs();
+    if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
+}
+window.setFormatViewMode = setFormatViewMode;
+window.syncStandardFormatTabs = syncStandardFormatTabs;
+
+function renderStandardSummaryView() {
+    const container = document.getElementById('transcript-window');
+    if (!container) return;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const summaryDirection = isRtl ? 'rtl' : 'ltr';
+    const summaryAlign = isRtl ? 'right' : 'left';
+    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const overview = String(fmt.overview || '').trim();
+    const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+    const actions = Array.isArray(fmt.action_items) ? fmt.action_items.map((p) => String(p || '').trim()).filter(Boolean) : [];
+    const emptyMsg = T('summary_empty') || 'No summary yet.';
+    const pointsHtml = points.length
+        ? `<ul id="standard-summary-points" style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+        : `<div style="color:#6b7280;">${esc(emptyMsg)}</div>`;
+    const actionsHtml = actions.length
+        ? `<ul id="standard-summary-actions" style="margin:8px 0 0; padding-inline-start:20px;">${actions.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+        : `<div style="color:#6b7280;">${esc(emptyMsg)}</div>`;
+    container.innerHTML = `
+        <div id="standard-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;">
+            <div style="font-weight:700; margin-bottom:6px;">${esc(T('summary_overview') || 'Overview')}</div>
+            <div id="standard-summary-overview">${esc(overview || emptyMsg)}</div>
+            <div style="font-weight:700; margin:14px 0 6px;">${esc(T('summary_key_points') || 'Key points')}</div>
+            ${pointsHtml}
+            <div style="font-weight:700; margin:14px 0 6px;">${esc(T('summary_action_items') || 'Action items')}</div>
+            ${actionsHtml}
+        </div>`;
+    container.contentEditable = 'false';
 }
 
 function wrapTextByMaxChars(text, maxChars) {
@@ -9183,9 +9303,9 @@ function wrapTextByMaxChars(text, maxChars) {
 }
 
 function getDocFormatParagraphs() {
-    const fromSeg = String(buildTranscriptPlainBodyForExport() || '').trim();
     const fromFmt = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
-    const clean = fromSeg || fromFmt;
+    const fromSeg = String(buildTranscriptPlainBodyForExport() || '').trim();
+    const clean = (!window._qsDocPreferSegmentsAfterEdit && fromFmt) ? fromFmt : (fromSeg || fromFmt);
     if (!clean) return [];
     // Match backend DOCX paragraph logic:
     // - Paragraphs split only by blank lines (\n\n)
@@ -9740,10 +9860,11 @@ function setTranscriptActionButtonsVisible(visible) {
 function setExportMenuAuxiliaryControlsDisabled(disabled) {
     const fmtSub = document.getElementById('format-mode-subtitle');
     const fmtDoc = document.getElementById('format-mode-doc');
+    const fmtSummary = document.getElementById('format-mode-summary');
     const editBtn = document.getElementById('btn-edit');
     const subStyleToggle = document.getElementById('subtitle-style-toggle');
     const medicalNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
-    [fmtSub, fmtDoc, editBtn, subStyleToggle, medicalNewSessionBtn].forEach((el) => {
+    [fmtSub, fmtDoc, fmtSummary, editBtn, subStyleToggle, medicalNewSessionBtn].forEach((el) => {
         if (!el) return;
         el.disabled = !!disabled;
     });
@@ -9828,6 +9949,7 @@ document.addEventListener('DOMContentLoaded', () => {
             (
                 String(window.currentFormattedDoc.overview || '').trim() ||
                 (Array.isArray(window.currentFormattedDoc.key_points) && window.currentFormattedDoc.key_points.length > 0) ||
+                (Array.isArray(window.currentFormattedDoc.action_items) && window.currentFormattedDoc.action_items.length > 0) ||
                 String(window.currentFormattedDoc.medical_chief_complaint || '').trim() ||
                 String(window.currentFormattedDoc.medical_examination_transcript || '').trim() ||
                 String(window.currentFormattedDoc.medical_patient_recommendations || '').trim()
@@ -10170,6 +10292,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (_) {}
         updateMedicalTabUi();
+        try { if (typeof syncStandardFormatTabs === 'function') syncStandardFormatTabs(); } catch (_) {}
         syncRegularRecordUi();
         try { if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn(); } catch (_) {}
         try { qsSyncStarterPlanUploadGate(); } catch (_) {}
@@ -11448,6 +11571,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         }
+        if (isSummaryViewEnabled()) {
+            renderStandardSummaryView();
+            return;
+        }
         const hasWordModel =
             Array.isArray(window.currentWords) &&
             Array.isArray(window.currentCaptions) &&
@@ -11485,17 +11612,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('toggle-time')?.addEventListener('change', () => rerenderTranscriptView());
     const subtitleModeBtn = document.getElementById('format-mode-subtitle');
     const docModeBtn = document.getElementById('format-mode-doc');
+    const summaryModeBtn = document.getElementById('format-mode-summary');
     if (subtitleModeBtn && docModeBtn) {
-        const setFormatMode = (mode) => {
-            const isDoc = mode === 'doc';
-            docModeBtn.classList.toggle('is-active', isDoc);
-            subtitleModeBtn.classList.toggle('is-active', !isDoc);
-            rerenderTranscriptView();
-        };
-        subtitleModeBtn.addEventListener('click', () => setFormatMode('subtitle'));
-        docModeBtn.addEventListener('click', () => setFormatMode('doc'));
-        // Default to subtitle mode (better for subtitle editing/readability).
-        setFormatMode('subtitle');
+        subtitleModeBtn.addEventListener('click', () => setFormatViewMode('subtitle'));
+        docModeBtn.addEventListener('click', () => setFormatViewMode('doc'));
+        summaryModeBtn?.addEventListener('click', () => setFormatViewMode('summary'));
+        syncStandardFormatTabs();
+        setFormatViewMode(window.qsFormatViewMode || 'subtitle');
     } else {
         document.getElementById('toggle-doc-format')?.addEventListener('change', () => rerenderTranscriptView());
     }
@@ -11813,22 +11936,13 @@ document.addEventListener('DOMContentLoaded', () => {
             qsStartSummaryPipelineProgress();
         }
 
-        /** Medical: keep export/edit toolbar + result tabs hidden until GPT summary + transcript paint (spinner stays up). */
-        const medicalDeferToolbarUntilGptDone = (
-            typeof effectiveIsMedicalForFormatting === 'function'
-                ? effectiveIsMedicalForFormatting()
-                : isMedicalModeEnabled()
-        );
-        if (!medicalDeferToolbarUntilGptDone) {
-            setTranscriptActionButtonsVisible(true);
-            window._medicalHasResult = true;
-            try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
-            try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
-        } else {
-            window._medicalHasResult = false;
-            setTranscriptActionButtonsVisible(false);
-            try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
-        }
+        /** Keep toolbar hidden until unified GPT (clean transcript + summary) completes. */
+        const deferToolbarUntilGptDone = true;
+        window._medicalHasResult = false;
+        setTranscriptActionButtonsVisible(false);
+        try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+        try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
+        try { if (typeof syncStandardFormatTabs === 'function') syncStandardFormatTabs(); } catch (_) {}
 
         // 3. PROCESS DATA — support multiple API shapes (RunPod, simulation, etc.)
         let segments = incomingSegs.length ? incomingSegs.slice() : [];
@@ -11878,125 +11992,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // First, treat these as raw segments (or derived captions).
 
-        let translationMeta = null;
         let userLang = 'he';
         try {
             userLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he');
         } catch (_) {}
 
-        // Post-GPU GPT polish runs under the hood — no spinner / main-button % during polish.
-        if (!medicalDeferToolbarUntilGptDone) {
-            stopProcessingStateUI('handle_job_update_post_gpu_gpt');
+        // Keep processing spinner through unified GPT stage (no per-chunk translate_segments).
+        if (mainBtn) mainBtn.disabled = true;
+        const phaseElGpt = document.getElementById('processing-state-phase');
+        if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
+            window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
+            phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
         }
+        console.info('[qs-processing-ui] unified_gpt_format_start', {
+            segment_count: (window.currentSegments || []).length
+        });
 
-        // Medical: one GPT call (clean transcript + clinical summary). Skip per-segment translate_segments.
-        if (!medicalDeferToolbarUntilGptDone) {
-            const TRANSLATE_CHUNK_SIZE = 40;
-            let translatedCount = 0;
-            let changedCount = 0;
-            try {
-                const T = typeof window.t === 'function' ? window.t : (k) => k;
-                if (mainBtn) mainBtn.disabled = true;
-                const phaseElGpt = document.getElementById('processing-state-phase');
-                if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
-                    window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
-                    phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
-                }
-                const chunks = [];
-                for (let i = 0; i < window.currentSegments.length; i += TRANSLATE_CHUNK_SIZE) {
-                    chunks.push(window.currentSegments.slice(i, i + TRANSLATE_CHUNK_SIZE));
-                }
-                console.info('[qs-processing-ui] gpt_translate_start', {
-                    segment_count: window.currentSegments.length,
-                    chunk_requests: chunks.length
-                });
-                if (chunks.length > 1) console.log('[GPT] Chunked translate:', segments.length, 'segments ->', chunks.length, 'requests (all in flight)');
-                var completedCount = 0;
-                function onChunkDone() {
-                    completedCount++;
-                }
-                const chunkPromises = chunks.map(function (chunk, c) {
-                    return fetch('/api/translate_segments', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ segments: chunk, targetLang: userLang })
-                    }).then(function (res) {
-                        if (res.ok) return res.json().then(function (data) {
-                            onChunkDone();
-                            return { index: c, segments: Array.isArray(data.segments) ? data.segments : chunk, meta: data.meta };
-                        });
-                        onChunkDone();
-                        console.error('[GPT] translate_segments chunk ' + (c + 1) + '/' + chunks.length + ' failed:', res.status);
-                        return { index: c, segments: chunk, meta: null };
-                    }).catch(function (err) {
-                        onChunkDone();
-                        console.warn('[GPT] translate chunk ' + (c + 1) + ' error:', err);
-                        return { index: c, segments: chunk, meta: null };
-                    });
-                });
-                const chunkResults = await Promise.all(chunkPromises);
-                chunkResults.sort(function (a, b) { return a.index - b.index; });
-                const allTranslated = [];
-                let lastMeta = null;
-                for (let r = 0; r < chunkResults.length; r++) {
-                    allTranslated.push(...chunkResults[r].segments);
-                    if (chunkResults[r].meta) lastMeta = chunkResults[r].meta;
-                }
-                if (allTranslated.length) {
-                    translationMeta = lastMeta;
-                    translatedCount = allTranslated.filter(s => String(s.translated_text || '').trim().length > 0).length;
-                    changedCount = allTranslated.filter(s => {
-                        const t = String(s.translated_text || '').trim();
-                        const o = String(s.text || '').trim();
-                        return t.length > 0 && t !== o;
-                    }).length;
-                    const updated = allTranslated.map((s) => ({ ...s, text: (s.translated_text || s.text || '').trim() }));
-                    window.currentSegments = updated;
-                    if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
-                        for (let ci = 0; ci < window.currentCaptions.length && ci < updated.length; ci++) {
-                            const cap = window.currentCaptions[ci];
-                            const text = String(updated[ci].text || '').trim();
-                            const parts = text.split(/\s+/).filter(Boolean);
-                            const len = cap.wordEndIndex - cap.wordStartIndex + 1;
-                            for (let k = 0; k < len; k++) {
-                                const wi = cap.wordStartIndex + k;
-                                if (window.currentWords[wi]) {
-                                    window.currentWords[wi].text = (parts[k] !== undefined ? parts[k] : window.currentWords[wi].text);
-                                }
-                            }
-                        }
-                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, window.currentCaptions, 54);
-                        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                    }
-                    console.log('[GPT] Job translate success:', translatedCount + '/' + segments.length, 'changed:', changedCount + '/' + segments.length, 'meta:', translationMeta);
-                } else if (lastMeta) {
-                    translationMeta = lastMeta;
-                }
-            } catch (e) {
-                console.warn('[GPT] translate_segments failed, using raw Ivrit-AI output:', e);
-            }
-        } else {
-            if (mainBtn) mainBtn.disabled = true;
-            console.info('[medical] skipping translate_segments; single format_transcript_summary (clean + summary)');
-        }
-
-        // One-time doc formatting pass (clean transcript + summary), reused by exports.
-        // Standard mode: translate_segments above, then format in background.
-        // Medical mode: format only (one GPT call — no prior translate_segments).
+        // One GPT pass at end: clean transcript + summary + action items (reused by exports).
         const runPostTranscriptionFormatting = async () => {
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return false;
             const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
             try {
-                if (medicalDeferToolbarUntilGptDone) {
-                    console.info('[medical] format_transcript_summary start (unified clean + summary)', {
-                        chars: fullText.length
-                    });
-                }
+                console.info('[GPT] format_transcript_summary start (unified clean + summary)', {
+                    chars: fullText.length,
+                    medical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
+                });
                 const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId);
                 if (!ok || !fmt || typeof fmt !== 'object') return false;
                     let safeFmt = fmt;
-                    if (_medicalFormatLooksHallucinated(fullText, fmt)) {
+                    const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
+                    if (medFmt && _medicalFormatLooksHallucinated(fullText, fmt)) {
                         console.warn('[medical] format guardrail: rejecting hallucinated summary for short transcript');
                         safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
                     }
@@ -12005,6 +12031,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         overview: String(safeFmt.overview || '').trim(),
                         key_points: Array.isArray(safeFmt.key_points)
                             ? safeFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                            : [],
+                        action_items: Array.isArray(safeFmt.action_items)
+                            ? safeFmt.action_items.map((p) => String(p || '').trim()).filter(Boolean)
                             : []
                     };
                     for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
@@ -12047,6 +12076,9 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (typeof renderTranscriptFromCues === 'function') {
                                 renderTranscriptFromCues(window.currentSegments || []);
                             }
+                        } else if (hasStandardFormattedSummary()) {
+                            setFormatViewMode('summary');
+                            renderStandardSummaryView();
                         }
                     } catch (_) {}
                 return true;
@@ -12056,13 +12088,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        if (medicalDeferToolbarUntilGptDone) {
-            await runPostTranscriptionFormatting();
-            if (qsProcessingPipelineUsesBars()) qsCompleteSummaryPipelineProgress();
-        } else {
-            // Defer with setTimeout(0) so the main thread can paint after heavy translate merges.
-            setTimeout(() => { void runPostTranscriptionFormatting(); }, 0);
-        }
+        await runPostTranscriptionFormatting();
+        if (qsProcessingPipelineUsesBars()) qsCompleteSummaryPipelineProgress();
 
         // Ensure global segments are set (already handled above); keep legacy flow happy.
         const finalStatus = 'processed';
@@ -12146,14 +12173,18 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 // Library ?open= puts summary in a host above #transcript-window; clear it on a fresh transcribe result.
                 try { clearOpenJobStandardSummaryHost(); } catch (_) {}
-                try {
-                    if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
-                        renderWordCaptionEditor();
-                    } else {
-                        window.render();
+                if (isSummaryViewEnabled()) {
+                    renderStandardSummaryView();
+                } else {
+                    try {
+                        if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)) {
+                            renderWordCaptionEditor();
+                        } else {
+                            window.render();
+                        }
+                    } catch (renderErr) {
+                        console.error('[qs] transcript render failed; keeping export toolbar available', renderErr);
                     }
-                } catch (renderErr) {
-                    console.error('[qs] transcript render failed; keeping export toolbar available', renderErr);
                 }
             }
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
@@ -12210,14 +12241,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (_) {}
         window.isTriggering = false;
-        if (medicalDeferToolbarUntilGptDone) {
+        if (isMedicalModeEnabled()) {
             window._medicalHasResult = true;
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
             try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
             try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
-        if (medicalDeferToolbarUntilGptDone) {
+        if (deferToolbarUntilGptDone) {
             stopProcessingStateUI('handle_job_update_success_pipeline_done');
         }
         setTranscriptActionButtonsVisible(true);

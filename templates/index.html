@@ -19,12 +19,12 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                     <div class="seo-hero-grid">
                         <div class="seo-hero-copy">
                             <h1>
-                                <span class="seo-he">תמלול AI מדויק בעברית וכתוביות אוטומטיות</span>
-                                <span class="seo-en">Flawless Hebrew AI Transcription &amp; Automatic Subtitles</span>
+                                <span class="seo-he">הפכו כל פגישה, ראיון או הקלטה לטקסט מדויק — עם סיכום ומשימות אוטומטי בעברית</span>
+                                <span class="seo-en">Turn every meeting, interview, or recording into accurate text —<br class="seo-hero-linebreak">with an automatic summary and action items</span>
                             </h1>
                             <p class="seo-hero-subtitle">
-                                <span class="seo-he">הפכו אודיו ווידאו מורכבים לטקסט מדויק ולכתוביות SRT בתוך שניות. המערכת בנויה להתמודד עם רעשי רקע כבדים, ריבוי דוברים והקלטות מהשטח.</span>
-                                <span class="seo-en">Turn complex audio and video into accurate text and SRT subtitles in seconds. Built to handle heavy background noise, multi-speaker dynamics, and real-world field recordings.</span>
+                                <span class="seo-he">המערכת בנויה להתמודד עם רעשי רקע, ריבוי דוברים והקלטות מהשטח — ומפיקה בסוף סיכום מובנה עם רשימת משימות, מוכן לשיתוף.</span>
+                                <span class="seo-en">Built for background noise, multiple speakers, and field recordings —<br class="seo-hero-linebreak">structured summary with a task list, ready to share.</span>
                             </p>
                         </div>
                     </div>
@@ -529,9 +529,10 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
         <div class="transcription-wrapper">
             <div class="switches-top-bar">
                 <div class="toggles-group">
-                    <div class="format-ab-switch" id="format-mode-switch" role="group" aria-label="פורמט תצוגה">
-                        <button type="button" class="format-ab-option is-active" id="format-mode-subtitle">כתוביות</button>
-                        <button type="button" class="format-ab-option" id="format-mode-doc">מסמך</button>
+                    <div class="format-ab-switch" id="format-mode-switch" role="group" data-i18n-aria-label="format_view_aria" aria-label="פורמט תצוגה">
+                        <button type="button" class="format-ab-option is-active" id="format-mode-subtitle" data-i18n="tab_subtitle">כתוביות</button>
+                        <button type="button" class="format-ab-option" id="format-mode-doc" data-i18n="tab_doc">מסמך</button>
+                        <button type="button" class="format-ab-option" id="format-mode-summary" data-i18n="tab_summary">סיכום</button>
                     </div>
                     <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
                 </div>
@@ -1220,7 +1221,11 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
         planIds.forEach(wirePlanCard);
         syncPlanCardsUi();
         if (typeof window.qsRefreshUserCredits === 'function') {
-            void window.qsRefreshUserCredits({ ensureWelcome: true });
+            void window.qsRefreshUserCredits({ ensureWelcome: true }).then(() => {
+                if (typeof window.qsSyncStarterPlanUploadGate === 'function') {
+                    window.qsSyncStarterPlanUploadGate();
+                }
+            });
         }
 
         const salesModal = document.getElementById('sales-contact-modal');

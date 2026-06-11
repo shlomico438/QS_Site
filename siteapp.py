@@ -3214,6 +3214,7 @@ def _normalize_formatted_dict_for_storage(formatted):
         "clean_transcript": str(formatted.get("clean_transcript") or "").strip(),
         "overview": str(formatted.get("overview") or "").strip(),
         "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
+        "action_items": [str(p).strip() for p in (formatted.get("action_items") or []) if str(p).strip()],
     }
     for mk in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
         if mk in formatted:
@@ -3246,6 +3247,7 @@ def _existing_formatted_norm_for_merge(user_id, input_s3_key):
             str(norm.get('clean_transcript') or '').strip()
             or str(norm.get('overview') or '').strip()
             or (norm.get('key_points') and len(norm['key_points']) > 0)
+            or (norm.get('action_items') and len(norm['action_items']) > 0)
             or str(norm.get('medical_chief_complaint') or '').strip()
             or str(norm.get('medical_examination_transcript') or '').strip()
             or str(norm.get('medical_patient_recommendations') or '').strip()
@@ -6148,18 +6150,19 @@ def _format_unified_transcript_openai(
         system_prompt = (
             "You are an expert transcript editor. "
             "Return ONLY valid JSON in this exact shape: "
-            "{\"clean_transcript\":string,\"overview\":string,\"key_points\":[string]} . "
+            "{\"clean_transcript\":string,\"overview\":string,\"key_points\":[string],\"action_items\":[string]} . "
             "Do not include markdown fences. Keep original language and directionality."
         )
         task2 = (
-            "Task 2 – Summary\n"
-            "Create a separate summary including:\n\n"
-            "* A short 3–4 sentence overview\n"
-            "* 5–8 bullet key points\n"
+            "Task 2 – Summary and action items\n"
+            "Create a separate summary from the transcript including:\n\n"
+            "* overview: a short 3–4 sentence overview\n"
+            "* key_points: 5–8 bullet insights, decisions, or important facts\n"
+            "* action_items: 3–8 concrete follow-up tasks (include owner names or roles when clear from the transcript)\n"
             "Focus on decisions, insights, and actionable ideas.\n"
             "Ignore filler conversation.\n\n"
         )
-        json_tail = "Return as JSON fields only (clean_transcript, overview, key_points).\n"
+        json_tail = "Return as JSON fields only (clean_transcript, overview, key_points, action_items).\n"
     task1_clean = (
         _GPT_TASK1_CLEAN_TRANSCRIPT
         + (_GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else "")
@@ -6198,11 +6201,16 @@ def _format_unified_transcript_openai(
     if not isinstance(key_points, list):
         key_points = []
     key_points = [str(p).strip() for p in key_points if str(p).strip()]
+    action_items = (parsed or {}).get("action_items")
+    if not isinstance(action_items, list):
+        action_items = []
+    action_items = [str(p).strip() for p in action_items if str(p).strip()]
     overview, key_points = _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew)
     return {
         "clean_transcript": clean_transcript,
         "overview": overview,
         "key_points": key_points,
+        "action_items": action_items,
     }
 
 
@@ -7400,12 +7408,16 @@ def api_export_docx():
             else:
                 overview   = str(fmt.get('overview') or '').strip()
                 key_points = [str(p).strip() for p in (fmt.get('key_points') or []) if str(p).strip()]
+                action_items = [str(p).strip() for p in (fmt.get('action_items') or []) if str(p).strip()]
                 lines = []
                 lines.append('סקירה:')
                 lines.append(overview or 'N/A')
                 lines.append('')
                 lines.append('נקודות מפתח:')
                 lines.extend(key_points or ['לא הוחזרו נקודות מפתח.'])
+                lines.append('')
+                lines.append('פריטי פעולה:')
+                lines.extend(action_items or ['לא הוחזרו פריטי פעולה.'])
             dl_name = filename + '_summary.docx'
         else:
             clean = str(fmt.get('clean_transcript') or '').strip() or raw_text

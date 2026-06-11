@@ -18,6 +18,14 @@ window.translations = {
         credits_duration_unknown: "לא ניתן לקבוע את אורך הקובץ. נסה שוב או העלה קובץ אחר.",
         nav_cta_transcription: "תמלול חדש",
         nav_cta_dashboard: "לאזור האישי",
+        tab_subtitle: "כתוביות",
+        tab_doc: "מסמך",
+        tab_summary: "סיכום",
+        summary_overview: "סקירה",
+        summary_key_points: "נקודות מפתח",
+        summary_action_items: "משימות לביצוע",
+        summary_empty: "אין סיכום זמין עדיין. הסיכום יופיע לאחר סיום העיבוד.",
+        format_view_aria: "פורמט תצוגה",
         nav_logout: "התנתק",
         footer_legal: "תנאים ומדיניות",
         footer_copyright: "© 2026 QuickScribe. כל הזכויות שמורות.",
@@ -312,6 +320,14 @@ window.translations = {
         credits_duration_unknown: "Could not determine the file length. Try again or upload a different file.",
         nav_cta_transcription: "New Transcription",
         nav_cta_dashboard: "Go to Dashboard",
+        tab_subtitle: "Subtitles",
+        tab_doc: "Document",
+        tab_summary: "Summary",
+        summary_overview: "Overview",
+        summary_key_points: "Key points",
+        summary_action_items: "Action items",
+        summary_empty: "No summary yet. It will appear after processing finishes.",
+        format_view_aria: "Display format",
         nav_logout: "Log Out",
         personal_area_title: "Personal Area",
         personal_close_window: "Close and return to transcript",
@@ -662,7 +678,23 @@ window.setLocale = async function(code) {
 
 /** Apply translations to all elements with data-i18n. Run after DOM ready and on language change. */
 window.applyTranslations = function() {
+    const navCtaIds = new Set(['nav-dashboard-cta', 'nav-new-session-btn']);
+    const signedInForNav = !!(
+        window.__QS_UX_USER_SIGNED_IN
+        || document.body.classList.contains('qs-user-signed-in')
+        || (() => {
+            const wrap = document.getElementById('nav-utility-signed-in');
+            if (!wrap) return false;
+            const st = wrap.style.display;
+            if (st && st !== 'none') return true;
+            try { return window.getComputedStyle(wrap).display !== 'none'; } catch (_) { return false; }
+        })()
+    );
+    if (typeof window.qsSyncNavWorkspaceCta === 'function') {
+        window.qsSyncNavWorkspaceCta(signedInForNav);
+    }
     document.querySelectorAll('[data-i18n]').forEach(el => {
+        if (navCtaIds.has(el.id)) return;
         if (el.id === 'nav-auth-btn' || el.id === 'nav-auth-btn-mobile') {
             if (window.__QS_UX_USER_SIGNED_IN) return;
         }

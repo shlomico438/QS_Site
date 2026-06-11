@@ -88,7 +88,7 @@
                 </nav>
 
                 <div class="navbar-main-actions">
-                    <a href="/" class="nav-cta-btn" id="nav-dashboard-cta" data-i18n="nav_cta_transcription">New Transcription</a>
+                    <a href="/personal" class="nav-cta-btn" id="nav-dashboard-cta" data-i18n="nav_personal" hidden style="display:none;">Personal Area</a>
                     <button type="button" class="hamburger-menu" id="hamburger-menu" aria-label="Open menu" aria-expanded="false" aria-controls="nav-menu-mobile">
                         <span></span>
                         <span></span>
@@ -104,7 +104,7 @@
                 <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
                 <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
                 <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
-                <a href="/" class="nav-item nav-cta-btn nav-cta-btn--mobile" id="nav-new-session-btn" data-i18n="nav_cta_transcription">New Transcription</a>
+                <a href="/personal" class="nav-item nav-cta-btn nav-cta-btn--mobile" id="nav-new-session-btn" data-i18n="nav_personal" hidden style="display:none;">Personal Area</a>
                 <span id="nav-credit-balance-mobile" class="nav-credit-balance nav-credit-balance--mobile" style="display: none;" aria-live="polite">
                     <span data-i18n="nav_minutes_balance">Minutes balance</span>:
                     <strong id="nav-credit-minutes-mobile">0</strong>
@@ -251,7 +251,13 @@
                 document.documentElement.lang = loc === 'he' ? 'he' : 'en';
                 document.documentElement.dir = loc === 'he' ? 'rtl' : 'ltr';
                 if (typeof window.applyTranslations === 'function') window.applyTranslations();
-                setTimeout(function() { if (typeof window.applyTranslations === 'function') window.applyTranslations(); }, 0);
+                setTimeout(function() {
+                    if (typeof window.applyTranslations === 'function') window.applyTranslations();
+                    if (typeof window.qsSyncNavWorkspaceCta === 'function') {
+                        var signedIn = document.body.classList.contains('qs-user-signed-in') || !!window.__QS_UX_USER_SIGNED_IN;
+                        window.qsSyncNavWorkspaceCta(signedIn);
+                    }
+                }, 0);
             });
         })();
     </script>
