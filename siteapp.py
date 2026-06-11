@@ -352,6 +352,35 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
+
+def _resolve_static_asset_version():
+    """Cache-bust query for static CSS/JS (avoids stale CDN/browser CSS after deploy)."""
+    override = (os.environ.get('QS_STATIC_VERSION') or '').strip()
+    if override:
+        return override
+    static_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+    candidates = (
+        os.path.join(static_root, 'style.css'),
+        os.path.join(static_root, 'css', 'app_custom.css'),
+        os.path.join(static_root, 'js', 'app_logic.js'),
+    )
+    mtimes = []
+    for path in candidates:
+        try:
+            mtimes.append(int(os.path.getmtime(path)))
+        except OSError:
+            continue
+    return str(max(mtimes)) if mtimes else '1'
+
+
+STATIC_ASSET_VERSION = _resolve_static_asset_version()
+
+
+@app.context_processor
+def _inject_static_asset_version():
+    return {'static_asset_version': STATIC_ASSET_VERSION}
+
+
 # Configuration for automation
 RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.environ.get('RUNPOD_ENDPOINT_ID')

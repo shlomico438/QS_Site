@@ -23,16 +23,16 @@
     <link rel="alternate" hreflang="en" href="https://www.getquickscribe.com/en">
     <link rel="alternate" hreflang="x-default" href="https://www.getquickscribe.com">
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}?v={{ static_asset_version }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
-    <script src="{{ url_for('static', filename='js/translations.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/translations.js') }}?v={{ static_asset_version }}"></script>
     <script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
-    <script src="{{ url_for('static', filename='js/clinical_training_modal.js') }}"></script>
-    <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/clinical_training_modal.js') }}?v={{ static_asset_version }}"></script>
+    <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}?v={{ static_asset_version }}"></script>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
     {% block structured_data %}{% endblock %}
     {% block head_extra %}{% endblock %}

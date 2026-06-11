@@ -4,7 +4,7 @@
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/accuracy.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/accuracy.css') }}?v={{ static_asset_version }}">
 <meta name="description" content="QuickScribe achieves 94.36% accuracy on Hebrew transcription — independently verified. Compare to Whisper, Gemini, Sonix, and run the test yourself.">
 {% endblock %}
 
