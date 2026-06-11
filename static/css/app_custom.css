@@ -753,7 +753,7 @@ html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
 
 /* Initial homepage SEO content (visible before upload starts) */
 .seo-home-content {
-    max-width: 1120px;
+    max-width: 1180px;
     margin: 0 auto 20px;
     padding: 0;
     background: #ffffff;
@@ -762,10 +762,15 @@ html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
     box-shadow: 0 14px 40px rgba(15, 23, 42, 0.06);
     overflow: hidden;
 }
-/* Landing bands: py-12 + alternating backgrounds (Tailwind gray-50 = #f9fafb) */
+/* Landing: do not clip pricing cards; leave room above fixed upload bar */
+body.qs-homepage-landing .seo-home-content {
+    overflow: visible;
+    margin-bottom: calc(var(--qs-upload-bar-landing, 132px) + 8px);
+}
+/* Landing bands: compact vertical rhythm so pricing stays in primary viewport */
 .seo-landing-band,
 .seo-landing-section {
-    padding: 48px 0;
+    padding: 32px 0;
     scroll-margin-top: var(--nav-total-height, 104px);
 }
 .seo-landing-bg-white {
@@ -775,18 +780,23 @@ html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
     background-color: #f9fafb;
 }
 .seo-landing-inner {
-    max-width: 1040px;
+    max-width: 1140px;
     margin: 0 auto;
-    padding: 0 32px;
+    padding: 0 28px;
     box-sizing: border-box;
 }
-/* Hero: compact bottom so Features is visible above the fold */
+/* Hero: tight padding so features + pricing fit above the fold */
 .seo-landing-hero {
-    padding-top: 32px;
-    padding-bottom: 16px;
+    padding-top: 20px;
+    padding-bottom: 10px;
 }
 #features-section.seo-landing-section {
-    padding-top: 28px;
+    padding-top: 16px;
+    padding-bottom: 18px;
+}
+#pricing-section.seo-landing-section {
+    padding-top: 18px;
+    padding-bottom: 32px;
 }
 .seo-landing-divider {
     border: none;
@@ -800,9 +810,9 @@ html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
     text-align: center;
 }
 .seo-home-content h1 {
-    margin: 0 0 12px;
-    font-size: 2.1rem;
-    line-height: 1.2;
+    margin: 0 0 8px;
+    font-size: 2rem;
+    line-height: 1.18;
     text-align: left;
     color: #4f46e5; /* Fallback if gradient text clipping is unsupported */
     background: linear-gradient(90deg, #3b82f6 0%, #7c3aed 55%, #ec4899 100%);
@@ -813,9 +823,9 @@ html[lang="en"] .registration-feedback-block .reg-feedback-textarea {
 .seo-home-content .seo-hero-subtitle {
     margin: 0;
     color: #4b5563;
-    font-size: 1.05rem;
+    font-size: 1rem;
     text-align: left;
-    line-height: 1.6;
+    line-height: 1.5;
 }
 
 /* Landing state: larger navbar logo until video player is shown */
@@ -853,14 +863,22 @@ body.landing-logo-large .nav-logo img {
 .seo-hero-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 12px;
+    gap: 8px;
     max-width: 720px;
 }
 .seo-hero-copy {
     background: linear-gradient(170deg, #f8faff 0%, #ffffff 60%);
     border: 1px solid #e6edf9;
-    border-radius: 14px;
-    padding: 16px 18px;
+    border-radius: 12px;
+    padding: 10px 14px;
+}
+#features-section h2 {
+    margin-bottom: 8px;
+}
+#features-section .seo-landing-inner > p {
+    margin-bottom: 10px;
+    line-height: 1.5;
+    font-size: 0.98rem;
 }
 .seo-btn {
     display: inline-flex;
@@ -1014,9 +1032,50 @@ html[dir="rtl"] .product-card-features {
 .seo-format-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+.seo-feature-grid {
+    gap: 14px;
+}
+.seo-feature-grid .seo-card {
+    padding: 10px 12px;
+}
+.seo-feature-grid .seo-card h3 {
+    margin: 0 0 4px;
+    font-size: 1rem;
+}
+.seo-feature-grid .seo-card p {
+    line-height: 1.45;
+    font-size: 0.94rem;
+}
 .seo-use-cases-grid,
 .seo-pricing-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+/* Equal-height pricing cards (Hebrew + English) */
+.seo-pricing-grid {
+    align-items: stretch;
+}
+.seo-pricing-grid .seo-pricing-card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 100%;
+    box-sizing: border-box;
+    padding: 14px;
+}
+.seo-pricing-grid .seo-pricing-card .seo-pricing-features,
+.seo-pricing-grid .seo-pricing-card > ul {
+    flex: 1 1 auto;
+    margin-top: 10px;
+    margin-bottom: 0;
+}
+.seo-pricing-grid .seo-pricing-card .seo-btn,
+.seo-pricing-grid .seo-pricing-card .seo-plan-auto-badge {
+    margin-top: auto;
+    flex-shrink: 0;
+}
+.seo-pricing-grid .seo-pricing-card .seo-credit-bundle-picker {
+    flex-shrink: 0;
+    margin-bottom: 0;
 }
 .seo-testimonials-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1097,6 +1156,104 @@ html[dir="rtl"] .product-card-features {
     box-sizing: border-box;
     text-align: center;
 }
+.seo-credit-bundle-picker {
+    margin: 0 0 10px;
+}
+/* Unified segmented tab track (Light / Standard / Plus) */
+.seo-credit-bundle-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin: 0;
+    padding: 4px;
+    background: #f8fafc;
+    border-radius: 12px;
+    border: none;
+}
+.seo-credit-bundle-tabs .seo-credit-bundle-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    margin: 0;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    line-height: 1.15;
+    text-align: center;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: #6b7280;
+    cursor: pointer;
+    box-shadow: none;
+    transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+    -webkit-appearance: none;
+    appearance: none;
+}
+.seo-credit-bundle-tabs .seo-credit-bundle-tab .seo-he,
+.seo-credit-bundle-tabs .seo-credit-bundle-tab .seo-en {
+    display: block;
+}
+.seo-credit-bundle-tabs .seo-credit-bundle-tab:hover:not(.is-selected) {
+    color: #111827;
+    background: transparent;
+}
+.seo-credit-bundle-tabs .seo-credit-bundle-tab.is-selected {
+    background: #ffffff;
+    color: #111827;
+    font-weight: 700;
+    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.06), 0 1px 3px 0 rgba(15, 23, 42, 0.04);
+}
+/* Legacy bundle-item rules must not apply inside the segmented track */
+.seo-credit-bundle-tabs .seo-credit-bundle-item:hover,
+.seo-credit-bundle-tabs .seo-credit-bundle-item.is-selected,
+.seo-credit-bundle-tabs .seo-credit-bundle-item--recommended.is-selected {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+}
+.seo-credit-bundle-tabs .seo-credit-bundle-item.is-selected {
+    background: #ffffff;
+    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.06), 0 1px 3px 0 rgba(15, 23, 42, 0.04);
+}
+.seo-credit-bundle-tabs .seo-credit-bundle-tab:focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 1px;
+    z-index: 1;
+}
+/* Price + tabs are enough; detail row duplicated long EN copy and inflated card height */
+.seo-credit-bundle-detail {
+    display: none;
+}
+.seo-credit-bundle-pane {
+    margin: 0;
+}
+.seo-credit-bundle-pane strong {
+    color: #0f172a;
+    font-weight: 700;
+}
+/* English (LTR): slightly tighter sections above pricing only — cards share same typography */
+html[dir="ltr"] .seo-landing-hero {
+    padding-top: 14px;
+    padding-bottom: 8px;
+}
+html[dir="ltr"] .seo-home-content .seo-hero-subtitle {
+    font-size: 0.94rem;
+    line-height: 1.45;
+}
+html[dir="ltr"] #features-section.seo-landing-section {
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+html[dir="ltr"] #features-section .seo-landing-inner > p {
+    font-size: 0.92rem;
+    line-height: 1.45;
+    margin-bottom: 8px;
+}
+html[dir="ltr"] #pricing-section.seo-landing-section {
+    padding-top: 12px;
+    padding-bottom: 20px;
+}
 .seo-credit-bundle-list {
     list-style: none;
     margin: 0 0 10px;
@@ -1138,8 +1295,10 @@ html[dir="rtl"] .product-card-features {
 }
 .seo-pricing-card .seo-btn {
     width: 100%;
-    margin-top: 10px;
     box-sizing: border-box;
+}
+.seo-pricing-grid .seo-pricing-card .seo-btn {
+    margin-top: auto;
 }
 .seo-price {
     font-size: 1.6rem;
@@ -1448,7 +1607,7 @@ html[dir="rtl"] .seo-credit-bundle-item {
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-width: 1000px;
+    max-width: 1160px;
     margin: 0 auto;
     padding: 10px 15px;
     box-sizing: border-box;
@@ -3995,14 +4154,19 @@ html[dir="rtl"] .upload-status {
     }
     .seo-landing-band,
     .seo-landing-section {
-        padding: 36px 0;
+        padding: 24px 0;
     }
     .seo-landing-hero {
-        padding-top: 24px;
-        padding-bottom: 12px;
+        padding-top: 16px;
+        padding-bottom: 8px;
     }
     #features-section.seo-landing-section {
-        padding-top: 20px;
+        padding-top: 12px;
+        padding-bottom: 14px;
+    }
+    #pricing-section.seo-landing-section {
+        padding-top: 14px;
+        padding-bottom: 24px;
     }
     .seo-landing-inner {
         padding: 0 20px;
@@ -4027,7 +4191,19 @@ html[dir="rtl"] .upload-status {
         grid-template-columns: 1fr;
     }
     .seo-hero-copy {
-        padding: 14px;
+        padding: 10px 12px;
+    }
+    .seo-feature-grid .seo-card {
+        padding: 9px 11px;
+    }
+    .seo-credit-bundle-tabs {
+        padding: 3px;
+        border-radius: 10px;
+    }
+    .seo-credit-bundle-tabs .seo-credit-bundle-tab {
+        padding: 7px 6px;
+        font-size: 0.76rem;
+        border-radius: 8px;
     }
 
     /* Upload row: keep one row, compact — more space for transcript */

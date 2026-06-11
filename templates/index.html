@@ -123,30 +123,47 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                         </div>
                         <h3 id="seo-pricing-pro-title">
                             <span class="seo-he">חבילות דקות בתשלום מראש</span>
-                            <span class="seo-en">Prepaid minute bundles</span>
+                            <span class="seo-en">Prepaid bundles</span>
                         </h3>
-                        <div class="seo-price">
-                            <span class="seo-he">החל מ- ₪19</span>
-                            <span class="seo-en">From $7</span>
+                        <div class="seo-price" id="seo-credit-bundle-price">
+                            <span class="seo-he" data-bundle-price-he="standard">₪39</span>
+                            <span class="seo-en" data-bundle-price-en="standard">$13</span>
+                            <small><span class="seo-he" data-bundle-price-note-he="standard"> / 300 דקות</span><span class="seo-en" data-bundle-price-note-en="standard"> / 300 min</span></small>
                         </div>
-                        <ul class="seo-credit-bundle-list" aria-label="חבילות קרדיט">
-                            <li class="seo-credit-bundle-item" data-bundle="light" role="button" tabindex="0" aria-pressed="false">
-                                <span class="seo-he"><strong>חבילת Light:</strong> ₪19 עבור 90 דקות תמלול</span>
-                                <span class="seo-en"><strong>Light bundle:</strong> $7 for 90 minutes of transcription</span>
-                            </li>
-                            <li class="seo-credit-bundle-item seo-credit-bundle-item--recommended is-selected" data-bundle="standard" role="button" tabindex="0" aria-pressed="true">
-                                <span class="seo-he"><strong>חבילת Standard (מומלץ):</strong> ₪39 עבור 300 דקות (5 שעות מלאות)</span>
-                                <span class="seo-en"><strong>Standard bundle (recommended):</strong> $13 for 300 minutes (5 full hours)</span>
-                            </li>
-                            <li class="seo-credit-bundle-item" data-bundle="plus" role="button" tabindex="0" aria-pressed="false">
-                                <span class="seo-he"><strong>חבילת Plus:</strong> ₪79 עבור 720 דקות (12 שעות מלאות)</span>
-                                <span class="seo-en"><strong>Plus bundle:</strong> $27 for 720 minutes (12 full hours)</span>
-                            </li>
-                        </ul>
+                        <div class="seo-credit-bundle-picker">
+                            <div class="seo-credit-bundle-tabs" role="tablist" aria-label="חבילות קרדיט">
+                                <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="light" role="tab" aria-selected="false" id="seo-credit-tab-light">
+                                    <span class="seo-he">Light</span>
+                                    <span class="seo-en">Light</span>
+                                </button>
+                                <button type="button" class="seo-credit-bundle-item seo-credit-bundle-item--recommended seo-credit-bundle-tab is-selected" data-bundle="standard" role="tab" aria-selected="true" id="seo-credit-tab-standard">
+                                    <span class="seo-he">Standard</span>
+                                    <span class="seo-en">Standard</span>
+                                </button>
+                                <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="plus" role="tab" aria-selected="false" id="seo-credit-tab-plus">
+                                    <span class="seo-he">Plus</span>
+                                    <span class="seo-en">Plus</span>
+                                </button>
+                            </div>
+                            <div class="seo-credit-bundle-detail" id="seo-credit-bundle-detail" role="tabpanel" aria-live="polite">
+                                <div class="seo-credit-bundle-pane" data-bundle-pane="light" hidden aria-hidden="true">
+                                    <span class="seo-he">Light · ₪19 · 90 דקות</span>
+                                    <span class="seo-en">Light · $7 · 90 min</span>
+                                </div>
+                                <div class="seo-credit-bundle-pane is-active" data-bundle-pane="standard" aria-hidden="true">
+                                    <span class="seo-he">Standard · ₪39 · 300 דקות</span>
+                                    <span class="seo-en">Standard · $13 · 300 min</span>
+                                </div>
+                                <div class="seo-credit-bundle-pane" data-bundle-pane="plus" hidden aria-hidden="true">
+                                    <span class="seo-he">Plus · ₪79 · 720 דקות</span>
+                                    <span class="seo-en">Plus · $27 · 720 min</span>
+                                </div>
+                            </div>
+                        </div>
                         <ul class="seo-pricing-features">
                             <li>
                                 <span class="seo-he">הדקות שלך בארנק ולא פוקעות לעולם</span>
-                                <span class="seo-en">Your minutes stay in your wallet and never expire</span>
+                                <span class="seo-en">Minutes never expire in your wallet</span>
                             </li>
                             <li>
                                 <span class="seo-he">תור AI בעדיפות גבוהה</span>
@@ -154,7 +171,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                             </li>
                             <li>
                                 <span class="seo-he">הפרדת קול וניקוי רעשי רקע מתקדם</span>
-                                <span class="seo-en">Advanced vocal separation and background noise cleanup</span>
+                                <span class="seo-en">Advanced vocal separation &amp; noise cleanup</span>
                             </li>
                         </ul>
                         <button type="button" class="seo-btn seo-btn-primary seo-bridge-action" id="seo-buy-credits-btn" data-bundle="standard">
@@ -896,10 +913,41 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
         void confirmReturnedCardcomCheckout();
         const creditBundleIds = ['light', 'standard', 'plus'];
         const creditBundleStorageKey = 'qs_selected_credit_bundle';
+        const creditBundlePriceMeta = {
+            light: { he: '₪19', en: '$7', noteHe: ' / 90 דקות', noteEn: ' / 90 min' },
+            standard: { he: '₪39', en: '$13', noteHe: ' / 300 דקות', noteEn: ' / 300 min' },
+            plus: { he: '₪79', en: '$27', noteHe: ' / 720 דקות', noteEn: ' / 720 min' },
+        };
         const buyCreditsBtn = document.getElementById('seo-buy-credits-btn');
+        const creditBundlePriceEl = document.getElementById('seo-credit-bundle-price');
+        const creditBundleDetailEl = document.getElementById('seo-credit-bundle-detail');
         const creditBundleItems = Array.from(
             document.querySelectorAll('#seo-pricing-pro .seo-credit-bundle-item[data-bundle]')
         );
+        const creditBundlePanes = creditBundleDetailEl
+            ? Array.from(creditBundleDetailEl.querySelectorAll('.seo-credit-bundle-pane[data-bundle-pane]'))
+            : [];
+        const syncCreditBundleDisplay = (bundleId) => {
+            const meta = creditBundlePriceMeta[bundleId] || creditBundlePriceMeta.standard;
+            if (creditBundlePriceEl) {
+                const hePrice = creditBundlePriceEl.querySelector('.seo-he');
+                const enPrice = creditBundlePriceEl.querySelector('.seo-en');
+                const heNote = creditBundlePriceEl.querySelector('small .seo-he');
+                const enNote = creditBundlePriceEl.querySelector('small .seo-en');
+                if (hePrice) hePrice.textContent = meta.he;
+                if (enPrice) enPrice.textContent = meta.en;
+                if (heNote) heNote.textContent = meta.noteHe;
+                if (enNote) enNote.textContent = meta.noteEn;
+            }
+            creditBundlePanes.forEach((pane) => {
+                const on = pane.dataset.bundlePane === bundleId;
+                pane.hidden = !on;
+                pane.classList.toggle('is-active', on);
+            });
+            if (creditBundleDetailEl) {
+                creditBundleDetailEl.setAttribute('aria-labelledby', 'seo-credit-tab-' + bundleId);
+            }
+        };
         const getSelectedCreditBundle = () => {
             try {
                 const stored = String(localStorage.getItem(creditBundleStorageKey) || '').trim();
@@ -915,9 +963,12 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             creditBundleItems.forEach((item) => {
                 const on = item.dataset.bundle === bundleId;
                 item.classList.toggle('is-selected', on);
+                item.setAttribute('aria-selected', on ? 'true' : 'false');
                 item.setAttribute('aria-pressed', on ? 'true' : 'false');
+                item.tabIndex = on ? 0 : -1;
             });
             if (buyCreditsBtn) buyCreditsBtn.dataset.bundle = bundleId;
+            syncCreditBundleDisplay(bundleId);
         };
         setSelectedCreditBundle(getSelectedCreditBundle());
         creditBundleItems.forEach((item) => {
