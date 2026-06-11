@@ -2,6 +2,7 @@
    ROOT & GLOBAL
 ========================= */
 :root {
+    --qs-ui-scale: 0.9;
     --nav-height: 104px;
     --nav-utility-height: 40px;
     --nav-main-height: 64px;
@@ -12,8 +13,16 @@
 
 html {
     font-size: 16px;
+    zoom: var(--qs-ui-scale);
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+}
+
+/* Browsers without zoom: shrink rem-based typography (~90%). */
+@supports not (zoom: 1) {
+    html {
+        font-size: calc(16px * var(--qs-ui-scale));
+    }
 }
 
 html, body {
