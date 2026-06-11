@@ -3863,6 +3863,7 @@ function qsSyncUserCreditsUi() {
     if (navMinutesMobile) navMinutesMobile.textContent = displayMinutes;
     if (menuWrap) menuWrap.style.display = showCredits ? '' : 'none';
     if (menuMinutes) menuMinutes.textContent = displayMinutes;
+    try { if (typeof qsSyncStarterPlanUploadGate === 'function') qsSyncStarterPlanUploadGate(); } catch (_) {}
 }
 
 const QS_STARTER_PLAN_KEY = 'qs_starter_plan_selected';
@@ -4216,6 +4217,11 @@ function qsIsStarterPlanSelected() {
     return qsGetSelectedPlan() === 'starter';
 }
 
+function qsUserHasUploadCredits() {
+    const minutes = Number(window.__QS_USER_CREDIT_MINUTES);
+    return Number.isFinite(minutes) && minutes > 0;
+}
+
 function qsRequiresStarterPlanGate() {
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
     const seo = document.getElementById('seo-home-content');
@@ -4225,7 +4231,9 @@ function qsRequiresStarterPlanGate() {
 }
 
 function qsSyncStarterPlanUploadGate() {
-    const gated = qsRequiresStarterPlanGate() && qsGetSelectedPlan() !== 'starter';
+    const gated = qsRequiresStarterPlanGate()
+        && qsGetSelectedPlan() !== 'starter'
+        && !qsUserHasUploadCredits();
     document.body.classList.toggle('qs-starter-plan-required', gated);
     const mainBtn = document.getElementById('main-btn');
     const regularRecordBtn = document.getElementById('regular-record-btn');
@@ -4246,6 +4254,7 @@ function qsSyncStarterPlanUploadGate() {
 
 function qsBlockIfStarterPlanRequired() {
     if (!qsRequiresStarterPlanGate()) return false;
+    if (qsUserHasUploadCredits()) return false;
     const plan = qsGetSelectedPlan();
     if (plan === 'starter') return false;
     const pricing = document.getElementById('pricing-section') || document.getElementById('seo-pricing-starter');

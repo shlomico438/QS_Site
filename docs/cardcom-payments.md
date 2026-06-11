@@ -70,6 +70,7 @@ Cardcom returned **wrong username or password** — the app reached Cardcom, but
 
 4. Register webhook in Cardcom: `https://www.getquickscribe.com/api/cardcom/webhook`
 5. Test with Cardcom test card `4580000000000000` (expiry/CVV per [Cardcom docs](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514)).
+6. **Invoices (optional):** enable the **Documents** model on your Cardcom terminal, set `CARDCOM_INVOICES=true` (default on in sandbox), run `migrations/add_cardcom_invoice_columns.sql`, then complete a sandbox purchase — Cardcom issues **TaxInvoiceAndReceipt** with the charge. See [Invoices](#invoices-tax-invoice--receipt) below.
 
 **Important:** `CARDCOM_SIMULATION=false` disables the green page. `CARDCOM_SANDBOX=true` marks sandbox mode in logs/status only; the API host is the same (`https://secure.cardcom.solutions/api/v11`).
 
@@ -92,6 +93,28 @@ PUBLIC_BASE_URL=https://www.getquickscribe.com
 ```
 
 Startup logs will show `Cardcom LIVE payments enabled`.
+
+---
+
+## Invoices (tax invoice + receipt)
+
+For **credit card checkout**, Cardcom expects the invoice on **`LowProfile/Create`** (not the standalone `Documents/CreateTaxInvoice` API, which is for cash/check/bank transfers or retroactive linking).
+
+QuickScribe sends a `Document` block when `CARDCOM_INVOICES=true` ( **default on in sandbox**, off in live unless you set the env var):
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `CARDCOM_INVOICES` | `true` in sandbox, `false` in live | Attach `Document` to checkout |
+| `CARDCOM_INVOICE_TYPE` | `TaxInvoiceAndReceipt` | חשבונית מס קבלה |
+| `CARDCOM_INVOICE_EMAIL` | `true` | Email invoice to signed-in user |
+
+**Cardcom merchant portal:** enable the **Documents** (מסמכים) business model on the terminal. Without it, payment may still succeed but `DocumentInfo` in `GetLpResult` will fail.
+
+**After payment:** `confirm-payment` returns `invoice_number`, `invoice_type`, and `invoice_url` when Cardcom provides them. Apply `migrations/add_cardcom_invoice_columns.sql` to persist them in Supabase.
+
+**Sandbox test:** deploy with sandbox credentials + `CARDCOM_INVOICES=true` → buy credits on `/` → check Koyeb logs for `cardcom invoice document` → in Cardcom portal, open the transaction document list → confirm email if `CARDCOM_INVOICE_EMAIL=true`.
+
+References: [Low Profile + Document](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514), [Create Tax invoice (standalone)](https://cardcomapi.zendesk.com/hc/he/articles/25360043043602).
 
 ---
 

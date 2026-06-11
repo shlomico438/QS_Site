@@ -60,6 +60,26 @@ def _cardcom_sandbox_mode() -> bool:
     return terminal == CARDCOM_SANDBOX_TERMINAL
 
 
+def _cardcom_invoices_enabled() -> bool:
+    """Issue TaxInvoiceAndReceipt via LowProfile/Create Document block."""
+    if _simulation_mode():
+        return False
+    flag = _env_flag('CARDCOM_INVOICES')
+    if flag is False:
+        return False
+    if flag is True:
+        return True
+    # Default on in Cardcom sandbox so merchants can test before live.
+    return _cardcom_sandbox_mode()
+
+
+def _cardcom_invoice_document_type() -> str:
+    return (
+        str(os.environ.get('CARDCOM_INVOICE_TYPE') or 'TaxInvoiceAndReceipt').strip()
+        or 'TaxInvoiceAndReceipt'
+    )
+
+
 def cardcom_runtime_status() -> dict:
     """Summary for logs / ops (no secrets)."""
     internal_sim = _simulation_mode()
@@ -73,6 +93,8 @@ def cardcom_runtime_status() -> dict:
             else ('sandbox' if _cardcom_sandbox_mode() else ('live' if api_enabled else 'off'))
         ),
         'sandbox': _cardcom_sandbox_mode(),
+        'invoices_enabled': _cardcom_invoices_enabled(),
+        'invoice_document_type': _cardcom_invoice_document_type(),
         'terminal_configured': _cardcom_terminal_number() is not None,
         'api_base': CARDCOM_API_BASE,
     }
@@ -92,6 +114,11 @@ def _log_cardcom_startup() -> None:
         )
     elif status['api_mode'] == 'live':
         logger.warning('Cardcom LIVE payments enabled — real charges')
+    if status.get('invoices_enabled'):
+        logger.info(
+            'Cardcom invoices: enabled document_type=%s',
+            status.get('invoice_document_type'),
+        )
     terminal = _cardcom_terminal_number()
     if _cardcom_sandbox_mode() and terminal and terminal != CARDCOM_SANDBOX_TERMINAL:
         logger.warning(
@@ -347,6 +374,127 @@ def _public_base(req) -> str:
     return str(sa._public_base_url(req) or '').rstrip('/')
 
 
+def _cardcom_bearer_token(req) -> str:
+    auth_header = req.headers.get('Authorization') or ''
+    if auth_header.startswith('Bearer '):
+        return auth_header.replace('Bearer ', '', 1).strip()
+    try:
+        body = req.get_json(silent=True) or {}
+        return str(body.get('access_token') or '').strip()
+    except Exception:
+        return ''
+
+
+def _cardcom_user_contact_from_request(req) -> dict:
+    """Signed-in user email/name for invoice Document block."""
+    token = _cardcom_bearer_token(req)
+    if not token:
+        return {}
+    try:
+        supabase_url, service_key, _headers = _supabase_deps()
+    except RuntimeError:
+        return {}
+    if not supabase_url or not service_key:
+        return {}
+    try:
+        r_user = requests.get(
+            f"{supabase_url.rstrip('/')}/auth/v1/user",
+            headers={'Authorization': f'Bearer {token}', 'apikey': service_key},
+            timeout=10,
+        )
+        if r_user.status_code != 200:
+            return {}
+        user_data = r_user.json() if r_user.text else {}
+        email = str(user_data.get('email') or '').strip()
+        meta = user_data.get('user_metadata') or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        name = str(
+            meta.get('full_name')
+            or meta.get('name')
+            or user_data.get('name')
+            or ''
+        ).strip()
+        if not name and email and '@' in email:
+            name = email.split('@', 1)[0]
+        return {'email': email, 'name': name}
+    except Exception as e:
+        logger.warning('cardcom user contact lookup failed: %s', e)
+        return {}
+
+
+def _cardcom_invoice_line_description(bundle: dict, is_he: bool) -> str:
+    minutes = int(bundle.get('credit_minutes') or 0)
+    if is_he:
+        return f'חבילת קרדיט QuickScribe — {minutes} דקות תמלול'
+    return f'QuickScribe credit bundle — {minutes} transcription minutes'
+
+
+def _cardcom_build_checkout_document(
+    bundle: dict,
+    bundle_id: str,
+    amount_ils: float,
+    contact: dict,
+    is_he: bool,
+) -> dict:
+    """Document block for LowProfile/Create (invoice at charge time)."""
+    doc: Dict[str, Any] = {
+        'DocumentTypeToCreate': _cardcom_invoice_document_type(),
+        'Products': [{
+            'ProductID': f'qs-{bundle_id}',
+            'Description': _cardcom_invoice_line_description(bundle, is_he),
+            'Quantity': 1,
+            'UnitCost': float(amount_ils),
+        }],
+    }
+    name = str((contact or {}).get('name') or '').strip()
+    email = str((contact or {}).get('email') or '').strip()
+    if name:
+        doc['Name'] = name[:100]
+    if email:
+        doc['Email'] = email
+        if _env_flag('CARDCOM_INVOICE_EMAIL', True) is not False:
+            doc['IsSendByEmail'] = True
+    ext_id = str((contact or {}).get('external_id') or '').strip()
+    if ext_id:
+        doc['ExternalId'] = ext_id[:64]
+    return doc
+
+
+def _cardcom_extract_document_info(lp_result: dict) -> dict:
+    doc = lp_result.get('DocumentInfo') if isinstance(lp_result, dict) else {}
+    if not isinstance(doc, dict):
+        doc = {}
+    tranz = lp_result.get('TranzactionInfo') if isinstance(lp_result, dict) else {}
+    if not isinstance(tranz, dict):
+        tranz = {}
+    invoice_number = doc.get('DocumentNumber')
+    if invoice_number is None:
+        invoice_number = tranz.get('DocumentNumber')
+    invoice_type = doc.get('DocumentType') or tranz.get('DocumentType') or ''
+    invoice_url = doc.get('DocumentUrl') or tranz.get('DocumentUrl') or ''
+    doc_rc = doc.get('ResponseCode')
+    out = {
+        'invoice_number': str(invoice_number).strip() if invoice_number is not None else '',
+        'invoice_type': str(invoice_type or '').strip(),
+        'invoice_url': str(invoice_url or '').strip(),
+    }
+    if doc_rc is not None and str(doc_rc) not in ('', '0'):
+        out['invoice_error'] = str(doc.get('Description') or f'Document ResponseCode {doc_rc}')
+    return out
+
+
+def _cardcom_invoice_fields_for_client(purchase: Optional[dict]) -> dict:
+    if not purchase:
+        return {}
+    out = {}
+    for key in ('invoice_number', 'invoice_type', 'invoice_url'):
+        val = str(purchase.get(key) or '').strip()
+        if val:
+            out[key] = val
+    return out
+
+
 def _bundle_for_id(bundle_id: str) -> Optional[dict]:
     import siteapp as sa
     return sa.STRIPE_CREDIT_BUNDLES.get(str(bundle_id or '').strip().lower())
@@ -400,6 +548,13 @@ def _cardcom_create_low_profile(user_id: str, bundle_id: str, locale: str, req) 
         'SuccessRedirectUrl': f"{base}{success_path}?cardcom_success=1&order_id={quote(order_id, safe='')}",
         'FailedRedirectUrl': f"{base}{success_path}?cardcom_cancelled=1",
     }
+    if _cardcom_invoices_enabled():
+        contact = _cardcom_user_contact_from_request(req)
+        contact['external_id'] = order_id
+        payload['Document'] = _cardcom_build_checkout_document(
+            bundle, bundle_id, amount_ils, contact, is_he,
+        )
+        logger.info('cardcom invoice document order=%s type=%s', order_id, _cardcom_invoice_document_type())
     resp = _cardcom_api_post('LowProfile/Create', payload)
     api_low = str(resp.get('LowProfileId') or low_profile_id).strip()
     pay_url = str(resp.get('Url') or '').strip()
@@ -455,6 +610,7 @@ def _cardcom_already_credited_result(order_id: str, purchase: dict) -> dict:
         'added_minutes': 0,
         'order_id': order_id,
         'credit_minutes': int((row or {}).get('credit_minutes') or 0),
+        **_cardcom_invoice_fields_for_client(purchase),
     }
 
 
@@ -549,18 +705,28 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
     if isinstance(tranz_info, dict) and tranz_info.get('TranzactionId'):
         tranz_id = tranz_info.get('TranzactionId')
 
+    invoice_patch = _cardcom_extract_document_info(result)
+    if invoice_patch.get('invoice_error'):
+        logger.warning(
+            'cardcom invoice not issued order=%s: %s',
+            order_id,
+            invoice_patch.pop('invoice_error'),
+        )
     _cardcom_purchase_update(order_id, {
         'status': 'paid',
         'tranzaction_id': tranz_id,
         'credited_at': _utc_now_iso(),
+        **{k: v for k, v in invoice_patch.items() if v},
     })
     row = sa._user_credits_add_minutes(user_id, minutes)
+    purchase_after = _cardcom_purchase_get(order_id) or purchase
     return {
         'ok': True,
         'already_credited': False,
         'added_minutes': minutes,
         'order_id': order_id,
         'credit_minutes': int((row or {}).get('credit_minutes') or 0),
+        **_cardcom_invoice_fields_for_client(purchase_after),
     }
 
 
