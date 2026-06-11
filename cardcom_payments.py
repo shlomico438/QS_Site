@@ -451,6 +451,36 @@ def _cardcom_normalize_tax_id(raw: str) -> str:
     return ''.join(ch for ch in str(raw or '') if ch.isdigit())[:9]
 
 
+def _cardcom_resolve_invoice_billing(user_id: str, billing: Optional[dict]) -> dict:
+    """Request body first, then saved user profile in Supabase."""
+    billing = billing if isinstance(billing, dict) else {}
+    tax_id = _cardcom_normalize_tax_id(billing.get('tax_id') or billing.get('invoice_tax_id'))
+    city = str(billing.get('city') or billing.get('invoice_city') or '').strip()
+    if tax_id and city:
+        return {'tax_id': tax_id, 'city': city}
+    import siteapp as sa
+    stored = sa._user_invoice_billing_get(user_id)
+    if stored:
+        return {
+            'tax_id': _cardcom_normalize_tax_id(stored.get('invoice_tax_id')),
+            'city': str(stored.get('invoice_city') or '').strip(),
+        }
+    return {'tax_id': tax_id, 'city': city}
+
+
+def _cardcom_persist_invoice_billing(user_id: str, billing: Optional[dict]) -> None:
+    import siteapp as sa
+    resolved = _cardcom_resolve_invoice_billing(user_id, billing)
+    tax_id = resolved.get('tax_id') or ''
+    city = resolved.get('city') or ''
+    if not tax_id or not city:
+        return
+    try:
+        sa._user_invoice_billing_save(user_id, tax_id, city)
+    except Exception as e:
+        logger.warning('cardcom invoice billing save failed user=%s: %s', user_id, e)
+
+
 def _cardcom_validate_invoice_billing(billing: Optional[dict]) -> dict:
     """Cardcom invoice terminals require TaxId (ת.ז./ח.פ.) and City (ישוב)."""
     billing = billing if isinstance(billing, dict) else {}
@@ -600,13 +630,15 @@ def _cardcom_create_low_profile(
         'FailedRedirectUrl': f"{base}{success_path}?cardcom_cancelled=1",
     }
     if _cardcom_invoices_enabled():
+        resolved_billing = _cardcom_resolve_invoice_billing(user_id, invoice_billing)
+        _cardcom_persist_invoice_billing(user_id, resolved_billing)
         contact = {
             'email': user.get('email') or '',
             'name': user.get('name') or '',
             'external_id': order_id,
         }
         payload['Document'] = _cardcom_build_checkout_document(
-            bundle, bundle_id, amount_ils, contact, is_he, invoice_billing,
+            bundle, bundle_id, amount_ils, contact, is_he, resolved_billing,
         )
         logger.info('cardcom invoice document order=%s type=%s', order_id, _cardcom_invoice_document_type())
     t_cardcom = time.monotonic()

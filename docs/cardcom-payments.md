@@ -114,7 +114,7 @@ QuickScribe sends a `Document` block when `CARDCOM_INVOICES=true` ( **default on
 
 **Sandbox test:** deploy with sandbox credentials + `CARDCOM_INVOICES=true` → buy credits on `/` → check Koyeb logs for `cardcom invoice document` → in Cardcom portal, open the transaction document list → confirm email if `CARDCOM_INVOICE_EMAIL=true`.
 
-**Billing fields:** Cardcom requires **ת.ז. / ח.פ.** (`TaxId`) and **ישוב** (`City`) on the invoice. The Hebrew checkout shows a short modal before redirect; values are sent as `invoice_tax_id` and `invoice_city` and cached in `localStorage` for repeat purchases.
+**Billing fields:** Cardcom requires **ת.ז. / ח.פ.** (`TaxId`) and **ישוב** (`City`) on the invoice. The Hebrew checkout shows a short modal before redirect (first time per account). Values are saved on the user in Supabase (`user_credits.invoice_tax_id`, `invoice_city` via `migrations/add_user_invoice_billing.sql`) and sync across devices. API: `GET` / `POST /api/user/invoice-billing`.
 
 References: [Low Profile + Document](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514), [Create Tax invoice (standalone)](https://cardcomapi.zendesk.com/hc/he/articles/25360043043602).
 

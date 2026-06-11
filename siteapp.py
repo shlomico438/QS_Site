@@ -3531,6 +3531,76 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES):
     return rows[0] if rows else payload
 
 
+def _normalize_invoice_tax_id(raw):
+    return ''.join(ch for ch in str(raw or '') if ch.isdigit())[:9]
+
+
+def _user_invoice_billing_get(user_id):
+    """Saved Cardcom invoice fields for cross-device checkout."""
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return None
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    uid = quote(user_id, safe='')
+    url = (
+        f"{supabase_url}/rest/v1/user_credits"
+        f"?user_id=eq.{uid}&select=invoice_tax_id,invoice_city&limit=1"
+    )
+    r = _supabase_http_request('GET', url, headers=headers)
+    if r.status_code != 200:
+        if r.status_code in (400, 404) and 'invoice_tax_id' in (r.text or ''):
+            return None
+        raise RuntimeError(r.text or f"Supabase invoice billing lookup HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    row = rows[0] if rows else None
+    if not row:
+        return None
+    tax_id = _normalize_invoice_tax_id(row.get('invoice_tax_id'))
+    city = str(row.get('invoice_city') or '').strip()
+    if not tax_id or not city:
+        return None
+    return {'invoice_tax_id': tax_id, 'invoice_city': city}
+
+
+def _user_invoice_billing_save(user_id, tax_id, city):
+    """Persist invoice billing on the user wallet row."""
+    user_id = str(user_id or '').strip()
+    tax_id = _normalize_invoice_tax_id(tax_id)
+    city = str(city or '').strip()[:100]
+    if not user_id:
+        raise ValueError('userId required')
+    if not tax_id or len(tax_id) < 5:
+        raise ValueError('ת.ז. / ח.פ. לא תקין')
+    if not city:
+        raise ValueError('ישוב (עיר) נדרש')
+    _user_credits_ensure_welcome(user_id)
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    uid = quote(user_id, safe='')
+    payload = {
+        'invoice_tax_id': tax_id,
+        'invoice_city': city,
+        'updated_at': datetime.utcnow().isoformat() + 'Z',
+    }
+    r = requests.patch(
+        f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
+        headers={**headers, 'Prefer': 'return=representation'},
+        json=payload,
+        timeout=15,
+    )
+    if r.status_code not in (200, 204):
+        raise RuntimeError(r.text or f"Supabase invoice billing save HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    row = rows[0] if rows else payload
+    return {
+        'invoice_tax_id': tax_id,
+        'invoice_city': city,
+        'saved': True,
+        'row': row,
+    }
+
+
 def _user_credits_add_minutes(user_id, minutes):
     """Add purchased minutes to the user's wallet."""
     user_id = str(user_id or '').strip()
@@ -4525,6 +4595,36 @@ def api_user_credits_ensure_welcome():
         })
     except Exception as e:
         logging.exception("api_user_credits_ensure_welcome failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/user/invoice-billing', methods=['GET', 'POST'])
+def api_user_invoice_billing():
+    """Get or save Cardcom invoice billing details (synced per user account)."""
+    try:
+        user_id = _supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        if request.method == 'GET':
+            row = _user_invoice_billing_get(user_id)
+            if not row:
+                return jsonify({"invoice_tax_id": None, "invoice_city": None}), 200
+            return jsonify(row), 200
+        data = request.get_json(silent=True) or {}
+        saved = _user_invoice_billing_save(
+            user_id,
+            data.get('invoice_tax_id') or data.get('tax_id'),
+            data.get('invoice_city') or data.get('city'),
+        )
+        return jsonify({
+            "invoice_tax_id": saved['invoice_tax_id'],
+            "invoice_city": saved['invoice_city'],
+            "ok": True,
+        }), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception("api_user_invoice_billing failed")
         return jsonify({"error": str(e)}), 500
 
 

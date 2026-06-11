@@ -801,6 +801,37 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             return loc.startsWith('en');
         };
         const invoiceBillingStorageKeys = { taxId: 'qs_invoice_tax_id', city: 'qs_invoice_city' };
+        const cacheInvoiceBillingLocal = (taxId, city) => {
+            try {
+                if (taxId) localStorage.setItem(invoiceBillingStorageKeys.taxId, taxId);
+                if (city) localStorage.setItem(invoiceBillingStorageKeys.city, city);
+            } catch (_) {}
+        };
+        const fetchServerInvoiceBilling = async (headers) => {
+            try {
+                const res = await fetch('/api/user/invoice-billing', { headers });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) return null;
+                const taxId = String(data.invoice_tax_id || '').replace(/\D/g, '').trim();
+                const city = String(data.invoice_city || '').trim();
+                if (!taxId || !city) return null;
+                return { invoice_tax_id: taxId, invoice_city: city };
+            } catch (_) {
+                return null;
+            }
+        };
+        const saveServerInvoiceBilling = async (headers, taxId, city) => {
+            try {
+                await fetch('/api/user/invoice-billing', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        invoice_tax_id: taxId,
+                        invoice_city: city,
+                    }),
+                });
+            } catch (_) {}
+        };
         let cardcomInvoicesEnabledCache = null;
         const cardcomCheckoutNeedsBilling = async () => {
             if (creditCheckoutUsesStripe()) return false;
@@ -825,19 +856,26 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             invoiceBillingModal.style.display = 'none';
             invoiceBillingModal.setAttribute('aria-hidden', 'true');
         };
-        const promptInvoiceBillingIfNeeded = () => new Promise((resolve) => {
+        const promptInvoiceBillingIfNeeded = (headers) => new Promise((resolve) => {
             void (async () => {
                 if (!(await cardcomCheckoutNeedsBilling())) {
                     resolve({});
                     return;
                 }
+                const serverBilling = headers ? await fetchServerInvoiceBilling(headers) : null;
+                if (serverBilling) {
+                    cacheInvoiceBillingLocal(serverBilling.invoice_tax_id, serverBilling.invoice_city);
+                    resolve(serverBilling);
+                    return;
+                }
                 let taxId = '';
                 let city = '';
                 try {
-                    taxId = String(localStorage.getItem(invoiceBillingStorageKeys.taxId) || '').trim();
+                    taxId = String(localStorage.getItem(invoiceBillingStorageKeys.taxId) || '').replace(/\D/g, '').trim();
                     city = String(localStorage.getItem(invoiceBillingStorageKeys.city) || '').trim();
                 } catch (_) {}
                 if (taxId && city) {
+                    if (headers) await saveServerInvoiceBilling(headers, taxId, city);
                     resolve({ invoice_tax_id: taxId, invoice_city: city });
                     return;
                 }
@@ -862,23 +900,23 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                     if (e.target === invoiceBillingModal) onCancel();
                 };
                 const onContinue = () => {
-                    const nextTaxId = String(invoiceTaxIdInput.value || '').replace(/\D/g, '').trim();
-                    const nextCity = String(invoiceCityInput.value || '').trim();
-                    if (!nextTaxId || nextTaxId.length < 5) {
-                        if (typeof showStatus === 'function') showStatus('נא להזין ת.ז. / ח.פ. תקין.', true, { duration: 4000 });
-                        return;
-                    }
-                    if (!nextCity) {
-                        if (typeof showStatus === 'function') showStatus('נא להזין ישוב (עיר).', true, { duration: 4000 });
-                        return;
-                    }
-                    try {
-                        localStorage.setItem(invoiceBillingStorageKeys.taxId, nextTaxId);
-                        localStorage.setItem(invoiceBillingStorageKeys.city, nextCity);
-                    } catch (_) {}
-                    cleanup();
-                    closeInvoiceBillingModal();
-                    resolve({ invoice_tax_id: nextTaxId, invoice_city: nextCity });
+                    void (async () => {
+                        const nextTaxId = String(invoiceTaxIdInput.value || '').replace(/\D/g, '').trim();
+                        const nextCity = String(invoiceCityInput.value || '').trim();
+                        if (!nextTaxId || nextTaxId.length < 5) {
+                            if (typeof showStatus === 'function') showStatus('נא להזין ת.ז. / ח.פ. תקין.', true, { duration: 4000 });
+                            return;
+                        }
+                        if (!nextCity) {
+                            if (typeof showStatus === 'function') showStatus('נא להזין ישוב (עיר).', true, { duration: 4000 });
+                            return;
+                        }
+                        cacheInvoiceBillingLocal(nextTaxId, nextCity);
+                        if (headers) await saveServerInvoiceBilling(headers, nextTaxId, nextCity);
+                        cleanup();
+                        closeInvoiceBillingModal();
+                        resolve({ invoice_tax_id: nextTaxId, invoice_city: nextCity });
+                    })();
                 };
                 invoiceBillingContinueBtn && invoiceBillingContinueBtn.addEventListener('click', onContinue);
                 invoiceBillingCancelBtn && invoiceBillingCancelBtn.addEventListener('click', onCancel);
@@ -899,7 +937,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 try { if (typeof window.toggleModal === 'function') window.toggleModal(true); } catch (_) {}
                 return;
             }
-            const billing = await promptInvoiceBillingIfNeeded();
+            const billing = await promptInvoiceBillingIfNeeded(headers);
             if (billing === null) return;
             const locale = (window.currentLocale || document.documentElement.lang || 'he');
             const useStripe = creditCheckoutUsesStripe();
