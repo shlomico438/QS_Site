@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
@@ -385,42 +386,58 @@ def _cardcom_bearer_token(req) -> str:
         return ''
 
 
-def _cardcom_user_contact_from_request(req) -> dict:
-    """Signed-in user email/name for invoice Document block."""
+def _cardcom_parse_supabase_user(user_data: dict) -> Optional[dict]:
+    if not isinstance(user_data, dict):
+        return None
+    user_id = str(user_data.get('id') or user_data.get('user', {}).get('id') or '').strip()
+    if not user_id:
+        return None
+    email = str(user_data.get('email') or '').strip()
+    meta = user_data.get('user_metadata') or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    name = str(
+        meta.get('full_name')
+        or meta.get('name')
+        or user_data.get('name')
+        or ''
+    ).strip()
+    if not name and email and '@' in email:
+        name = email.split('@', 1)[0]
+    return {'user_id': user_id, 'email': email, 'name': name}
+
+
+def _cardcom_authenticated_user(req) -> Optional[dict]:
+    """Single Supabase auth round-trip: user id + invoice contact fields."""
     token = _cardcom_bearer_token(req)
     if not token:
-        return {}
+        return None
     try:
         supabase_url, service_key, _headers = _supabase_deps()
     except RuntimeError:
-        return {}
+        return None
     if not supabase_url or not service_key:
-        return {}
+        return None
     try:
         r_user = requests.get(
             f"{supabase_url.rstrip('/')}/auth/v1/user",
             headers={'Authorization': f'Bearer {token}', 'apikey': service_key},
-            timeout=10,
+            timeout=8,
         )
         if r_user.status_code != 200:
-            return {}
-        user_data = r_user.json() if r_user.text else {}
-        email = str(user_data.get('email') or '').strip()
-        meta = user_data.get('user_metadata') or {}
-        if not isinstance(meta, dict):
-            meta = {}
-        name = str(
-            meta.get('full_name')
-            or meta.get('name')
-            or user_data.get('name')
-            or ''
-        ).strip()
-        if not name and email and '@' in email:
-            name = email.split('@', 1)[0]
-        return {'email': email, 'name': name}
+            return None
+        return _cardcom_parse_supabase_user(r_user.json() if r_user.text else {})
     except Exception as e:
-        logger.warning('cardcom user contact lookup failed: %s', e)
-        return {}
+        logger.warning('cardcom auth lookup failed: %s', e)
+        return None
+
+
+def _cardcom_user_contact_from_request(req) -> dict:
+    user = _cardcom_authenticated_user(req) or {}
+    return {
+        'email': user.get('email') or '',
+        'name': user.get('name') or '',
+    }
 
 
 def _cardcom_invoice_line_description(bundle: dict, is_he: bool) -> str:
@@ -430,12 +447,31 @@ def _cardcom_invoice_line_description(bundle: dict, is_he: bool) -> str:
     return f'QuickScribe credit bundle — {minutes} transcription minutes'
 
 
+def _cardcom_normalize_tax_id(raw: str) -> str:
+    return ''.join(ch for ch in str(raw or '') if ch.isdigit())[:9]
+
+
+def _cardcom_validate_invoice_billing(billing: Optional[dict]) -> dict:
+    """Cardcom invoice terminals require TaxId (ת.ז./ח.פ.) and City (ישוב)."""
+    billing = billing if isinstance(billing, dict) else {}
+    tax_id = _cardcom_normalize_tax_id(billing.get('tax_id') or billing.get('invoice_tax_id'))
+    city = str(billing.get('city') or billing.get('invoice_city') or '').strip()
+    if not tax_id:
+        raise ValueError('ת.ז. / ח.פ. נדרשים להפקת חשבונית.')
+    if len(tax_id) < 5:
+        raise ValueError('מספר ת.ז. / ח.פ. לא תקין.')
+    if not city:
+        raise ValueError('ישוב (עיר) נדרש להפקת חשבונית.')
+    return {'tax_id': tax_id, 'city': city[:100]}
+
+
 def _cardcom_build_checkout_document(
     bundle: dict,
     bundle_id: str,
     amount_ils: float,
     contact: dict,
     is_he: bool,
+    billing: Optional[dict] = None,
 ) -> dict:
     """Document block for LowProfile/Create (invoice at charge time)."""
     doc: Dict[str, Any] = {
@@ -458,6 +494,11 @@ def _cardcom_build_checkout_document(
     ext_id = str((contact or {}).get('external_id') or '').strip()
     if ext_id:
         doc['ExternalId'] = ext_id[:64]
+    normalized_billing = _cardcom_validate_invoice_billing(billing)
+    doc['TaxId'] = normalized_billing['tax_id']
+    doc['City'] = normalized_billing['city']
+    if _env_flag('CARDCOM_INVOICE_ALLOW_EDIT', True) is not False:
+        doc['IsAllowEditDocument'] = True
     return doc
 
 
@@ -500,10 +541,20 @@ def _bundle_for_id(bundle_id: str) -> Optional[dict]:
     return sa.STRIPE_CREDIT_BUNDLES.get(str(bundle_id or '').strip().lower())
 
 
-def _cardcom_create_low_profile(user_id: str, bundle_id: str, locale: str, req) -> dict:
+def _cardcom_create_low_profile(
+    user: dict,
+    bundle_id: str,
+    locale: str,
+    req,
+    invoice_billing: Optional[dict] = None,
+) -> dict:
+    user_id = str((user or {}).get('user_id') or '').strip()
+    if not user_id:
+        raise ValueError('Authorization required')
     bundle = _bundle_for_id(bundle_id)
     if not bundle:
         raise ValueError('Unknown credit bundle')
+    t0 = time.monotonic()
     order_id = _new_order_id()
     low_profile_id = _new_low_profile_id()
     amount_ils = float(bundle['amount_ils'])
@@ -523,9 +574,9 @@ def _cardcom_create_low_profile(user_id: str, bundle_id: str, locale: str, req) 
     }
     if sim_token:
         row['sim_token'] = sim_token
-    _cardcom_purchase_insert(row)
 
     if _simulation_mode():
+        _cardcom_purchase_insert(row)
         sim_q = f"order_id={quote(order_id, safe='')}&sim_token={quote(sim_token or '', safe='')}"
         sim_url = f"{base}/cardcom/sim-checkout?{sim_q}"
         logger.info('cardcom simulation checkout order=%s bundle=%s', order_id, bundle_id)
@@ -549,18 +600,31 @@ def _cardcom_create_low_profile(user_id: str, bundle_id: str, locale: str, req) 
         'FailedRedirectUrl': f"{base}{success_path}?cardcom_cancelled=1",
     }
     if _cardcom_invoices_enabled():
-        contact = _cardcom_user_contact_from_request(req)
-        contact['external_id'] = order_id
+        contact = {
+            'email': user.get('email') or '',
+            'name': user.get('name') or '',
+            'external_id': order_id,
+        }
         payload['Document'] = _cardcom_build_checkout_document(
-            bundle, bundle_id, amount_ils, contact, is_he,
+            bundle, bundle_id, amount_ils, contact, is_he, invoice_billing,
         )
         logger.info('cardcom invoice document order=%s type=%s', order_id, _cardcom_invoice_document_type())
+    t_cardcom = time.monotonic()
     resp = _cardcom_api_post('LowProfile/Create', payload)
+    cardcom_ms = int((time.monotonic() - t_cardcom) * 1000)
     api_low = str(resp.get('LowProfileId') or low_profile_id).strip()
     pay_url = str(resp.get('Url') or '').strip()
     if not pay_url:
         raise RuntimeError('Cardcom did not return payment URL')
-    _cardcom_purchase_update(order_id, {'low_profile_id': api_low})
+    row['low_profile_id'] = api_low
+    t_db = time.monotonic()
+    _cardcom_purchase_insert(row)
+    db_ms = int((time.monotonic() - t_db) * 1000)
+    total_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        'cardcom checkout ready order=%s cardcom_ms=%s db_ms=%s total_ms=%s invoices=%s',
+        order_id, cardcom_ms, db_ms, total_ms, _cardcom_invoices_enabled(),
+    )
     return {
         'url': pay_url,
         'order_id': order_id,
@@ -741,17 +805,22 @@ def register_cardcom_routes(app: Flask) -> None:
 
     @app.route('/api/cardcom/create-payment', methods=['POST'])
     def api_cardcom_create_payment():
-        import siteapp as sa
         try:
             if not _cardcom_enabled():
                 return jsonify({'error': 'Cardcom payments are not configured'}), 503
-            user_id = sa._supabase_user_id_from_request()
-            if not user_id:
+            user = _cardcom_authenticated_user(request)
+            if not user:
                 return jsonify({'error': 'Authorization required'}), 401
             data = request.get_json(silent=True) or {}
             bundle_id = str(data.get('bundle') or data.get('bundle_id') or 'standard').strip().lower()
             locale = str(data.get('locale') or '').strip().lower()
-            out = _cardcom_create_low_profile(user_id, bundle_id, locale, request)
+            invoice_billing = {
+                'tax_id': data.get('invoice_tax_id') or data.get('tax_id'),
+                'city': data.get('invoice_city') or data.get('city'),
+            }
+            out = _cardcom_create_low_profile(
+                user, bundle_id, locale, request, invoice_billing=invoice_billing,
+            )
             return jsonify(out), 200
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
