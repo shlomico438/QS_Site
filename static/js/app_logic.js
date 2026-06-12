@@ -3114,10 +3114,54 @@ function qsApplyTriggerCreditFields(triggerData) {
         if (typeof qsSyncUserCreditsUi === 'function') qsSyncUserCreditsUi();
         return;
     }
-    if (typeof qsRefreshUserCredits === 'function') {
-        void qsRefreshUserCredits();
+    // Reserve/verify responses include balance only — do not refresh nav credits mid-job.
+}
+
+/** Deduct wallet minutes in the background after transcript + GPT summary are on screen. */
+function qsDeferJobCreditsAfterDelivery(jobId, inputS3Key) {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
+    const run = async () => {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            const jid = String(jobId || localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+            if (!user || !jid) return;
+            const s3Key = String(inputS3Key || localStorage.getItem('lastS3Key') || '').trim();
+            const res = await fetch('/api/charge_job_credits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    userId: user.id,
+                    jobId: jid,
+                    input_s3_key: s3Key,
+                    segments: window.currentSegments || [],
+                    isMedical: false,
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                qsApplyTriggerCreditFields(data);
+                const used = Number(data.credit_minutes_used);
+                if (Number.isFinite(used) && used > 0) {
+                    console.info('[qs-credits] deferred charge applied', {
+                        jobId: jid,
+                        credit_minutes_used: used,
+                        credit_minutes: data.credit_minutes
+                    });
+                }
+            } else {
+                console.warn('[qs-credits] deferred charge failed', res.status, data);
+            }
+        } catch (e) {
+            console.warn('[qs-credits] deferred charge error', e);
+        }
+    };
+    if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(() => { void run(); }, { timeout: 8000 });
+    } else {
+        setTimeout(() => { void run(); }, 50);
     }
 }
+window.qsDeferJobCreditsAfterDelivery = qsDeferJobCreditsAfterDelivery;
 
 async function qsSupabaseAccessToken() {
     try {
@@ -12274,20 +12318,10 @@ document.addEventListener('DOMContentLoaded', () => {
             window._handleJobUpdateInFlight = null;
             window._lastProcessedJobId = jobId;
         }
-        try {
-            const charged = Number(rawResult.credit_minutes);
-            const used = Number(rawResult.credit_minutes_used);
-            if (Number.isFinite(charged)) {
-                window.__QS_USER_CREDIT_MINUTES = charged;
-                qsSyncUserCreditsUi();
-            }
-            if (typeof qsRefreshUserCredits === 'function') {
-                void qsRefreshUserCredits({ silent: true });
-            }
-            if (Number.isFinite(used) && used > 0) {
-                console.info('[qs-credits] charged for job', { jobId, credit_minutes_used: used, credit_minutes: charged });
-            }
-        } catch (_) {}
+        qsDeferJobCreditsAfterDelivery(
+            jobId,
+            inputS3KeyForJob || localStorage.getItem('lastS3Key') || ''
+        );
     };
 
 function groupSegmentsBySpeaker(segments, enableGlue = true) {

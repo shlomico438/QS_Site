@@ -4005,7 +4005,7 @@ def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=
 def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=False, request_data=None):
     """
     Probe uploaded file length and verify wallet balance before GPU work.
-    Does not deduct — minutes are charged in _charge_job_credits after success (same file length).
+    Does not deduct — minutes are charged via /api/charge_job_credits after the client shows GPT summary.
     Idempotent per job_id (skips re-check if credit_minutes_used already set on job).
     """
     if not _credits_gate_applies(is_medical):
@@ -4201,8 +4201,87 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         "credit_minutes": balance,
         "file_duration_seconds": duration_sec,
         "duration_seconds": duration_sec,
-        "charged_at": "gpu_callback_success",
+        "charged_at": "post_gpt_delivery",
     }
+
+
+def _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=None):
+    """Keep file-duration billing hints until the client calls /api/charge_job_credits."""
+    jid = str(job_id or '').strip()
+    uid = str(user_id or '').strip()
+    key = str(input_s3_key or '').strip()
+    if not jid or not uid or not key:
+        return
+    if _job_is_medical_for_credits(key, pending_info):
+        return
+    if not _credits_billing_enabled():
+        return
+    ctx = {"user_id": uid, "input_s3_key": key}
+    if isinstance(pending_info, dict):
+        for k in ("bucket", "credit_file_duration_sec", "credit_required_minutes", "is_medical"):
+            if pending_info.get(k) is not None:
+                ctx[k] = pending_info[k]
+    pending_credit_charge_context[jid] = ctx
+
+
+@app.route('/api/charge_job_credits', methods=['POST'])
+def api_charge_job_credits():
+    """Deduct wallet minutes after transcript + GPT summary are shown (idempotent per job)."""
+    try:
+        data = request.json or {}
+        user_id = str(data.get('userId') or data.get('user_id') or '').strip()
+        job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
+        input_s3_key = str(data.get('input_s3_key') or data.get('s3Key') or '').strip()
+        segments = data.get('segments') or []
+        is_medical = bool(data.get('isMedical'))
+        if not user_id or not job_id:
+            return jsonify({"error": "userId and jobId required"}), 400
+        if is_medical or _job_is_medical_for_credits(input_s3_key):
+            wallet = _user_credits_get(user_id)
+            return jsonify({
+                "ok": True,
+                "skipped": True,
+                "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+            })
+        if not _credits_billing_enabled():
+            wallet = _user_credits_get(user_id)
+            return jsonify({
+                "ok": True,
+                "skipped": True,
+                "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+            })
+        ctx = pending_credit_charge_context.pop(job_id, None) or {}
+        if not ctx:
+            pinfo = pending_job_info.get(job_id)
+            if isinstance(pinfo, dict) and pinfo.get('input_s3_key'):
+                _stash_deferred_credit_context(
+                    job_id,
+                    pinfo.get('user_id') or user_id,
+                    pinfo.get('input_s3_key'),
+                    pending_info=pinfo,
+                )
+                ctx = pending_credit_charge_context.pop(job_id, None) or {}
+        if not input_s3_key:
+            input_s3_key = str(ctx.get('input_s3_key') or '').strip()
+        pending_info = dict(ctx) if ctx else None
+        if not isinstance(segments, list):
+            segments = []
+        credit_info = _charge_job_credits(
+            user_id,
+            job_id,
+            segments,
+            input_s3_key,
+            pending_info=pending_info,
+        )
+        if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
+            return jsonify({**credit_info, "ok": False}), 402
+        out = {"ok": True, **_credit_fields_for_api(credit_info or {})}
+        if isinstance(credit_info, dict) and credit_info.get('already_charged'):
+            out['already_charged'] = True
+        return jsonify(out)
+    except Exception as e:
+        logging.exception("charge_job_credits failed")
+        return jsonify({"error": str(e)}), 500
 
 
 def _stripe_credit_purchase_get(session_id):
@@ -4910,6 +4989,8 @@ pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detect
 STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
+# Billing context kept until client finishes GPT + summary (see /api/charge_job_credits).
+pending_credit_charge_context = {}  # job_id -> { user_id, input_s3_key, bucket, credit_file_duration_sec, ... }
 vocal_separation_jobs = {}  # job_id -> pending RunPod CPU vocal separation + trigger handoff
 _medical_learn_async_jobs = {}  # learn_job_id -> {status, result|error, started_at}
 _medical_learn_async_lock = threading.Lock()
@@ -7443,10 +7524,9 @@ def api_export_docx():
 
 
 # --- GPU Callback: ack fast to worker; persist in background (see docs/GPU_CALLBACK_API.md) ---
-def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base, pending_info=None, credit_info=None):
+def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base, pending_info=None):
     """S3 persist, DB timings, email — runs after HTTP 200 ack so the worker is not blocked."""
     result_s3_key = None
-    credit_info = None
     try:
         if input_s3_key:
             transcript_payload = {"segments": segments}
@@ -7469,10 +7549,6 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             data['result'] = result_dict
             job_results_cache[job_id] = data
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
-            if credit_info and isinstance(data, dict):
-                data['credit_minutes_used'] = credit_info.get('credit_minutes_used')
-                data['credit_minutes'] = credit_info.get('credit_minutes')
-                job_results_cache[job_id] = data
             _schedule_runpod_min_workers(0)
     except Exception as e:
         logging.exception("gpu_callback background save failed for %s", job_id)
@@ -7546,12 +7622,10 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         logging.warning("transcription ready email flow failed for %s: %s", job_id, _email_err)
 
     logging.info(
-        "gpu_callback background done job_id=%s result_s3_key=%s persist_sec=%.2f credit_minutes_used=%s balance=%s",
+        "gpu_callback background done job_id=%s result_s3_key=%s persist_sec=%.2f",
         job_id,
         (result_s3_key or '')[:80],
         now - t0,
-        (credit_info or {}).get('credit_minutes_used'),
-        (credit_info or {}).get('credit_minutes'),
     )
     try:
         refreshed = _completed_job_payload_from_db(job_id)
@@ -7630,17 +7704,7 @@ def gpu_callback():
     data['segments'] = segments
     data['status'] = 'completed'
 
-    credit_info = _charge_job_credits(
-        user_id,
-        job_id,
-        segments,
-        input_s3_key,
-        result=result,
-        pending_info=pending,
-    )
-    if credit_info:
-        data['credit_minutes_used'] = credit_info.get('credit_minutes_used')
-        data['credit_minutes'] = credit_info.get('credit_minutes')
+    _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=pending)
 
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
@@ -7660,7 +7724,6 @@ def gpu_callback():
             "t0": t0,
             "public_base": public_base,
             "pending_info": pending,
-            "credit_info": credit_info,
         },
         daemon=True,
     )
