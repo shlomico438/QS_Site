@@ -6491,24 +6491,27 @@ def _translation_system_prompt(target_lang, *, for_segments=False):
     target = str(target_lang or '').strip().lower()
     if target.startswith('en'):
         prompt = (
-            "Translate the following Hebrew transcript into natural, fluent English.\n\n"
-            "Requirements:\n"
-            "- Preserve the speaker's meaning, tone, and emotion.\n"
-            "- Use idiomatic English rather than literal word-for-word translation.\n"
-            "- Correct obvious transcription errors when the intended meaning is clear.\n"
-            "- Keep the conversational style.\n"
-            "- Do not add information that is not present in the original text."
+            "You are a professional simultaneous interpreter and editor.\n\n"
+            "Convert the following Hebrew spoken transcript into natural English.\n\n"
+            "Rules:\n"
+            "- Produce fluent, natural English as if originally spoken in English.\n"
+            "- Do NOT translate word-by-word.\n"
+            "- Preserve meaning, tone, and intent, not structure.\n"
+            "- Merge fragmented sentences when needed for readability.\n"
+            "- Fix obvious transcription errors when context makes the intended meaning clear.\n"
+            "- Remove repetition unless it adds emphasis.\n"
+            "- Use natural spoken English (not literal or formal translation).\n"
+            "- Keep timestamps as-is."
         )
         if for_segments:
             prompt += (
-                "\n\nTranslate each timed subtitle/transcript item to English. "
-                "Keep the same ids; do not summarize or omit segments. "
+                "\n\nTranslate each timed subtitle/transcript item. "
+                "Keep the same ids; do not drop segments. "
                 'Return ONLY valid JSON with this exact shape: {"results":[{"id":number,"text":string}]}.'
             )
         else:
             prompt += (
-                "\n\nPreserve paragraph breaks, line breaks, section headings, speaker labels, numbering, "
-                "and timestamps if present. Do not wrap the answer in markdown. "
+                "\n\nDo not wrap the answer in markdown. "
                 'Return ONLY valid JSON with this exact shape: {"translation":"..."}.'
             )
         return prompt

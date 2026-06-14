@@ -6367,17 +6367,45 @@ function getMedicalActiveTabTextForCopy() {
     return String(buildTranscriptPlainBodyForExport() || '').trim();
 }
 
+function getDocumentSourceForTranslation() {
+    const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : null;
+    const fromFmt = fmt ? String(fmt.clean_transcript || '').trim() : '';
+    if (fromFmt) return fromFmt;
+    return String(buildTranscriptPlainBodyForExport() || '').trim();
+}
+
+function applyTranslatedDocumentText(translatedDocText) {
+    const clean = String(translatedDocText || '').trim();
+    if (!clean) return false;
+    const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : {};
+    window.currentFormattedDoc = { ...prev, clean_transcript: clean };
+    window._qsDocPreferSegmentsAfterEdit = false;
+    return true;
+}
+
+function rerenderTranscriptAfterTranslation() {
+    if (typeof window._qsRerenderTranscriptView === 'function') {
+        window._qsRerenderTranscriptView();
+        return;
+    }
+    if (typeof renderTranscriptFromCues === 'function') {
+        renderTranscriptFromCues(window.currentSegments || []);
+        return;
+    }
+    if (typeof window.render === 'function') window.render();
+}
+
 function getCurrentTextForTranslation() {
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
         const medicalText = String(getMedicalActiveTabTextForCopy() || '').trim();
         if (medicalText) return medicalText;
     }
-    const exportText = String(buildTranscriptPlainBodyForExport() || '').trim();
-    if (exportText) return exportText;
-    const formatted = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
-        ? String(window.currentFormattedDoc.clean_transcript || '').trim()
-        : '';
-    if (formatted) return formatted;
+    const docSource = getDocumentSourceForTranslation();
+    if (docSource) return docSource;
     const transcriptWindow = document.getElementById('transcript-window');
     return String((transcriptWindow && (transcriptWindow.innerText || transcriptWindow.textContent)) || '').trim();
 }
@@ -6644,25 +6672,43 @@ async function runUserRequestedTranslation() {
             translateBtn.textContent = '…';
         }
         showTranslationProgressBar(target);
-        const data = canTranslateSegments
-            ? await translateSegmentsInClientBatches(window.currentSegments, target, isMedical)
-            : await translatePlainTextInClientBatches(sourceText, target, isMedical);
-        if (canTranslateSegments && Array.isArray(data.segments) && data.segments.length) {
-            window.currentSegments = data.segments;
+        if (canTranslateSegments) {
+            const docSourceHe = getDocumentSourceForTranslation();
+            const [segmentResult, docResult] = await Promise.all([
+                translateSegmentsInClientBatches(window.currentSegments, target, isMedical),
+                docSourceHe
+                    ? translatePlainTextInClientBatches(docSourceHe, target, isMedical)
+                    : Promise.resolve(null),
+            ]);
+            if (!Array.isArray(segmentResult.segments) || !segmentResult.segments.length) {
+                throw new Error('Translation returned empty segments');
+            }
+            window.currentSegments = segmentResult.segments;
             window.currentWords = null;
             window.currentCaptions = null;
             window.currentTranslationTargetLang = target;
-            window.currentTranslationText = String(buildTranscriptPlainBodyForExport() || '').trim();
-            if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments);
+            let translatedDoc = docResult && String(docResult.translation || '').trim();
+            if (!translatedDoc) {
+                translatedDoc = String(buildTranscriptPlainBodyForExport() || '').trim();
+            }
+            if (translatedDoc) {
+                applyTranslatedDocumentText(translatedDoc);
+                window.currentTranslationText = translatedDoc;
+            } else {
+                window.currentTranslationText = String(buildTranscriptPlainBodyForExport() || '').trim();
+            }
+            rerenderTranscriptAfterTranslation();
             if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(true);
             if (typeof showStatus === 'function') showStatus(`Translated to ${target}.`, false, { duration: 5000 });
             return;
         }
+        const data = await translatePlainTextInClientBatches(sourceText, target, isMedical);
         const translated = String(data.translation || '').trim();
         if (!translated) throw new Error('Translation returned empty text');
         window.currentTranslationText = translated;
         window.currentTranslationTargetLang = target;
-        renderPlainTextInTranscriptWindow(translated, `Translation: ${target}`);
+        applyTranslatedDocumentText(translated);
+        rerenderTranscriptAfterTranslation();
         if (typeof showStatus === 'function') showStatus(`Translated to ${target}.`, false, { duration: 5000 });
     } catch (e) {
         console.warn('[translate_text] failed', e);
