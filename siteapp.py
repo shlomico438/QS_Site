@@ -6486,6 +6486,45 @@ def api_translate_segments():
         _translate_in_flight -= 1
 
 
+def _translation_system_prompt(target_lang, *, for_segments=False):
+    """GPT instructions for /api/translate_text and segment translation."""
+    target = str(target_lang or '').strip().lower()
+    if target.startswith('en'):
+        prompt = (
+            "Translate the following Hebrew transcript into natural, fluent English.\n\n"
+            "Requirements:\n"
+            "- Preserve the speaker's meaning, tone, and emotion.\n"
+            "- Use idiomatic English rather than literal word-for-word translation.\n"
+            "- Correct obvious transcription errors when the intended meaning is clear.\n"
+            "- Keep the conversational style.\n"
+            "- Do not add information that is not present in the original text."
+        )
+        if for_segments:
+            prompt += (
+                "\n\nTranslate each timed subtitle/transcript item to English. "
+                "Keep the same ids; do not summarize or omit segments. "
+                'Return ONLY valid JSON with this exact shape: {"results":[{"id":number,"text":string}]}.'
+            )
+        else:
+            prompt += (
+                "\n\nPreserve paragraph breaks, line breaks, section headings, speaker labels, numbering, "
+                "and timestamps if present. Do not wrap the answer in markdown. "
+                'Return ONLY valid JSON with this exact shape: {"translation":"..."}.'
+            )
+        return prompt
+    prompt = (
+        "You are a professional translation engine. "
+        f"Translate the user's text to {target or 'the requested target language'}. "
+        "Preserve meaning, paragraph breaks, line breaks, section headings, speaker labels, numbering, and timestamps if present. "
+        "Do not summarize, omit, add facts, explain, or wrap the answer in markdown. "
+    )
+    if for_segments:
+        prompt += 'Return ONLY valid JSON with this exact shape: {"results":[{"id":number,"text":string}]}.'
+    else:
+        prompt += 'Return ONLY valid JSON with this exact shape: {"translation":"..."}.'
+    return prompt
+
+
 def _translate_text_via_openai(text, target_lang):
     """Translate a complete transcript/summary to target_lang using GPT, preserving structure."""
     raw_text = str(text or "").strip()
@@ -6502,21 +6541,15 @@ def _translate_text_via_openai(text, target_lang):
     read_retries = max(0, int(os.environ.get('POST_TRANSLATION_READ_RETRIES', '1') or 1))
     model = (os.environ.get('POST_TRANSLATION_MODEL') or 'gpt-4o-mini').strip()
 
-    system_prompt = (
-        "You are a professional translation engine. "
-        "Translate the user's text to the requested target language. "
-        "Preserve meaning, paragraph breaks, line breaks, section headings, speaker labels, numbering, and timestamps if present. "
-        "Do not summarize, omit, add facts, explain, or wrap the answer in markdown. "
-        "Return ONLY valid JSON with this exact shape: {\"translation\":\"...\"}."
-    )
+    system_prompt = _translation_system_prompt(target, for_segments=False)
 
     translated_parts = []
     for idx, chunk in enumerate(chunks):
         user_prompt = (
             f"Target language: {target}\n"
             f"Chunk {idx + 1} of {len(chunks)}.\n\n"
-            "Translate this text exactly, preserving structure:\n\n"
-            f"{chunk}"
+            + ("Hebrew transcript:\n\n" if target.startswith('en') else "Translate this text, preserving structure:\n\n")
+            + f"{chunk}"
         )
         parsed = _openai_chat_json_completion(
             system_prompt,
@@ -6567,13 +6600,7 @@ def _translate_segments_for_user_via_openai(segments, target_lang):
     model = (os.environ.get('POST_TRANSLATION_MODEL') or 'gpt-4o-mini').strip()
     chunks = [clean_segments[i:i + chunk_size] for i in range(0, len(clean_segments), chunk_size)]
 
-    system_prompt = (
-        "You are a professional subtitle/transcript translation engine. "
-        "Translate every item to the requested target language. "
-        "Preserve meaning, speaker labels, punctuation intent, and timing metadata by keeping ids unchanged. "
-        "Do not summarize, omit, add facts, or explain. "
-        "Return ONLY valid JSON with this exact shape: {\"results\":[{\"id\":number,\"text\":string}]}."
-    )
+    system_prompt = _translation_system_prompt(target, for_segments=True)
 
     def _translate_chunk(chunk):
         payload_items = [
@@ -6582,8 +6609,12 @@ def _translate_segments_for_user_via_openai(segments, target_lang):
         ]
         user_prompt = (
             f"Target language: {target}\n\n"
-            "Translate each item. Return the same ids.\n\n"
-            f"{json.dumps({'results': payload_items}, ensure_ascii=False)}"
+            + (
+                "Translate each Hebrew transcript item below. Return the same ids.\n\n"
+                if target.startswith('en')
+                else "Translate each item. Return the same ids.\n\n"
+            )
+            + f"{json.dumps({'results': payload_items}, ensure_ascii=False)}"
         )
         parsed = _openai_chat_json_completion(
             system_prompt,
