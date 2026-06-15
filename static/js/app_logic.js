@@ -10037,6 +10037,11 @@ function setTranscriptActionButtonsVisible(visible) {
         document.body.classList.toggle('has-transcript-actions', !!visible);
         document.body.classList.toggle('qs-transcript-present', !!visible || qsHasTranscriptResult());
     } catch (_) {}
+    if (visible) {
+        try {
+            if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
+        } catch (_) {}
+    }
     qsSyncAppChromeBodyClasses();
 }
 
@@ -13473,9 +13478,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     
     window.showSubtitleStyleSelector = function() {
         if (!document.body.classList.contains('has-transcript-actions')) return;
+        if (window.uploadWasVideo !== true) return;
         const selector = document.getElementById('subtitle-style-selector');
         const video = document.getElementById('main-video');
-        if (selector && video && window.currentSegments && window.currentSegments.length > 0) {
+        const videoWrapper = document.getElementById('video-wrapper');
+        const videoVisible = !!(videoWrapper && videoWrapper.classList.contains('visible'));
+        if (selector && video && videoVisible && window.currentSegments && window.currentSegments.length > 0) {
             try { selector.querySelector('#caption-style-timeline-ui')?.remove(); } catch (_) {}
             selector.style.display = 'flex';
             selector.classList.remove('is-open');
