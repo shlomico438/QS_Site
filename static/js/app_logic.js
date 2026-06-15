@@ -9725,6 +9725,7 @@ function stopProcessingStateUI(reason) {
     }
     window.processingPhaseIndex = 0;
     if (panel) panel.style.display = 'none';
+    try { if (typeof window.qsStopFeatureShowcase === 'function') window.qsStopFeatureShowcase(); } catch (_) {}
     qsSetProcessingOverlayActive(false);
     const twWrap = document.querySelector('.transcript-area-wrap');
     const twOuter = document.querySelector('.transcription-wrapper');
@@ -9765,6 +9766,32 @@ function _processingIntroThreeSentencesEn(loggedIn) {
     return loggedIn ? '' : 'Sign in to the site so we can notify you by email when it is ready.';
 }
 
+function qsShowProcessingShowcase() {
+    const panel = document.getElementById('processing-state-panel');
+    if (!panel) return;
+    const isMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+    const showShowcase = !isMedical;
+    if (!showShowcase && !isMedical) return;
+
+    if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
+
+    panel.style.display = 'flex';
+    const showcaseEl = document.getElementById('qs-feature-showcase');
+    if (showcaseEl) showcaseEl.hidden = !showShowcase;
+    if (showShowcase && typeof window.qsStartFeatureShowcase === 'function') {
+        try { window.qsStartFeatureShowcase(); } catch (_) {}
+    } else if (typeof window.qsStopFeatureShowcase === 'function') {
+        try { window.qsStopFeatureShowcase(); } catch (_) {}
+    }
+    const introEl = document.getElementById('processing-state-intro');
+    if (showShowcase && introEl) {
+        introEl.textContent = '';
+        introEl.style.display = 'none';
+    }
+    qsSetProcessingOverlayActive(true);
+    qsSyncAppChromeBodyClasses();
+}
+
 function startProcessingStateUI() {
     const panel = document.getElementById('processing-state-panel');
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
@@ -9783,9 +9810,7 @@ function startProcessingStateUI() {
     if (spinnerWrap) spinnerWrap.style.display = 'none';
     if (phaseEl) phaseEl.style.display = 'none';
     window.processingPhaseIndex = 0;
-    const showOverlayPanel = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
-    panel.style.display = showOverlayPanel ? 'flex' : 'none';
-    qsSetProcessingOverlayActive(true);
+    qsShowProcessingShowcase();
     qsSyncAppChromeBodyClasses();
     if (controlsRow) controlsRow.style.display = 'none';
 
@@ -9797,25 +9822,31 @@ function startProcessingStateUI() {
     }
 
     if (introEl) {
-        const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-        const setIntro = (loggedIn) => {
-            const text = isHe
-                ? _processingIntroThreeSentencesHe(loggedIn)
-                : _processingIntroThreeSentencesEn(loggedIn);
-            introEl.textContent = text;
-            introEl.style.display = text ? '' : 'none';
-        };
-        setIntro(false);
-        (async () => {
-            let loggedIn = false;
-            try {
-                if (typeof supabase !== 'undefined' && supabase.auth && typeof supabase.auth.getSession === 'function') {
-                    const { data } = await supabase.auth.getSession();
-                    loggedIn = !!(data && data.session && data.session.user);
-                }
-            } catch (_) {}
-            setIntro(loggedIn);
-        })();
+        const isMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+        if (!isMedical) {
+            introEl.textContent = '';
+            introEl.style.display = 'none';
+        } else {
+            const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+            const setIntro = (loggedIn) => {
+                const text = isHe
+                    ? _processingIntroThreeSentencesHe(loggedIn)
+                    : _processingIntroThreeSentencesEn(loggedIn);
+                introEl.textContent = text;
+                introEl.style.display = text ? '' : 'none';
+            };
+            setIntro(false);
+            (async () => {
+                let loggedIn = false;
+                try {
+                    if (typeof supabase !== 'undefined' && supabase.auth && typeof supabase.auth.getSession === 'function') {
+                        const { data } = await supabase.auth.getSession();
+                        loggedIn = !!(data && data.session && data.session.user);
+                    }
+                } catch (_) {}
+                setIntro(loggedIn);
+            })();
+        }
     }
 }
 
@@ -9935,6 +9966,9 @@ function showProgressBar() {
     qsHideMedicalWarmupBanner();
     qsShowPipelineBarChrome();
     qsSetUnifiedProgressPhase('upload', 0);
+    if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+        qsShowProcessingShowcase();
+    }
     const wrap = document.getElementById('qs-pipeline-phase-wrap');
     if (wrap) {
         setTimeout(() => { wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 100);

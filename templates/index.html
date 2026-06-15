@@ -556,6 +556,28 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
+                <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}">
+                    <div class="qs-feature-showcase-header">
+                        <p class="qs-feature-showcase-kicker" data-i18n="showcase_kicker">בינתיים, הנה מה שמחכה לכם</p>
+                        <h2 class="qs-feature-showcase-title" data-i18n="showcase_title">כלים חזקים — מוכנים ברגע שהתמלול יסתיים</h2>
+                        <p class="qs-feature-showcase-subtitle" data-i18n="showcase_subtitle">ערכו, עצבו, תרגמו וייצאו — הכל במקום אחד.</p>
+                    </div>
+                    <div class="qs-feature-showcase-carousel">
+                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-prev" aria-label="Previous slide">‹</button>
+                        <div class="qs-feature-showcase-card">
+                            <div class="qs-feature-showcase-media">
+                                <span class="qs-feature-showcase-slide-badge">Aa</span>
+                                <img class="qs-feature-showcase-image" src="{{ url_for('static', filename='images/showcase/subtitle-styling.png') }}" alt="" loading="lazy" decoding="async">
+                            </div>
+                            <div class="qs-feature-showcase-copy">
+                                <h3 class="qs-feature-showcase-slide-title"></h3>
+                                <p class="qs-feature-showcase-slide-body"></p>
+                            </div>
+                        </div>
+                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-next" aria-label="Next slide">›</button>
+                    </div>
+                    <div class="qs-feature-showcase-dots" role="tablist" aria-label="Feature slides"></div>
+                </div>
                 <p id="processing-state-intro" class="processing-state-primary"></p>
                 <div id="processing-unified-progress" class="processing-unified-progress" style="display:none;" aria-hidden="true">
                     <div id="qs-unified-phase-label" class="processing-unified-label">העלאה</div>

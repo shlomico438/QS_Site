@@ -219,6 +219,22 @@ window.translations = {
         pipeline_upload: "העלאה",
         pipeline_transcribe: "תמלול",
         pipeline_summary: "יצירת סיכום",
+        showcase_kicker: "בינתיים, הנה מה שמחכה לכם",
+        showcase_title: "כלים חזקים — מוכנים ברגע שהתמלול יסתיים",
+        showcase_subtitle: "ערכו, עצבו, תרגמו וייצאו — הכל במקום אחד.",
+        showcase_dot_label: "שקופית",
+        showcase_slide_styling_badge: "עיצוב",
+        showcase_slide_styling_title: "עיצוב כתוביות מקצועי",
+        showcase_slide_styling_body: "בחרו מיקום על המסך, צבע וסגנון גופן — TikTok Bold, Clean Pro או Cinematic — כדי שהכתוביות ייראו בדיוק כמו שאתם רוצים.",
+        showcase_slide_editing_badge: "עריכה",
+        showcase_slide_editing_title: "עריכת תמלול עם דיוק בזמן",
+        showcase_slide_editing_body: "ערכו את הטקסט ישירות על ציר הזמן. גררו את ידיות ההתחלה והסיום כדי לסנכרן כל שורה לשנייה.",
+        showcase_slide_translation_badge: "תרגום",
+        showcase_slide_translation_title: "תמיכה רב-לשונית",
+        showcase_slide_translation_body: "תרגמו את התמלול לאנגלית, עברית, ערבית, רוסית, צרפתית, ספרדית, גרמנית, איטלקית ועוד — בלחיצה אחת.",
+        showcase_slide_export_badge: "ייצוא",
+        showcase_slide_export_title: "ייצוא בכל הפורמטים שצריך",
+        showcase_slide_export_body: "תמלול מלא, סיכום ישיבה, וידאו עם כתוביות צרובות, וקבצי SRT/VTT לעריכה חיצונית — אפשר לבחור כמה שרוצים.",
         upload_confirm_title: "אישור העלאת קובץ",
         upload_confirm_submit: "אישור והתחל תמלול",
         upload_confirm_unknown_file: "קובץ שנבחר",
@@ -515,6 +531,22 @@ window.translations = {
         pipeline_upload: "Uploading",
         pipeline_transcribe: "Transcribing",
         pipeline_summary: "Summary creation",
+        showcase_kicker: "While you wait, here is what is ready for you",
+        showcase_title: "Powerful tools — ready when your transcript is",
+        showcase_subtitle: "Edit, style, translate, and export — all in one place.",
+        showcase_dot_label: "Slide",
+        showcase_slide_styling_badge: "Styling",
+        showcase_slide_styling_title: "Professional subtitle styling",
+        showcase_slide_styling_body: "Choose on-screen position, color, and font preset — TikTok Bold, Clean Pro, or Cinematic — so captions look exactly the way you want.",
+        showcase_slide_editing_badge: "Editing",
+        showcase_slide_editing_title: "Edit transcripts with precise timing",
+        showcase_slide_editing_body: "Edit text directly on the timeline. Drag the start and end handles to sync every line to the second.",
+        showcase_slide_translation_badge: "Translate",
+        showcase_slide_translation_title: "Multilingual support",
+        showcase_slide_translation_body: "Translate your transcript into English, Hebrew, Arabic, Russian, French, Spanish, German, Italian, and more — in one click.",
+        showcase_slide_export_badge: "Export",
+        showcase_slide_export_title: "Export in every format you need",
+        showcase_slide_export_body: "Full transcript, meeting summary, video with burned-in captions, and SRT/VTT files for external editing — pick as many as you like.",
         upload_confirm_title: "Confirm File Upload",
         upload_confirm_submit: "Confirm & Transcribe",
         upload_confirm_unknown_file: "Selected file",
@@ -726,4 +758,7 @@ window.applyTranslations = function() {
         const key = el.getAttribute('data-i18n-aria-label');
         if (key) el.setAttribute('aria-label', window.t(key));
     });
+    try {
+        if (typeof window.qsRefreshFeatureShowcaseI18n === 'function') window.qsRefreshFeatureShowcaseI18n();
+    } catch (_) {}
 };
