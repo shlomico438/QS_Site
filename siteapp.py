@@ -3214,7 +3214,7 @@ def _normalize_formatted_dict_for_storage(formatted):
         "clean_transcript": str(formatted.get("clean_transcript") or "").strip(),
         "overview": str(formatted.get("overview") or "").strip(),
         "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
-        "action_items": [str(p).strip() for p in (formatted.get("action_items") or []) if str(p).strip()],
+        "action_items": _normalize_action_items_list(formatted.get("action_items")),
     }
     for mk in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
         if mk in formatted:
@@ -3444,8 +3444,7 @@ def _stripe_api(method, path, **kwargs):
     return r.json() if r.text else {}
 
 
-def _supabase_user_id_from_request():
-    """Return authenticated Supabase user id from Bearer token, or None."""
+def _supabase_bearer_token_from_request():
     auth_header = request.headers.get('Authorization') or ''
     token = auth_header.replace('Bearer ', '').strip() if auth_header.startswith('Bearer ') else ''
     if not token:
@@ -3453,6 +3452,12 @@ def _supabase_user_id_from_request():
             token = str((request.json or {}).get('access_token') or '').strip()
         except Exception:
             token = ''
+    return token or None
+
+
+def _supabase_auth_user_from_request():
+    """Return authenticated Supabase auth user payload from Bearer token, or None."""
+    token = _supabase_bearer_token_from_request()
     if not token:
         return None
     supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
@@ -3468,9 +3473,37 @@ def _supabase_user_id_from_request():
         return None
     try:
         user_data = r_user.json()
-        return str(user_data.get('id') or user_data.get('user', {}).get('id') or '').strip() or None
+        return user_data if isinstance(user_data, dict) else None
     except Exception:
         return None
+
+
+def _supabase_user_id_from_request():
+    """Return authenticated Supabase user id from Bearer token, or None."""
+    user_data = _supabase_auth_user_from_request()
+    if not user_data:
+        return None
+    return str(user_data.get('id') or user_data.get('user', {}).get('id') or '').strip() or None
+
+
+def _user_display_name_from_auth_payload(user_data):
+    """Best-effort display name from Supabase auth user payload."""
+    if not isinstance(user_data, dict):
+        return None
+    meta = user_data.get('user_metadata') or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    name = str(meta.get('full_name') or meta.get('name') or '').strip()
+    if not name:
+        given = str(meta.get('given_name') or '').strip()
+        family = str(meta.get('family_name') or '').strip()
+        name = ' '.join(part for part in (given, family) if part).strip() or given
+    if not name:
+        email = str(user_data.get('email') or '').strip()
+        if email and '@' in email:
+            local = email.split('@', 1)[0]
+            name = (local[:1].upper() + local[1:]) if local else ''
+    return name or None
 
 
 def _user_credits_get(user_id):
@@ -3480,7 +3513,7 @@ def _user_credits_get(user_id):
     from urllib.parse import quote
     supabase_url, _service_key, headers = _supabase_rest_config()
     uid = quote(user_id, safe='')
-    url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}&select=user_id,credit_minutes,welcome_granted,updated_at&limit=1"
+    url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}&select=user_id,credit_minutes,welcome_granted,user_name,updated_at&limit=1"
     r = _supabase_http_request('GET', url, headers=headers)
     if r.status_code != 200:
         raise RuntimeError(r.text or f"Supabase user_credits lookup HTTP {r.status_code}")
@@ -3488,13 +3521,57 @@ def _user_credits_get(user_id):
     return rows[0] if rows else None
 
 
-def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES):
+def _user_credits_sync_user_name(user_id, user_name):
+    """Persist display name on the user wallet row when it changes."""
+    user_id = str(user_id or '').strip()
+    user_name = str(user_name or '').strip()
+    if not user_id or not user_name:
+        return None
+    existing = _user_credits_get(user_id)
+    if existing and str(existing.get('user_name') or '').strip() == user_name:
+        return existing
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    uid = quote(user_id, safe='')
+    payload = {
+        "user_name": user_name,
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    if not existing:
+        payload.update({
+            "user_id": user_id,
+            "credit_minutes": 0,
+            "welcome_granted": False,
+        })
+        r = requests.post(
+            f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
+            headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    else:
+        r = requests.patch(
+            f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
+            headers={**headers, "Prefer": "return=representation"},
+            json=payload,
+            timeout=15,
+        )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"Supabase user_credits name sync HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else payload
+
+
+def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_name=None):
     """Idempotent welcome pack grant (matches DB trigger/backfill logic)."""
     user_id = str(user_id or '').strip()
     if not user_id:
         raise ValueError("userId required")
+    user_name = str(user_name or '').strip() or None
     existing = _user_credits_get(user_id)
     if existing and existing.get('welcome_granted'):
+        if user_name:
+            return _user_credits_sync_user_name(user_id, user_name) or existing
         return existing
     supabase_url, _service_key, headers = _supabase_rest_config()
     if not existing:
@@ -3504,6 +3581,8 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES):
             "welcome_granted": True,
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
+        if user_name:
+            payload["user_name"] = user_name
         url = f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id"
         r = requests.post(
             url,
@@ -3520,6 +3599,8 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES):
             "welcome_granted": True,
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
+        if user_name:
+            payload["user_name"] = user_name
         url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}"
         r = requests.patch(
             url,
@@ -4642,6 +4723,36 @@ def api_user_credits_check_upload():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/analytics/event', methods=['POST'])
+def api_analytics_event():
+    """Best-effort product analytics (server log). No PII required."""
+    try:
+        data = request.get_json(silent=True) or {}
+        event = str(data.get('event') or data.get('name') or '').strip()
+        if not event:
+            return jsonify({"error": "event required"}), 400
+        props = data.get('properties') if isinstance(data.get('properties'), dict) else {}
+        user_id = _supabase_user_id_from_request()
+        job_id = str(
+            props.get('job_id')
+            or props.get('jobId')
+            or data.get('job_id')
+            or data.get('jobId')
+            or ''
+        ).strip() or None
+        logging.info(
+            "analytics_event event=%s user_id=%s job_id=%s props=%s",
+            event,
+            user_id or '',
+            job_id or '',
+            json.dumps(props, ensure_ascii=False)[:2000],
+        )
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        logging.warning("api_analytics_event failed: %s", e)
+        return jsonify({"ok": False}), 200
+
+
 @app.route('/api/user/credits', methods=['GET'])
 def api_user_credits():
     """Return the signed-in user's remaining transcription minutes."""
@@ -4665,13 +4776,19 @@ def api_user_credits():
 def api_user_credits_ensure_welcome():
     """Ensure the one-time welcome credit pack exists for the signed-in user."""
     try:
-        user_id = _supabase_user_id_from_request()
+        auth_user = _supabase_auth_user_from_request()
+        if not auth_user:
+            return jsonify({"error": "Authorization required"}), 401
+        user_id = str(auth_user.get('id') or auth_user.get('user', {}).get('id') or '').strip()
         if not user_id:
             return jsonify({"error": "Authorization required"}), 401
-        row = _user_credits_ensure_welcome(user_id)
+        body = request.get_json(silent=True) or {}
+        user_name = str(body.get('user_name') or '').strip() or _user_display_name_from_auth_payload(auth_user)
+        row = _user_credits_ensure_welcome(user_id, user_name=user_name)
         return jsonify({
             "credit_minutes": int((row or {}).get('credit_minutes') or 0),
             "welcome_granted": bool((row or {}).get('welcome_granted')),
+            "user_name": (row or {}).get('user_name'),
             "granted_minutes": WELCOME_CREDIT_MINUTES,
         })
     except Exception as e:
@@ -5987,9 +6104,83 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
                 2 * (attempt + 1),
             )
             time.sleep(min(12, 2 * (attempt + 1)))
+def _normalize_action_item_entry(item):
+    """Normalize GPT action_items (string or {task, owner}) to a display/storage string."""
+    if isinstance(item, dict):
+        task = str(item.get('task') or '').strip()
+        owner = str(item.get('owner') or '').strip()
+        if task and owner:
+            return f"{task} ({owner})"
+        return task or owner
+    return str(item or '').strip()
+
+
+def _normalize_action_items_list(items):
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in items:
+        norm = _normalize_action_item_entry(item)
+        if norm:
+            out.append(norm)
+    return out
+
+
+def _openai_chat_text_completion(system_prompt, user_prompt, timeout_sec, read_retries=0, model_name=None, temperature=0.2):
+    """POST chat completions; return plain-text message content."""
+    api_key = (os.environ.get('GPT_API_KEY') or os.environ.get('OPENAI_API_KEY') or '').strip()
+    if not api_key:
+        raise RuntimeError("GPT_API_KEY missing")
+    model = (model_name or os.environ.get('GPT_MODEL') or 'gpt-4.1-mini').strip()
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    if _openai_model_supports_custom_temperature(model):
+        payload["temperature"] = temperature
+    read_t = max(60, int(timeout_sec))
+    connect_t = min(30, max(10, read_t // 8))
+    timeout_tuple = (connect_t, read_t)
+    last_timeout_exc = None
+    for attempt in range(read_retries + 1):
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=timeout_tuple,
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(f"OpenAI API {resp.status_code}: {(resp.text or '')[:500]}")
+            data = resp.json()
+            content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            if not content:
+                raise RuntimeError("OpenAI returned empty content")
+            content = re.sub(r'^```(?:text)?\s*', '', content, flags=re.IGNORECASE)
+            content = re.sub(r'```$', '', content).strip()
+            return content
+        except requests.exceptions.ReadTimeout as e:
+            last_timeout_exc = e
+            if attempt >= read_retries:
+                raise RuntimeError(
+                    f"OpenAI read timed out after {read_t}s (connect {connect_t}s), "
+                    f"{read_retries + 1} attempt(s)."
+                ) from e
+            logging.warning(
+                "OpenAI ReadTimeout cleanup attempt %s/%s; retrying in %ss",
+                attempt + 1,
+                read_retries + 1,
+                2 * (attempt + 1),
+            )
+            time.sleep(min(12, 2 * (attempt + 1)))
     raise RuntimeError(f"OpenAI read timed out: {last_timeout_exc}") from last_timeout_exc
 
-# Oral Hebrew: "…, אז …" / "…. אז …" is common in speech but not in written clinical prose.
 _SPOKEN_AZ_AFTER_PUNCT_RE = re.compile(r'([\.,])\s*אז\s+')
 
 
@@ -6182,6 +6373,122 @@ def _truncate_transcript_for_unified_gpt(transcript_text):
     )
 
 
+def _format_output_lang_label(target_lang='he'):
+    lang_hint = str(target_lang or 'he').strip().lower()[:8]
+    want_hebrew = lang_hint.startswith('he')
+    return ('Hebrew' if want_hebrew else str(target_lang or 'English')), lang_hint, want_hebrew
+
+
+def _format_summary_focused_openai(
+    transcript_text,
+    target_lang='he',
+    gpt_model=None,
+    timeout_sec=None,
+    read_retries=None,
+):
+    """One OpenAI call: overview + key_points + action_items only (no transcript cleanup)."""
+    transcript_text = str(transcript_text or "").strip()
+    if not transcript_text:
+        raise RuntimeError("empty transcript")
+    if timeout_sec is None:
+        timeout_sec = int(
+            os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
+            or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '180')
+            or 180
+        )
+    if read_retries is None:
+        read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
+    output_lang_label, lang_hint, want_hebrew = _format_output_lang_label(target_lang)
+    system_prompt = (
+        "You analyze transcripts and return ONLY valid JSON. "
+        "Do not include markdown fences."
+    )
+    user_prompt = (
+        "You are analyzing a transcript.\n\n"
+        f"Create a concise summary in {output_lang_label}.\n\n"
+        "Requirements:\n\n"
+        "* Focus on decisions, conclusions, insights, commitments, and important facts.\n"
+        "* Ignore filler conversation, greetings, repetitions, and small talk.\n"
+        "* Keep the output concise.\n"
+        "* Do not include information that is not supported by the transcript.\n\n"
+        "Return valid JSON only:\n\n"
+        "{\n"
+        '"overview": "2-3 sentence summary",\n'
+        '"key_points": [\n'
+        '"up to 5 important points"\n'
+        "],\n"
+        '"action_items": [\n'
+        "{\n"
+        '"task": "action description",\n'
+        '"owner": "person or role if known, otherwise empty string"\n'
+        "}\n"
+        "]\n"
+        "}\n\n"
+        f"Output language: {output_lang_label}.\n\n"
+        f"Language hint: {lang_hint}\n\n"
+        "Transcript:\n\n"
+        f"{transcript_text}"
+    )
+    parsed = _openai_chat_json_completion(
+        system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
+    )
+    overview = str((parsed or {}).get("overview") or "").strip()
+    key_points = (parsed or {}).get("key_points")
+    if not isinstance(key_points, list):
+        key_points = []
+    key_points = [str(p).strip() for p in key_points if str(p).strip()][:5]
+    action_items = _normalize_action_items_list((parsed or {}).get("action_items"))
+    overview, key_points = _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew)
+    return {
+        "overview": overview,
+        "key_points": key_points,
+        "action_items": action_items,
+    }
+
+
+def _format_transcript_cleanup_openai(
+    transcript_text,
+    target_lang='he',
+    gpt_model=None,
+    timeout_sec=None,
+    read_retries=None,
+):
+    """One OpenAI call: light punctuation/STT cleanup; plain text only."""
+    transcript_text = str(transcript_text or "").strip()
+    if not transcript_text:
+        raise RuntimeError("empty transcript")
+    if timeout_sec is None:
+        timeout_sec = int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '180') or 180)
+    if read_retries is None:
+        read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
+    output_lang_label, lang_hint, _want_hebrew = _format_output_lang_label(target_lang)
+    system_prompt = (
+        "You edit transcripts. Return plain text only. "
+        "Do not include markdown fences or JSON."
+    )
+    user_prompt = (
+        "You are editing a transcript.\n\n"
+        "Requirements:\n\n"
+        "* Fix punctuation.\n"
+        "* Correct obvious transcription mistakes.\n"
+        "* Preserve the original wording and meaning.\n"
+        "* Do not summarize.\n"
+        "* Do not omit information.\n"
+        "* Do not add information.\n"
+        "* Keep paragraph structure when possible.\n"
+        "* Do not rewrite sentences for style.\n\n"
+        f"Output language: {output_lang_label}.\n\n"
+        f"Language hint: {lang_hint}\n\n"
+        "Transcript:\n\n"
+        f"{transcript_text}"
+    )
+    clean = _openai_chat_text_completion(
+        system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
+    )
+    clean = _wrap_text_to_max_chars(str(clean or "").strip())
+    return {"clean_transcript": clean}
+
+
 def _format_unified_transcript_openai(
     transcript_text,
     target_lang='he',
@@ -6282,10 +6589,7 @@ def _format_unified_transcript_openai(
     if not isinstance(key_points, list):
         key_points = []
     key_points = [str(p).strip() for p in key_points if str(p).strip()]
-    action_items = (parsed or {}).get("action_items")
-    if not isinstance(action_items, list):
-        action_items = []
-    action_items = [str(p).strip() for p in action_items if str(p).strip()]
+    action_items = _normalize_action_items_list((parsed or {}).get("action_items"))
     overview, key_points = _maybe_translate_summary_to_hebrew(overview, key_points, want_hebrew)
     return {
         "clean_transcript": clean_transcript,
@@ -6862,9 +7166,11 @@ def _format_request_is_music_context(data, job_id=None):
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export.
 
-    Default (no mode): one GPT call does Task 1 (grammar/clean) + Task 2 (summary) together.
-    mode=summary_only: same unified call (raw transcript; very long input is truncated server-side).
-    mode=clean_chunk: legacy grammar-only chunk (deprecated; prefer default).
+    mode=summary: summary + action items only (standard jobs; faster time-to-value).
+    mode=cleanup: transcript cleanup only (lazy, on Transcript tab).
+    Default (no mode): medical → unified clean+summary; standard → summary only.
+    mode=summary_only: legacy alias for summary (was unified; now summary-focused).
+    mode=clean_chunk: legacy grammar-only chunk (deprecated).
     """
     t0 = time.time()
     data = request.json or {}
@@ -6908,13 +7214,65 @@ def api_format_transcript_summary():
             logging.warning("format_transcript_summary clean_chunk failed: %s", e)
             return jsonify({"error": str(e)}), 500
 
-    if mode == 'summary_only':
+    def _apply_summary_timing(elapsed):
+        timing_job_id = req_job_id
+        timing_user_id = req_user_id
+        if not timing_job_id:
+            last_job, callback_at, last_user_id = _get_last_callback_for_gpt()
+            if last_job and callback_at is not None and (time.time() - callback_at) < 600:
+                timing_job_id = last_job
+                timing_user_id = timing_user_id or last_user_id
+        if timing_job_id:
+            _update_job_timings(timing_job_id, user_id=timing_user_id, gpt_format_sec=elapsed)
+
+    def _run_summary_focused(raw):
+        summ_input = _truncate_transcript_for_unified_gpt(raw)
+        summary_timeout = int(
+            os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
+            or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '180')
+            or 180
+        )
+        return _format_summary_focused_openai(
+            summ_input,
+            target_lang=target_lang,
+            timeout_sec=summary_timeout,
+            read_retries=read_retries,
+        )
+
+    def _run_cleanup_only(raw):
+        cleanup_timeout = int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '180') or 180)
+        return _format_transcript_cleanup_openai(
+            raw,
+            target_lang=target_lang,
+            timeout_sec=cleanup_timeout,
+            read_retries=read_retries,
+        )
+
+    if mode == 'cleanup':
+        raw = str(data.get('text') or '').strip()
+        if not raw:
+            return jsonify({"error": "No transcript text provided"}), 400
+        try:
+            t_cleanup = time.time()
+            out = _run_cleanup_only(raw)
+            elapsed = time.time() - t_cleanup
+            _apply_format_timing(elapsed)
+            return jsonify({
+                "clean_transcript": out.get("clean_transcript") or "",
+                "cleanup_generation_time": round(float(elapsed), 3),
+                "gpt_format_sec": round(float(elapsed), 3),
+            }), 200
+        except Exception as e:
+            logging.warning("format_transcript_summary cleanup failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    if mode in ('summary', 'summary_only'):
         raw = str(data.get('text') or '').strip()
         if not raw:
             return jsonify({"error": "No transcript text provided"}), 400
         if is_medical and _should_bypass_medical_gpt_format(raw):
             elapsed = time.time() - t0
-            _apply_format_timing(elapsed)
+            _apply_summary_timing(elapsed)
             base = _medical_minimal_format_payload(raw, target_lang=target_lang)
             return jsonify({
                 "clean_transcript": base.get("clean_transcript", ""),
@@ -6923,40 +7281,47 @@ def api_format_transcript_summary():
                 "medical_chief_complaint": base.get("medical_chief_complaint", ""),
                 "medical_examination_transcript": base.get("medical_examination_transcript", ""),
                 "medical_patient_recommendations": base.get("medical_patient_recommendations", ""),
+                "summary_generation_time": round(float(elapsed), 3),
                 "gpt_format_sec": round(float(elapsed), 3),
                 "format_guardrail": "medical_short_transcript_bypass",
             }), 200
-        summ_input = _truncate_transcript_for_unified_gpt(raw)
-        summary_timeout = int(
-            os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
-            or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270')
-            or 270
-        )
         try:
-            out = _format_summary_only_openai(
-                summ_input,
-                target_lang,
-                summary_timeout,
-                read_retries,
-                is_medical=is_medical,
-                is_music=is_music_format,
-                user_id=req_user_id,
-            )
-            elapsed = time.time() - t0
-            _apply_format_timing(elapsed)
+            t_summary = time.time()
+            if is_medical:
+                summ_input = _truncate_transcript_for_unified_gpt(raw)
+                summary_timeout = int(
+                    os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
+                    or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270')
+                    or 270
+                )
+                out = _format_summary_only_openai(
+                    summ_input,
+                    target_lang,
+                    summary_timeout,
+                    read_retries,
+                    is_medical=True,
+                    is_music=is_music_format,
+                    user_id=req_user_id,
+                )
+            else:
+                out = _run_summary_focused(raw)
+            elapsed = time.time() - t_summary
+            _apply_summary_timing(elapsed)
             payload = {
-                "clean_transcript": out.get("clean_transcript") or "",
                 "overview": out.get("overview") or "",
                 "key_points": out.get("key_points") or [],
+                "action_items": out.get("action_items") or [],
+                "summary_generation_time": round(float(elapsed), 3),
                 "gpt_format_sec": round(float(elapsed), 3),
             }
             if is_medical:
+                payload["clean_transcript"] = out.get("clean_transcript") or ""
                 for k in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
                     if k in out:
                         payload[k] = out[k]
             return jsonify(payload), 200
         except Exception as e:
-            logging.warning("format_transcript_summary summary_only failed: %s", e)
+            logging.warning("format_transcript_summary summary failed: %s", e)
             return jsonify({"error": str(e)}), 500
 
     raw_text = str(data.get('text') or '').strip()
@@ -6977,13 +7342,22 @@ def api_format_transcript_summary():
             out['gpt_format_sec'] = round(float(elapsed), 3)
             out['format_guardrail'] = 'medical_short_transcript_bypass'
             return jsonify(out), 200
-        out = _format_transcript_and_summary_via_openai(
-            raw_text,
-            target_lang=target_lang,
-            is_medical=is_medical,
-            is_music=is_music_format,
-            user_id=req_user_id,
-        )
+        if is_medical or is_music_format:
+            out = _format_transcript_and_summary_via_openai(
+                raw_text,
+                target_lang=target_lang,
+                is_medical=is_medical,
+                is_music=is_music_format,
+                user_id=req_user_id,
+            )
+        else:
+            t_summary = time.time()
+            out = _run_summary_focused(raw_text)
+            elapsed = time.time() - t_summary
+            out['summary_generation_time'] = round(float(elapsed), 3)
+            out['gpt_format_sec'] = round(float(elapsed), 3)
+            _apply_summary_timing(elapsed)
+            return jsonify(out), 200
         elapsed = time.time() - t0
         _apply_format_timing(elapsed)
         out['gpt_format_sec'] = round(float(elapsed), 3)
@@ -7523,7 +7897,7 @@ def api_export_docx():
             else:
                 overview   = str(fmt.get('overview') or '').strip()
                 key_points = [str(p).strip() for p in (fmt.get('key_points') or []) if str(p).strip()]
-                action_items = [str(p).strip() for p in (fmt.get('action_items') or []) if str(p).strip()]
+                action_items = _normalize_action_items_list(fmt.get('action_items'))
                 lines = []
                 lines.append('סקירה:')
                 lines.append(overview or 'N/A')

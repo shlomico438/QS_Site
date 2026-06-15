@@ -3810,12 +3810,16 @@ async function qsEnsureWelcomeCredits() {
         const { data: { session } } = await supabase.auth.getSession();
         const token = session && session.access_token ? session.access_token : '';
         if (!token) return null;
+        const user = session && session.user ? session.user : null;
+        const info = user && typeof getAuthUserDisplayInfo === 'function' ? getAuthUserDisplayInfo(user) : null;
+        const user_name = info && info.displayName && info.displayName !== 'Account' ? info.displayName : null;
         const res = await fetch('/api/user/credits/ensure-welcome', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
+            body: JSON.stringify(user_name ? { user_name } : {}),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -4741,6 +4745,9 @@ async function loadUserMenuProfile(user) {
             const { displayName: d, email: em } = getAuthUserDisplayInfo(userToShow);
             nameInput.value = d === 'Account' ? '' : d;
             emailInput.value = em || '';
+            if (typeof qsEnsureWelcomeCredits === 'function') {
+                qsEnsureWelcomeCredits().catch((err) => console.warn('profile name sync to user_credits failed:', err));
+            }
         } catch (e) {
             if (messageEl) {
                 const msg = (e && (e.message || e.error_description || e.msg)) || (typeof window.t === 'function' ? window.t('save_failed') : 'Save failed');
@@ -5560,6 +5567,7 @@ async function initOpenInApp(jobId) {
                     if (trFmt) {
                         window.currentFormattedDoc = trFmt;
                         window._qsDocPreferSegmentsAfterEdit = false;
+                        if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
                     }
                     const cleanLen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
                     console.log('[word-edit] open-in-app: formatted in transcript JSON', {
@@ -6152,6 +6160,16 @@ function _medicalMinimalFormattedDocFromTranscript(sourceText) {
     });
 }
 
+function normalizeActionItemEntry(p) {
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+        const task = String(p.task || '').trim();
+        const owner = String(p.owner || '').trim();
+        if (task && owner) return `${task} (${owner})`;
+        return task || owner;
+    }
+    return String(p || '').trim();
+}
+
 function normalizeFormattedFields(f) {
     if (!f || typeof f !== 'object') return null;
     const out = {
@@ -6161,7 +6179,7 @@ function normalizeFormattedFields(f) {
             ? f.key_points.map((p) => String(p || '').trim()).filter(Boolean)
             : [],
         action_items: Array.isArray(f.action_items)
-            ? f.action_items.map((p) => String(p || '').trim()).filter(Boolean)
+            ? f.action_items.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
             : []
     };
     if (
@@ -6212,8 +6230,17 @@ function extractFormattedFromJobPayload(payload) {
  * so export_docx receives formatted. Logs explain misses for debugging.
  */
 async function hydrateFormattedFromSavedTranscript() {
-    const hasClean = !!(window.currentFormattedDoc && String(window.currentFormattedDoc.clean_transcript || '').trim());
-    if (hasClean) return true;
+    const fmtMem = window.currentFormattedDoc;
+    const hasClean = !!(fmtMem && String(fmtMem.clean_transcript || '').trim());
+    const hasSummary = hasStandardFormattedSummary();
+    if (hasClean && hasSummary) {
+        window._qsCleanupDone = true;
+        return true;
+    }
+    if (hasClean) {
+        window._qsCleanupDone = true;
+        return true;
+    }
     try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) {
@@ -6248,11 +6275,21 @@ async function hydrateFormattedFromSavedTranscript() {
         const tr = await fetch(urlJson.url).then((r) => r.json());
         const trFmt = pickFormattedFromObject(tr);
         const clen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
-        if (trFmt && clen > 0) {
-            window.currentFormattedDoc = trFmt;
+        if (trFmt) {
+            const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : {};
+            window.currentFormattedDoc = normalizeFormattedFields({ ...prev, ...trFmt });
             window._qsDocPreferSegmentsAfterEdit = false;
-            console.log('[export] hydrated formatted from S3 (clean_transcript length=%s)', clen);
-            return true;
+            if (clen > 0) {
+                window._qsCleanupDone = true;
+                console.log('[export] hydrated formatted from S3 (clean_transcript length=%s)', clen);
+                return true;
+            }
+            if (hasStandardFormattedSummary()) {
+                console.log('[export] hydrated summary from S3 (no clean_transcript yet)');
+                return true;
+            }
         }
         const topKeys = tr && typeof tr === 'object' ? Object.keys(tr) : [];
         console.info(
@@ -7123,7 +7160,67 @@ function renderMedicalTrainingPanel(container) {
     }
 }
 
-async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
+async function qsTrackEvent(event, properties) {
+    try {
+        const props = { ...(properties || {}) };
+        const jobId = String(localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+        if (jobId && !props.job_id) props.job_id = jobId;
+        const headers = { 'Content-Type': 'application/json' };
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session && session.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+        } catch (_) {}
+        fetch('/api/analytics/event', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ event: String(event || '').trim(), properties: props }),
+            keepalive: true,
+        }).catch(() => {});
+    } catch (_) {}
+}
+window.qsTrackEvent = qsTrackEvent;
+
+function hasCleanTranscript() {
+    const fmt = window.currentFormattedDoc;
+    return !!(fmt && String(fmt.clean_transcript || '').trim());
+}
+
+function qsTranscriptCleanupBannerHtml() {
+    if (!window._qsCleanupInFlight) return '';
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const msg = T('transcript_cleanup_in_progress') || 'Improving transcript readability…';
+    return `<div id="qs-cleanup-banner" class="qs-cleanup-banner" role="status" style="margin:0 0 10px;padding:8px 12px;border-radius:8px;background:#eff6ff;color:#1e40af;font-size:13px;line-height:1.4;">${msg.replace(/</g, '&lt;')}</div>`;
+}
+
+async function qsPersistFormattedDocToS3() {
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
+            String(localStorage.getItem('lastS3Key') || '').trim();
+        if (!user || !s3Key || !(window.currentSegments || []).length) return;
+        const saveFmtRes = await fetch('/api/save_job_result', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userId: user.id,
+                input_s3_key: s3Key,
+                segments: window.currentSegments,
+                words: window.currentWords || undefined,
+                captions: window.currentCaptions || undefined,
+                formatted: window.currentFormattedDoc,
+                stage: 'gpt',
+                isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
+            })
+        });
+        if (saveFmtRes.ok) {
+            await syncJobResultS3KeyFromSaveResponse(saveFmtRes, localStorage.getItem('lastJobDbId'));
+        }
+    } catch (e) {
+        console.warn('[GPT] save formatted payload failed:', e);
+    }
+}
+
+async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId) {
     const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
     const userId = await qsCurrentUserId();
     const base = () => ({
@@ -7131,9 +7228,122 @@ async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
         jobId: jobId || undefined,
         userId: userId || undefined,
         isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
+        mode: 'summary',
         ...(hint ? { input_s3_key: hint } : {}),
     });
-    // One server request: GPT runs grammar/clean + summary in the same prompt (faster than N+1 chunk flow).
+    const t0 = performance.now();
+    const res = await fetch('/api/format_transcript_summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...base(), text: fullText })
+    });
+    const fmt = await res.json().catch(() => ({}));
+    const elapsedMs = Math.round(performance.now() - t0);
+    const summarySec = Number(fmt && fmt.summary_generation_time);
+    qsTrackEvent('summary_generation_time', {
+        duration_ms: elapsedMs,
+        summary_generation_time: Number.isFinite(summarySec) ? summarySec : undefined,
+        ok: !!(res.ok && fmt && !fmt.error),
+    });
+    return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt: fmt && !fmt.error ? normalizeFormattedFields(fmt) : fmt };
+}
+
+async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId) {
+    const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
+    const userId = await qsCurrentUserId();
+    const base = () => ({
+        target_lang: targetLang,
+        jobId: jobId || undefined,
+        userId: userId || undefined,
+        isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
+        mode: 'cleanup',
+        ...(hint ? { input_s3_key: hint } : {}),
+    });
+    const t0 = performance.now();
+    const res = await fetch('/api/format_transcript_summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...base(), text: fullText })
+    });
+    const fmt = await res.json().catch(() => ({}));
+    const elapsedMs = Math.round(performance.now() - t0);
+    const cleanupSec = Number(fmt && (fmt.cleanup_generation_time || fmt.gpt_format_sec));
+    qsTrackEvent('cleanup_generation_time', {
+        duration_ms: elapsedMs,
+        cleanup_generation_time: Number.isFinite(cleanupSec) ? cleanupSec : undefined,
+        ok: !!(res.ok && fmt && !fmt.error),
+    });
+    const normalized = fmt && !fmt.error
+        ? normalizeFormattedFields({ clean_transcript: fmt.clean_transcript || '' })
+        : fmt;
+    return { ok: res.ok && normalized && typeof normalized === 'object' && !normalized.error, res, fmt: normalized };
+}
+
+async function ensureTranscriptCleanupLazy(options) {
+    options = options || {};
+    if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
+        return hasCleanTranscript();
+    }
+    if (window._qsCleanupDone || hasCleanTranscript()) {
+        window._qsCleanupDone = true;
+        return true;
+    }
+    if (window._qsCleanupInFlight) return false;
+    const fullText = buildTranscriptTextForGptFormat();
+    if (!fullText.trim()) return false;
+    window._qsCleanupInFlight = true;
+    window._qsCleanupFailed = false;
+    if (options.rerender !== false && typeof window._qsRerenderTranscriptView === 'function') {
+        window._qsRerenderTranscriptView();
+    }
+    const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
+    const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
+    try {
+        const { ok, fmt } = await runFormatTranscriptCleanupRequest(fullText, targetLang, jobId);
+        if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
+            window._qsCleanupFailed = true;
+            return false;
+        }
+        const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+            ? window.currentFormattedDoc
+            : {};
+        window.currentFormattedDoc = normalizeFormattedFields({
+            ...prev,
+            clean_transcript: String(fmt.clean_transcript || '').trim(),
+        });
+        window._qsCleanupDone = true;
+        window._qsDocPreferSegmentsAfterEdit = false;
+        qsTrackEvent('cleanup_completed', { ok: true });
+        void qsPersistFormattedDocToS3();
+        if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
+        return true;
+    } catch (e) {
+        window._qsCleanupFailed = true;
+        console.warn('[GPT] lazy transcript cleanup failed:', e);
+        return false;
+    } finally {
+        window._qsCleanupInFlight = false;
+        if (options.rerender !== false && typeof window._qsRerenderTranscriptView === 'function') {
+            window._qsRerenderTranscriptView();
+        }
+    }
+}
+window.ensureTranscriptCleanupLazy = ensureTranscriptCleanupLazy;
+
+async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
+    const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
+    if (!medFmt) {
+        return runFormatSummaryOnlyRequest(fullText, targetLang, jobId);
+    }
+    const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
+    const userId = await qsCurrentUserId();
+    const base = () => ({
+        target_lang: targetLang,
+        jobId: jobId || undefined,
+        userId: userId || undefined,
+        isMedical: true,
+        ...(hint ? { input_s3_key: hint } : {}),
+    });
     const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7177,37 +7387,70 @@ async function ensureFormattedViaApiForExport() {
     if (!fullText.trim()) return false;
     const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
     const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
+    const needSummary = !hasStandardFormattedSummary();
+    const needClean = !hasCleanTranscript();
+    if (!needSummary && !needClean) return true;
     if (typeof showStatus === 'function') {
-        showStatus(
-            medFmt ? 'מייצר סיכום רפואי ומעצב תמלול (GPT)…' : 'מעצב תמלול לייצוא…',
-            false,
-            { duration: 720000 }
-        );
+        const msg = medFmt
+            ? 'מייצר סיכום רפואי ומעצב תמלול (GPT)…'
+            : (needClean && needSummary ? 'מייצר סיכום ומעצב תמלול…' : (needClean ? 'מעצב תמלול לייצוא…' : 'מייצר סיכום…'));
+        showStatus(msg, false, { duration: 720000 });
     }
     try {
         const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
-        const { ok, res, fmt } = await runFormatTranscriptSummaryRequests(fullText, targetLang, jobId);
-        if (!ok || !fmt || typeof fmt !== 'object') {
-            const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
-            console.warn('[export] format_transcript_summary failed', res.status, errMsg);
-            if (typeof showStatus === 'function') {
-                showStatus('עיצוב התמלול נכשל: ' + errMsg.slice(0, 200), true);
+        let safeFmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+            ? { ...window.currentFormattedDoc }
+            : {};
+        if (medFmt) {
+            const { ok, res, fmt } = await runFormatTranscriptSummaryRequests(fullText, targetLang, jobId);
+            if (!ok || !fmt || typeof fmt !== 'object') {
+                const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
+                console.warn('[export] format_transcript_summary failed', res.status, errMsg);
+                if (typeof showStatus === 'function') {
+                    showStatus('עיצוב התמלול נכשל: ' + errMsg.slice(0, 200), true);
+                }
+                return false;
             }
-            return false;
-        }
-        let safeFmt = fmt;
-        if (medFmt && _medicalFormatLooksHallucinated(fullText, fmt)) {
-            console.warn('[export] medical format guardrail: rejecting hallucinated summary for short transcript');
-            safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
+            safeFmt = fmt;
+            if (_medicalFormatLooksHallucinated(fullText, fmt)) {
+                console.warn('[export] medical format guardrail: rejecting hallucinated summary for short transcript');
+                safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
+            }
+        } else {
+            if (needSummary) {
+                const { ok, res, fmt } = await runFormatSummaryOnlyRequest(fullText, targetLang, jobId);
+                if (!ok || !fmt || typeof fmt !== 'object') {
+                    const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
+                    console.warn('[export] summary format failed', res.status, errMsg);
+                    if (typeof showStatus === 'function') {
+                        showStatus('יצירת הסיכום נכשלה: ' + errMsg.slice(0, 200), true);
+                    }
+                    return false;
+                }
+                safeFmt = { ...safeFmt, ...fmt };
+            }
+            if (needClean) {
+                const { ok, res, fmt } = await runFormatTranscriptCleanupRequest(fullText, targetLang, jobId);
+                if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
+                    const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
+                    console.warn('[export] cleanup format failed', res.status, errMsg);
+                    if (typeof showStatus === 'function') {
+                        showStatus('עיצוב התמלול נכשל: ' + errMsg.slice(0, 200), true);
+                    }
+                    return false;
+                }
+                safeFmt.clean_transcript = String(fmt.clean_transcript || '').trim();
+                window._qsCleanupDone = true;
+            }
         }
         const rawFmt = {
             clean_transcript: String(safeFmt.clean_transcript || '').trim(),
             overview: String(safeFmt.overview || '').trim(),
             key_points: Array.isArray(safeFmt.key_points)
-                ? safeFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
+                ? safeFmt.key_points.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
                 : [],
             action_items: Array.isArray(safeFmt.action_items)
-                ? safeFmt.action_items.map((p) => String(p || '').trim()).filter(Boolean)
+                ? safeFmt.action_items.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
                 : []
         };
         for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
@@ -7230,31 +7473,7 @@ async function ensureFormattedViaApiForExport() {
             } catch (_) {}
         }
         try {
-            const { data: { user } } = await supabase.auth.getUser();
-            const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
-                String(localStorage.getItem('lastS3Key') || '').trim();
-            if (user && s3Key && (window.currentSegments || []).length) {
-                const saveRes = await fetch('/api/save_job_result', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        userId: user.id,
-                        input_s3_key: s3Key,
-                        segments: window.currentSegments,
-                        words: window.currentWords || undefined,
-                        captions: window.currentCaptions || undefined,
-                        formatted: window.currentFormattedDoc,
-                        stage: 'gpt',
-                        isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
-                    })
-                });
-                if (saveRes.ok) {
-                    await syncJobResultS3KeyFromSaveResponse(saveRes, null);
-                    console.log('[export] saved transcript JSON with formatted to S3 for next open');
-                } else {
-                    console.warn('[export] save_job_result after format failed', saveRes.status);
-                }
-            }
+            await qsPersistFormattedDocToS3();
         } catch (e) {
             console.warn('[export] persist formatted after API format:', e);
         }
@@ -8169,7 +8388,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
                 : [];
             const actionItems = Array.isArray(fmt && fmt.action_items)
-                ? fmt.action_items.map((p) => String(p || '').trim()).filter(Boolean)
+                ? fmt.action_items.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
                 : [];
             const mc = String((fmt && fmt.medical_chief_complaint) || '').trim();
             const me = String((fmt && fmt.medical_examination_transcript) || '').trim();
@@ -8897,6 +9116,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         docExportBtn.addEventListener('click', async function(e) {
             e.preventDefault();
             e.stopPropagation();
+            qsTrackEvent('export_clicked');
             const selectedDocKinds = getSelectedDocxKinds();
             const selectedExtraKinds = getSelectedExtraKinds();
             if (!selectedDocKinds.length && !selectedExtraKinds.length) {
@@ -9330,12 +9550,16 @@ function setFormatViewMode(mode) {
     const subtitleBtn = document.getElementById('format-mode-subtitle');
     const docBtn = document.getElementById('format-mode-doc');
     const summaryBtn = document.getElementById('format-mode-summary');
-    const next = String(mode || 'subtitle').toLowerCase();
+    const next = String(mode || 'summary').toLowerCase();
     if (subtitleBtn) subtitleBtn.classList.toggle('is-active', next === 'subtitle');
     if (docBtn) docBtn.classList.toggle('is-active', next === 'doc');
     if (summaryBtn) summaryBtn.classList.toggle('is-active', next === 'summary');
     window.qsFormatViewMode = next;
     syncStandardFormatTabs();
+    if (next === 'doc' && !(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+        qsTrackEvent('transcript_tab_opened');
+        void ensureTranscriptCleanupLazy();
+    }
     if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
 }
 window.setFormatViewMode = setFormatViewMode;
@@ -9411,7 +9635,7 @@ const PROCESSING_PHASES_HE = [
     "מנתח את האודיו ומזהה מילים...",
     "מייצר כתוביות ומסנכרן לוידאו...",
     "מבצע פינישים אחרונים...",
-    "משפר תמלול וכותרות (GPT)..."
+    "משפר תמלול וכותב סיכום (GPT)..."
 ];
 const QS_GPT_PHASE_INDEX = 4;
 const QS_PIPELINE_TRANSCRIBE_MS = 30000;
@@ -9965,6 +10189,14 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
 document.addEventListener('DOMContentLoaded', () => {
     qsEnsureUploadConfirmModalInBody();
     const transcriptWindow = document.getElementById('transcript-window');
+    if (transcriptWindow && transcriptWindow.dataset.qsCopyAnalyticsBound !== '1') {
+        transcriptWindow.dataset.qsCopyAnalyticsBound = '1';
+        transcriptWindow.addEventListener('copy', () => {
+            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
+            if (isSummaryViewEnabled()) return;
+            qsTrackEvent('transcript_copied');
+        });
+    }
     const fileInput = document.getElementById('fileInput');
     const medicalRecordWrap = document.getElementById('medical-recording-wrap');
     const medicalRecordBtn = document.getElementById('medical-record-btn');
@@ -11708,7 +11940,7 @@ document.addEventListener('DOMContentLoaded', () => {
         docModeBtn.addEventListener('click', () => setFormatViewMode('doc'));
         summaryModeBtn?.addEventListener('click', () => setFormatViewMode('summary'));
         syncStandardFormatTabs();
-        setFormatViewMode(window.qsFormatViewMode || 'subtitle');
+        setFormatViewMode(window.qsFormatViewMode || 'summary');
     } else {
         document.getElementById('toggle-doc-format')?.addEventListener('change', () => rerenderTranscriptView());
     }
@@ -12026,8 +12258,11 @@ document.addEventListener('DOMContentLoaded', () => {
             qsStartSummaryPipelineProgress();
         }
 
-        /** Keep toolbar hidden until unified GPT (clean transcript + summary) completes. */
+        /** Keep toolbar hidden until summary GPT completes (cleanup is lazy on Transcript tab). */
         const deferToolbarUntilGptDone = true;
+        window._qsCleanupDone = false;
+        window._qsCleanupInFlight = false;
+        window._qsCleanupFailed = false;
         window._medicalHasResult = false;
         setTranscriptActionButtonsVisible(false);
         try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
@@ -12094,83 +12329,65 @@ document.addEventListener('DOMContentLoaded', () => {
             window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
             phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
         }
-        console.info('[qs-processing-ui] unified_gpt_format_start', {
+        console.info('[qs-processing-ui] summary_gpt_start', {
             segment_count: (window.currentSegments || []).length
         });
 
-        // One GPT pass at end: clean transcript + summary + action items (reused by exports).
+        if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+            setFormatViewMode('summary');
+        }
+
+        // Summary GPT first; transcript cleanup runs lazily when the user opens the Transcript tab.
         const runPostTranscriptionFormatting = async () => {
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return false;
             const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
+            const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
             try {
-                console.info('[GPT] format_transcript_summary start (unified clean + summary)', {
+                console.info('[GPT] format_transcript_summary start', {
                     chars: fullText.length,
-                    medical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
+                    medical: medFmt,
+                    mode: medFmt ? 'unified' : 'summary_only'
                 });
                 const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId);
                 if (!ok || !fmt || typeof fmt !== 'object') return false;
-                    let safeFmt = fmt;
-                    const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
-                    if (medFmt && _medicalFormatLooksHallucinated(fullText, fmt)) {
-                        console.warn('[medical] format guardrail: rejecting hallucinated summary for short transcript');
-                        safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
-                    }
-                    const rawFmt = {
-                        clean_transcript: String(safeFmt.clean_transcript || '').trim(),
-                        overview: String(safeFmt.overview || '').trim(),
-                        key_points: Array.isArray(safeFmt.key_points)
-                            ? safeFmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
-                            : [],
-                        action_items: Array.isArray(safeFmt.action_items)
-                            ? safeFmt.action_items.map((p) => String(p || '').trim()).filter(Boolean)
-                            : []
-                    };
-                    for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
-                        if (safeFmt[k] != null) rawFmt[k] = safeFmt[k];
-                    }
-                    window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
-                    window._qsDocPreferSegmentsAfterEdit = false;
-                    // Persist formatted payload so future exports can use cached formatting.
-                    (async () => {
-                        try {
-                            const { data: { user } } = await supabase.auth.getUser();
-                            const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
-                                String(localStorage.getItem('lastS3Key') || '').trim();
-                            if (!user || !s3Key || !(window.currentSegments || []).length) return;
-                            const saveFmtRes = await fetch('/api/save_job_result', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    userId: user.id,
-                                    input_s3_key: s3Key,
-                                    segments: window.currentSegments,
-                                    words: window.currentWords || undefined,
-                                    captions: window.currentCaptions || undefined,
-                                    formatted: window.currentFormattedDoc,
-                                    stage: 'gpt',
-                                    isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false
-                                })
-                            });
-                            if (saveFmtRes.ok) {
-                                await syncJobResultS3KeyFromSaveResponse(saveFmtRes, dbId);
-                            }
-                        } catch (e) {
-                            console.warn('[GPT] save formatted payload failed:', e);
+                let safeFmt = fmt;
+                if (medFmt && _medicalFormatLooksHallucinated(fullText, fmt)) {
+                    console.warn('[medical] format guardrail: rejecting hallucinated summary for short transcript');
+                    safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
+                }
+                const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                    ? window.currentFormattedDoc
+                    : {};
+                const rawFmt = {
+                    clean_transcript: medFmt ? String(safeFmt.clean_transcript || '').trim() : String(prev.clean_transcript || '').trim(),
+                    overview: String(safeFmt.overview || '').trim(),
+                    key_points: Array.isArray(safeFmt.key_points)
+                        ? safeFmt.key_points.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
+                        : [],
+                    action_items: Array.isArray(safeFmt.action_items)
+                        ? safeFmt.action_items.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
+                        : []
+                };
+                for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
+                    if (safeFmt[k] != null) rawFmt[k] = safeFmt[k];
+                }
+                window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
+                window._qsDocPreferSegmentsAfterEdit = false;
+                if (medFmt && hasCleanTranscript()) window._qsCleanupDone = true;
+                void qsPersistFormattedDocToS3();
+                try {
+                    if (isMedicalModeEnabled()) {
+                        window.medicalActiveTab = 'summary';
+                        if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+                        if (typeof renderTranscriptFromCues === 'function') {
+                            renderTranscriptFromCues(window.currentSegments || []);
                         }
-                    })();
-                    try {
-                        if (isMedicalModeEnabled()) {
-                            window.medicalActiveTab = 'summary';
-                            if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
-                            if (typeof renderTranscriptFromCues === 'function') {
-                                renderTranscriptFromCues(window.currentSegments || []);
-                            }
-                        } else if (hasStandardFormattedSummary()) {
-                            setFormatViewMode('summary');
-                            renderStandardSummaryView();
-                        }
-                    } catch (_) {}
+                    } else if (hasStandardFormattedSummary()) {
+                        setFormatViewMode('summary');
+                        renderStandardSummaryView();
+                    }
+                } catch (_) {}
                 return true;
             } catch (e) {
                 console.warn('[GPT] format_transcript_summary failed, export will fallback:', e);
@@ -12508,12 +12725,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         window.isDocumentMode = isDocumentFormatEnabled();
         if (window.isDocumentMode) {
             const docParagraphs = getDocFormatParagraphs();
+            const banner = qsTranscriptCleanupBannerHtml();
             if (docParagraphs.length) {
                 const htmlDoc = docParagraphs.map((p) => {
                     const safe = p.replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em;"><p style="margin: 0; line-height: 1.7; cursor: text;">${safe}</p></div>`;
                 }).join('');
-                transcriptWindow.innerHTML = htmlDoc;
+                transcriptWindow.innerHTML = banner + htmlDoc;
                 transcriptWindow.contentEditable = 'false';
                 return;
             }
