@@ -1928,6 +1928,81 @@ function getLocalPreviewAudioMime() {
     try { return localStorage.getItem('currentAudioMime') || ''; } catch (_) { return ''; }
 }
 
+/** Show audio/video player immediately after the user picks a file (before credit checks). */
+function qsShowLocalUploadMediaPreview(file) {
+    if (!file) return null;
+    let isAudio = typeof qsIsAudioMediaFile === 'function' && qsIsAudioMediaFile(file);
+    let isVideo = !isAudio && typeof qsIsVideoMediaFile === 'function' && qsIsVideoMediaFile(file);
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        isAudio = true;
+        isVideo = false;
+    }
+    window.uploadWasVideo = !!isVideo;
+    window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'media';
+    const skipLocalBlobPreview = typeof qsIsLargeUploadFile === 'function' && qsIsLargeUploadFile(file);
+    let objectUrl = null;
+    if (!skipLocalBlobPreview) {
+        objectUrl = URL.createObjectURL(file);
+    }
+    const mimeForMov = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+        ? (typeof qsGuessUploadMimeType === 'function' ? qsGuessUploadMimeType(file, 'audio/webm') : 'audio/webm')
+        : ((/\.mov$/i.test(file.name) || String(file.type || '').toLowerCase().includes('quicktime')) ? 'video/mp4' : (file.type || ''));
+
+    const videoWrapper = document.getElementById('video-wrapper');
+    const videoPlayer = document.getElementById('video-player-container');
+    const playerContainer = document.getElementById('audio-player-container');
+    const videoSrc = document.getElementById('video-source');
+    const video = document.getElementById('main-video');
+    const audioSource = document.getElementById('audio-source');
+    const mainAudio = document.getElementById('main-audio');
+
+    try {
+        if (isVideo) {
+            if (playerContainer) playerContainer.style.display = 'none';
+            if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
+            if (video) video.style.display = '';
+            if (videoPlayer) videoPlayer.style.display = 'block';
+            if (objectUrl && videoSrc) {
+                const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
+                videoSrc.src = objectUrl;
+                videoSrc.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+            }
+            if (video && objectUrl) {
+                video.style.position = 'relative';
+                video.style.zIndex = '1002';
+                video.controls = true;
+                video.load();
+                video.pause();
+                try { video.focus(); } catch (_) {}
+            }
+        } else if (objectUrl) {
+            if (videoWrapper) {
+                videoWrapper.style.display = 'none';
+                videoWrapper.classList.remove('visible');
+            }
+            try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
+            if (video) video.style.display = 'none';
+            if (playerContainer && videoWrapper && videoPlayer && playerContainer.parentNode === videoPlayer) {
+                videoWrapper.parentNode.insertBefore(playerContainer, videoWrapper);
+            }
+            if (playerContainer) playerContainer.style.display = 'block';
+            if (audioSource && mainAudio) {
+                audioSource.src = objectUrl;
+                audioSource.type = typeof qsMimeForAudioElement === 'function' ? qsMimeForAudioElement(file) : (file.type || 'audio/mp4');
+                mainAudio.load();
+            }
+            if (videoPlayer) videoPlayer.style.display = 'block';
+        }
+    } catch (e) {
+        console.warn('qsShowLocalUploadMediaPreview failed', e);
+    }
+
+    if (objectUrl) setLocalPreviewAudio(objectUrl, mimeForMov);
+    if (typeof syncMobileVideoSessionState === 'function') syncMobileVideoSessionState();
+    window.__QS_UPLOAD_PREVIEW_READY = true;
+    return { objectUrl, isAudio, isVideo, skipLocalBlobPreview, mimeForMov };
+}
+
 function clearSensitiveStorageForMedicalMode() {
     _qsRevokeLocalPreviewAudio();
     const keysToWipe = [
@@ -2510,6 +2585,12 @@ function qsFormatMediaDurationForConfirm(seconds) {
 
 /** Read duration from file metadata before upload confirm (hidden audio/video element). */
 function qsProbeFileMediaDurationSec(file, timeoutMs) {
+    const fromPlayer = typeof qsClientMediaDurationSecForCredits === 'function'
+        ? qsClientMediaDurationSecForCredits()
+        : 0;
+    if (Number.isFinite(fromPlayer) && fromPlayer > 0) {
+        return Promise.resolve(fromPlayer);
+    }
     const limit = Number.isFinite(timeoutMs) ? timeoutMs : 8000;
     return new Promise((resolve) => {
         if (!file) {
@@ -2635,15 +2716,22 @@ function qsShowUploadConfirmModal(file, opts) {
     });
 }
 
-/** Restore landing chrome after user cancels upload confirm. */
-function qsRestoreUiAfterUploadConfirmCancel() {
-    try {
-        setSeoHomeContentVisibility(true);
-    } catch (_) {}
-    const ph = document.getElementById('placeholder');
-    if (ph && typeof initOpenAppHasLoadedTranscriptPayload === 'function' && !initOpenAppHasLoadedTranscriptPayload()) {
-        ph.style.display = '';
+/** Restore landing chrome after user cancels upload confirm or credit check fails. */
+function qsRestoreUiAfterUploadConfirmCancel(opts) {
+    opts = opts || {};
+    if (!opts.keepMediaPreview) {
+        try {
+            setSeoHomeContentVisibility(true);
+        } catch (_) {}
+        const ph = document.getElementById('placeholder');
+        if (ph && typeof initOpenAppHasLoadedTranscriptPayload === 'function' && !initOpenAppHasLoadedTranscriptPayload()) {
+            ph.style.display = '';
+        }
     }
+    try {
+        document.body.classList.remove('qs-app-busy');
+        if (typeof qsSyncAppChromeBodyClasses === 'function') qsSyncAppChromeBodyClasses();
+    } catch (_) {}
 }
 
 /** Ensure media src is absolute (CDN env without https:// must not become a site-relative path). */
@@ -2871,7 +2959,8 @@ async function qsSupabaseAccessToken() {
 }
 
 /** Block upload when signed-in user lacks minutes for file length (check before S3 upload). */
-async function qsEnsureCreditsForUpload(durationSec) {
+async function qsEnsureCreditsForUpload(durationSec, opts) {
+    opts = opts || {};
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
         return true;
     }
@@ -2908,7 +2997,7 @@ async function qsEnsureCreditsForUpload(durationSec) {
             }
             return false;
         }
-        if (typeof qsRefreshUserCredits === 'function') {
+        if (!opts.skipRefresh && typeof qsRefreshUserCredits === 'function') {
             await qsRefreshUserCredits();
         }
         const res = await fetch('/api/user/credits/check-upload', {
@@ -3605,7 +3694,7 @@ function qsSyncUserCreditsUi() {
     const menuMinutes = document.getElementById('user-menu-credit-minutes');
     if (navWrap) navWrap.style.display = showCredits ? 'inline-flex' : 'none';
     if (navMinutes) navMinutes.textContent = displayMinutes;
-    if (navWrapMobile) navWrapMobile.style.display = showCredits ? 'inline-flex' : 'none';
+    if (navWrapMobile) navWrapMobile.style.display = 'none';
     if (navMinutesMobile) navMinutesMobile.textContent = displayMinutes;
     if (menuWrap) menuWrap.style.display = showCredits ? '' : 'none';
     if (menuMinutes) menuMinutes.textContent = displayMinutes;
@@ -3996,36 +4085,32 @@ function qsSyncNavWorkspaceCta(isSignedIn) {
 }
 window.qsSyncNavWorkspaceCta = qsSyncNavWorkspaceCta;
 
+function qsEnsureDefaultStarterPlan() {
+    try {
+        const current = String(localStorage.getItem(QS_SELECTED_PLAN_KEY) || '').trim();
+        if (current !== 'starter' && current !== 'pro' && current !== 'enterprise') {
+            localStorage.setItem(QS_SELECTED_PLAN_KEY, 'starter');
+            if (typeof window.syncPlanCardsUi === 'function') window.syncPlanCardsUi();
+        }
+    } catch (_) {}
+}
+window.qsEnsureDefaultStarterPlan = qsEnsureDefaultStarterPlan;
+
 function qsSyncStarterPlanUploadGate() {
     const mainBtn = document.getElementById('main-btn');
     const regularRecordBtn = document.getElementById('regular-record-btn');
-    if (qsUserHasUploadCredits()) {
-        document.body.classList.remove('qs-starter-plan-required');
-        if (mainBtn && mainBtn.getAttribute('data-qs-plan-gated') === '1') {
-            mainBtn.disabled = false;
-            mainBtn.removeAttribute('data-qs-plan-gated');
-        }
-        if (regularRecordBtn) {
-            regularRecordBtn.disabled = false;
-            regularRecordBtn.setAttribute('aria-disabled', 'false');
-        }
-        return;
-    }
     const gated = qsRequiresStarterPlanGate()
         && qsGetSelectedPlan() !== 'starter';
     document.body.classList.toggle('qs-starter-plan-required', gated);
     if (mainBtn) {
-        if (gated) {
-            mainBtn.disabled = true;
-            mainBtn.setAttribute('data-qs-plan-gated', '1');
-        } else if (mainBtn.getAttribute('data-qs-plan-gated') === '1') {
-            mainBtn.disabled = false;
+        if (mainBtn.getAttribute('data-qs-plan-gated') === '1') {
             mainBtn.removeAttribute('data-qs-plan-gated');
         }
+        if (!window.isTriggering) mainBtn.disabled = false;
     }
     if (regularRecordBtn) {
-        regularRecordBtn.disabled = gated;
-        regularRecordBtn.setAttribute('aria-disabled', gated ? 'true' : 'false');
+        regularRecordBtn.disabled = false;
+        regularRecordBtn.setAttribute('aria-disabled', 'false');
     }
 }
 
@@ -9746,6 +9831,7 @@ function resetScreenToInitial() {
     window._medicalHasResult = false;
     window.currentFormattedDoc = null;
     window._qsDocPreferSegmentsAfterEdit = false;
+    try { window.__QS_UPLOAD_PREVIEW_READY = false; } catch (_) {}
     setSeoHomeContentVisibility(true);
     stopProcessingStateUI('reset_screen_to_initial');
 
@@ -11297,7 +11383,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (regularRecordBtn) {
         regularRecordBtn.addEventListener('click', async () => {
-            if (typeof qsBlockIfStarterPlanRequired === 'function' && qsBlockIfStarterPlanRequired()) return;
             if (isMedicalModeEnabled()) return;
             window._qsRegularRecordVisible = true;
             if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
@@ -11565,6 +11650,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     window.addEventListener('resize', syncMobileVideoSessionState);
     syncMobileVideoSessionState();
+    try { qsEnsureDefaultStarterPlan(); } catch (_) {}
     try { qsSyncStarterPlanUploadGate(); } catch (_) {}
     try {
         const videoWrapper = document.getElementById('video-wrapper');
@@ -11576,7 +11662,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (mainBtn) {
         mainBtn.addEventListener('click', async () => {
-            if (typeof qsBlockIfStarterPlanRequired === 'function' && qsBlockIfStarterPlanRequired()) return;
             if (window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON) {
                 if (fileInput) {
                     try { window.__QS_FILE_PICKER_PURPOSE = 'attach_local_media'; } catch (_) {}
@@ -14226,6 +14311,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
 
                 const runUploadPipeline = async () => {
+                const previewReady = !!window.__QS_UPLOAD_PREVIEW_READY;
+                let isAudio = qsIsAudioMediaFile(file);
+                let isVideo = !isAudio && qsIsVideoMediaFile(file);
+                if (isMedicalModeEnabled()) {
+                    isAudio = true;
+                    isVideo = false;
+                }
+                const skipLocalBlobPreview = qsIsLargeUploadFile(file);
+                if (!previewReady) {
                 setSeoHomeContentVisibility(false);
                 try {
                     document.body.classList.add('qs-app-busy');
@@ -14234,14 +14328,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 const placeholderElUpload = document.getElementById('placeholder');
                 if (placeholderElUpload) placeholderElUpload.style.display = 'none';
 
-                let isAudio = qsIsAudioMediaFile(file);
-                let isVideo = !isAudio && qsIsVideoMediaFile(file);
-                if (isMedicalModeEnabled()) {
-                    isAudio = true;
-                    isVideo = false;
-                }
                 window.uploadWasVideo = !!isVideo;
-                const skipLocalBlobPreview = qsIsLargeUploadFile(file);
                 let objectUrl = null;
                 if (!skipLocalBlobPreview) {
                     objectUrl = URL.createObjectURL(file);
@@ -14253,7 +14340,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const video = document.getElementById('main-video');
                         if (src) {
                             src.src = objectUrl;
-                            // Use video/mp4 for .mov so Chrome/Firefox can play (same as presigned-URL path)
                             const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
                             src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
                         }
@@ -14265,7 +14351,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             video.pause();
                             try { video.focus(); } catch (e) {}
                         }
-                        // Show video player immediately; do not wait for transcription
                         const videoWrapper = document.getElementById('video-wrapper');
                         const videoPlayer = document.getElementById('video-player-container');
                         const playerContainer = document.getElementById('audio-player-container');
@@ -14273,7 +14358,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
                         if (video) video.style.display = '';
                         if (videoPlayer) videoPlayer.style.display = 'block';
-                        // Continue to upload and process (do not return) so transcription runs for video too
                     } else if (isVideo && skipLocalBlobPreview) {
                         window.originalFileName = file.name.replace(/\.[^.]+$/, '');
                         const videoWrapper = document.getElementById('video-wrapper');
@@ -14319,6 +14403,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 }
                 setLocalPreviewAudio(objectUrl, mimeForMov);
             }
+                } else {
+                    setSeoHomeContentVisibility(false);
+                    try {
+                        document.body.classList.add('qs-app-busy');
+                        if (typeof qsSyncAppChromeBodyClasses === 'function') qsSyncAppChromeBodyClasses();
+                    } catch (_) {}
+                    const placeholderElUpload = document.getElementById('placeholder');
+                    if (placeholderElUpload) placeholderElUpload.style.display = 'none';
+                }
 
             const currentFile = file; // Captured for use in the fetch
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
@@ -14720,13 +14813,31 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     await runUploadPipeline();
                     return;
                 }
+
+                try { window.__QS_UPLOAD_PREVIEW_READY = false; } catch (_) {}
+                qsShowLocalUploadMediaPreview(file);
+                setSeoHomeContentVisibility(false);
+                try {
+                    document.body.classList.add('qs-app-busy');
+                    if (typeof qsSyncAppChromeBodyClasses === 'function') qsSyncAppChromeBodyClasses();
+                } catch (_) {}
+                const placeholderElPrep = document.getElementById('placeholder');
+                if (placeholderElPrep) placeholderElPrep.style.display = 'none';
+
                 const durationProbeMs = qsIsLargeUploadFile(file) ? 12000 : 8000;
-                let durationSec = await qsProbeFileMediaDurationSec(file, durationProbeMs);
+                const creditsRefresh = (typeof qsRefreshUserCredits === 'function')
+                    ? qsRefreshUserCredits({ ensureWelcome: true })
+                    : Promise.resolve();
+                const [durationSec] = await Promise.all([
+                    qsProbeFileMediaDurationSec(file, durationProbeMs),
+                    creditsRefresh,
+                ]);
                 window.__QS_UPLOAD_MEDIA_DURATION_SEC = durationSec > 0 ? durationSec : null;
                 if (qsShouldShowUploadMusicConfirm(durationSec)) {
                     const uploadChoice = await qsShowUploadConfirmModal(file, { durationSec });
                     if (!uploadChoice) {
                         fileInput.value = '';
+                        try { window.__QS_UPLOAD_PREVIEW_READY = false; } catch (_) {}
                         qsRestoreUiAfterUploadConfirmCancel();
                         return;
                     }
@@ -14734,9 +14845,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 } else {
                     qsSetUserAudioProfileChoice(false);
                 }
-                if (!(await qsEnsureCreditsForUpload(durationSec))) {
+                if (!(await qsEnsureCreditsForUpload(durationSec, { skipRefresh: true }))) {
                     fileInput.value = '';
-                    qsRestoreUiAfterUploadConfirmCancel();
+                    try { window.__QS_UPLOAD_PREVIEW_READY = false; } catch (_) {}
+                    qsRestoreUiAfterUploadConfirmCancel({ keepMediaPreview: true });
                     return;
                 }
                 await runUploadPipeline();

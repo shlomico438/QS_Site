@@ -666,11 +666,25 @@ header.site-header.navbar {
         padding-right: 16px !important;
     }
     .site-header .navbar-utility-inner {
-        flex-wrap: wrap !important;
-        row-gap: 8px !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        row-gap: 0 !important;
+    }
+    .site-header .navbar-utility-start {
+        flex-wrap: nowrap !important;
+        gap: 8px !important;
+        flex: 0 1 auto !important;
+        min-width: 0 !important;
     }
     .site-header .navbar-utility-end {
         gap: 10px !important;
+        flex: 0 0 auto !important;
+        width: auto !important;
+        margin-left: auto !important;
+        margin-inline-start: auto !important;
+    }
+    .site-header .nav-credit-balance--mobile {
+        display: none !important;
     }
     .site-header .nav-menu-desktop {
         display: none !important;
@@ -704,18 +718,26 @@ header.site-header.navbar {
 
 @media screen and (max-width: 640px) {
     .site-header .navbar-utility-inner {
-        align-items: flex-start !important;
+        align-items: center !important;
     }
-    .site-header .navbar-utility-end {
-        width: 100% !important;
-        justify-content: flex-start !important;
-        margin-left: 0 !important;
+    .site-header .navbar-utility-start .nav-credit-balance {
+        padding: 4px 8px;
+        font-size: 0.72rem;
+    }
+    .site-header .navbar-utility-start .nav-credit-balance strong {
+        font-size: 0.85rem;
     }
     .site-header .navbar-main-inner {
         gap: 14px !important;
     }
     .site-header .nav-logo-text {
         display: none !important;
+    }
+}
+
+@media screen and (max-width: 420px) {
+    .site-header .navbar-utility-start .nav-credit-label {
+        display: none;
     }
 }
 
@@ -1457,11 +1479,6 @@ html[dir="ltr"] #pricing-section.seo-landing-section {
 }
 .seo-pricing-card.is-selected.is-plan-muted {
     opacity: 1 !important;
-}
-body.qs-starter-plan-required #main-btn,
-body.qs-starter-plan-required #regular-record-btn {
-    opacity: 0.45;
-    cursor: not-allowed;
 }
 .seo-popular-badge {
     display: inline-block;
@@ -3905,18 +3922,36 @@ body:not(.has-transcript-actions) #subtitle-style-selector {
   max-width: 420px;
   margin: 0 auto 10px;
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
 }
 
 .qs-pipeline-phase-label {
-  margin: 0 0 8px;
+  margin: 0;
+  flex: 0 0 auto;
+  min-width: 6.5em;
   font-size: 0.9rem;
   font-weight: 600;
   color: #111827;
-  text-align: center;
+  white-space: nowrap;
 }
 
+html[dir="ltr"] .qs-pipeline-phase-label {
+  text-align: left;
+}
+
+html[dir="rtl"] .qs-pipeline-phase-label {
+  text-align: right;
+}
+
+.qs-pipeline-phase-wrap #p-container,
 .upload-zone .qs-pipeline-phase-wrap #p-container {
+  flex: 1 1 auto;
+  min-width: 0;
   height: 14px;
+  margin: 0;
 }
 
 .processing-pipeline-row {

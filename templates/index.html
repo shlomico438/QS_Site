@@ -1222,6 +1222,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             });
         };
         planIds.forEach(wirePlanCard);
+        if (typeof window.qsEnsureDefaultStarterPlan === 'function') window.qsEnsureDefaultStarterPlan();
         syncPlanCardsUi();
         if (typeof window.qsRefreshUserCredits === 'function') {
             void window.qsRefreshUserCredits({ ensureWelcome: true }).then(() => {
