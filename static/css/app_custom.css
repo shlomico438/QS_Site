@@ -3101,12 +3101,9 @@ body.qs-upload-confirm-open {
   display: none;
 }
 
-/* Medical: legacy upload-zone bar hidden; warmup notification banner stays at startup. */
+/* Medical: single pipeline bar lives in upload zone (same as standard). */
+.main-app-container.medical-mode .qs-pipeline-phase-wrap .processing-unified-track,
 .main-app-container.medical-mode #p-container {
-  display: none !important;
-}
-
-.main-app-container.medical-mode #processing-unified-progress .processing-unified-track {
   margin: 0;
 }
 
@@ -3901,6 +3898,25 @@ body:not(.has-transcript-actions) #subtitle-style-selector {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.qs-pipeline-phase-wrap {
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto 10px;
+  flex: 0 0 auto;
+}
+
+.qs-pipeline-phase-label {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #111827;
+  text-align: center;
+}
+
+.upload-zone .qs-pipeline-phase-wrap #p-container {
+  height: 14px;
 }
 
 .processing-pipeline-row {

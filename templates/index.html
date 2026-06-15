@@ -557,30 +557,10 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <p id="processing-state-intro" class="processing-state-primary"></p>
-                <div id="processing-unified-progress" class="processing-unified-progress" style="display:none;">
+                <div id="processing-unified-progress" class="processing-unified-progress" style="display:none;" aria-hidden="true">
                     <div id="qs-unified-phase-label" class="processing-unified-label">העלאה</div>
                     <div class="progress-container processing-unified-track">
                         <div id="progress-bar" class="processing-unified-fill"></div>
-                    </div>
-                </div>
-                <div id="processing-triple-progress" class="processing-triple-progress" style="display:none;">
-                    <div class="processing-pipeline-row is-pending" data-phase="upload">
-                        <div id="qs-pipeline-label-upload" class="processing-pipeline-label" data-i18n="pipeline_upload">העלאה</div>
-                        <div class="progress-container processing-unified-track">
-                            <div id="qs-pipeline-bar-upload" class="processing-unified-fill"></div>
-                        </div>
-                    </div>
-                    <div class="processing-pipeline-row is-pending" data-phase="transcribe">
-                        <div id="qs-pipeline-label-transcribe" class="processing-pipeline-label" data-i18n="pipeline_transcribe">תמלול</div>
-                        <div class="progress-container processing-unified-track">
-                            <div id="qs-pipeline-bar-transcribe" class="processing-unified-fill"></div>
-                        </div>
-                    </div>
-                    <div class="processing-pipeline-row is-pending" data-phase="summary">
-                        <div id="qs-pipeline-label-summary" class="processing-pipeline-label" data-i18n="pipeline_summary">יצירת סיכום</div>
-                        <div class="progress-container processing-unified-track">
-                            <div id="qs-pipeline-bar-summary" class="processing-unified-fill"></div>
-                        </div>
                     </div>
                 </div>
                 <div class="processing-state-spinner-wrap" id="processing-state-spinner-wrap" style="display:none;" aria-hidden="true">
@@ -775,8 +755,11 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             </div>
             <button id="medical-upload-new-session-btn" class="btn btn-primary medical-upload-new-session-btn" type="button" style="display:none;" data-i18n="new_session">סשן חדש</button>
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
-            <div class="progress-container" id="p-container" style="display:none;" aria-hidden="true">
-                <div id="progress-bar-legacy"></div>
+            <div id="qs-pipeline-phase-wrap" class="qs-pipeline-phase-wrap" style="display:none;" aria-live="polite">
+                <div id="qs-pipeline-phase-label" class="qs-pipeline-phase-label" data-i18n="pipeline_upload">העלאה</div>
+                <div class="progress-container" id="p-container">
+                    <div id="progress-bar-legacy"></div>
+                </div>
             </div>
             <!-- diarization toggle removed on mobile upload UI -->
             <div class="upload-zone-app-footer" dir="ltr">
