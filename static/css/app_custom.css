@@ -4215,14 +4215,47 @@ html[dir="rtl"] .qs-pipeline-phase-label {
     outline-offset: 2px;
 }
 
-.processing-state-panel:has(.qs-feature-showcase:not([hidden])) {
+.processing-state-panel:has(.qs-feature-showcase:not([hidden])),
+body.qs-showcase-active .transcript-area-wrap .processing-state-panel {
     justify-content: flex-start;
     padding-top: 20px;
     overflow-y: auto;
 }
 
-.processing-state-panel:has(.qs-feature-showcase:not([hidden])) #processing-state-intro {
+.processing-state-panel:has(.qs-feature-showcase:not([hidden])) #processing-state-intro,
+body.qs-showcase-active #processing-state-intro {
     display: none !important;
+}
+
+body.qs-showcase-active .medical-transcript-shell {
+    visibility: hidden;
+}
+
+body.qs-showcase-active .transcription-wrapper {
+    min-height: clamp(320px, 48vh, 560px) !important;
+}
+
+body.qs-showcase-active .transcript-area-wrap {
+    min-height: clamp(300px, 46vh, 540px) !important;
+}
+
+body.qs-showcase-active .transcript-area-wrap .processing-state-panel {
+    z-index: 120;
+}
+
+@media screen and (max-width: 768px) {
+    body.qs-showcase-active .transcript-area-wrap .processing-state-panel {
+        position: fixed !important;
+        top: calc(52px + env(safe-area-inset-top, 0px)) !important;
+        left: 10px !important;
+        right: 10px !important;
+        bottom: calc(var(--qs-upload-bar-compact, 84px) + env(safe-area-inset-bottom, 0px) + 10px) !important;
+        width: auto !important;
+        max-width: none !important;
+        min-height: 0 !important;
+        z-index: 1800 !important;
+        box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+    }
 }
 
 @media screen and (max-width: 520px) {

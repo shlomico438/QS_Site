@@ -2758,6 +2758,13 @@ function qsRestoreUiAfterUploadConfirmCancel(opts) {
         document.body.classList.remove('qs-app-busy');
         if (typeof qsSyncAppChromeBodyClasses === 'function') qsSyncAppChromeBodyClasses();
     } catch (_) {}
+    try {
+        const panel = document.getElementById('processing-state-panel');
+        if (panel) panel.style.display = 'none';
+        if (typeof window.qsStopFeatureShowcase === 'function') window.qsStopFeatureShowcase();
+        document.body.classList.remove('qs-showcase-active');
+        qsSetProcessingOverlayActive(false);
+    } catch (_) {}
 }
 
 /** Ensure media src is absolute (CDN env without https:// must not become a site-relative path). */
@@ -9726,6 +9733,7 @@ function stopProcessingStateUI(reason) {
     window.processingPhaseIndex = 0;
     if (panel) panel.style.display = 'none';
     try { if (typeof window.qsStopFeatureShowcase === 'function') window.qsStopFeatureShowcase(); } catch (_) {}
+    try { document.body.classList.remove('qs-showcase-active'); } catch (_) {}
     qsSetProcessingOverlayActive(false);
     const twWrap = document.querySelector('.transcript-area-wrap');
     const twOuter = document.querySelector('.transcription-wrapper');
@@ -9777,9 +9785,15 @@ function qsShowProcessingShowcase() {
 
     panel.style.display = 'flex';
     const showcaseEl = document.getElementById('qs-feature-showcase');
+    if (showShowcase && !showcaseEl) {
+        console.warn('[qs-showcase] markup missing — deploy latest index.html');
+    }
     if (showcaseEl) showcaseEl.hidden = !showShowcase;
     if (showShowcase && typeof window.qsStartFeatureShowcase === 'function') {
         try { window.qsStartFeatureShowcase(); } catch (_) {}
+    } else if (showShowcase && showcaseEl) {
+        showcaseEl.hidden = false;
+        showcaseEl.setAttribute('aria-hidden', 'false');
     } else if (typeof window.qsStopFeatureShowcase === 'function') {
         try { window.qsStopFeatureShowcase(); } catch (_) {}
     }
@@ -9788,8 +9802,26 @@ function qsShowProcessingShowcase() {
         introEl.textContent = '';
         introEl.style.display = 'none';
     }
+    try { document.body.classList.toggle('qs-showcase-active', showShowcase); } catch (_) {}
     qsSetProcessingOverlayActive(true);
     qsSyncAppChromeBodyClasses();
+    if (showShowcase) {
+        try {
+            if (typeof syncMobileVideoSessionState === 'function') syncMobileVideoSessionState();
+        } catch (_) {}
+        const scrollShowcaseIntoView = () => {
+            try {
+                const wrap = document.querySelector('.transcript-area-wrap');
+                if (wrap) wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } catch (_) {}
+        };
+        try {
+            requestAnimationFrame(() => requestAnimationFrame(scrollShowcaseIntoView));
+        } catch (_) {
+            setTimeout(scrollShowcaseIntoView, 80);
+        }
+    }
 }
 
 function startProcessingStateUI() {
@@ -14943,6 +14975,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 } catch (_) {}
                 const placeholderElPrep = document.getElementById('placeholder');
                 if (placeholderElPrep) placeholderElPrep.style.display = 'none';
+                if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+                    try { qsShowProcessingShowcase(); } catch (_) {}
+                }
 
                 const durationProbeMs = qsIsLargeUploadFile(file) ? 12000 : 8000;
                 const creditsRefresh = (typeof qsRefreshUserCredits === 'function')

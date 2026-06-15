@@ -359,11 +359,21 @@ def _resolve_static_asset_version():
     if override:
         return override
     static_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
-    candidates = (
+    candidates = [
         os.path.join(static_root, 'style.css'),
         os.path.join(static_root, 'css', 'app_custom.css'),
         os.path.join(static_root, 'js', 'app_logic.js'),
-    )
+        os.path.join(static_root, 'js', 'feature_showcase.js'),
+        os.path.join(static_root, 'js', 'translations.js'),
+    ]
+    showcase_dir = os.path.join(static_root, 'images', 'showcase')
+    try:
+        for name in os.listdir(showcase_dir):
+            path = os.path.join(showcase_dir, name)
+            if os.path.isfile(path):
+                candidates.append(path)
+    except OSError:
+        pass
     mtimes = []
     for path in candidates:
         try:

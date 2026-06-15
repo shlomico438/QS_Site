@@ -169,6 +169,7 @@
             root.hidden = true;
             root.setAttribute('aria-hidden', 'true');
         }
+        try { document.body.classList.remove('qs-showcase-active'); } catch (_) {}
     };
 
     window.qsRefreshFeatureShowcaseI18n = function () {
