@@ -5516,6 +5516,16 @@ html[dir="rtl"] .upload-status {
 #transcript-window.transcript-sync-mode {
   position: relative;
 }
+#transcript-window.transcript-sync-mode .caption-ts,
+#transcript-window.transcript-sync-mode .qs-sync-legacy-ts {
+  display: block !important;
+}
+#transcript-window.transcript-sync-mode .qs-sync-handle {
+  width: 10px;
+  min-width: 10px;
+  height: 24px;
+  min-height: 24px;
+}
 #transcript-window.transcript-sync-mode .caption-row.qs-timing-line-selected,
 #transcript-window.transcript-sync-mode .paragraph-row.qs-timing-legacy-row.qs-timing-line-selected {
   cursor: grab;

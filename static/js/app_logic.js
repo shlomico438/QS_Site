@@ -1859,6 +1859,32 @@ function qsClearTranscriptWindowIdle() {
     transcriptWindow.contentEditable = 'false';
 }
 
+/** Reset edit/timing chrome so a new session or re-render does not leave stale partial edit UI (text edit without handles). */
+function qsClearTranscriptEditState(win) {
+    const el = win || document.getElementById('transcript-window');
+    if (!el) return;
+    el.contentEditable = 'false';
+    el.classList.remove('transcript-editing', 'transcript-sync-mode');
+    el.style.border = '';
+    el.style.backgroundColor = '';
+    window._qsTimingMode = false;
+    window._qsTimingModeBackup = null;
+    window._qsForceLegacyEditMode = false;
+    try { _qsSetSyncModeButtonActive(false); } catch (_) {}
+    const editActions = document.getElementById('edit-actions');
+    if (editActions) editActions.style.display = 'none';
+}
+
+function qsActivateSubtitleFormatTabOnly() {
+    const subtitleBtn = document.getElementById('format-mode-subtitle');
+    const docBtn = document.getElementById('format-mode-doc');
+    const summaryBtn = document.getElementById('format-mode-summary');
+    if (subtitleBtn) subtitleBtn.classList.add('is-active');
+    if (docBtn) docBtn.classList.remove('is-active');
+    if (summaryBtn) summaryBtn.classList.remove('is-active');
+    window.qsFormatViewMode = 'subtitle';
+}
+
 function qsRenderEmptyTranscriptMessage(reason) {
     const transcriptWindow = document.getElementById('transcript-window');
     if (!transcriptWindow) return;
@@ -9861,6 +9887,7 @@ function resetScreenToInitial() {
     try { qsSyncStarterPlanUploadGate(); } catch (_) {}
 
     if (transcriptWindow) {
+        qsClearTranscriptEditState(transcriptWindow);
         qsClearTranscriptWindowIdle();
     }
     if (placeholder) placeholder.style.display = 'none';
@@ -10028,6 +10055,7 @@ function setTranscriptActionButtonsVisible(visible) {
         try { qsSetProcessingOverlayActive(false); } catch (_) {}
     }
     if (!visible) {
+        try { qsClearTranscriptEditState(); } catch (_) {}
         if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
         if (editActions) editActions.style.display = 'none';
         if (downloadMenu) downloadMenu.style.display = 'none';
@@ -11773,7 +11801,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         }
-        if (isSummaryViewEnabled()) {
+        const inTranscriptEdit = !!(
+            twRerender &&
+            (twRerender.classList.contains('transcript-editing') ||
+                twRerender.classList.contains('transcript-sync-mode') ||
+                window._qsTimingMode)
+        );
+        if (isSummaryViewEnabled() && !inTranscriptEdit) {
             renderStandardSummaryView();
             return;
         }
@@ -12398,6 +12432,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const transcriptWindow = document.getElementById('transcript-window');
         if (transcriptWindow) {
+            try { qsClearTranscriptEditState(transcriptWindow); } catch (_) {}
             if (!window.currentSegments || !window.currentSegments.length) {
                 qsRenderEmptyTranscriptMessage();
             } else if (isMedicalModeEnabled()) {
@@ -13845,9 +13880,19 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'summary';
         const isMedicalTranscriptEdit =
             isMedicalModeEnabled() && String(window.medicalActiveTab || 'summary') === 'transcript';
+        const hasWordModel = Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length;
+        const docMode = isDocumentFormatEnabled();
+        const inUnifiedWordEdit = !!(
+            win &&
+            hasWordModel &&
+            !docMode &&
+            win.classList.contains('transcript-editing') &&
+            window._qsTimingMode &&
+            !window._qsForceLegacyEditMode
+        );
         const isEditable = ((isMedicalSummaryEdit || isMedicalTranscriptEdit) && win)
             ? win.classList.contains('transcript-editing')
-            : (win.contentEditable === 'true');
+            : !!(win && (win.contentEditable === 'true' || inUnifiedWordEdit));
 
         if (!isEditable) {
             if (isMedicalSummaryEdit) {
@@ -13905,16 +13950,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 return;
             }
             // --- START EDITING ---
-            const hasWordModel = Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length && window.currentCaptions.length;
-            const docMode = isDocumentFormatEnabled();
             // Unified word-caption screen (pre-HIPAA): text + drag timing + nudges on one surface; window stays contentEditable=false.
-            if (hasWordModel && !docMode && win.classList.contains('transcript-editing') && window._qsTimingMode && !window._qsForceLegacyEditMode) {
+            if (inUnifiedWordEdit) {
                 window.saveEdits();
                 return;
             }
             // Word-caption editor (desktop + mobile): subtitle mode — tokens + line timing together (no separate timing button).
             // Document mode uses legacy paragraph edit below.
             if (hasWordModel && !docMode) {
+                qsActivateSubtitleFormatTabOnly();
                 window._qsForceLegacyEditMode = false;
                 win.contentEditable = 'false';
                 try {
@@ -13943,6 +13987,40 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     try {
                         const first = win.querySelector('.caption-row .caption-text');
                         if (first) first.focus();
+                        const timingRow = win.querySelector('.caption-row.qs-timing-line-selected, .qs-timing-legacy-row.qs-timing-line-selected');
+                        if (timingRow) timingRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    } catch (_) {}
+                });
+                return;
+            }
+
+            const hasSeg = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+            if (!hasWordModel && hasSeg && !docMode && !isMedicalModeEnabled()) {
+                qsActivateSubtitleFormatTabOnly();
+                window._qsForceLegacyEditMode = false;
+                win.contentEditable = 'false';
+                try {
+                    window.transcriptBackup = win.innerHTML;
+                } catch (_) {
+                    window.transcriptBackup = null;
+                }
+                try {
+                    window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
+                } catch (_) {
+                    window._qsTimingModeBackup = null;
+                }
+                window._qsTimingMode = true;
+                if (!Number.isFinite(window._qsTimingSelectedCi)) window._qsTimingSelectedCi = 0;
+                win.classList.add('transcript-editing', 'transcript-sync-mode');
+                _qsSetSyncModeButtonActive(true);
+                renderLegacyTimingModeTranscript(win);
+                if (editActions) editActions.style.display = 'flex';
+                win.style.border = "2px solid #1e3a8a";
+                win.style.backgroundColor = "#fff";
+                requestAnimationFrame(() => {
+                    try {
+                        const timingRow = win.querySelector('.qs-timing-legacy-row.qs-timing-line-selected');
+                        if (timingRow) timingRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                     } catch (_) {}
                 });
                 return;
