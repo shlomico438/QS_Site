@@ -9345,6 +9345,10 @@ function qsProcessingPipelineUsesBars() {
     return typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
 }
 
+function qsProcessingPipelineUsesTripleBars() {
+    return typeof isMedicalModeEnabled === 'function' && !isMedicalModeEnabled();
+}
+
 function qsProgressBarElement() {
     if (qsProcessingPipelineUsesBars()) {
         return document.getElementById('progress-bar');
@@ -9423,17 +9427,172 @@ function qsStartUnifiedProgressPhase(phase) {
 }
 
 function qsCompleteTranscribePipelineProgress() {
-    qsClearUnifiedProgressTimer();
-    qsSetUnifiedProgressPhase('transcribe', 100);
+    if (qsProcessingPipelineUsesBars()) {
+        qsClearUnifiedProgressTimer();
+        qsSetUnifiedProgressPhase('transcribe', 100);
+    } else if (qsProcessingPipelineUsesTripleBars()) {
+        qsCompleteTriplePipelinePhase('transcribe');
+    }
 }
 
 function qsStartSummaryPipelineProgress() {
-    qsStartUnifiedProgressPhase('summary');
+    if (qsProcessingPipelineUsesBars()) {
+        qsStartUnifiedProgressPhase('summary');
+    } else if (qsProcessingPipelineUsesTripleBars()) {
+        qsStartTripleProgressPhase('summary');
+    }
 }
 
 function qsCompleteSummaryPipelineProgress() {
     qsClearUnifiedProgressTimer();
-    qsSetUnifiedProgressPhase('summary', 100);
+    qsClearTripleProgressTimer();
+    if (qsProcessingPipelineUsesBars()) {
+        qsSetUnifiedProgressPhase('summary', 100);
+    } else if (qsProcessingPipelineUsesTripleBars()) {
+        qsSetTripleBarPct('upload', 100);
+        qsSetTripleBarPct('transcribe', 100);
+        qsSetTripleBarPct('summary', 100);
+        qsMarkAllTriplePipelineRowsComplete();
+    }
+}
+
+function qsTripleBarElement(phase) {
+    const ids = {
+        upload: 'qs-pipeline-bar-upload',
+        transcribe: 'qs-pipeline-bar-transcribe',
+        summary: 'qs-pipeline-bar-summary'
+    };
+    const id = ids[phase];
+    return id ? document.getElementById(id) : null;
+}
+
+function qsSetTripleBarPct(phase, pct) {
+    const bar = qsTripleBarElement(phase);
+    if (!bar) return;
+    const n = Math.max(0, Math.min(100, Number(pct) || 0));
+    bar.style.width = n + '%';
+}
+
+function qsTriplePhaseLabel(phase) {
+    const keyByPhase = {
+        upload: 'pipeline_upload',
+        transcribe: 'pipeline_transcribe',
+        summary: 'pipeline_summary'
+    };
+    const key = keyByPhase[phase];
+    if (key && typeof window.t === 'function') {
+        const tr = window.t(key);
+        if (tr) return tr;
+    }
+    const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+    const labels = isHe
+        ? { upload: 'העלאה', transcribe: 'תמלול', summary: 'יצירת סיכום' }
+        : { upload: 'Uploading', transcribe: 'Transcribing', summary: 'Summary creation' };
+    return labels[phase] || labels.upload;
+}
+
+function qsRefreshTriplePipelineLabels() {
+    ['upload', 'transcribe', 'summary'].forEach((phase) => {
+        const labelEl = document.getElementById(`qs-pipeline-label-${phase}`);
+        if (labelEl) labelEl.textContent = qsTriplePhaseLabel(phase);
+    });
+}
+
+function qsClearTripleProgressTimer() {
+    if (window.__QS_TRIPLE_PROGRESS_TIMER) {
+        clearInterval(window.__QS_TRIPLE_PROGRESS_TIMER);
+        window.__QS_TRIPLE_PROGRESS_TIMER = null;
+    }
+}
+
+function qsUpdateTriplePipelineRowStates(activePhase) {
+    const order = { upload: 0, transcribe: 1, summary: 2 };
+    const activeIndex = order[activePhase] ?? 0;
+    document.querySelectorAll('.processing-pipeline-row[data-phase]').forEach((row) => {
+        const phase = row.getAttribute('data-phase');
+        const idx = order[phase] ?? 0;
+        row.classList.remove('is-active', 'is-complete', 'is-pending');
+        if (idx < activeIndex) row.classList.add('is-complete');
+        else if (idx === activeIndex) row.classList.add('is-active');
+        else row.classList.add('is-pending');
+    });
+}
+
+function qsMarkAllTriplePipelineRowsComplete() {
+    document.querySelectorAll('.processing-pipeline-row[data-phase]').forEach((row) => {
+        row.classList.remove('is-active', 'is-pending');
+        row.classList.add('is-complete');
+    });
+}
+
+function qsResetTriplePipelineBars() {
+    ['upload', 'transcribe', 'summary'].forEach((phase) => qsSetTripleBarPct(phase, 0));
+    qsUpdateTriplePipelineRowStates('upload');
+}
+
+function qsShowTripleProgressChrome() {
+    const wrap = document.getElementById('processing-triple-progress');
+    const spinnerWrap = document.getElementById('processing-state-spinner-wrap');
+    const phaseEl = document.getElementById('processing-state-phase');
+    if (wrap) wrap.style.display = 'flex';
+    if (spinnerWrap) spinnerWrap.style.display = 'none';
+    if (phaseEl) phaseEl.style.display = 'none';
+    qsRefreshTriplePipelineLabels();
+}
+
+function qsHideTripleProgressChrome() {
+    const wrap = document.getElementById('processing-triple-progress');
+    if (wrap) wrap.style.display = 'none';
+    qsClearTripleProgressTimer();
+    window.__QS_TRIPLE_PROGRESS_PHASE = null;
+    qsResetTriplePipelineBars();
+}
+
+function qsSetTripleProgressPhase(phase, pct) {
+    window.__QS_TRIPLE_PROGRESS_PHASE = phase;
+    qsUpdateTriplePipelineRowStates(phase);
+    if (pct != null) qsSetTripleBarPct(phase, pct);
+}
+
+function qsAnimateTripleProgress(phase, durationMs, capPct) {
+    const cap = capPct != null ? capPct : 95;
+    const ms = Math.max(1000, Number(durationMs) || QS_PIPELINE_TRANSCRIBE_MS);
+    const bar = qsTripleBarElement(phase);
+    if (!bar) return null;
+    const start = Date.now();
+    return setInterval(() => {
+        if (!window.isTriggering) return;
+        const elapsed = Date.now() - start;
+        const pct = Math.min(cap, Math.round((elapsed / ms) * cap));
+        qsSetTripleBarPct(phase, pct);
+    }, 400);
+}
+
+function qsStartTripleProgressPhase(phase) {
+    qsClearTripleProgressTimer();
+    qsSetTripleProgressPhase(phase, phase === 'upload' ? 0 : undefined);
+    if (phase === 'upload') {
+        window.__QS_TRIPLE_PROGRESS_TIMER = qsAnimateTripleProgress('upload', QS_PIPELINE_TRANSCRIBE_MS, 95);
+    } else if (phase === 'transcribe') {
+        qsSetTripleBarPct('upload', 100);
+        qsSetTripleBarPct('transcribe', 0);
+        qsUpdateTriplePipelineRowStates('transcribe');
+        window.__QS_TRIPLE_PROGRESS_TIMER = qsAnimateTripleProgress('transcribe', QS_PIPELINE_TRANSCRIBE_MS, 95);
+    } else if (phase === 'summary') {
+        qsSetTripleBarPct('upload', 100);
+        qsSetTripleBarPct('transcribe', 100);
+        qsSetTripleBarPct('summary', 0);
+        qsUpdateTriplePipelineRowStates('summary');
+        window.__QS_TRIPLE_PROGRESS_TIMER = qsAnimateTripleProgress('summary', QS_PIPELINE_SUMMARY_MS, 95);
+    }
+}
+
+function qsCompleteTriplePipelinePhase(phase) {
+    qsClearTripleProgressTimer();
+    qsSetTripleBarPct(phase, 100);
+    if (phase === 'upload') qsUpdateTriplePipelineRowStates('transcribe');
+    else if (phase === 'transcribe') qsUpdateTriplePipelineRowStates('summary');
+    else if (phase === 'summary') qsMarkAllTriplePipelineRowsComplete();
 }
 
 function qsShowProcessingPipelineChrome(useBars) {
@@ -9469,10 +9628,12 @@ function stopProcessingStateUI(reason) {
     const panel = document.getElementById('processing-state-panel');
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
     qsClearUnifiedProgressTimer();
+    qsClearTripleProgressTimer();
     qsClearMedicalWarmupWaitTimer();
     qsStopMedicalWarmupPhaseTick();
     window.__QS_MEDICAL_RECORDING_WARMUP_BAR = false;
     qsHideUnifiedProgressChrome();
+    qsHideTripleProgressChrome();
     let panelWasVisible = false;
     try {
         if (panel) {
@@ -9546,7 +9707,8 @@ function startProcessingStateUI() {
     }
 
     const usePipelineBars = qsProcessingPipelineUsesBars();
-    qsShowProcessingPipelineChrome(usePipelineBars);
+    const useTripleBars = qsProcessingPipelineUsesTripleBars();
+    if (usePipelineBars) qsShowProcessingPipelineChrome(true);
 
     window.processingPhaseIndex = 0;
     if (phaseEl) phaseEl.textContent = PROCESSING_PHASES_HE[0];
@@ -9564,12 +9726,25 @@ function startProcessingStateUI() {
         if (phase !== 'transcribe' && phase !== 'summary' && phase !== 'upload' && phase !== 'warmup') {
             qsStartUnifiedProgressPhase('transcribe');
         }
+    } else if (useTripleBars) {
+        if (spinnerWrap) spinnerWrap.style.display = 'none';
+        if (phaseEl) phaseEl.style.display = 'none';
+        qsShowTripleProgressChrome();
+        const phase = window.__QS_TRIPLE_PROGRESS_PHASE;
+        if (phase === 'summary') {
+            qsStartTripleProgressPhase('summary');
+        } else if (phase === 'transcribe') {
+            qsSetTripleBarPct('upload', 100);
+            qsStartTripleProgressPhase('transcribe');
+        } else {
+            qsSetTripleBarPct('upload', 100);
+            qsStartTripleProgressPhase('transcribe');
+        }
     } else if (phaseEl) {
-        // Regular mode: show the classic spinner + rotating status lines.
         if (spinnerWrap) spinnerWrap.style.display = 'flex';
         if (phaseEl) phaseEl.style.display = '';
-        // Ensure the unified bar UI is hidden in regular mode.
         try { qsHideUnifiedProgressChrome(); } catch (_) {}
+        try { qsHideTripleProgressChrome(); } catch (_) {}
         window.processingStateTimer = setInterval(() => {
             const currentIndex = Number(window.processingPhaseIndex || 0);
             const next = (currentIndex + 1) % PROCESSING_PHASES_HE.length;
@@ -12001,7 +12176,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (qsProcessingPipelineUsesBars() && window.isTriggering) {
+        if ((qsProcessingPipelineUsesBars() || qsProcessingPipelineUsesTripleBars()) && window.isTriggering) {
             qsCompleteTranscribePipelineProgress();
             qsStartSummaryPipelineProgress();
         }
@@ -12076,10 +12251,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // Keep processing spinner through summary GPT stage (skip if already generated for this job).
         if (!summaryAlreadyDone) {
             if (mainBtn) mainBtn.disabled = true;
-            const phaseElGpt = document.getElementById('processing-state-phase');
-            if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
-                window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
-                phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
+            if (!qsProcessingPipelineUsesTripleBars()) {
+                const phaseElGpt = document.getElementById('processing-state-phase');
+                if (phaseElGpt && PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX]) {
+                    window.processingPhaseIndex = QS_GPT_PHASE_INDEX;
+                    phaseElGpt.textContent = PROCESSING_PHASES_HE[QS_GPT_PHASE_INDEX];
+                }
             }
             console.info('[qs-processing-ui] summary_gpt_start', {
                 segment_count: (window.currentSegments || []).length
@@ -12160,7 +12337,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setFormatViewMode('summary');
             renderStandardSummaryView();
         }
-        if (qsProcessingPipelineUsesBars()) qsCompleteSummaryPipelineProgress();
+        if (qsProcessingPipelineUsesBars() || qsProcessingPipelineUsesTripleBars()) qsCompleteSummaryPipelineProgress();
 
         // Ensure global segments are set (already handled above); keep legacy flow happy.
         const finalStatus = 'processed';
@@ -14029,7 +14206,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (current < 95) {
                 current += 0.5;
                 const pct = Math.round(current);
-                if (!qsProcessingPipelineUsesBars()) qsSetProgressBarPct(current);
+                if (!qsProcessingPipelineUsesBars() && !qsProcessingPipelineUsesTripleBars()) qsSetProgressBarPct(current);
                 if (mainBtn) qsSetMainBtnDynamicLabel(processingLabel + ' ' + pct + '%');
                 if (statusTxt) statusTxt.style.display = 'none';
             }

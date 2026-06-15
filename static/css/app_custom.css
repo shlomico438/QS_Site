@@ -3893,6 +3893,42 @@ body:not(.has-transcript-actions) #subtitle-style-selector {
   transition: width 0.35s ease;
 }
 
+.processing-triple-progress {
+  width: 100%;
+  max-width: 420px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.processing-pipeline-row {
+  width: 100%;
+}
+
+.processing-pipeline-label {
+  margin: 0 0 6px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: #9ca3af;
+  text-align: start;
+  transition: color 0.2s ease;
+}
+
+.processing-pipeline-row.is-active .processing-pipeline-label {
+  font-weight: 600;
+  color: #111827;
+}
+
+.processing-pipeline-row.is-complete .processing-pipeline-label {
+  color: #6b7280;
+}
+
+.processing-pipeline-row.is-pending .processing-unified-fill {
+  background: #d1d5db;
+}
+
 .processing-state-spinner-wrap {
     display: flex;
     align-items: center;

@@ -563,6 +563,26 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                         <div id="progress-bar" class="processing-unified-fill"></div>
                     </div>
                 </div>
+                <div id="processing-triple-progress" class="processing-triple-progress" style="display:none;">
+                    <div class="processing-pipeline-row is-pending" data-phase="upload">
+                        <div id="qs-pipeline-label-upload" class="processing-pipeline-label" data-i18n="pipeline_upload">העלאה</div>
+                        <div class="progress-container processing-unified-track">
+                            <div id="qs-pipeline-bar-upload" class="processing-unified-fill"></div>
+                        </div>
+                    </div>
+                    <div class="processing-pipeline-row is-pending" data-phase="transcribe">
+                        <div id="qs-pipeline-label-transcribe" class="processing-pipeline-label" data-i18n="pipeline_transcribe">תמלול</div>
+                        <div class="progress-container processing-unified-track">
+                            <div id="qs-pipeline-bar-transcribe" class="processing-unified-fill"></div>
+                        </div>
+                    </div>
+                    <div class="processing-pipeline-row is-pending" data-phase="summary">
+                        <div id="qs-pipeline-label-summary" class="processing-pipeline-label" data-i18n="pipeline_summary">יצירת סיכום</div>
+                        <div class="progress-container processing-unified-track">
+                            <div id="qs-pipeline-bar-summary" class="processing-unified-fill"></div>
+                        </div>
+                    </div>
+                </div>
                 <div class="processing-state-spinner-wrap" id="processing-state-spinner-wrap" style="display:none;" aria-hidden="true">
                     <div class="processing-state-spinner" id="processing-state-spinner"></div>
                 </div>
