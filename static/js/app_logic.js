@@ -6257,6 +6257,8 @@ function askTranslationLanguage() {
 }
 
 const QS_TRANSLATION_TEXT_CHUNK_CHARS = 6000;
+const QS_CLEANUP_MAX_SINGLE_CHARS = 6500;
+const QS_CLEANUP_CHUNK_PARALLEL = 2;
 const QS_TRANSLATION_SEGMENT_BATCH_SIZE = 96;
 const QS_TRANSLATION_TEXT_MAX_CLIENT_CONCURRENCY = 2;
 const QS_TRANSLATION_SEGMENT_MAX_CLIENT_CONCURRENCY = 2;
@@ -6888,8 +6890,20 @@ function hasCleanTranscript() {
 function qsTranscriptCleanupBannerHtml() {
     if (!window._qsCleanupInFlight) return '';
     const T = typeof window.t === 'function' ? window.t : (k) => k;
-    const msg = T('transcript_cleanup_in_progress') || 'Improving transcript readability…';
+    let msg = T('transcript_cleanup_in_progress') || 'Improving transcript readability…';
+    const prog = window._qsCleanupProgress;
+    if (prog && prog.total > 1 && Number.isFinite(prog.current)) {
+        msg += ` (${prog.current}/${prog.total})`;
+    }
     return `<div id="qs-cleanup-banner" class="qs-cleanup-banner" role="status" style="margin:0 0 10px;padding:8px 12px;border-radius:8px;background:#eff6ff;color:#1e40af;font-size:13px;line-height:1.4;">${msg.replace(/</g, '&lt;')}</div>`;
+}
+
+function qsResetCleanupState() {
+    window._qsCleanupDone = false;
+    window._qsCleanupInFlight = false;
+    window._qsCleanupFailed = false;
+    window._qsCleanupPromise = null;
+    window._qsCleanupProgress = null;
 }
 
 async function qsPersistFormattedDocToS3() {
@@ -6948,22 +6962,38 @@ async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId) {
     return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt: fmt && !fmt.error ? normalizeFormattedFields(fmt) : fmt };
 }
 
-async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId) {
+async function fetchTranscriptFormatChunksPlan(fullText) {
+    const res = await fetch('/api/transcript_format_chunks_plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: fullText }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !Array.isArray(data.chunks)) {
+        throw new Error((data && data.error) ? String(data.error) : `chunk plan HTTP ${res.status}`);
+    }
+    return data.chunks.map((c) => String(c || '').trim()).filter(Boolean);
+}
+
+function qsCleanupRequestBase(targetLang, jobId) {
     const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
-    const userId = await qsCurrentUserId();
-    const base = () => ({
+    return {
         target_lang: targetLang,
         jobId: jobId || undefined,
-        userId: userId || undefined,
+        userId: undefined,
         isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
-        mode: 'cleanup',
         ...(hint ? { input_s3_key: hint } : {}),
-    });
+    };
+}
+
+async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId) {
+    const userId = await qsCurrentUserId();
+    const base = { ...qsCleanupRequestBase(targetLang, jobId), userId: userId || undefined, mode: 'cleanup' };
     const t0 = performance.now();
     const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...base(), text: fullText })
+        body: JSON.stringify({ ...base, text: fullText }),
     });
     const fmt = await res.json().catch(() => ({}));
     const elapsedMs = Math.round(performance.now() - t0);
@@ -6972,6 +7002,7 @@ async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId) {
         duration_ms: elapsedMs,
         cleanup_generation_time: Number.isFinite(cleanupSec) ? cleanupSec : undefined,
         ok: !!(res.ok && fmt && !fmt.error),
+        chunked: false,
     });
     const normalized = fmt && !fmt.error
         ? normalizeFormattedFields({ clean_transcript: fmt.clean_transcript || '' })
@@ -6979,7 +7010,77 @@ async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId) {
     return { ok: res.ok && normalized && typeof normalized === 'object' && !normalized.error, res, fmt: normalized };
 }
 
-async function ensureTranscriptCleanupLazy(options) {
+async function runFormatTranscriptCleanChunkRequest(chunkText, targetLang, jobId) {
+    const userId = await qsCurrentUserId();
+    const base = { ...qsCleanupRequestBase(targetLang, jobId), userId: userId || undefined, mode: 'clean_chunk' };
+    const res = await fetch('/api/format_transcript_summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...base, text: chunkText }),
+    });
+    const fmt = await res.json().catch(() => ({}));
+    const normalized = fmt && !fmt.error
+        ? normalizeFormattedFields({ clean_transcript: fmt.clean_transcript || '' })
+        : fmt;
+    return { ok: res.ok && normalized && typeof normalized === 'object' && !normalized.error, res, fmt: normalized };
+}
+
+async function runFormatTranscriptCleanupChunked(fullText, targetLang, jobId) {
+    const chunks = await fetchTranscriptFormatChunksPlan(fullText);
+    if (!chunks.length) return { ok: false, res: null, fmt: null };
+    if (chunks.length === 1) {
+        return runFormatTranscriptCleanupRequest(fullText, targetLang, jobId);
+    }
+    const parts = new Array(chunks.length);
+    let completed = 0;
+    const parallel = Math.max(1, Math.min(QS_CLEANUP_CHUNK_PARALLEL, chunks.length));
+    window._qsCleanupProgress = { current: 0, total: chunks.length };
+    const t0 = performance.now();
+    let nextIdx = 0;
+    const processOne = async () => {
+        while (nextIdx < chunks.length) {
+            const i = nextIdx++;
+            const { ok, res, fmt } = await runFormatTranscriptCleanChunkRequest(chunks[i], targetLang, jobId);
+            if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
+                const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res && res.status}`;
+                throw new Error(`cleanup chunk ${i + 1}/${chunks.length} failed: ${errMsg}`);
+            }
+            parts[i] = String(fmt.clean_transcript || '').trim();
+            completed++;
+            window._qsCleanupProgress = { current: completed, total: chunks.length };
+            if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
+        }
+    };
+    await Promise.all(Array.from({ length: parallel }, () => processOne()));
+    const clean = parts.filter(Boolean).join('\n\n').trim();
+    const elapsedMs = Math.round(performance.now() - t0);
+    qsTrackEvent('cleanup_generation_time', {
+        duration_ms: elapsedMs,
+        ok: !!clean,
+        chunked: true,
+        chunk_count: chunks.length,
+    });
+    if (!clean) return { ok: false, res: null, fmt: null };
+    return { ok: true, res: { status: 200 }, fmt: normalizeFormattedFields({ clean_transcript: clean }) };
+}
+
+function qsApplyCleanupResult(cleanTranscript) {
+    const clean = String(cleanTranscript || '').trim();
+    if (!clean) return false;
+    const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : {};
+    window.currentFormattedDoc = normalizeFormattedFields({
+        ...prev,
+        clean_transcript: clean,
+    });
+    window._qsCleanupDone = true;
+    window._qsDocPreferSegmentsAfterEdit = false;
+    return true;
+}
+
+/** Single shared cleanup runner — Transcript tab and export await the same in-flight work. */
+async function runTranscriptCleanupShared(options) {
     options = options || {};
     if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
         return hasCleanTranscript();
@@ -6988,45 +7089,59 @@ async function ensureTranscriptCleanupLazy(options) {
         window._qsCleanupDone = true;
         return true;
     }
-    if (window._qsCleanupInFlight) return false;
+    if (window._qsCleanupPromise) {
+        return window._qsCleanupPromise;
+    }
     const fullText = buildTranscriptTextForGptFormat();
     if (!fullText.trim()) return false;
+
+    const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
+    const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
     window._qsCleanupInFlight = true;
     window._qsCleanupFailed = false;
+    window._qsCleanupProgress = null;
     if (options.rerender !== false && typeof window._qsRerenderTranscriptView === 'function') {
         window._qsRerenderTranscriptView();
     }
-    const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
-    const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
-    try {
-        const { ok, fmt } = await runFormatTranscriptCleanupRequest(fullText, targetLang, jobId);
-        if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
+
+    window._qsCleanupPromise = (async () => {
+        try {
+            const useChunked = fullText.length > QS_CLEANUP_MAX_SINGLE_CHARS;
+            const { ok, fmt } = useChunked
+                ? await runFormatTranscriptCleanupChunked(fullText, targetLang, jobId)
+                : await runFormatTranscriptCleanupRequest(fullText, targetLang, jobId);
+            if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
+                window._qsCleanupFailed = true;
+                return false;
+            }
+            if (!qsApplyCleanupResult(fmt.clean_transcript)) {
+                window._qsCleanupFailed = true;
+                return false;
+            }
+            qsTrackEvent('cleanup_completed', { ok: true, chunked: useChunked });
+            void qsPersistFormattedDocToS3();
+            if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
+            return true;
+        } catch (e) {
             window._qsCleanupFailed = true;
+            console.warn('[GPT] transcript cleanup failed:', e);
             return false;
+        } finally {
+            window._qsCleanupInFlight = false;
+            window._qsCleanupPromise = null;
+            window._qsCleanupProgress = null;
+            if (options.rerender !== false && typeof window._qsRerenderTranscriptView === 'function') {
+                window._qsRerenderTranscriptView();
+            }
         }
-        const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
-            ? window.currentFormattedDoc
-            : {};
-        window.currentFormattedDoc = normalizeFormattedFields({
-            ...prev,
-            clean_transcript: String(fmt.clean_transcript || '').trim(),
-        });
-        window._qsCleanupDone = true;
-        window._qsDocPreferSegmentsAfterEdit = false;
-        qsTrackEvent('cleanup_completed', { ok: true });
-        void qsPersistFormattedDocToS3();
-        if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
-        return true;
-    } catch (e) {
-        window._qsCleanupFailed = true;
-        console.warn('[GPT] lazy transcript cleanup failed:', e);
-        return false;
-    } finally {
-        window._qsCleanupInFlight = false;
-        if (options.rerender !== false && typeof window._qsRerenderTranscriptView === 'function') {
-            window._qsRerenderTranscriptView();
-        }
-    }
+    })();
+
+    return window._qsCleanupPromise;
+}
+window.runTranscriptCleanupShared = runTranscriptCleanupShared;
+
+async function ensureTranscriptCleanupLazy(options) {
+    return runTranscriptCleanupShared(options);
 }
 window.ensureTranscriptCleanupLazy = ensureTranscriptCleanupLazy;
 
@@ -7130,17 +7245,16 @@ async function ensureFormattedViaApiForExport() {
                 safeFmt = { ...safeFmt, ...fmt };
             }
             if (needClean) {
-                const { ok, res, fmt } = await runFormatTranscriptCleanupRequest(fullText, targetLang, jobId);
-                if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
-                    const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
-                    console.warn('[export] cleanup format failed', res.status, errMsg);
+                const cleanupOk = await runTranscriptCleanupShared({ rerender: false });
+                if (!cleanupOk || !hasCleanTranscript()) {
+                    const errMsg = window._qsCleanupFailed ? 'cleanup failed or timed out' : 'no clean transcript';
+                    console.warn('[export] cleanup format failed', errMsg);
                     if (typeof showStatus === 'function') {
                         showStatus('עיצוב התמלול נכשל: ' + errMsg.slice(0, 200), true);
                     }
                     return false;
                 }
-                safeFmt.clean_transcript = String(fmt.clean_transcript || '').trim();
-                window._qsCleanupDone = true;
+                safeFmt.clean_transcript = String(window.currentFormattedDoc.clean_transcript || '').trim();
             }
         }
         const rawFmt = {
@@ -10900,6 +11014,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window._lastProcessedJobId = null;
         window._qsSummaryGptDoneJobId = null;
         window._qsCreditsDeferredForJobId = null;
+        qsResetCleanupState();
         const dbId = localStorage.getItem('lastJobDbId');
         if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
         let warmUserId = window.__QS_MEDICAL_WARMUP_USER_ID;
@@ -11696,6 +11811,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     window._lastProcessedJobId = null;
                     window._qsSummaryGptDoneJobId = null;
                     window._qsCreditsDeferredForJobId = null;
+                    qsResetCleanupState();
                     try {
                         await supabase
                             .from('jobs')
@@ -12185,9 +12301,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const deferToolbarUntilGptDone = true;
         const summaryAlreadyDone = qsJobSummaryAlreadyDone(jobId);
         if (!summaryAlreadyDone) {
-            window._qsCleanupDone = false;
-            window._qsCleanupInFlight = false;
-            window._qsCleanupFailed = false;
+            qsResetCleanupState();
             window._medicalHasResult = false;
             setTranscriptActionButtonsVisible(false);
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
@@ -14517,6 +14631,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window._lastProcessedJobId = null;
                 window._qsSummaryGptDoneJobId = null;
                 window._qsCreditsDeferredForJobId = null;
+                qsResetCleanupState();
                 console.log("💾 Keys parked for recovery:", s3Key);
                 if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId, s3Key });
 
