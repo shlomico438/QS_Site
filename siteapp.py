@@ -67,8 +67,66 @@ def _standard_s3_bucket_name():
     return (os.environ.get('S3_BUCKET') or '').strip()
 
 
+def _aws_region():
+    return (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+
+
+def _r2_region():
+    """Cloudflare R2 region (boto3: use 'auto', not AWS_REGION)."""
+    return (os.environ.get('R2_REGION') or 'auto').strip()
+
+
+def _r2_endpoint_url():
+    """Account-level R2 S3 API endpoint (no bucket path suffix)."""
+    raw = (os.environ.get('S3_ENDPOINT_URL') or os.environ.get('R2_ENDPOINT_URL') or '').strip().rstrip('/')
+    if not raw:
+        return ''
+    bucket = _standard_s3_bucket_name()
+    if bucket and raw.endswith('/' + bucket):
+        raw = raw[: -(len(bucket) + 1)]
+    return raw
+
+
+def _r2_configured():
+    return bool(
+        _r2_endpoint_url()
+        and (os.environ.get('R2_ACCESS_KEY_ID') or '').strip()
+        and (os.environ.get('R2_SECRET_ACCESS_KEY') or '').strip()
+    )
+
+
+def _bucket_uses_r2(bucket):
+    """Standard RunPod bucket on R2; medical + SageMaker manifest buckets stay on AWS."""
+    if not _r2_configured():
+        return False
+    b = str(bucket or '').strip()
+    med = (MEDICAL_S3_BUCKET or '').strip()
+    if med and b == med:
+        return False
+    sage_bucket = (os.environ.get('SAGEMAKER_REQUEST_BUCKET') or '').strip()
+    if sage_bucket and b == sage_bucket:
+        return False
+    return True
+
+
+def _s3_storage_credentials_configured(bucket):
+    if _bucket_uses_r2(bucket):
+        return _r2_configured()
+    return bool(
+        (os.environ.get('AWS_ACCESS_KEY_ID') or '').strip()
+        and (os.environ.get('AWS_SECRET_ACCESS_KEY') or '').strip()
+    )
+
+
+def _s3_credentials_error_message(bucket):
+    backend = 'R2' if _bucket_uses_r2(bucket) else 'AWS'
+    return f"{backend} credentials missing on server"
+
+
 def _s3_upload_accelerate_enabled_for_bucket(bucket):
     """S3 Transfer Acceleration for upload presigns (enable on bucket in AWS)."""
+    if _bucket_uses_r2(bucket):
+        return False
     if (str(bucket or '').strip() or '') != _standard_s3_bucket_name():
         return False
     v = (os.environ.get('S3_UPLOAD_ACCELERATE') or '').strip().lower()
@@ -76,18 +134,27 @@ def _s3_upload_accelerate_enabled_for_bucket(bucket):
 
 
 def _s3_boto_client(for_upload=False, bucket=None):
-    """S3 client. Upload presigns must use S3 (or Transfer Acceleration) — not CloudFront."""
-    region = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+    """S3-compatible client: R2 for S3_BUCKET (RunPod), AWS for medical / SageMaker manifests."""
+    use_r2 = _bucket_uses_r2(bucket)
+    region = _r2_region() if use_r2 else _aws_region()
     config_kw = {'signature_version': 's3v4'}
     if for_upload and bucket and _s3_upload_accelerate_enabled_for_bucket(bucket):
         config_kw['s3'] = {'use_accelerate_endpoint': True}
-    return boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=region,
-        config=Config(**config_kw),
-    )
+    client_kw = {
+        'service_name': 's3',
+        'aws_access_key_id': (
+            os.environ.get('R2_ACCESS_KEY_ID') if use_r2 else os.environ.get('AWS_ACCESS_KEY_ID')
+        ),
+        'aws_secret_access_key': (
+            os.environ.get('R2_SECRET_ACCESS_KEY') if use_r2 else os.environ.get('AWS_SECRET_ACCESS_KEY')
+        ),
+        'region_name': region,
+        'config': Config(**config_kw),
+    }
+    endpoint = _r2_endpoint_url() if use_r2 else None
+    if endpoint:
+        client_kw['endpoint_url'] = endpoint
+    return boto3.client(**client_kw)
 
 
 def _s3_cdn_media_get_enabled():
@@ -396,8 +463,6 @@ RUNPOD_API_KEY = os.environ.get('RUNPOD_API_KEY')
 RUNPOD_ENDPOINT_ID = os.environ.get('RUNPOD_ENDPOINT_ID')
 RUNPOD_MOVIE_ENDPOINT_ID = os.environ.get('RUNPOD_MOVIE_ENDPOINT_ID') or RUNPOD_ENDPOINT_ID
 RUNPOD_CPU_ENDPOINT_ID = os.environ.get('RUNPOD_CPU_ENDPOINT_ID') or RUNPOD_MOVIE_ENDPOINT_ID
-BUCKET_NAME = "quickscribe-v2-12345"
-
 
 def _runpod_burn_endpoint_id():
     """RunPod serverless endpoint for subtitle burn + music vocal separation (CPU worker)."""
@@ -705,12 +770,7 @@ def _read_medical_warmup_hint_s3():
     if not bucket:
         return {}
     try:
-        s3 = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
-        )
+        s3 = _s3_boto_client(bucket=bucket)
         resp = s3.get_object(Bucket=bucket, Key=_medical_warmup_hint_s3_key)
         raw = resp['Body'].read().decode('utf-8')
         data = json.loads(raw) if raw else {}
@@ -742,12 +802,7 @@ def _write_medical_warmup_hint_s3(job_id, submitted_at=None):
     jid = str(job_id or '').strip() or None
     payload = {'submitted_at': at, 'job_id': jid}
     try:
-        s3 = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
-        )
+        s3 = _s3_boto_client(bucket=bucket)
         s3.put_object(
             Bucket=bucket,
             Key=_medical_warmup_hint_s3_key,
@@ -772,12 +827,7 @@ def _clear_medical_warmup_hint_s3():
     if not bucket:
         return
     try:
-        s3 = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
-        )
+        s3 = _s3_boto_client(bucket=bucket)
         s3.delete_object(Bucket=bucket, Key=_medical_warmup_hint_s3_key)
     except Exception as e:
         logging.debug('medical warmup hint delete: %s', e)
@@ -1345,12 +1395,7 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=20):
         if not bucket or not s3_key:
             return {"profile": "unknown", "reason": "missing_bucket_or_key"}
         ffmpeg_path = _resolve_ffmpeg()
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
+        s3_client = _s3_boto_client(bucket=bucket)
         sr = 16000
         # Allow longer samples (e.g. speech intro then music); cap keeps ffmpeg/memory bounded.
         seconds = max(5, min(45, int(seconds or 20)))
@@ -1851,12 +1896,7 @@ def _s3_object_exists(bucket, key):
     if not bucket or not key:
         return False
     try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
+        s3_client = _s3_boto_client(bucket=bucket)
         s3_client.head_object(Bucket=bucket, Key=key)
         return True
     except ClientError:
@@ -2352,7 +2392,7 @@ def _resolve_storage_profile(user_id, input_s3_key=None, is_medical=None):
     safe_user = str(user_id or 'anonymous').strip() or 'anonymous'
     return {
         "is_medical": inferred_medical,
-        "bucket": MEDICAL_S3_BUCKET if inferred_medical else (os.environ.get('S3_BUCKET') or "quickscribe-v2-12345"),
+        "bucket": MEDICAL_S3_BUCKET if inferred_medical else _standard_s3_bucket_name(),
         "input_prefix": f"users/{safe_user}/raw-audio" if inferred_medical else f"users/{safe_user}/input",
         "output_prefix": f"users/{safe_user}/summaries" if inferred_medical else f"users/{safe_user}/output",
     }
@@ -2926,12 +2966,7 @@ def stream_s3_media(token):
     if not bucket:
         return jsonify({"error": "S3 bucket not configured"}), 500
 
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.environ.get('AWS_REGION')
-    )
+    s3_client = _s3_boto_client(bucket=bucket)
 
     def _ctype_override(ct, key):
         if key and str(key).lower().endswith('.mov'):
@@ -3017,12 +3052,7 @@ def api_s3_exists():
         if not bucket:
             return jsonify({"error": "S3 bucket not configured"}), 500
 
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
+        s3_client = _s3_boto_client(bucket=bucket)
         try:
             s3_client.head_object(Bucket=bucket, Key=s3_key)
             return jsonify({"exists": True}), 200
@@ -3126,12 +3156,7 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
     result_s3_key = base + '.json'
 
     body = json.dumps(transcript, ensure_ascii=False).encode('utf-8')
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.environ.get('AWS_REGION')
-    )
+    s3_client = _s3_boto_client(bucket=profile["bucket"])
     s3_client.put_object(
         Bucket=profile["bucket"],
         Key=result_s3_key,
@@ -3162,12 +3187,7 @@ def _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt', is_medical=
     # `stage` is accepted for backward compatibility, but ignored.
     key = base + '.json'
     try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
+        s3_client = _s3_boto_client(bucket=bucket)
         resp = s3_client.get_object(Bucket=bucket, Key=key)
         raw = resp['Body'].read().decode('utf-8')
         data = json.loads(raw)
@@ -3905,12 +3925,7 @@ def _media_duration_seconds_from_s3(bucket, s3_key, client_duration_sec=0.0):
     ffprobe_path = _resolve_ffprobe()
     probe_timeout = max(30, int(os.environ.get('CREDITS_DURATION_PROBE_TIMEOUT_SEC', '120') or 120))
     try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION'),
-        )
+        s3_client = _s3_boto_client(bucket=bucket)
     except Exception as e:
         logging.warning("_media_duration_seconds_from_s3 s3 client failed key=%s err=%s", s3_key[-48:], e)
         return 0.0
@@ -4496,12 +4511,7 @@ def _delete_s3_keys_batch(keys):
     bucket = os.environ.get('S3_BUCKET')
     if not bucket:
         return 0
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.environ.get('AWS_REGION')
-    )
+    s3_client = _s3_boto_client(bucket=bucket)
     deleted_count = 0
     for i in range(0, len(keys), 1000):
         chunk = keys[i:i + 1000]
@@ -4599,12 +4609,7 @@ def recording_delete(file_id):
             try:
                 bucket = os.environ.get('S3_BUCKET')
                 if bucket:
-                    s3_client = boto3.client(
-                        's3',
-                        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-                        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-                        region_name=os.environ.get('AWS_REGION')
-                    )
+                    s3_client = _s3_boto_client(bucket=bucket)
                     base = _derive_output_key_base(user_id, input_key)
                     token = None
                     while True:
@@ -5582,12 +5587,7 @@ def _get_json_object_from_s3_key(s3_key, user_id=None):
     if not bucket:
         return None
     try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.environ.get('AWS_REGION')
-        )
+        s3_client = _s3_boto_client(bucket=bucket)
         resp = s3_client.get_object(Bucket=bucket, Key=key)
         raw = resp['Body'].read().decode('utf-8')
         data = json.loads(raw)
@@ -8206,7 +8206,37 @@ def _sagemaker_medical_endpoint_name():
 def _simulation_uses_sagemaker_async():
     if not SIMULATION_MODE:
         return False
+    # When explicitly testing storage via R2, skip any SageMaker simulation execution.
+    if _simulation_use_r2_storage():
+        return False
     return bool(_sagemaker_sim_endpoint_name())
+
+
+def _simulation_use_r2_storage():
+    """When true, keep SIMULATION_MODE but use real R2 multipart/presigned uploads.
+
+    This is meant for validating the upload+ETag pipeline without running RunPod/SageMaker jobs.
+    """
+    if not SIMULATION_MODE:
+        return False
+    flag = str(os.environ.get('SIMULATION_USE_R2_STORAGE', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+    if flag:
+        return True
+    # Auto-detect: if the configured endpoint looks like Cloudflare R2 and R2 creds are present,
+    # prefer real R2 uploads in simulation.
+    endpoint = (os.environ.get('S3_ENDPOINT_URL') or '').strip().lower()
+    r2_key = (os.environ.get('R2_ACCESS_KEY_ID') or '').strip()
+    r2_secret = (os.environ.get('R2_SECRET_ACCESS_KEY') or '').strip()
+    return bool(endpoint and ('cloudflarestorage.com' in endpoint) and r2_key and r2_secret)
+
+
+def _simulation_should_mock_upload():
+    """Simulation upload uses /api/mock-upload only when we are not using real storage."""
+    if not SIMULATION_MODE:
+        return False
+    if _simulation_use_r2_storage():
+        return False
+    return not _simulation_uses_sagemaker_async()
 
 
 def _ascii_safe_job_suffix(name: str, max_len: int = 96) -> str:
@@ -8339,18 +8369,14 @@ def _submit_sagemaker_async_job(
                 payload["upload_status_url"] = f"{base}/api/upload_status?job_id={job_id}" if base else None
         payload_json = json.dumps(payload, ensure_ascii=False).encode('utf-8')
 
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-            region_name=region,
-        )
         audio_bucket = str(bucket or (os.environ.get('S3_BUCKET') or '')).strip()
         if not audio_bucket:
             raise RuntimeError('Missing S3 bucket for SageMaker async request payload')
         manifest_bucket = _sagemaker_async_manifest_bucket(audio_bucket)
         if not manifest_bucket:
-            raise RuntimeError('Missing manifest bucket for SageMaker async (set S3_BUCKET)')
+            raise RuntimeError('Missing manifest bucket for SageMaker async (set SAGEMAKER_REQUEST_BUCKET)')
+
+        s3_client = _s3_boto_client(bucket=manifest_bucket)
 
         request_key = (
             f"users/{_extract_user_id_from_s3_key(s3_key) or 'anonymous'}"
@@ -8487,7 +8513,7 @@ def sign_s3():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e), "isMedical": is_medical}), 400
 
-    if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
+    if _simulation_should_mock_upload():
         job_id = f"job_sim_{int(time.time())}"
         s3_key = f"{user_prefix}/simulation_audio"
 
@@ -8513,15 +8539,12 @@ def sign_s3():
         filename = data.get('filename')
         file_type = _guess_upload_content_type(filename, data.get('filetype'))
 
-        key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-        secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-        region = os.environ.get("AWS_REGION", "eu-north-1")
         storage_profile = _resolve_storage_profile(user_id, is_medical=is_medical)
         bucket = storage_profile["bucket"]
         kms_arn = validated_kms_arn
 
-        if not key_id or not secret:
-            return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
+        if not _s3_storage_credentials_configured(bucket):
+            return jsonify({"status": "error", "message": _s3_credentials_error_message(bucket)}), 500
 
         base_name, extension = os.path.splitext(filename)
         job_id = _build_transcription_job_id(filename)
@@ -8656,7 +8679,7 @@ def sign_s3_multipart_init():
             part_bytes,
         )
 
-    if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
+    if _simulation_should_mock_upload():
         job_id = f"job_sim_{int(time.time())}"
         user_prefix = f"users/{user_id}"
         s3_key = f"{user_prefix}/simulation_audio"
@@ -8673,7 +8696,7 @@ def sign_s3_multipart_init():
                 'uploadId': 'sim',
                 's3Key': s3_key,
                 'jobId': job_id,
-                'bucket': os.environ.get('S3_BUCKET') or 'quickscribe-v2-12345',
+                'bucket': _standard_s3_bucket_name() or os.environ.get('S3_BUCKET'),
                 'partSizeBytes': part_bytes,
                 'partCount': part_count,
                 'isMedical': is_medical,
@@ -8685,22 +8708,14 @@ def sign_s3_multipart_init():
     filename = data.get('filename')
     file_type = _guess_upload_content_type(filename, data.get('filetype'))
 
-    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("AWS_REGION", "eu-north-1")
     storage_profile = _resolve_storage_profile(user_id, is_medical=is_medical)
     bucket = storage_profile["bucket"]
     kms_arn = validated_kms_arn
 
-    if not key_id or not secret:
-        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
+    if not _s3_storage_credentials_configured(bucket):
+        return jsonify({"status": "error", "message": _s3_credentials_error_message(bucket)}), 500
 
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=key_id,
-        aws_secret_access_key=secret,
-        region_name=region
-    )
+    s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
 
     base_name, extension = os.path.splitext(filename or 'upload')
     job_id = _build_transcription_job_id(filename or 'upload')
@@ -8772,7 +8787,7 @@ def sign_s3_multipart_part_urls():
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
     part_numbers = data.get('partNumbers') or data.get('part_numbers') or []
 
-    if (SIMULATION_MODE and not _simulation_uses_sagemaker_async()) or upload_id == 'sim':
+    if _simulation_should_mock_upload() or upload_id == 'sim':
         if not isinstance(part_numbers, list) or not part_numbers:
             return jsonify({"status": "error", "message": "partNumbers required"}), 400
         base = request.url_root.rstrip('/')
@@ -8804,13 +8819,10 @@ def sign_s3_multipart_part_urls():
     if len(part_numbers) > 100:
         return jsonify({"status": "error", "message": "Too many parts in one request"}), 400
 
-    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("AWS_REGION", "eu-north-1")
-    if not key_id or not secret:
-        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
-
     bucket = prof['bucket']
+    if not _s3_storage_credentials_configured(bucket):
+        return jsonify({"status": "error", "message": _s3_credentials_error_message(bucket)}), 500
+
     s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
     if _s3_upload_accelerate_enabled_for_bucket(bucket):
         logging.info("multipart part presign via S3 Transfer Acceleration key_suffix=%s", s3_key[-48:])
@@ -8854,7 +8866,7 @@ def sign_s3_multipart_complete():
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
     parts_raw = data.get('parts') or []
 
-    if (SIMULATION_MODE and not _simulation_uses_sagemaker_async()) or upload_id == 'sim':
+    if _simulation_should_mock_upload() or upload_id == 'sim':
         return jsonify({'status': 'ok', 'simulation': True})
 
     try:
@@ -8870,18 +8882,9 @@ def sign_s3_multipart_complete():
     if not isinstance(parts_raw, list) or not parts_raw:
         return jsonify({"status": "error", "message": "parts required"}), 400
 
-    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("AWS_REGION", "eu-north-1")
-    if not key_id or not secret:
-        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
-
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=key_id,
-        aws_secret_access_key=secret,
-        region_name=region
-    )
+    if not _s3_storage_credentials_configured(bucket):
+        return jsonify({"status": "error", "message": _s3_credentials_error_message(bucket)}), 500
+    s3_client = _s3_boto_client(bucket=bucket)
 
     aws_parts = []
     for p in parts_raw:
@@ -8924,7 +8927,7 @@ def sign_s3_multipart_abort():
     s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
 
-    if (SIMULATION_MODE and not _simulation_uses_sagemaker_async()) or upload_id == 'sim':
+    if _simulation_should_mock_upload() or upload_id == 'sim':
         return jsonify({'status': 'ok', 'simulation': True})
 
     try:
@@ -8937,18 +8940,9 @@ def sign_s3_multipart_abort():
     if bucket_in and bucket_in != bucket:
         return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
 
-    key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    region = os.environ.get("AWS_REGION", "eu-north-1")
-    if not key_id or not secret:
-        return jsonify({"status": "error", "message": "AWS Credentials missing on server"}), 500
-
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=key_id,
-        aws_secret_access_key=secret,
-        region_name=region
-    )
+    if not _s3_storage_credentials_configured(bucket):
+        return jsonify({"status": "error", "message": _s3_credentials_error_message(bucket)}), 500
+    s3_client = _s3_boto_client(bucket=bucket)
 
     try:
         s3_client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
@@ -9397,12 +9391,7 @@ def _queue_vocal_separation_on_runpod(job_id, bucket, source_s3_key, vocals_s3_k
     if not public_base:
         raise RuntimeError("PUBLIC_BASE_URL is required for RunPod vocal separation callbacks")
 
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.environ.get('AWS_REGION')
-    )
+    s3_client = _s3_boto_client(bucket=bucket)
     if not bucket:
         raise RuntimeError("S3 bucket missing")
 
@@ -9576,12 +9565,7 @@ def _preprocess_music_vocals_then_trigger(job_id, payload, endpoint_id, api_key,
         with tempfile.TemporaryDirectory(prefix=f"qs_vocals_{job_id}_") as tmpdir:
             suffix = pathlib.Path(str(source_s3_key or '')).suffix or '.bin'
             local_input = os.path.join(tmpdir, f"input{suffix}")
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-                region_name=os.environ.get('AWS_REGION')
-            )
+            s3_client = _s3_boto_client(bucket=bucket)
             s3_client.download_file(bucket, source_s3_key, local_input)
 
             from music_vocal_separator import separate_vocals
@@ -9828,9 +9812,24 @@ def trigger_processing():
                 pending_trigger[job_id] = "triggered"
                 _set_trigger_state(job_id, "triggered")
                 _mark_upload_complete(job_id)
+                # R2 simulation: real upload succeeded, but no RunPod/SageMaker — finish locally.
+                if _simulation_use_r2_storage():
+                    run_diarization = bool(data.get('diarization', False))
+                    threading.Thread(
+                        target=simulate_completion,
+                        args=(job_id, run_diarization),
+                        daemon=True,
+                    ).start()
+                    logging.info(
+                        "SIMULATION R2: queued local simulate_completion job_id=%s diarization=%s",
+                        job_id,
+                        run_diarization,
+                    )
             return jsonify({
                 "status": "started",
                 "runpod_id": "sim_id_123",
+                "simulation": True,
+                "simulation_storage": "r2" if _simulation_use_r2_storage() else "mock",
                 "transcription_options": transcription_options,
                 **_audio_profile_api_fields,
             }), 202
@@ -10805,12 +10804,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
         raise RuntimeError("RunPod burn CPU endpoint is not configured (set RUNPOD_CPU_ENDPOINT_ID or RUNPOD_MOVIE_ENDPOINT_ID)")
 
     bucket = os.environ.get('S3_BUCKET')
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.environ.get('AWS_REGION')
-    )
+    s3_client = _s3_boto_client(bucket=bucket)
 
     if not bucket:
         raise RuntimeError("S3_BUCKET missing")
@@ -10924,12 +10918,7 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
 def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
     """Background task: download from S3, check duration limit, burn subtitles, upload to S3, optional email."""
     bucket = os.environ.get('S3_BUCKET')
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.environ.get('AWS_REGION')
-    )
+    s3_client = _s3_boto_client(bucket=bucket)
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             ext = '.mp4'
@@ -11231,12 +11220,7 @@ def burn_subtitles_status():
             output_s3_key = info.get('output_s3_key')
             if output_s3_key:
                 out["output_s3_key"] = output_s3_key
-                s3_client = boto3.client(
-                    's3',
-                    aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-                    aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-                    region_name=os.environ.get('AWS_REGION')
-                )
+                s3_client = _s3_boto_client(bucket=os.environ.get('S3_BUCKET'))
                 url = s3_client.generate_presigned_url(
                     'get_object',
                     Params={'Bucket': os.environ.get('S3_BUCKET'), 'Key': output_s3_key},
