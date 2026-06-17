@@ -14388,6 +14388,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     isVideo = false;
                 }
                 const skipLocalBlobPreview = qsIsLargeUploadFile(file);
+                const mimeForMov = isMedicalModeEnabled()
+                    ? qsGuessUploadMimeType(file, 'audio/webm')
+                    : ((/\.mov$/i.test(file.name) || String(file.type || '').toLowerCase().includes('quicktime')) ? 'video/mp4' : (file.type || ''));
                 if (!previewReady) {
                 setSeoHomeContentVisibility(false);
                 try {
@@ -14442,9 +14445,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     console.warn('Video preview failed', e);
                 }
 
-            const mimeForMov = isMedicalModeEnabled()
-                ? qsGuessUploadMimeType(file, 'audio/webm')
-                : ((/\.mov$/i.test(file.name) || String(file.type || '').toLowerCase().includes('quicktime')) ? 'video/mp4' : (file.type || ''));
             if (objectUrl) {
                 if (isMedicalModeEnabled()) {
                     const audioContainer = document.getElementById('audio-player-container');
@@ -19003,6 +19003,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const selector = document.getElementById('subtitle-style-selector');
         if (selector && selector.classList.contains('is-open')) {
             window.toggleSubtitleStyleDrawer(true);
+        }
+        if (window.currentSegments && window.currentSegments.length && typeof window.refreshVideoSubtitles === 'function') {
+            clearTimeout(window._qsSubtitleResizeTimer);
+            window._qsSubtitleResizeTimer = setTimeout(() => window.refreshVideoSubtitles(), 150);
         }
     });
 });

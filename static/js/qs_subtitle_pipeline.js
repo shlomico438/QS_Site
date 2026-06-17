@@ -8,9 +8,9 @@ import {
     mapLinesToWordRanges,
 } from './qs_subtitle_semantic.js';
 import { allocateLineTimes } from './qs_subtitle_timing.js';
-import { buildLayoutConfig, layoutTimedCueText } from './qs_subtitle_layout.js';
+import { buildLayoutConfig, layoutTimedCueText, layoutCuePages } from './qs_subtitle_layout.js';
 
-export { generateSplitCandidates, pickTimingSegmentation, allocateLineTimes, buildLayoutConfig, layoutTimedCueText };
+export { generateSplitCandidates, pickTimingSegmentation, allocateLineTimes, buildLayoutConfig, layoutTimedCueText, layoutCuePages };
 
 function captionTextFromWords(words, cap) {
     return words
@@ -46,7 +46,7 @@ export function processWhisperSegments(segments) {
                 end: row.end,
                 text: row.text,
                 speaker: seg.speaker,
-                semanticCandidates: candidates,
+                semanticCandidates: generateSplitCandidates(row.text),
             });
         }
     }
@@ -73,12 +73,13 @@ export function reflowCaptionsSemantic(words, captions) {
         }
         const ranges = mapLinesToWordRanges(words, cap.wordStartIndex, cap.wordEndIndex, lines);
         for (const range of ranges) {
+            const subText = captionTextFromWords(words, range);
             out.push({
                 id: `c${Date.now()}_${out.length}`,
                 wordStartIndex: range.wordStartIndex,
                 wordEndIndex: range.wordEndIndex,
                 style: cap.style ? { ...cap.style } : undefined,
-                semanticCandidates: candidates,
+                semanticCandidates: generateSplitCandidates(subText),
             });
         }
     }
@@ -86,16 +87,41 @@ export function reflowCaptionsSemantic(words, captions) {
 }
 
 /**
- * Apply stage-3 layout to cues for VTT / preview (does not mutate timing).
+ * Apply stage-3 layout to cues for VTT / preview.
+ * TikTok: max 2 lines per screen; longer phrases become sequential timed cues.
  */
 export function layoutCuesForDisplay(cues, videoEl, styleKey) {
-    const config = buildLayoutConfig(videoEl, { styleKey, maxLines: 2 });
-    return (cues || []).map((cue) => {
-        const text = layoutTimedCueText(
-            cue && cue.text,
-            config,
-            cue && cue.semanticCandidates
-        );
-        return { ...cue, text };
-    });
+    const style = String(styleKey || 'tiktok').toLowerCase();
+    const maxLines = style === 'tiktok' ? 2 : 3;
+    const config = buildLayoutConfig(videoEl, { styleKey: style, maxLines });
+    const out = [];
+    const list = cues || [];
+
+    for (let i = 0; i < list.length; i++) {
+        const cue = list[i];
+        const pages = layoutCuePages(cue && cue.text, config, cue && cue.semanticCandidates);
+
+        if (pages.length <= 1) {
+            out.push({ ...cue, text: pages[0] || String((cue && cue.text) || '') });
+            continue;
+        }
+
+        const start = Number(cue && cue.start);
+        let end = cue && cue.end != null ? Number(cue.end) : NaN;
+        if (!Number.isFinite(start)) {
+            out.push({ ...cue, text: pages[0] || '' });
+            continue;
+        }
+        if (!Number.isFinite(end) || end <= start) {
+            const next = list[i + 1];
+            const nextS = next && Number(next.start);
+            end = Number.isFinite(nextS) && nextS > start ? nextS : (start + Math.max(0.5, pages.length * 0.4));
+        }
+
+        const timed = allocateLineTimes(start, end, pages, { useRhythmBias: false });
+        for (const row of timed) {
+            out.push({ ...cue, start: row.start, end: row.end, text: row.text });
+        }
+    }
+    return out;
 }

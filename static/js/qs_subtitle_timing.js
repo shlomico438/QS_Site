@@ -31,9 +31,10 @@ function punctuationBiasMultiplier(line, isLast) {
  * @param {number} startTime
  * @param {number} endTime
  * @param {string[]} lines
+ * @param {{useRhythmBias?:boolean}} options
  * @returns {{start:number,end:number,text:string}[]}
  */
-export function allocateLineTimes(startTime, endTime, lines) {
+export function allocateLineTimes(startTime, endTime, lines, options = {}) {
     const cleanLines = (lines || []).map((l) => String(l || '').trim()).filter(Boolean);
     if (!cleanLines.length) return [];
 
@@ -48,8 +49,10 @@ export function allocateLineTimes(startTime, endTime, lines) {
     }
 
     const weights = cleanLines.map((line) => lineWeight(line));
-    const bias = cleanLines.map((line, i) => punctuationBiasMultiplier(line, i === cleanLines.length - 1));
-    const adjusted = weights.map((w, i) => w * bias[i]);
+    const useRhythmBias = options.useRhythmBias !== false;
+    const adjusted = useRhythmBias
+        ? weights.map((w, i) => w * punctuationBiasMultiplier(cleanLines[i], i === cleanLines.length - 1))
+        : weights;
     const total = adjusted.reduce((a, b) => a + b, 0) || 1;
     const rawDurations = adjusted.map((w) => duration * (w / total));
 

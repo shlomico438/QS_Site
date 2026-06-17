@@ -47,10 +47,36 @@ function isMediumBoundaryAfter(words, index) {
     return COMMA_END_RE.test(left);
 }
 
+const HEBREW_LETTER = /[\u0590-\u05FF]/;
+
+function bareWord(word) {
+    return String(word || '').replace(/^[^\u0590-\u05FFa-zA-Z0-9]+|[^\u0590-\u05FFa-zA-Z0-9]+$/g, '');
+}
+
+function isPhraseBoundaryAfter(words, index) {
+    if (index < 0 || index >= words.length - 1) return false;
+    if (isMediumBoundaryAfter(words, index)) return true;
+    const next = bareWord(words[index + 1]);
+    const prev = bareWord(words[index]);
+    if (!next) return false;
+    // New instruction clause: להשתחרר, … (not לעומס after a verb)
+    if (next.startsWith('ל') && next.length >= 4 && HEBREW_LETTER.test(next[1])) {
+        if (/(גוף|נחה|רגע|זמן|מקום|שלב)$/.test(prev)) return true;
+        if (STRONG_END_RE.test(words.slice(0, index + 1).join(' '))) return true;
+        return false;
+    }
+    // New subordinate clause: שמשחררת, שמאפשר, …
+    if (next.startsWith('ש') && next.length >= 4 && HEBREW_LETTER.test(next[1])) {
+        if (COMMA_END_RE.test(words.slice(0, index + 1).join(' '))) return true;
+        if (/נחה$/.test(prev)) return true;
+    }
+    return false;
+}
+
 function isValidSplitPoint(words, index) {
     if (index < 0 || index >= words.length - 1) return false;
     if (isProtectedSpan(words, Math.max(0, index - 1), index + 1)) return false;
-    return isMediumBoundaryAfter(words, index);
+    return isPhraseBoundaryAfter(words, index);
 }
 
 function wordsToLines(words, splitIndices) {
@@ -72,7 +98,7 @@ function wordsToLines(words, splitIndices) {
  * Generate up to maxCandidates linguistic line splits for a text span.
  * @returns {string[][]}
  */
-export function generateSplitCandidates(text, maxCandidates = 5) {
+export function generateSplitCandidates(text, maxCandidates = 8) {
     const normalized = normalizeText(text);
     if (!normalized) return [];
     const words = tokenizeWords(normalized);
@@ -106,6 +132,30 @@ export function generateSplitCandidates(text, maxCandidates = 5) {
         }
     }
     for (const idx of mediumPoints) add(wordsToLines(words, [idx]));
+    for (let a = 0; a < splitPoints.length; a++) {
+        for (let b = a + 1; b < splitPoints.length; b++) {
+            add(wordsToLines(words, [splitPoints[a], splitPoints[b]]));
+        }
+    }
+
+    const phrasePoints = [];
+    for (let i = 0; i < words.length - 1; i++) {
+        if (phrasePoints.includes(i)) continue;
+        if (isPhraseBoundaryAfter(words, i) && !splitPoints.includes(i)) phrasePoints.push(i);
+    }
+    for (const idx of phrasePoints) add(wordsToLines(words, [idx]));
+    for (let a = 0; a < phrasePoints.length; a++) {
+        for (let b = a + 1; b < phrasePoints.length; b++) {
+            add(wordsToLines(words, [phrasePoints[a], phrasePoints[b]]));
+        }
+    }
+    if (phrasePoints.length && strongPoints.length) {
+        for (const p of phrasePoints) {
+            for (const s of strongPoints) {
+                if (p !== s) add(wordsToLines(words, [Math.min(p, s), Math.max(p, s)]));
+            }
+        }
+    }
 
     if (candidates.length < maxCandidates && splitPoints.length > 1) {
         const mid = splitPoints[Math.floor(splitPoints.length / 2)];
@@ -134,13 +184,35 @@ export function pickTimingSegmentation(candidates) {
             else if (COMMA_END_RE.test(lines[i])) score += 4;
             else if (MEDIUM_CONJUNCTIONS.has(tokenizeWords(lines[i + 1] || '')[0] || '')) score += 3;
         }
-        score -= lines.length * 0.75;
+        // Prefer fewer lines only as a tie-breaker — never drop content.
+        score -= lines.length * 0.25;
         if (score > bestScore) {
             bestScore = score;
             best = lines;
         }
     }
     return best;
+}
+
+function normalizeMatchText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
+function stripTokenPunctuation(s) {
+    return String(s || '').replace(/^[^\u0590-\u05FF\w]+|[^\u0590-\u05FF\w]+$/g, '');
+}
+
+function tokensRoughlyEqual(a, b) {
+    const x = stripTokenPunctuation(a);
+    const y = stripTokenPunctuation(b);
+    if (!x || !y) return x === y;
+    return x === y;
+}
+
+function joinCaptionWordEntries(entries, from, to) {
+    return normalizeMatchText(
+        entries.slice(from, to + 1).map((e) => e.text).join(' ')
+    );
 }
 
 /**
@@ -158,19 +230,61 @@ export function mapLinesToWordRanges(words, wordStartIndex, wordEndIndex, lines)
     const ranges = [];
     let cursor = 0;
     for (const line of lines) {
-        const lineWords = tokenizeWords(line);
+        const want = normalizeMatchText(line);
+        if (!want) continue;
+        const lineWords = tokenizeWords(want);
         if (!lineWords.length) continue;
+        if (cursor >= captionWords.length) break;
+
         const startEntry = captionWords[cursor];
-        if (!startEntry) break;
         let endEntry = startEntry;
-        for (let li = 0; li < lineWords.length && cursor < captionWords.length; li++) {
-            endEntry = captionWords[cursor];
-            cursor++;
+        let li = 0;
+        let endCursor = cursor;
+
+        while (li < lineWords.length && endCursor < captionWords.length) {
+            if (!tokensRoughlyEqual(lineWords[li], captionWords[endCursor].text)) break;
+            endEntry = captionWords[endCursor];
+            li++;
+            endCursor++;
         }
+
+        const joined = joinCaptionWordEntries(captionWords, cursor, endCursor - 1);
+        if (li < lineWords.length || joined !== want) {
+            // Fallback: advance by token count when punctuation differs slightly.
+            let fallbackEnd = cursor;
+            for (let n = 0; n < lineWords.length && fallbackEnd < captionWords.length; n++) {
+                endEntry = captionWords[fallbackEnd];
+                fallbackEnd++;
+            }
+            const fallbackJoined = joinCaptionWordEntries(captionWords, cursor, fallbackEnd - 1);
+            if (fallbackJoined !== want) break;
+            endCursor = fallbackEnd;
+        }
+
         ranges.push({ wordStartIndex: startEntry.wi, wordEndIndex: endEntry.wi });
+        cursor = endCursor;
     }
+
     if (!ranges.length) {
         ranges.push({ wordStartIndex, wordEndIndex });
+        return ranges;
     }
-    return ranges;
+
+    // Ensure ranges are contiguous, non-overlapping, and cover no duplicate words.
+    const deduped = [];
+    let nextWi = wordStartIndex;
+    for (const range of ranges) {
+        const start = Math.max(nextWi, range.wordStartIndex);
+        const end = Math.max(start, range.wordEndIndex);
+        if (end < start) continue;
+        deduped.push({ wordStartIndex: start, wordEndIndex: end });
+        nextWi = end + 1;
+    }
+    if (deduped.length && deduped[deduped.length - 1].wordEndIndex < wordEndIndex) {
+        const tailStart = deduped[deduped.length - 1].wordEndIndex + 1;
+        if (tailStart <= wordEndIndex) {
+            deduped.push({ wordStartIndex: tailStart, wordEndIndex });
+        }
+    }
+    return deduped.length ? deduped : [{ wordStartIndex, wordEndIndex }];
 }

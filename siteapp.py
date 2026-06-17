@@ -228,7 +228,9 @@ FORMAT_SHORT_PARA_MERGE_CHARS = max(80, int(os.environ.get("FORMAT_SHORT_PARA_ME
 
 _GPT_TASK1_CLEAN_TRANSCRIPT = (
     "Task 1 – Clean transcript (meetings and clinical encounters)\n\n"
-    "* Fix grammar and punctuation lightly; keep spoken wording as much as possible.\n"
+    "* Fix grammar, punctuation, and spelling lightly; keep spoken wording as much as possible.\n"
+    "* For Hebrew: correct obvious ASR/STT letter confusions when context supports it "
+    "(e.g. ט/ת, ש/ס, ע/א, כ/ק, ח/ה) — such as והטענות not והתענות, טעות not תעות.\n"
     "* Paragraphs: use a blank line (two newlines: \\n\\n) only when the topic or speaker clearly changes.\n"
     "* Within a paragraph write continuous text; do not insert line breaks for width or arbitrary character counts.\n"
     "* Do NOT summarize, omit, or invent content beyond what the transcript supports.\n\n"
@@ -6501,8 +6503,10 @@ def _format_transcript_cleanup_openai(
         user_prompt = (
             "You are editing a transcript.\n\n"
             "Requirements:\n\n"
-            "* Fix punctuation.\n"
-            "* Correct obvious transcription mistakes.\n"
+            "* Fix punctuation and spelling.\n"
+            "* Correct obvious transcription / ASR mistakes, including Hebrew letter confusions "
+            "(ט/ת, ש/ס, ע/א, כ/ק) when the intended word is clear from context "
+            "(e.g. והטענות not והתענות).\n"
             "* Preserve the original wording and meaning.\n"
             "* Do not summarize.\n"
             "* Do not omit information.\n"
