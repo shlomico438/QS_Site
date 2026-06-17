@@ -245,15 +245,53 @@ _GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE = (
     "content, clean_transcript must stay faithful to those exact words—never invent dialogue, symptoms, or exam Q&A.\n\n"
 )
 
-_GPT_MUSIC_CLEAN_TRANSCRIPT_NOTE = (
-    "Hebrew song transcript correction — clean_transcript only:\n"
-    "אתה עוזר תמלול מקצועי. לפניך טקסט בעברית שיצא ממודל שמע (STT) של שיר עברי ישן. "
-    "הטקסט מכיל שגיאות שמיעה פונטיות קשות (למשל, המילה 'העפילו' הפכה ל'הפילו', "
-    "'ארץ צבי' הפכה ל'ארץ אוויל'). תפקידך להשתמש בידע התרבותי שלך על שירים עבריים, "
-    "לתקן את המילים הנכונות, ולשמור על מבנה ה-SRT והטיימינג במדויק.\n"
-    "Apply this only as correction of likely misheard song lyrics. Do not invent lyrics when uncertain; preserve "
-    "the transcript's line/paragraph order and do not change timestamps or cue order if timing/cue data appears.\n\n"
+_GPT_MUSIC_CLEAN_TRANSCRIPT_PROMPT = (
+    "You are an expert Hebrew linguistic editor and cultural archivist. Your task is to correct garbled "
+    "Automatic Speech Recognition (ASR) outputs while strictly preserving the original timestamps.\n\n"
+    "Instructions:\n"
+    "1. Identify Known Works: Analyze the input to determine if it is a known Hebrew song, poem, or historical "
+    "text (e.g., \"שיר המעפילים\").\n"
+    "2. Decode Phonetic Hallucinations: ASR models often mishear sung Hebrew. Look for phonetic similarities "
+    "rather than literal meanings (e.g., map 'הבילו' to 'העפילו', or 'ביחסו בפגויי' to 'יחסום בפדויי').\n"
+    "3. Restore Original Lyrics: If you identify the work, reconstruct the text using the exact, culturally "
+    "accurate lyrics.\n"
+    "4. Timestamp Integrity: You must preserve every original timestamp exactly as formatted (MM:SS.ms). Fit the "
+    "corrected lyrics into the logical timestamp windows without adding or dropping timecodes.\n\n"
+    "// Input Format\n"
+    "[Timestamp] [Garbled Text]\n\n"
+    "// Output Format\n"
+    "[Timestamp] [Corrected Text]\n\n"
 )
+
+
+def _gpt_task1_clean_transcript_prompt(is_medical=False, is_music=False):
+    """Task 1 instructions for transcript cleanup; music mode replaces the default meeting rules."""
+    if is_music and not is_medical:
+        return _GPT_MUSIC_CLEAN_TRANSCRIPT_PROMPT
+    return _GPT_TASK1_CLEAN_TRANSCRIPT + (_GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else "")
+
+
+def _format_segments_for_music_gpt(segments):
+    """One [MM:SS.ms] line per segment for music-mode GPT correction."""
+    lines = []
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            continue
+        text = str(seg.get('text') or '').strip()
+        if not text:
+            continue
+        try:
+            sec = float(seg.get('start'))
+        except (TypeError, ValueError):
+            lines.append(text)
+            continue
+        cs = max(0, round(sec * 100))
+        mm = cs // 6000
+        ss = (cs % 6000) // 100
+        frac = cs % 100
+        ts = f"{mm:02d}:{ss:02d}.{frac:02d}"
+        lines.append(f"[{ts}] {text}")
+    return "\n".join(lines).strip()
 
 # Medical / clinical: written documentation for summary fields only (not the dialogue transcript).
 _GPT_MEDICAL_WRITTEN_STYLE_NOTE = (
@@ -6327,8 +6365,7 @@ def _format_transcript_clean_chunk_openai(chunk_text, target_lang, timeout_sec, 
         "No markdown fences. Keep original language and directionality."
     )
     user_prompt = (
-        f"{_GPT_TASK1_CLEAN_TRANSCRIPT}"
-        f"{_GPT_MUSIC_CLEAN_TRANSCRIPT_NOTE if is_music else ''}"
+        f"{_gpt_task1_clean_transcript_prompt(is_music=is_music)}"
         "This request is one fragment of a longer transcript; keep paragraph boundaries natural at the edges.\n\n"
         f"Output language: {output_lang_label}\n\n"
         f"Fragment:\n\n{chunk_text}"
@@ -6432,6 +6469,7 @@ def _format_transcript_cleanup_openai(
     gpt_model=None,
     timeout_sec=None,
     read_retries=None,
+    is_music=False,
 ):
     """One OpenAI call: light punctuation/STT cleanup; plain text only."""
     transcript_text = str(transcript_text or "").strip()
@@ -6442,26 +6480,40 @@ def _format_transcript_cleanup_openai(
     if read_retries is None:
         read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
     output_lang_label, lang_hint, _want_hebrew = _format_output_lang_label(target_lang)
-    system_prompt = (
-        "You edit transcripts. Return plain text only. "
-        "Do not include markdown fences or JSON."
-    )
-    user_prompt = (
-        "You are editing a transcript.\n\n"
-        "Requirements:\n\n"
-        "* Fix punctuation.\n"
-        "* Correct obvious transcription mistakes.\n"
-        "* Preserve the original wording and meaning.\n"
-        "* Do not summarize.\n"
-        "* Do not omit information.\n"
-        "* Do not add information.\n"
-        "* Keep paragraph structure when possible.\n"
-        "* Do not rewrite sentences for style.\n\n"
-        f"Output language: {output_lang_label}.\n\n"
-        f"Language hint: {lang_hint}\n\n"
-        "Transcript:\n\n"
-        f"{transcript_text}"
-    )
+    if is_music:
+        system_prompt = (
+            "You are an expert Hebrew linguistic editor and cultural archivist. "
+            "Return plain text only in [Timestamp] [Corrected Text] format. "
+            "Do not include markdown fences or JSON."
+        )
+        user_prompt = (
+            f"{_GPT_MUSIC_CLEAN_TRANSCRIPT_PROMPT}"
+            f"Output language: {output_lang_label}.\n\n"
+            f"Language hint: {lang_hint}\n\n"
+            "Transcript:\n\n"
+            f"{transcript_text}"
+        )
+    else:
+        system_prompt = (
+            "You edit transcripts. Return plain text only. "
+            "Do not include markdown fences or JSON."
+        )
+        user_prompt = (
+            "You are editing a transcript.\n\n"
+            "Requirements:\n\n"
+            "* Fix punctuation.\n"
+            "* Correct obvious transcription mistakes.\n"
+            "* Preserve the original wording and meaning.\n"
+            "* Do not summarize.\n"
+            "* Do not omit information.\n"
+            "* Do not add information.\n"
+            "* Keep paragraph structure when possible.\n"
+            "* Do not rewrite sentences for style.\n\n"
+            f"Output language: {output_lang_label}.\n\n"
+            f"Language hint: {lang_hint}\n\n"
+            "Transcript:\n\n"
+            f"{transcript_text}"
+        )
     clean = _openai_chat_text_completion(
         system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
     )
@@ -6531,11 +6583,7 @@ def _format_unified_transcript_openai(
             "Ignore filler conversation.\n\n"
         )
         json_tail = "Return as JSON fields only (clean_transcript, overview, key_points, action_items).\n"
-    task1_clean = (
-        _GPT_TASK1_CLEAN_TRANSCRIPT
-        + (_GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else "")
-        + (_GPT_MUSIC_CLEAN_TRANSCRIPT_NOTE if (is_music and not is_medical) else "")
-    )
+    task1_clean = _gpt_task1_clean_transcript_prompt(is_medical=is_medical, is_music=is_music)
     user_prompt = (
         "You are editing a transcript.\n\n"
         f"{task1_clean}"
@@ -7226,10 +7274,16 @@ def api_format_transcript_summary():
             target_lang=target_lang,
             timeout_sec=cleanup_timeout,
             read_retries=read_retries,
+            is_music=is_music_format,
         )
 
     if mode == 'cleanup':
+        segments = data.get('segments') or []
         raw = str(data.get('text') or '').strip()
+        if is_music_format and isinstance(segments, list) and segments:
+            ts_text = _format_segments_for_music_gpt(segments)
+            if ts_text:
+                raw = ts_text
         if not raw:
             return jsonify({"error": "No transcript text provided"}), 400
         try:
@@ -7306,7 +7360,11 @@ def api_format_transcript_summary():
 
     raw_text = str(data.get('text') or '').strip()
     segments = data.get('segments') or []
-    if not raw_text and isinstance(segments, list):
+    if is_music_format and isinstance(segments, list) and segments:
+        ts_text = _format_segments_for_music_gpt(segments)
+        if ts_text:
+            raw_text = ts_text
+    elif not raw_text and isinstance(segments, list):
         raw_text = "\n".join(
             str((s or {}).get('text') or '').strip()
             for s in segments

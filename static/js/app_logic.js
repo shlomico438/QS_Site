@@ -6125,8 +6125,26 @@ async function hydrateFormattedFromSavedTranscript() {
  * When S3/ memory lack GPT formatting, run /api/format_transcript_summary once and persist to S3 (same as post-job flow).
  */
 /** Join cue texts for GPT format pass: spaces, not newlines, so the model does not lock in ~54-char subtitle lines. */
+function qsEffectiveMusicForFormatting() {
+    if (typeof qsUserTreatAsMusicForUpload === 'function' && qsUserTreatAsMusicForUpload()) return true;
+    return false;
+}
+
 function buildTranscriptTextForGptFormat() {
-    const fromSegments = (window.currentSegments || [])
+    const segs = window.currentSegments || [];
+    if (qsEffectiveMusicForFormatting() && segs.length) {
+        const lines = segs
+            .map((s) => {
+                const text = String((s && s.text) || '').trim();
+                if (!text) return '';
+                const start = Number(s && s.start);
+                if (Number.isFinite(start)) return `[${formatTime(start)}] ${text}`;
+                return text;
+            })
+            .filter(Boolean);
+        if (lines.length) return lines.join('\n');
+    }
+    const fromSegments = segs
         .map((s) => String((s && s.text) || '').trim())
         .filter(Boolean)
         .join(' ');
@@ -7093,13 +7111,19 @@ async function fetchTranscriptFormatChunksPlan(fullText) {
 
 function qsCleanupRequestBase(targetLang, jobId) {
     const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
-    return {
+    const base = {
         target_lang: targetLang,
         jobId: jobId || undefined,
         userId: undefined,
         isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
         ...(hint ? { input_s3_key: hint } : {}),
     };
+    if (qsEffectiveMusicForFormatting()) {
+        base.audio_profile = 'music';
+        const segs = window.currentSegments || [];
+        if (segs.length) base.segments = segs;
+    }
+    return base;
 }
 
 async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId) {
