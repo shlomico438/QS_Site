@@ -6,11 +6,85 @@ import {
     generateSplitCandidates,
     pickTimingSegmentation,
     mapLinesToWordRanges,
+    tokenizeWords,
 } from './qs_subtitle_semantic.js';
 import { allocateLineTimes } from './qs_subtitle_timing.js';
 import { buildLayoutConfig, layoutTimedCueText, layoutCuePages } from './qs_subtitle_layout.js';
 
 export { generateSplitCandidates, pickTimingSegmentation, allocateLineTimes, buildLayoutConfig, layoutTimedCueText, layoutCuePages };
+
+function normalizeToken(s) {
+    return String(s || '')
+        .replace(/^[^\u0590-\u05FFa-zA-Z0-9]+|[^\u0590-\u05FFa-zA-Z0-9]+$/g, '')
+        .trim();
+}
+
+function tokensEqual(a, b) {
+    const x = normalizeToken(a);
+    const y = normalizeToken(b);
+    if (!x || !y) return x === y;
+    return x === y;
+}
+
+function alignPagesToWordTimes(pages, words, cueStart, cueEnd) {
+    const cleanPages = (pages || []).map((p) => String(p || '').trim()).filter(Boolean);
+    const cleanWords = (words || [])
+        .map((w) => ({
+            text: String((w && (w.word ?? w.text)) || '').trim(),
+            start: Number(w && w.start),
+            end: Number(w && w.end),
+        }))
+        .filter((w) => w.text);
+    if (!cleanPages.length || !cleanWords.length) return null;
+
+    const out = [];
+    let cursor = 0;
+    for (const page of cleanPages) {
+        const tokens = tokenizeWords(page);
+        if (!tokens.length) continue;
+        if (cursor >= cleanWords.length) return null;
+
+        const startIdx = cursor;
+        let consumed = 0;
+        for (let ti = 0; ti < tokens.length && cursor < cleanWords.length; ti++) {
+            const want = tokens[ti];
+            if (tokensEqual(want, cleanWords[cursor].text)) {
+                cursor++;
+                consumed++;
+                continue;
+            }
+            // Small lookahead helps tolerate minor punctuation/tokenization drift.
+            let matched = false;
+            for (let look = 1; look <= 2 && (cursor + look) < cleanWords.length; look++) {
+                if (tokensEqual(want, cleanWords[cursor + look].text)) {
+                    cursor += (look + 1);
+                    consumed++;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return null;
+        }
+        if (!consumed) return null;
+
+        const endIdx = Math.max(startIdx, cursor - 1);
+        const start = Number.isFinite(cleanWords[startIdx].start) ? cleanWords[startIdx].start : Number(cueStart);
+        const end = Number.isFinite(cleanWords[endIdx].end) ? cleanWords[endIdx].end : Number(cueEnd);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+        out.push({ start, end, text: page });
+    }
+
+    if (!out.length) return null;
+    const firstStart = Number(cueStart);
+    const lastEnd = Number(cueEnd);
+    if (Number.isFinite(firstStart)) out[0].start = firstStart;
+    if (Number.isFinite(lastEnd)) out[out.length - 1].end = Math.max(out[out.length - 1].end, lastEnd);
+    for (let i = 1; i < out.length; i++) {
+        out[i].start = Math.max(out[i - 1].end, out[i].start);
+        if (out[i].end <= out[i].start) out[i].end = out[i].start + 0.05;
+    }
+    return out;
+}
 
 function captionTextFromWords(words, cap) {
     return words
@@ -118,7 +192,8 @@ export function layoutCuesForDisplay(cues, videoEl, styleKey) {
             end = Number.isFinite(nextS) && nextS > start ? nextS : (start + Math.max(0.5, pages.length * 0.4));
         }
 
-        const timed = allocateLineTimes(start, end, pages, { useRhythmBias: false });
+        const timedFromWords = alignPagesToWordTimes(pages, cue && cue.words, start, end);
+        const timed = timedFromWords || allocateLineTimes(start, end, pages, { useRhythmBias: false });
         for (const row of timed) {
             out.push({ ...cue, start: row.start, end: row.end, text: row.text });
         }
