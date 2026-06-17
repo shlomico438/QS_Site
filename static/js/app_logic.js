@@ -1,5 +1,10 @@
 // Supabase client (inlined — avoids extra same-origin fetch). Use jsDelivr +esm (reliable named export); esm.sh ?bundle broke createClient in some browsers.
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/+esm'
+import {
+    processWhisperSegments,
+    reflowCaptionsSemantic,
+    layoutCuesForDisplay,
+} from './qs_subtitle_pipeline.js'
 
 const supabaseUrl = 'https://vojesnnvehecenjymrko.supabase.co'
 const supabaseAnonKey = 'sb_publishable_BhoKDe-_iL04tOVYCbbX0w_3TjKWaGG'
@@ -3789,79 +3794,13 @@ async function maybeShowInitialRegistrationPrompt() {
     } catch (_) {}
 }
 
-// --- SUBTITLE CHUNKER ---
-function splitLongSegments(segments, maxChars = 40) {
-    const result = [];
+// --- SUBTITLE CHUNKER (semantic segmentation + sqrt word-weight timing) ---
+function splitLongSegments(segments, _maxChars = 40) {
+    return processWhisperSegments(segments);
+}
 
-    function pushChunk(chunks, text) {
-        const t = text.trim();
-        if (!t) return;
-        if (t.length <= maxChars) {
-            chunks.push(t);
-            return;
-        }
-        for (let i = 0; i < t.length; i += maxChars) {
-            chunks.push(t.slice(i, i + maxChars));
-        }
-    }
-
-    for (const seg of segments) {
-        // If it's already short enough, just keep it
-        if (!seg.text || seg.text.length <= maxChars) {
-            result.push(seg);
-            continue;
-        }
-
-        // Split by ANY kind of space (crucial for Hebrew AI non-breaking spaces)
-        const words = seg.text.split(/\s+/);
-        let currentText = '';
-        let chunks = [];
-
-        // Group words into chunks that fit the maxChars limit
-        for (const word of words) {
-            // Single word longer than limit: flush current line, then split the word by chars
-            if (word.length > maxChars) {
-                pushChunk(chunks, currentText);
-                currentText = '';
-                for (let i = 0; i < word.length; i += maxChars) {
-                    chunks.push(word.slice(i, i + maxChars));
-                }
-                continue;
-            }
-
-            // Check if adding this word (with space) would exceed the limit
-            const testText = currentText + word + ' ';
-            if (testText.length > maxChars && currentText.length > 0) {
-                pushChunk(chunks, currentText);
-                currentText = word + ' ';
-            } else {
-                currentText += word + ' ';
-            }
-        }
-        pushChunk(chunks, currentText);
-
-        // Assign proportional timeframes to the new chunks; enforce minimum duration so no 33ms segments
-        const totalDuration = (seg.end || seg.start + 5) - seg.start;
-        const totalChars = Math.max(1, seg.text.length);
-        const MIN_CHUNK_DUR = 0.5;
-        const rawDurations = chunks.map(chunk => Math.max(MIN_CHUNK_DUR, (chunk.length / totalChars) * totalDuration));
-        const sum = rawDurations.reduce((a, b) => a + b, 0);
-        const scale = sum > 0 && totalDuration < sum ? totalDuration / sum : 1;
-        const durations = rawDurations.map(d => d * scale);
-        let currentTime = seg.start;
-
-        for (let i = 0; i < chunks.length; i++) {
-            const chunkDuration = durations[i];
-            result.push({
-                start: currentTime,
-                end: currentTime + chunkDuration,
-                text: chunks[i],
-                speaker: seg.speaker
-            });
-            currentTime += chunkDuration;
-        }
-    }
-    return result;
+function reflowCaptionsByMaxChars(words, captions, _maxChars = 54) {
+    return reflowCaptionsSemantic(words, captions);
 }
 
 /** User-facing messages.
@@ -13850,55 +13789,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (raw === 'clean' || raw === 'cinematic' || raw === 'tiktok') return raw;
             return 'tiktok';
         };
-        const estimateCueFontPx = (videoEl, styleKey) => {
-            const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-            const isMobileViewport = vw > 0 && vw <= 768;
-            // Mirrors ::cue font-size rules from app_custom.css
-            const emByStyleDesktop = { tiktok: 2.5, clean: 1.4, cinematic: 1.6 };
-            const emByStyleMobile = { tiktok: 1.15, clean: 1.05, cinematic: 1.1 };
-            const em = (isMobileViewport ? emByStyleMobile : emByStyleDesktop)[styleKey] || 1.15;
-            const basePx = 16; // Browser default media text size reference.
-            const h = Number(videoEl && videoEl.clientHeight) || Number(videoEl && videoEl.videoHeight) || 0;
-            const heightScale = h > 0 ? Math.max(0.72, Math.min(1.35, h / 720)) : 1;
-            return em * basePx * heightScale;
-        };
-        const estimateMaxCharsPerLine = (videoEl) => {
-            const styleKey = getCueStyleKey();
-            const widthPx = Number(videoEl && videoEl.clientWidth) || Number(videoEl && videoEl.videoWidth) || 0;
-            const heightPx = Number(videoEl && videoEl.clientHeight) || Number(videoEl && videoEl.videoHeight) || 0;
-            const isPortrait = widthPx > 0 && heightPx > 0 ? (heightPx > widthPx) : false;
-            const fontPx = estimateCueFontPx(videoEl, styleKey);
-            // Hebrew/Latin average glyph width is roughly 0.54-0.58 of font-size.
-            const avgCharPx = Math.max(7, fontPx * 0.56);
-            const horizontalPadding = isPortrait ? 20 : 36;
-            const usableWidthPx = Math.max(120, widthPx - (horizontalPadding * 2));
-            const estimated = Math.floor(usableWidthPx / avgCharPx);
-            const minChars = isPortrait ? 10 : 14;
-            const maxChars = isPortrait ? 38 : 68;
-            return Math.max(minChars, Math.min(maxChars, estimated || 0));
-        };
-        const wrapCueTextByMaxChars = (rawText, maxChars) => {
-            const s = String(rawText || '').replace(/\s+/g, ' ').trim();
-            if (!s || !maxChars || s.length <= maxChars) return s;
-            const words = s.split(' ').filter(Boolean);
-            if (!words.length) return s;
-            const lines = [];
-            let line = '';
-            for (const w of words) {
-                const candidate = line ? `${line} ${w}` : w;
-                if (candidate.length <= maxChars) {
-                    line = candidate;
-                } else {
-                    if (line) lines.push(line);
-                    line = w;
-                }
-            }
-            if (line) lines.push(line);
-            return lines.join('\n');
-        };
-        const maxCharsPerLine = estimateMaxCharsPerLine(primary);
-        for (let i = 0; i < window.currentSegments.length; i++) {
-            const c = window.currentSegments[i];
+        const styleKey = getCueStyleKey();
+        const displayCues = layoutCuesForDisplay(window.currentSegments, primary, styleKey);
+        for (let i = 0; i < displayCues.length; i++) {
+            const c = displayCues[i];
             const st = (typeof window.getResolvedCaptionStyle === 'function')
                 ? window.getResolvedCaptionStyle(i)
                 : { position: 'bottom', highlightMode: 'none' };
@@ -13907,14 +13801,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             let end = c && c.end != null ? Number(c.end) : NaN;
             if (!Number.isFinite(start)) continue;
             if (!Number.isFinite(end) || end <= start) {
-                const next = window.currentSegments[i + 1];
+                const next = displayCues[i + 1];
                 const nextS = next && Number(next.start);
                 end = Number.isFinite(nextS) ? nextS : (start + 1);
             }
             if (end <= start) end = start + 0.05;
             vttLines.push(`${fmt(start)} --> ${fmt(end)}${cueSettings}`);
-            let text = (c.text || '').replace(/<[^>]+>/g, '').trim();
-            text = wrapCueTextByMaxChars(text, maxCharsPerLine);
+            const text = String(c.text || '').replace(/<[^>]+>/g, '').trim();
             vttLines.push(text);
             vttLines.push('');
         }
@@ -15629,7 +15522,8 @@ function _captionsToCues(words, captions) {
         cues.push({
             start: ws.start,
             end: we.end,
-            text: getCaptionText(c, words)
+            text: getCaptionText(c, words),
+            semanticCandidates: c.semanticCandidates,
         });
     }
     return cues;
@@ -16583,33 +16477,6 @@ function _qsInsertWordTextsAfterIndex(insertAfterWi, texts) {
     return n;
 }
 
-function reflowCaptionsByMaxChars(words, captions, maxChars = 54) {
-    // Re-split captions using ONLY word boundaries (no timing estimation).
-    if (!Array.isArray(words) || !Array.isArray(captions) || captions.length === 0) return captions;
-    const out = [];
-    for (let ci = 0; ci < captions.length; ci++) {
-        const cap = captions[ci];
-        let start = cap.wordStartIndex;
-        let line = '';
-        for (let wi = cap.wordStartIndex; wi <= cap.wordEndIndex; wi++) {
-            const w = words[wi];
-            const t = (w && w.text != null) ? String(w.text).trim() : '';
-            if (!t) continue;
-            const next = line ? (line + ' ' + t) : t;
-            if (line && next.length > maxChars) {
-                // close current caption at previous word
-                const end = wi - 1;
-                if (end >= start) out.push({ id: `c${Date.now()}_${out.length}`, wordStartIndex: start, wordEndIndex: end, style: cap.style ? { ...cap.style } : undefined });
-                start = wi;
-                line = t;
-            } else {
-                line = next;
-            }
-        }
-        if (cap.wordEndIndex >= start) out.push({ id: cap.id || `c${Date.now()}_${out.length}`, wordStartIndex: start, wordEndIndex: cap.wordEndIndex, style: cap.style ? { ...cap.style } : undefined });
-    }
-    return out;
-}
 
 function _closestWordIndexFromSelection(container) {
     const sel = window.getSelection();
