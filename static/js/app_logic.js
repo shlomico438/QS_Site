@@ -9471,6 +9471,10 @@ function renderStandardSummaryView() {
     const overview = String(fmt.overview || '').trim();
     const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
     const actions = Array.isArray(fmt.action_items) ? fmt.action_items.map((p) => String(p || '').trim()).filter(Boolean) : [];
+    if (!overview && !points.length && !actions.length && !document.body.classList.contains('has-transcript-actions')) {
+        qsClearTranscriptWindowIdle();
+        return;
+    }
     const emptyMsg = T('summary_empty') || 'No summary yet.';
     const pointsHtml = points.length
         ? `<ul id="standard-summary-points" style="margin:8px 0 0; padding-inline-start:20px;">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
@@ -11802,6 +11806,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (transcriptWindow.classList.contains('transcript-sync-mode')) return;
             if (document.body.classList.contains('has-transcript-actions')) return;
             if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return;
+            if (!String(transcriptWindow.textContent || '').trim()) return;
             const t = e && e.target;
             if (t && t.closest && t.closest('button,a,input,textarea,select,[role="button"]')) return;
             mainBtn.click();

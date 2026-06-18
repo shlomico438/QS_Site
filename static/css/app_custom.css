@@ -3835,6 +3835,11 @@ body:not(.has-transcript-actions) #subtitle-style-selector {
     display: none !important;
 }
 
+/* Homepage landing: hide idle transcript pane (empty summary placeholder). */
+body.qs-homepage-landing:not(.has-transcript-actions):not(.mobile-video-session) .transcription-wrapper:not(.qs-processing-active) {
+    display: none !important;
+}
+
 /* Centered over the transcript pane (not the upload / keyboard area) */
 .transcript-area-wrap .processing-state-panel {
     display: none;
