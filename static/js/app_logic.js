@@ -4200,6 +4200,7 @@ async function setupNavbarAuth(userOverride) {
 
     try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
     try { document.body.classList.toggle('qs-user-signed-in', !!user); } catch (_) {}
+    try { syncTranscriptCopyButtonUi(); } catch (_) {}
     if (user) {
         try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
     } else {
@@ -6175,6 +6176,48 @@ function getMedicalActiveTabTextForCopy() {
                 return lines.join('\n').trim();
     }
     return String(buildTranscriptPlainBodyForExport() || '').trim();
+}
+
+function getStandardActiveTabTextForCopy() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (isSummaryViewEnabled()) {
+        const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+        const overview = String(fmt.overview || '').trim();
+        const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+        const actions = Array.isArray(fmt.action_items) ? fmt.action_items.map((p) => String(p || '').trim()).filter(Boolean) : [];
+        const lines = [];
+        lines.push(T('summary_overview') || 'Overview');
+        lines.push(overview || (T('summary_empty') || 'No summary yet.'));
+        lines.push('');
+        lines.push(T('summary_key_points') || 'Key points');
+        (points.length ? points : [T('summary_empty') || 'No summary yet.']).forEach((p) => lines.push(p));
+        lines.push('');
+        lines.push(T('summary_action_items') || 'Action items');
+        (actions.length ? actions : [T('summary_empty') || 'No summary yet.']).forEach((p) => lines.push(p));
+        return lines.join('\n').trim();
+    }
+    if (isDocumentFormatEnabled()) {
+        return String(getDocumentSourceForTranslation() || '').trim();
+    }
+    return String(buildTranscriptPlainBodyForExport() || '').trim();
+}
+
+function getActiveTabTextForCopy() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        return String(getMedicalActiveTabTextForCopy() || '').trim();
+    }
+    return String(getStandardActiveTabTextForCopy() || '').trim();
+}
+
+function syncTranscriptCopyButtonUi() {
+    const medicalCopyBtn = document.getElementById('medical-copy-btn');
+    if (!medicalCopyBtn) return;
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
+    medicalCopyBtn.style.removeProperty('display');
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const label = T('medical_copy') || 'Copy';
+    medicalCopyBtn.setAttribute('aria-label', label);
+    medicalCopyBtn.setAttribute('title', label);
 }
 
 function getDocumentSourceForTranslation() {
@@ -9454,6 +9497,7 @@ function setFormatViewMode(mode) {
         void ensureTranscriptCleanupLazy();
     }
     if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
+    try { syncTranscriptCopyButtonUi(); } catch (_) {}
 }
 window.setFormatViewMode = setFormatViewMode;
 window.syncStandardFormatTabs = syncStandardFormatTabs;
@@ -10104,6 +10148,7 @@ function setTranscriptActionButtonsVisible(visible) {
         } catch (_) {}
     }
     qsSyncAppChromeBodyClasses();
+    try { syncTranscriptCopyButtonUi(); } catch (_) {}
 }
 
 /** While the export menu is open, disable other transcript toolbar controls. */
@@ -10125,13 +10170,20 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
 document.addEventListener('DOMContentLoaded', () => {
     qsEnsureUploadConfirmModalInBody();
     const transcriptWindow = document.getElementById('transcript-window');
-    if (transcriptWindow && transcriptWindow.dataset.qsCopyAnalyticsBound !== '1') {
-        transcriptWindow.dataset.qsCopyAnalyticsBound = '1';
-        transcriptWindow.addEventListener('copy', () => {
-            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
-            if (isSummaryViewEnabled()) return;
-            qsTrackEvent('transcript_copied');
-        });
+    if (transcriptWindow && transcriptWindow.dataset.qsCopyGuardBound !== '1') {
+        transcriptWindow.dataset.qsCopyGuardBound = '1';
+        const blockNativeTranscriptCopy = (e) => {
+            const win = document.getElementById('transcript-window');
+            if (!win) return;
+            const editing = win.classList.contains('transcript-editing') || win.classList.contains('transcript-sync-mode');
+            if (editing && document.body.classList.contains('qs-user-signed-in')) return;
+            e.preventDefault();
+            if (!document.body.classList.contains('qs-user-signed-in')) {
+                void requireUserForCopyOrDownload();
+            }
+        };
+        transcriptWindow.addEventListener('copy', blockNativeTranscriptCopy);
+        transcriptWindow.addEventListener('cut', blockNativeTranscriptCopy);
     }
     const fileInput = document.getElementById('fileInput');
     const medicalRecordWrap = document.getElementById('medical-recording-wrap');
@@ -10216,7 +10268,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const hasTranscript = hasSegments || hasWordModel;
         const showTabs = isMedicalModeEnabled() && (hasTranscript || hasFormattedSummary || window._medicalHasResult === true);
         medicalTabsWrap.style.display = showTabs ? 'flex' : 'none';
-        if (medicalCopyBtn) medicalCopyBtn.style.display = showTabs ? 'inline-flex' : 'none';
+        if (medicalCopyBtn) {
+            if (isMedicalModeEnabled()) {
+                medicalCopyBtn.style.display = showTabs ? 'inline-flex' : 'none';
+            } else {
+                medicalCopyBtn.style.removeProperty('display');
+            }
+        }
         if (!showTabs) return;
         // In medical mode, summary should be the main/default tab, including simulation.
         if (!window.medicalActiveTab) {
@@ -10226,6 +10284,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalTabTranscript) medicalTabTranscript.classList.toggle('is-active', !isSummary);
         if (medicalTabSummary) medicalTabSummary.classList.toggle('is-active', isSummary);
         try { if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn(); } catch (_) {}
+        try { syncTranscriptCopyButtonUi(); } catch (_) {}
     }
     window.refreshMedicalTabs = updateMedicalTabUi;
     function syncRegularRecordUi() {
@@ -11512,14 +11571,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 const ok = await requireUserForCopyOrDownload();
                 if (!ok) return;
             }
-            const text = getMedicalActiveTabTextForCopy();
+            const text = getActiveTabTextForCopy();
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
             if (!text) {
-                if (typeof showStatus === 'function') showStatus('אין טקסט להעתקה.', true);
+                if (typeof showStatus === 'function') {
+                    showStatus(T('medical_no_text_to_copy') || 'No text to copy', true);
+                }
                 return;
             }
             try {
                 await navigator.clipboard.writeText(text);
-                if (typeof showStatus === 'function') showStatus('הטקסט הועתק.', false);
+                if (typeof showStatus === 'function') {
+                    showStatus(T('text_copied') || 'Text copied.', false);
+                }
                 try {
                     if (typeof ensureJobRecordOnExport === 'function') {
                         await ensureJobRecordOnExport();
@@ -11531,12 +11595,22 @@ document.addEventListener('DOMContentLoaded', () => {
                             try { sessionStorage.removeItem('qs_medical_show_feedback_on_next_copy'); } catch (_) {}
                         }
                         setTimeout(() => {
-                            try { void maybeShowPostExportFeedbackModal('medical_copy'); } catch (_) {}
+                            try {
+                                const kind = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+                                    ? 'medical_copy'
+                                    : 'export';
+                                void maybeShowPostExportFeedbackModal(kind);
+                            } catch (_) {}
                         }, 400);
                     }
                 } catch (_) {}
+                if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+                    qsTrackEvent('transcript_copied');
+                }
             } catch (e) {
-                if (typeof showStatus === 'function') showStatus('העתקה נכשלה.', true);
+                if (typeof showStatus === 'function') {
+                    showStatus(T('copy_failed') || 'Copy failed.', true);
+                }
             }
         });
     }

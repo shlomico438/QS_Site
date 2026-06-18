@@ -2997,6 +2997,20 @@ body.qs-upload-confirm-open {
   display: inline-flex;
 }
 
+body.has-transcript-actions:not(.medical-mode) .main-app-container .medical-transcript-shell > .medical-transcript-top-actions {
+  display: inline-flex;
+}
+
+body.has-transcript-actions:not(.medical-mode) #transcript-window {
+  padding-top: 58px;
+}
+
+#transcript-window:not(.transcript-editing):not(.transcript-sync-mode) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 .medical-side-action-stack {
   display: flex;
   flex-direction: column;
