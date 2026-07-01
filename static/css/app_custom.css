@@ -6327,9 +6327,9 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
   body.mobile-video-session:not(.medical-mode),
   body.qs-mobile-transcript-layout {
     width: 100% !important;
-    height: 100dvh !important;
-    min-height: 100dvh !important;
-    max-height: 100dvh !important;
+    height: var(--qs-mobile-layout-vh, 100dvh) !important;
+    min-height: var(--qs-mobile-layout-vh, 100dvh) !important;
+    max-height: var(--qs-mobile-layout-vh, 100dvh) !important;
     overflow: hidden !important;
     overscroll-behavior: none;
     display: flex !important;

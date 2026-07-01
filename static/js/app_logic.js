@@ -10442,13 +10442,19 @@ function qsSyncMobileTranscriptLayout() {
 
         const viewportH = Math.max(
             320,
-            Math.floor((window.visualViewport && window.visualViewport.height) || window.innerHeight || document.documentElement.clientHeight || 0)
+            Math.floor(window.visualViewport && window.visualViewport.height || 0),
+            Math.floor(window.innerHeight || 0),
+            Math.floor(document.documentElement.clientHeight || 0),
+            Math.floor((window.screen && window.screen.availHeight) || 0)
         );
+        document.documentElement.style.setProperty('--qs-mobile-layout-vh', `${viewportH}px`);
         const wrapperTop = Math.max(0, Math.floor(wrapper.getBoundingClientRect().top || 0));
         const controlsRect = controlsVisible ? controlsBar.getBoundingClientRect() : null;
-        const controlsTop = controlsRect && Number.isFinite(controlsRect.top) && controlsRect.top > 0
+        const fallbackControlsTop = viewportH - uploadH - controlsH;
+        const measuredControlsTop = controlsRect && Number.isFinite(controlsRect.top) && controlsRect.top > 0
             ? Math.floor(controlsRect.top)
-            : (viewportH - uploadH - controlsH);
+            : 0;
+        const controlsTop = Math.max(measuredControlsTop, fallbackControlsTop);
         const mainTop = mainApp ? Math.max(0, Math.floor(mainApp.getBoundingClientRect().top || 0)) : 0;
         const appH = Math.max(240, controlsTop - mainTop);
         const videoMaxH = Math.max(110, Math.min(220, Math.floor(appH * 0.32)));
