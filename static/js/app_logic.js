@@ -10172,6 +10172,9 @@ function qsEnsureTranscriptToolbarVisible(reason, opts) {
         }
     } catch (_) {}
     try { document.body.classList.add('qs-transcript-present'); } catch (_) {}
+    try {
+        if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
+    } catch (_) {}
     qsSyncAppChromeBodyClasses();
     if (reason) {
         console.info('[qs-transcript-toolbar] ensured visible', { reason: String(reason) });
@@ -10271,9 +10274,17 @@ function setTranscriptActionButtonsVisible(visible) {
     try { qsSyncMusicModeBottomToggleUi(); } catch (_) {}
     try { qsSyncRegularRecordUi(); } catch (_) {}
     if (visible) {
+        const syncAa = () => {
+            try {
+                if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
+            } catch (_) {}
+        };
+        syncAa();
         try {
-            if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
-        } catch (_) {}
+            requestAnimationFrame(() => requestAnimationFrame(syncAa));
+        } catch (_) {
+            setTimeout(syncAa, 0);
+        }
     }
     qsSyncAppChromeBodyClasses();
     try { syncTranscriptCopyButtonUi(); } catch (_) {}
@@ -13744,14 +13755,26 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     };
     
     window.showSubtitleStyleSelector = function() {
-        if (!document.body.classList.contains('has-transcript-actions')) return;
-        if (window.uploadWasVideo !== true) return;
         const selector = document.getElementById('subtitle-style-selector');
+        if (!selector) return;
+        const hide = () => {
+            selector.classList.remove('is-visible', 'is-open');
+            selector.style.display = 'none';
+        };
+        if (!document.body.classList.contains('has-transcript-actions')) {
+            hide();
+            return;
+        }
+        if (window.uploadWasVideo !== true) {
+            hide();
+            return;
+        }
         const video = document.getElementById('main-video');
         const videoWrapper = document.getElementById('video-wrapper');
         const videoVisible = !!(videoWrapper && videoWrapper.classList.contains('visible'));
-        if (selector && video && videoVisible && window.currentSegments && window.currentSegments.length > 0) {
+        if (video && videoVisible && window.currentSegments && window.currentSegments.length > 0) {
             try { selector.querySelector('#caption-style-timeline-ui')?.remove(); } catch (_) {}
+            selector.classList.add('is-visible');
             selector.style.display = 'flex';
             selector.classList.remove('is-open');
             if (typeof window.syncSubtitleDrawerGlobalPositionUI === 'function') {
@@ -13761,13 +13784,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window.syncSubtitleDrawerColorUI();
             }
             window.applySubtitleStyle(window.currentSubtitleStyle);
+        } else {
+            hide();
         }
     };
 
     window.hideSubtitleStyleSelector = function() {
         const selector = document.getElementById('subtitle-style-selector');
         if (selector) {
-            selector.classList.remove('is-open');
+            selector.classList.remove('is-visible', 'is-open');
             selector.style.display = 'none';
         }
     };
