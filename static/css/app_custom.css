@@ -6310,15 +6310,88 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
     flex-direction: column !important;
     margin-bottom: 0 !important;
   }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .transcript-area-wrap,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .transcript-area-wrap {
+    order: 1 !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .switches-top-bar,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .switches-top-bar {
+    order: 2 !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .controls-bar,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .controls-bar {
+    order: 3 !important;
+  }
   body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .switches-top-bar,
   body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .controls-bar,
   body.mobile-video-session:not(.medical-mode) .transcription-wrapper .switches-top-bar,
   body.mobile-video-session:not(.medical-mode) .transcription-wrapper .controls-bar {
     flex: 0 0 auto !important;
+    padding: 6px 10px !important;
+    overflow: visible !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .switches-top-bar.is-visible,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .switches-top-bar.is-visible,
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .controls-bar.is-visible,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .controls-bar.is-visible {
+    display: flex !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .switches-top-bar,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .switches-top-bar {
+    border-radius: 0 !important;
+    border-top: none !important;
+    border-bottom: none !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .controls-bar,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .controls-bar {
+    border-radius: 0 0 8px 8px !important;
+    border-top: none !important;
+    border-bottom: 1px solid #e5e7eb !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .toggles-group,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .toggles-group,
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .toolbar-group,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .toolbar-group {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex-wrap: nowrap !important;
+    gap: 6px !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper #format-mode-switch,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper #format-mode-switch {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .format-ab-option,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .format-ab-option {
+    min-width: 0 !important;
+    padding: 6px 8px !important;
+    font-size: 0.78rem !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .generate-btn-wrap,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .generate-btn-wrap {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper #btn-download.generate-select-btn,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper #btn-download.generate-select-btn {
+    width: 100% !important;
+    height: 34px !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .btn-icon,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .btn-icon,
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper #subtitle-style-toggle.subtitle-style-toggle-btn,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper #subtitle-style-toggle.subtitle-style-toggle-btn {
+    width: 34px !important;
+    height: 34px !important;
+    flex: 0 0 34px !important;
   }
   body.has-transcript-actions:not(.medical-mode) .transcript-area-wrap,
   body.mobile-video-session:not(.medical-mode) .transcript-area-wrap {
-    flex: 1 1 auto !important;
+    flex: 1 1 0 !important;
     min-height: 0 !important;
     overflow: hidden !important;
     display: flex !important;
