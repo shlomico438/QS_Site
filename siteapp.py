@@ -4106,6 +4106,40 @@ def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
     }
 
 
+def _check_credits_for_multipart_init(user_id, duration_sec, prefer_hebrew=True):
+    """Upload-first gate: full duration check when known; otherwise require minimum wallet balance."""
+    user_id = str(user_id or '').strip()
+    if not user_id or user_id == 'anonymous':
+        return {"ok": True, "skipped": True}
+    try:
+        duration_sec = float(duration_sec or 0)
+    except (TypeError, ValueError):
+        duration_sec = 0.0
+    if duration_sec > 0:
+        return _check_credits_for_duration(user_id, duration_sec, prefer_hebrew)
+    wallet = _user_credits_get(user_id)
+    balance = int((wallet or {}).get('credit_minutes') or 0)
+    min_m = _min_credit_minutes_for_upload()
+    if balance < min_m:
+        if prefer_hebrew:
+            msg = f"אין מספיק דקות בחשבון. נדרשות לפחות {min_m} דקות כדי להתחיל העלאה."
+        else:
+            msg = f"Not enough minutes in your account. At least {min_m} minute(s) required to start an upload."
+        return {
+            "ok": False,
+            "error": "insufficient_credits",
+            "message": msg,
+            "http_status": 402,
+            "credit_minutes": balance,
+            "required_minutes": min_m,
+        }
+    return {
+        "ok": True,
+        "credit_minutes": balance,
+        "deferred_duration_check": True,
+    }
+
+
 def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=True):
     if prefer_hebrew:
         return (
@@ -4731,7 +4765,7 @@ def api_user_credits_check_upload():
         if not _credits_gate_applies(is_medical):
             return jsonify({"status": "ok", "skipped": True}), 200
         duration_sec = _client_media_duration_from_request(data)
-        check = _check_credits_for_duration(user_id, duration_sec, _credits_prefer_hebrew_from_request())
+        check = _check_credits_for_multipart_init(user_id, duration_sec, _credits_prefer_hebrew_from_request())
         if not check.get('ok'):
             return jsonify({
                 "status": "error",
@@ -8723,7 +8757,7 @@ def sign_s3_multipart_init():
 
     if _credits_gate_applies(is_medical):
         duration_sec = _client_media_duration_from_request(data)
-        credit_check = _check_credits_for_duration(user_id, duration_sec, _credits_prefer_hebrew_from_request())
+        credit_check = _check_credits_for_multipart_init(user_id, duration_sec, _credits_prefer_hebrew_from_request())
         if not credit_check.get('ok'):
             return jsonify({
                 "status": "error",
@@ -9011,6 +9045,37 @@ def sign_s3_multipart_abort():
     except ClientError as e:
         logging.warning("abort_multipart_upload: %s", e)
 
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/delete-uploaded-input', methods=['POST'])
+def delete_uploaded_input():
+    """Delete an uploaded input object after a failed credit gate (upload-first flow)."""
+    data = request.json or {}
+    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
+    is_medical = bool(data.get('isMedical'))
+    bucket_in = (data.get('bucket') or '').strip()
+    s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
+    if not s3_key:
+        return jsonify({"status": "error", "message": "s3Key required"}), 400
+    if _simulation_should_mock_upload():
+        return jsonify({'status': 'ok', 'simulation': True})
+    try:
+        _assert_multipart_key_for_user(s3_key, user_id, is_medical)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=is_medical)
+    bucket = prof['bucket']
+    if bucket_in and bucket_in != bucket:
+        return jsonify({"status": "error", "message": "Bucket mismatch"}), 400
+    if not _s3_storage_credentials_configured(bucket):
+        return jsonify({"status": "error", "message": _s3_credentials_error_message(bucket)}), 500
+    s3_client = _s3_boto_client(bucket=bucket)
+    try:
+        s3_client.delete_object(Bucket=bucket, Key=s3_key)
+    except ClientError as e:
+        logging.warning("delete_uploaded_input failed key=%s: %s", s3_key[-48:], e)
+        return jsonify({"status": "error", "message": str(e)}), 500
     return jsonify({'status': 'ok'})
 
 

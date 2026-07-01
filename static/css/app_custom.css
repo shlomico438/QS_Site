@@ -2770,6 +2770,56 @@ body.qs-upload-confirm-open {
   color: #64748b;
 }
 
+.qs-music-mode-bottom-wrap {
+  flex: 0 0 auto;
+  margin: 0;
+  min-width: 0;
+}
+
+.qs-music-mode-bottom-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.qs-music-mode-bottom-checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0d9488;
+}
+
+.qs-music-mode-bottom-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1;
+}
+
+.qs-music-mode-info-body {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.qs-music-mode-info-body:last-of-type {
+  margin-bottom: 18px;
+}
+
+body.medical-mode .qs-music-mode-bottom-wrap,
+.main-app-container.medical-mode .qs-music-mode-bottom-wrap {
+  display: none !important;
+}
+
 .qs-upload-confirm-actions {
   display: flex;
   gap: 10px;
@@ -3933,7 +3983,7 @@ body.qs-homepage-landing:not(.has-transcript-actions):not(.mobile-video-session)
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
 .qs-pipeline-phase-wrap {
@@ -3942,9 +3992,13 @@ body.qs-homepage-landing:not(.has-transcript-actions):not(.mobile-video-session)
   margin: 0 auto 10px;
   flex: 0 0 auto;
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.qs-pipeline-phase-wrap .processing-triple-progress {
+  width: 100%;
 }
 
 .qs-pipeline-phase-label {
@@ -3973,8 +4027,16 @@ html[dir="rtl"] .qs-pipeline-phase-label {
   margin: 0;
 }
 
+.qs-pipeline-multi-progress.is-warmup-only .processing-pipeline-row:not([data-phase="upload"]) {
+  display: none;
+}
+
 .processing-pipeline-row {
   width: 100%;
+}
+
+.processing-pipeline-row[hidden] {
+  display: none !important;
 }
 
 .processing-pipeline-label {
@@ -4388,25 +4450,27 @@ html[dir="ltr"] #main-btn::before {
 }
 /* --- NEW CONTROLS STYLING --- */
 
-/* Single row: [Detect Speakers] [Upload and Process] [Status] — more space for transcript */
+/* Single row: [Music] [Upload and Process] [Record] */
 .upload-controls-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    display: flex;
+    flex-wrap: nowrap;
     align-items: center;
-    justify-items: center;
-    gap: 12px;
+    justify-content: center;
+    gap: 10px;
     margin-bottom: 10px;
     direction: rtl;
     width: 100%;
 }
 .upload-control-left {
-    justify-self: start;
+    flex: 0 0 auto;
     min-width: 0;
 }
 .upload-controls-row .btn.btn-primary {
-    justify-self: center;
+    flex: 1 1 auto;
     align-self: center;
-    margin: 0 auto;
+    margin: 0;
+    min-width: 0;
+    max-width: 320px;
 }
 .regular-record-btn {
     justify-self: center;
@@ -4575,11 +4639,12 @@ html[dir="rtl"] .upload-status {
         border-radius: 8px;
     }
 
-    /* Upload row: keep one row, compact — more space for transcript */
+    /* Upload row: one line — music toggle + upload button */
     .upload-controls-row {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         justify-content: center;
+        align-items: center;
         gap: 8px;
         margin-bottom: 8px;
     }
@@ -4587,21 +4652,31 @@ html[dir="rtl"] .upload-status {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 170px;
+        min-width: 0;
+        flex: 0 0 auto;
     }
     .upload-control-left .control-label {
         font-size: 0.85rem;
     }
     .upload-controls-row .btn.btn-primary {
-        width: calc(100% - 32px);
-        margin: 0 16px;
+        flex: 1 1 auto;
+        width: auto;
+        min-width: 140px;
+        max-width: none;
+        margin: 0;
         display: flex;
         align-items: center;
         justify-content: center;
         height: 50px;
         border-radius: 12px;
-        padding: 0;
+        padding: 0 16px;
         font-size: 17px;
+    }
+    .qs-music-mode-bottom-option {
+        padding: 7px 8px;
+    }
+    .qs-music-mode-bottom-title {
+        font-size: 0.76rem;
     }
     .upload-status { display: none; }
 
@@ -5733,10 +5808,9 @@ html[dir="rtl"] .upload-status {
     align-items: center;
     width: 100%;
     margin: 0;
-    /* Pair upload + record as one centered group (margin:auto on #main-btn broke this) */
-    gap: 12px;
+    gap: 10px;
     flex-wrap: nowrap;
-    direction: ltr;
+    direction: rtl;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary {
@@ -5744,11 +5818,13 @@ html[dir="rtl"] .upload-status {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 220px;
+    flex: 1 1 auto;
+    min-width: 140px;
+    max-width: 280px;
     height: 50px;
     border-radius: 18px;
-    padding: 10px 38px;
-    flex-shrink: 0;
+    padding: 10px 24px;
+    flex-shrink: 1;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .regular-record-btn {
@@ -6073,7 +6149,9 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .btn.btn-primary {
     display: inline-flex !important;
-    min-width: min(220px, 72vw);
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: min(240px, calc(100% - 88px));
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .regular-record-btn {

@@ -498,6 +498,17 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
                 </div>
             </div>
         </div>
+        <div id="qs-music-mode-info-modal" class="qs-upload-confirm-backdrop" hidden aria-hidden="true">
+            <div class="qs-upload-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="qs-music-mode-info-title">
+                <h3 id="qs-music-mode-info-title" data-i18n="upload_music_mode_title">Music / Singing Mode</h3>
+                <p id="qs-music-mode-info-body" class="qs-music-mode-info-body" data-i18n="upload_music_mode_slow_notice">Processing takes significantly longer than standard speech mode.</p>
+                <p id="qs-music-mode-info-vocal" class="qs-music-mode-info-body" data-i18n="upload_music_mode_vocal_separation_notice">The system separates vocals from background music to improve transcription accuracy on songs and music-heavy recordings.</p>
+                <div class="qs-upload-confirm-actions">
+                    <button type="button" id="qs-music-mode-info-cancel" class="qs-upload-confirm-btn secondary" data-i18n="cancel">Cancel</button>
+                    <button type="button" id="qs-music-mode-info-ok" class="qs-upload-confirm-btn primary" data-i18n="upload_music_mode_enable">Enable</button>
+                </div>
+            </div>
+        </div>
         <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
                 <h3 id="translation-modal-title">Translate transcript</h3>
@@ -732,6 +743,12 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
         <div class="upload-zone">
             <div class="upload-controls-row">
                 <input type="file" id="fileInput" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" hidden>
+                <div id="qs-music-mode-bottom-wrap" class="qs-music-mode-bottom-wrap">
+                    <label class="qs-music-mode-bottom-option" for="qs-music-mode-bottom-checkbox">
+                        <input type="checkbox" id="qs-music-mode-bottom-checkbox" class="qs-music-mode-bottom-checkbox" />
+                        <span class="qs-music-mode-bottom-title" data-i18n="upload_music_mode_short">מוזיקה</span>
+                    </label>
+                </div>
                 <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">התחל כאן</button>
                 <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
             </div>
@@ -778,9 +795,31 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             <button id="medical-upload-new-session-btn" class="btn btn-primary medical-upload-new-session-btn" type="button" style="display:none;" data-i18n="new_session">סשן חדש</button>
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
             <div id="qs-pipeline-phase-wrap" class="qs-pipeline-phase-wrap" style="display:none;" aria-live="polite">
-                <div id="qs-pipeline-phase-label" class="qs-pipeline-phase-label" data-i18n="pipeline_upload">העלאה</div>
-                <div class="progress-container" id="p-container">
-                    <div id="progress-bar-legacy"></div>
+                <div id="qs-pipeline-multi-progress" class="processing-triple-progress">
+                    <div class="processing-pipeline-row is-active" data-phase="upload">
+                        <p class="processing-pipeline-label" data-i18n="pipeline_upload">העלאה</p>
+                        <div class="progress-container processing-unified-track">
+                            <div class="processing-unified-fill" data-pipeline-fill="upload"></div>
+                        </div>
+                    </div>
+                    <div class="processing-pipeline-row is-pending" data-phase="vocal_separation" id="qs-pipeline-vocal-row" hidden>
+                        <p class="processing-pipeline-label" data-i18n="pipeline_vocal_separation">הפרדת קול</p>
+                        <div class="progress-container processing-unified-track">
+                            <div class="processing-unified-fill" data-pipeline-fill="vocal_separation"></div>
+                        </div>
+                    </div>
+                    <div class="processing-pipeline-row is-pending" data-phase="transcribe">
+                        <p class="processing-pipeline-label" data-i18n="pipeline_transcribe">תמלול</p>
+                        <div class="progress-container processing-unified-track">
+                            <div class="processing-unified-fill" data-pipeline-fill="transcribe"></div>
+                        </div>
+                    </div>
+                    <div class="processing-pipeline-row is-pending" data-phase="summary">
+                        <p class="processing-pipeline-label" data-i18n="pipeline_summary">יצירת סיכום</p>
+                        <div class="progress-container processing-unified-track">
+                            <div class="processing-unified-fill" data-pipeline-fill="summary"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <!-- diarization toggle removed on mobile upload UI -->
