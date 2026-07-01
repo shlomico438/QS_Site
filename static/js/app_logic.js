@@ -10312,13 +10312,13 @@ function qsClearMobileTranscriptLayoutInline(wrapper, switchesTopBar, transcript
     clearEl(controlsBar);
     clearEl(switchesTopBar);
     if (transcriptAreaWrap) {
-        ['flex', 'min-height', 'overflow', 'height', 'display', 'flex-direction'].forEach((prop) => {
+        ['flex', 'min-height', 'max-height', 'overflow', 'height', 'display', 'flex-direction'].forEach((prop) => {
             transcriptAreaWrap.style.removeProperty(prop);
         });
     }
     const medicalShell = transcriptAreaWrap && transcriptAreaWrap.querySelector('.medical-transcript-shell');
     if (medicalShell) {
-        ['flex', 'min-height', 'overflow', 'display', 'flex-direction'].forEach((prop) => {
+        ['flex', 'min-height', 'max-height', 'overflow', 'height', 'display', 'flex-direction'].forEach((prop) => {
             medicalShell.style.removeProperty(prop);
         });
     }
@@ -10326,17 +10326,33 @@ function qsClearMobileTranscriptLayoutInline(wrapper, switchesTopBar, transcript
         switchesTopBar.style.removeProperty('flex');
     }
     if (wrapper) {
-        ['display', 'flex', 'flex-direction', 'min-height', 'overflow'].forEach((prop) => {
+        ['display', 'flex', 'flex-direction', 'min-height', 'max-height', 'height', 'overflow'].forEach((prop) => {
             wrapper.style.removeProperty(prop);
         });
     }
     const tw = document.getElementById('transcript-window');
     if (tw) {
-        ['flex', 'min-height', 'overflow-y', 'height'].forEach((prop) => tw.style.removeProperty(prop));
+        ['flex', 'min-height', 'max-height', 'overflow-y', 'height'].forEach((prop) => tw.style.removeProperty(prop));
     }
     const mainApp = document.querySelector('.main-app-container:not(.medical-mode)');
-    if (mainApp) mainApp.style.removeProperty('padding-bottom');
-    ['--qs-mobile-upload-h', '--qs-mobile-controls-h', '--qs-mobile-switches-h', '--qs-mobile-toolbar-stack'].forEach((v) => {
+    if (mainApp) {
+        ['padding-bottom', 'height', 'max-height', 'overflow', 'display', 'flex-direction'].forEach((prop) => {
+            mainApp.style.removeProperty(prop);
+        });
+    }
+    const videoWrapper = document.getElementById('video-wrapper');
+    if (videoWrapper) {
+        ['flex', 'margin-bottom', 'max-height', 'overflow'].forEach((prop) => videoWrapper.style.removeProperty(prop));
+    }
+    const videoPlayer = document.getElementById('video-player-container');
+    if (videoPlayer) {
+        ['max-height', 'overflow'].forEach((prop) => videoPlayer.style.removeProperty(prop));
+    }
+    const mainVideo = document.getElementById('main-video');
+    if (mainVideo) {
+        ['max-height', 'width', 'max-width'].forEach((prop) => mainVideo.style.removeProperty(prop));
+    }
+    ['--qs-mobile-upload-h', '--qs-mobile-controls-h', '--qs-mobile-switches-h', '--qs-mobile-toolbar-stack', '--qs-mobile-transcript-wrapper-h', '--qs-mobile-transcript-editor-h'].forEach((v) => {
         document.documentElement.style.removeProperty(v);
     });
 }
@@ -10373,38 +10389,43 @@ function qsSyncMobileTranscriptLayout() {
         const controlsVisible = !processing && controlsBar.classList.contains('is-visible');
         const switchesVisible = !processing && switchesTopBar.classList.contains('is-visible');
 
+        const clampPx = (value, min, max) => Math.min(max, Math.max(min, Math.ceil(Number(value) || 0)));
         const uploadEl = document.querySelector('.main-app-container:not(.medical-mode) > .upload-zone');
-        const uploadH = uploadEl ? Math.max(72, Math.ceil(uploadEl.offsetHeight || uploadEl.getBoundingClientRect().height)) : 84;
+        const measuredUploadH = uploadEl ? (uploadEl.offsetHeight || uploadEl.getBoundingClientRect().height) : 84;
+        const uploadH = clampPx(measuredUploadH, 58, 104);
 
         if (controlsVisible) {
             controlsBar.style.removeProperty('display');
-            controlsBar.style.setProperty('position', 'fixed');
-            controlsBar.style.setProperty('left', '0');
-            controlsBar.style.setProperty('right', '0');
-            controlsBar.style.setProperty('width', '100%');
-            controlsBar.style.setProperty('bottom', `${uploadH}px`);
-            controlsBar.style.setProperty('z-index', '850');
-            controlsBar.style.setProperty('margin', '0');
+            controlsBar.style.setProperty('position', 'fixed', 'important');
+            controlsBar.style.setProperty('left', '0', 'important');
+            controlsBar.style.setProperty('right', '0', 'important');
+            controlsBar.style.setProperty('width', '100%', 'important');
+            controlsBar.style.setProperty('bottom', `${uploadH}px`, 'important');
+            controlsBar.style.setProperty('z-index', '850', 'important');
+            controlsBar.style.setProperty('margin', '0', 'important');
             void controlsBar.offsetHeight;
         } else {
             controlsBar.style.display = 'none';
         }
 
         const controlsH = controlsVisible
-            ? Math.max(44, Math.ceil(controlsBar.offsetHeight || controlsBar.getBoundingClientRect().height))
+            ? clampPx(controlsBar.offsetHeight || controlsBar.getBoundingClientRect().height, 40, 64)
             : 0;
 
         if (switchesVisible) {
             switchesTopBar.style.removeProperty('display');
-            switchesTopBar.style.setProperty('position', 'relative');
-            switchesTopBar.style.setProperty('bottom', 'auto');
-            switchesTopBar.style.setProperty('left', 'auto');
-            switchesTopBar.style.setProperty('right', 'auto');
-            switchesTopBar.style.setProperty('width', '100%');
+            switchesTopBar.style.setProperty('position', 'relative', 'important');
+            switchesTopBar.style.setProperty('bottom', 'auto', 'important');
+            switchesTopBar.style.setProperty('left', 'auto', 'important');
+            switchesTopBar.style.setProperty('right', 'auto', 'important');
+            switchesTopBar.style.setProperty('width', '100%', 'important');
             void switchesTopBar.offsetHeight;
         } else {
             switchesTopBar.style.display = 'none';
         }
+        const switchesH = switchesVisible
+            ? Math.max(0, Math.ceil(switchesTopBar.offsetHeight || switchesTopBar.getBoundingClientRect().height))
+            : 0;
 
         document.documentElement.style.setProperty('--qs-mobile-upload-h', `${uploadH}px`);
         document.documentElement.style.setProperty('--qs-mobile-controls-h', `${controlsH}px`);
@@ -10414,40 +10435,88 @@ function qsSyncMobileTranscriptLayout() {
         if (mainApp) {
             mainApp.style.setProperty(
                 'padding-bottom',
-                `calc(${uploadH}px + ${controlsH}px + env(safe-area-inset-bottom, 0px))`
+                '0px',
+                'important'
             );
         }
 
-        wrapper.style.display = 'flex';
-        wrapper.style.flexDirection = 'column';
-        wrapper.style.flex = '1 1 0';
-        wrapper.style.minHeight = '0';
-        wrapper.style.overflow = 'hidden';
+        const viewportH = Math.max(
+            320,
+            Math.floor((window.visualViewport && window.visualViewport.height) || window.innerHeight || document.documentElement.clientHeight || 0)
+        );
+        const wrapperTop = Math.max(0, Math.floor(wrapper.getBoundingClientRect().top || 0));
+        const controlsRect = controlsVisible ? controlsBar.getBoundingClientRect() : null;
+        const controlsTop = controlsRect && Number.isFinite(controlsRect.top) && controlsRect.top > 0
+            ? Math.floor(controlsRect.top)
+            : (viewportH - uploadH - controlsH);
+        const mainTop = mainApp ? Math.max(0, Math.floor(mainApp.getBoundingClientRect().top || 0)) : 0;
+        const appH = Math.max(240, controlsTop - mainTop);
+        const videoMaxH = Math.max(110, Math.min(220, Math.floor(appH * 0.32)));
+        const videoWrapper = document.getElementById('video-wrapper');
+        const videoPlayer = document.getElementById('video-player-container');
+        const mainVideo = document.getElementById('main-video');
+        if (mainApp) {
+            mainApp.style.setProperty('height', `${appH}px`, 'important');
+            mainApp.style.setProperty('max-height', `${appH}px`, 'important');
+            mainApp.style.setProperty('overflow', 'hidden', 'important');
+            mainApp.style.setProperty('display', 'flex', 'important');
+            mainApp.style.setProperty('flex-direction', 'column', 'important');
+        }
+        if (videoWrapper) {
+            videoWrapper.style.setProperty('flex', '0 0 auto', 'important');
+            videoWrapper.style.setProperty('margin-bottom', '6px', 'important');
+            videoWrapper.style.setProperty('max-height', `${videoMaxH}px`, 'important');
+            videoWrapper.style.setProperty('overflow', 'hidden', 'important');
+        }
+        if (videoPlayer) {
+            videoPlayer.style.setProperty('max-height', `${videoMaxH}px`, 'important');
+            videoPlayer.style.setProperty('overflow', 'hidden', 'important');
+        }
+        if (mainVideo) {
+            mainVideo.style.setProperty('max-height', `${videoMaxH}px`, 'important');
+            mainVideo.style.setProperty('width', 'auto', 'important');
+            mainVideo.style.setProperty('max-width', '100%', 'important');
+        }
+        document.documentElement.style.setProperty('--qs-mobile-transcript-wrapper-h', 'auto');
+        document.documentElement.style.setProperty('--qs-mobile-transcript-editor-h', 'auto');
 
-        switchesTopBar.style.flex = '0 0 auto';
+        wrapper.style.setProperty('display', 'flex', 'important');
+        wrapper.style.setProperty('flex-direction', 'column', 'important');
+        wrapper.style.setProperty('flex', '1 1 0', 'important');
+        wrapper.style.setProperty('height', 'auto', 'important');
+        wrapper.style.setProperty('max-height', 'none', 'important');
+        wrapper.style.setProperty('min-height', '0', 'important');
+        wrapper.style.setProperty('overflow', 'hidden', 'important');
 
-        transcriptAreaWrap.style.flex = '1 1 0';
-        transcriptAreaWrap.style.minHeight = '0';
-        transcriptAreaWrap.style.overflow = 'hidden';
-        transcriptAreaWrap.style.display = 'flex';
-        transcriptAreaWrap.style.flexDirection = 'column';
+        switchesTopBar.style.setProperty('flex', '0 0 auto', 'important');
+
+        transcriptAreaWrap.style.setProperty('flex', '1 1 0', 'important');
+        transcriptAreaWrap.style.setProperty('height', 'auto', 'important');
+        transcriptAreaWrap.style.setProperty('max-height', 'none', 'important');
+        transcriptAreaWrap.style.setProperty('min-height', '0', 'important');
+        transcriptAreaWrap.style.setProperty('overflow', 'hidden', 'important');
+        transcriptAreaWrap.style.setProperty('display', 'flex', 'important');
+        transcriptAreaWrap.style.setProperty('flex-direction', 'column', 'important');
 
         const medicalShell = transcriptAreaWrap.querySelector('.medical-transcript-shell');
         if (medicalShell) {
-            medicalShell.style.flex = '1 1 0';
-            medicalShell.style.minHeight = '0';
-            medicalShell.style.overflow = 'hidden';
-            medicalShell.style.display = 'flex';
-            medicalShell.style.flexDirection = 'column';
+            medicalShell.style.setProperty('flex', '1 1 0', 'important');
+            medicalShell.style.setProperty('height', 'auto', 'important');
+            medicalShell.style.setProperty('max-height', 'none', 'important');
+            medicalShell.style.setProperty('min-height', '0', 'important');
+            medicalShell.style.setProperty('overflow', 'hidden', 'important');
+            medicalShell.style.setProperty('display', 'flex', 'important');
+            medicalShell.style.setProperty('flex-direction', 'column', 'important');
         }
 
         const tw = document.getElementById('transcript-window');
         if (tw) {
-            tw.style.display = 'block';
-            tw.style.flex = '1 1 0';
-            tw.style.minHeight = '0';
-            tw.style.height = 'auto';
-            tw.style.overflowY = 'auto';
+            tw.style.setProperty('display', 'block', 'important');
+            tw.style.setProperty('flex', '1 1 0', 'important');
+            tw.style.setProperty('min-height', '0', 'important');
+            tw.style.setProperty('height', 'auto', 'important');
+            tw.style.setProperty('max-height', 'none', 'important');
+            tw.style.setProperty('overflow-y', 'auto', 'important');
         }
         if (controlsVisible) {
             try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
@@ -10475,6 +10544,16 @@ window.addEventListener('resize', () => {
     try { qsSyncMobileTranscriptLayout(); } catch (_) {}
     try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
 });
+try {
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => {
+            try { qsSyncMobileTranscriptLayout(); } catch (_) {}
+        });
+        window.visualViewport.addEventListener('scroll', () => {
+            try { qsSyncMobileTranscriptLayout(); } catch (_) {}
+        });
+    }
+} catch (_) {}
 document.addEventListener('DOMContentLoaded', () => { try { qsSyncMobileTranscriptLayout(); } catch (_) {} });
 
 /** Idempotent: show export/format toolbar whenever transcript data exists (guards intermittent races). */
