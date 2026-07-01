@@ -1969,6 +1969,7 @@ function qsShowLocalUploadMediaPreview(file) {
         isVideo = false;
     }
     window.uploadWasVideo = !!isVideo;
+    qsPersistUploadWasVideoFlag(!!isVideo);
     window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'media';
     const skipLocalBlobPreview = typeof qsIsLargeUploadFile === 'function' && qsIsLargeUploadFile(file);
     let objectUrl = null;
@@ -2587,10 +2588,13 @@ function qsSyncRegularRecordUi() {
     const regularRecordBtn = document.getElementById('regular-record-btn');
     if (!regularRecordBtn) return;
     const onMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+    const processing = (typeof qsTranscriptActionsSuppressedDuringProcessing === 'function')
+        ? qsTranscriptActionsSuppressedDuringProcessing()
+        : !!window.isTriggering;
     const sessionComplete = !window.isTriggering && (
         document.body.classList.contains('has-transcript-actions') || qsHasTranscriptResult()
     );
-    const canShow = !onMedical && !window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON && !sessionComplete;
+    const canShow = !processing && !onMedical && !window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON && !sessionComplete;
     regularRecordBtn.style.display = canShow ? 'inline-flex' : 'none';
     const rec = window._medicalRecorder;
     if (canShow && rec && (rec.state === 'recording' || rec.state === 'paused')) {
@@ -5541,6 +5545,7 @@ async function initOpenInApp(jobId) {
         isVideo = false;
     }
     window.uploadWasVideo = isVideo;
+    qsPersistUploadWasVideoFlag(!!isVideo);
     const uniqueSpeakers = new Set(window.currentSegments.map(s => s.speaker).filter(Boolean));
     window.aiDiarizationRan = uniqueSpeakers.size > 1;
 
@@ -9858,6 +9863,7 @@ function stopProcessingStateUI(reason) {
         window.processingStateTimer = null;
     }
     window.processingPhaseIndex = 0;
+    window.__QS_UPLOAD_PIPELINE_BUSY = false;
     if (panel) panel.style.display = 'none';
     try { if (typeof window.qsStopFeatureShowcase === 'function') window.qsStopFeatureShowcase(); } catch (_) {}
     try { document.body.classList.remove('qs-showcase-active'); } catch (_) {}
@@ -9881,6 +9887,16 @@ function qsSetProcessingOverlayActive(active) {
     document.querySelectorAll('.transcript-area-wrap, .transcription-wrapper').forEach((el) => {
         if (el) el.classList.toggle('qs-processing-active', on);
     });
+}
+
+function qsTranscriptActionsSuppressedDuringProcessing() {
+    if (window.isTriggering || window.__QS_UPLOAD_PIPELINE_BUSY) return true;
+    try {
+        if (document.body.classList.contains('qs-app-busy')) return true;
+        const wrapper = document.querySelector('.transcription-wrapper');
+        if (wrapper && wrapper.classList.contains('qs-processing-active')) return true;
+    } catch (_) {}
+    return false;
 }
 
 function _processingIntroThreeSentencesHe(loggedIn) {
@@ -10051,6 +10067,8 @@ function resetScreenToInitial() {
     window._medicalHasResult = false;
     window.currentFormattedDoc = null;
     window._qsDocPreferSegmentsAfterEdit = false;
+    window.uploadWasVideo = false;
+    qsPersistUploadWasVideoFlag(false);
     try { window.__QS_UPLOAD_PREVIEW_READY = false; } catch (_) {}
     setSeoHomeContentVisibility(true);
     stopProcessingStateUI('reset_screen_to_initial');
@@ -10108,6 +10126,7 @@ function resetScreenToInitial() {
     if (editActions) editActions.style.display = 'none';
 
     if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
+    try { qsPersistUploadWasVideoFlag(false); } catch (_) {}
     if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(false);
     try { document.body.classList.remove('qs-transcript-present'); } catch (_) {}
     try { document.body.classList.remove('qs-app-busy'); } catch (_) {}
@@ -10119,6 +10138,8 @@ function resetScreenToInitial() {
 
 /** Show upload-zone pipeline bar and scroll it into view. */
 function showProgressBar() {
+    window.__QS_UPLOAD_PIPELINE_BUSY = true;
+    try { document.body.classList.add('qs-app-busy'); } catch (_) {}
     const keepWarmupBarForPostRecord =
         window.__QS_MEDICAL_RECORDING_WARMUP_BAR
         && window.__QS_MEDICAL_WARMUP_STATE !== 'ready';
@@ -10142,6 +10163,8 @@ function showProgressBar() {
 }
 
 function hideProgressBar() {
+    window.__QS_UPLOAD_PIPELINE_BUSY = false;
+    try { qsSyncAppChromeBodyClasses(); } catch (_) {}
     qsHidePipelineBarChrome();
 }
 
@@ -10152,37 +10175,331 @@ function qsHasTranscriptResult() {
     );
 }
 
+/** Infer video upload from persisted S3 keys (survives reload / missing preview blob). */
+function qsInferVideoFromStoredInputKey() {
+    try {
+        const key = String(
+            localStorage.getItem('lastS3Key')
+            || localStorage.getItem('pendingS3Key')
+            || ''
+        ).trim();
+        if (!key) return false;
+        return QS_VIDEO_FILE_EXTENSIONS.test(key);
+    } catch (_) {
+        return false;
+    }
+}
+
+/** True when the current session is a non-medical video upload (subtitle Aa applies). */
+function qsUploadIsVideoSession() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+    if (window.uploadWasVideo === true) return true;
+    try {
+        if (sessionStorage.getItem('qs_upload_was_video') === '1') return true;
+        if (localStorage.getItem('qs_upload_was_video') === '1') return true;
+    } catch (_) {}
+    if (qsInferVideoFromStoredInputKey()) return true;
+    const video = document.getElementById('main-video');
+    const videoSrc = document.getElementById('video-source');
+    const hasVideoMedia = !!(
+        (video && (video.currentSrc || video.getAttribute('src'))) ||
+        (videoSrc && (videoSrc.src || videoSrc.getAttribute('src')))
+    );
+    if (hasVideoMedia) return true;
+    const videoWrapper = document.getElementById('video-wrapper');
+    if (videoWrapper) {
+        if (videoWrapper.classList.contains('visible')) return true;
+        try {
+            const st = window.getComputedStyle(videoWrapper);
+            if (st.display !== 'none' && st.visibility !== 'hidden') return true;
+        } catch (_) {}
+    }
+    if (video) {
+        try {
+            const st = window.getComputedStyle(video);
+            if (st.display !== 'none' && st.visibility !== 'hidden') return true;
+        } catch (_) {}
+    }
+    return false;
+}
+
+function qsShouldShowSubtitleStyleAa() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+    return document.body.classList.contains('has-transcript-actions');
+}
+
+function qsPersistUploadWasVideoFlag(isVideo) {
+    try {
+        if (isVideo) {
+            sessionStorage.setItem('qs_upload_was_video', '1');
+            localStorage.setItem('qs_upload_was_video', '1');
+        } else {
+            sessionStorage.removeItem('qs_upload_was_video');
+            localStorage.removeItem('qs_upload_was_video');
+        }
+    } catch (_) {}
+}
+
+function qsApplySubtitleStyleAaDomVisible(show) {
+    const selector = document.getElementById('subtitle-style-selector');
+    const toggleBtn = document.getElementById('subtitle-style-toggle');
+    if (!selector) return;
+    if (show) {
+        selector.classList.add('is-visible');
+        selector.style.setProperty('display', 'inline-flex', 'important');
+        selector.style.setProperty('visibility', 'visible', 'important');
+        selector.style.setProperty('opacity', '1', 'important');
+        selector.style.removeProperty('width');
+        selector.style.removeProperty('height');
+        if (toggleBtn) {
+            toggleBtn.style.setProperty('display', 'flex', 'important');
+            toggleBtn.style.setProperty('visibility', 'visible', 'important');
+            toggleBtn.style.setProperty('opacity', '1', 'important');
+        }
+    } else {
+        selector.classList.remove('is-visible', 'is-open');
+        selector.style.display = 'none';
+        if (toggleBtn) {
+            toggleBtn.style.removeProperty('display');
+            toggleBtn.style.removeProperty('visibility');
+            toggleBtn.style.removeProperty('opacity');
+        }
+    }
+}
+
+/** Show/hide the Aa subtitle-style control in the transcript toolbar. */
+function qsSyncSubtitleStyleAaVisibility() {
+    const show = qsShouldShowSubtitleStyleAa();
+    try {
+        document.body.classList.toggle('qs-video-transcript-session', show && qsUploadIsVideoSession());
+    } catch (_) {}
+    qsApplySubtitleStyleAaDomVisible(show);
+}
+window.qsSyncSubtitleStyleAaVisibility = qsSyncSubtitleStyleAaVisibility;
+window.showSubtitleStyleSelector = function() {
+    qsSyncSubtitleStyleAaVisibility();
+};
+
 function qsSyncAppChromeBodyClasses() {
     try {
         const hasTranscript = qsHasTranscriptResult() || document.body.classList.contains('has-transcript-actions');
-        document.body.classList.toggle('qs-app-busy', !!window.isTriggering);
+        const processingActive = !!document.querySelector('.transcription-wrapper.qs-processing-active, .transcript-area-wrap.qs-processing-active');
+        const appBusy = !!(window.isTriggering || window.__QS_UPLOAD_PIPELINE_BUSY || processingActive);
+        document.body.classList.toggle('qs-app-busy', appBusy);
         document.body.classList.toggle('qs-transcript-present', !!hasTranscript);
     } catch (_) {}
+    try { qsSyncMobileTranscriptLayout(); } catch (_) {}
+    try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
 }
+
+function qsIsMobileTranscriptSessionActive() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+    return !!(
+        document.body.classList.contains('has-transcript-actions')
+        || document.body.classList.contains('mobile-video-session')
+        || document.body.classList.contains('qs-transcript-present')
+        || (typeof qsHasTranscriptResult === 'function' && qsHasTranscriptResult())
+    );
+}
+
+function qsClearMobileTranscriptLayoutInline(wrapper, switchesTopBar, transcriptAreaWrap, controlsBar) {
+    const clearEl = (el) => {
+        if (!el) return;
+        ['position', 'left', 'right', 'bottom', 'z-index', 'width', 'visibility'].forEach((prop) => {
+            el.style.removeProperty(prop);
+        });
+    };
+    clearEl(controlsBar);
+    clearEl(switchesTopBar);
+    if (transcriptAreaWrap) {
+        ['flex', 'min-height', 'overflow', 'height', 'display', 'flex-direction'].forEach((prop) => {
+            transcriptAreaWrap.style.removeProperty(prop);
+        });
+    }
+    const medicalShell = transcriptAreaWrap && transcriptAreaWrap.querySelector('.medical-transcript-shell');
+    if (medicalShell) {
+        ['flex', 'min-height', 'overflow', 'display', 'flex-direction'].forEach((prop) => {
+            medicalShell.style.removeProperty(prop);
+        });
+    }
+    if (switchesTopBar) {
+        switchesTopBar.style.removeProperty('flex');
+    }
+    if (wrapper) {
+        ['display', 'flex', 'flex-direction', 'min-height', 'overflow'].forEach((prop) => {
+            wrapper.style.removeProperty(prop);
+        });
+    }
+    const tw = document.getElementById('transcript-window');
+    if (tw) {
+        ['flex', 'min-height', 'overflow-y', 'height'].forEach((prop) => tw.style.removeProperty(prop));
+    }
+    const mainApp = document.querySelector('.main-app-container:not(.medical-mode)');
+    if (mainApp) mainApp.style.removeProperty('padding-bottom');
+    ['--qs-mobile-upload-h', '--qs-mobile-controls-h', '--qs-mobile-switches-h', '--qs-mobile-toolbar-stack'].forEach((v) => {
+        document.documentElement.style.removeProperty(v);
+    });
+}
+
+/**
+ * Mobile transcript session: format tabs in-flow above editor; action row fixed above New Session.
+ */
+function qsSyncMobileTranscriptLayout() {
+    try {
+        const wrapper = document.querySelector('.transcription-wrapper');
+        if (!wrapper) return;
+        const switchesTopBar = wrapper.querySelector('.switches-top-bar');
+        const transcriptAreaWrap = wrapper.querySelector('.transcript-area-wrap');
+        const controlsBar = wrapper.querySelector('.controls-bar');
+        if (!switchesTopBar || !transcriptAreaWrap || !controlsBar) return;
+
+        const isMobile = !!(window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+        const sessionActive = isMobile && qsIsMobileTranscriptSessionActive();
+        document.body.classList.toggle('qs-mobile-transcript-layout', sessionActive);
+
+        if (!sessionActive) {
+            qsClearMobileTranscriptLayoutInline(wrapper, switchesTopBar, transcriptAreaWrap, controlsBar);
+            wrapper.appendChild(switchesTopBar);
+            wrapper.appendChild(transcriptAreaWrap);
+            wrapper.appendChild(controlsBar);
+            return;
+        }
+
+        wrapper.appendChild(switchesTopBar);
+        wrapper.appendChild(transcriptAreaWrap);
+        wrapper.appendChild(controlsBar);
+
+        const processing = wrapper.classList.contains('qs-processing-active') || document.body.classList.contains('qs-app-busy');
+        const controlsVisible = !processing && controlsBar.classList.contains('is-visible');
+        const switchesVisible = !processing && switchesTopBar.classList.contains('is-visible');
+
+        const uploadEl = document.querySelector('.main-app-container:not(.medical-mode) > .upload-zone');
+        const uploadH = uploadEl ? Math.max(72, Math.ceil(uploadEl.offsetHeight || uploadEl.getBoundingClientRect().height)) : 84;
+
+        if (controlsVisible) {
+            controlsBar.style.removeProperty('display');
+            controlsBar.style.setProperty('position', 'fixed');
+            controlsBar.style.setProperty('left', '0');
+            controlsBar.style.setProperty('right', '0');
+            controlsBar.style.setProperty('width', '100%');
+            controlsBar.style.setProperty('bottom', `${uploadH}px`);
+            controlsBar.style.setProperty('z-index', '850');
+            controlsBar.style.setProperty('margin', '0');
+            void controlsBar.offsetHeight;
+        } else {
+            controlsBar.style.display = 'none';
+        }
+
+        const controlsH = controlsVisible
+            ? Math.max(44, Math.ceil(controlsBar.offsetHeight || controlsBar.getBoundingClientRect().height))
+            : 0;
+
+        if (switchesVisible) {
+            switchesTopBar.style.removeProperty('display');
+            switchesTopBar.style.setProperty('position', 'relative');
+            switchesTopBar.style.setProperty('bottom', 'auto');
+            switchesTopBar.style.setProperty('left', 'auto');
+            switchesTopBar.style.setProperty('right', 'auto');
+            switchesTopBar.style.setProperty('width', '100%');
+            void switchesTopBar.offsetHeight;
+        } else {
+            switchesTopBar.style.display = 'none';
+        }
+
+        document.documentElement.style.setProperty('--qs-mobile-upload-h', `${uploadH}px`);
+        document.documentElement.style.setProperty('--qs-mobile-controls-h', `${controlsH}px`);
+        document.documentElement.style.setProperty('--qs-mobile-toolbar-stack', `${controlsH}px`);
+
+        const mainApp = document.querySelector('.main-app-container:not(.medical-mode)');
+        if (mainApp) {
+            mainApp.style.setProperty(
+                'padding-bottom',
+                `calc(${uploadH}px + ${controlsH}px + env(safe-area-inset-bottom, 0px))`
+            );
+        }
+
+        wrapper.style.display = 'flex';
+        wrapper.style.flexDirection = 'column';
+        wrapper.style.flex = '1 1 0';
+        wrapper.style.minHeight = '0';
+        wrapper.style.overflow = 'hidden';
+
+        switchesTopBar.style.flex = '0 0 auto';
+
+        transcriptAreaWrap.style.flex = '1 1 0';
+        transcriptAreaWrap.style.minHeight = '0';
+        transcriptAreaWrap.style.overflow = 'hidden';
+        transcriptAreaWrap.style.display = 'flex';
+        transcriptAreaWrap.style.flexDirection = 'column';
+
+        const medicalShell = transcriptAreaWrap.querySelector('.medical-transcript-shell');
+        if (medicalShell) {
+            medicalShell.style.flex = '1 1 0';
+            medicalShell.style.minHeight = '0';
+            medicalShell.style.overflow = 'hidden';
+            medicalShell.style.display = 'flex';
+            medicalShell.style.flexDirection = 'column';
+        }
+
+        const tw = document.getElementById('transcript-window');
+        if (tw) {
+            tw.style.display = 'block';
+            tw.style.flex = '1 1 0';
+            tw.style.minHeight = '0';
+            tw.style.height = 'auto';
+            tw.style.overflowY = 'auto';
+        }
+        if (controlsVisible) {
+            try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
+        }
+    } catch (_) {}
+}
+window.qsSyncMobileTranscriptLayout = qsSyncMobileTranscriptLayout;
+window.qsSyncMobileToolbarOrder = qsSyncMobileTranscriptLayout;
+
+function qsScheduleMobileTranscriptLayoutSync() {
+    const run = () => { try { qsSyncMobileTranscriptLayout(); } catch (_) {} };
+    run();
+    try {
+        requestAnimationFrame(() => requestAnimationFrame(run));
+    } catch (_) {
+        setTimeout(run, 0);
+    }
+    setTimeout(run, 120);
+    setTimeout(run, 500);
+    setTimeout(run, 1200);
+}
+window.qsScheduleMobileTranscriptLayoutSync = qsScheduleMobileTranscriptLayoutSync;
+
+window.addEventListener('resize', () => {
+    try { qsSyncMobileTranscriptLayout(); } catch (_) {}
+    try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
+});
+document.addEventListener('DOMContentLoaded', () => { try { qsSyncMobileTranscriptLayout(); } catch (_) {} });
 
 /** Idempotent: show export/format toolbar whenever transcript data exists (guards intermittent races). */
 function qsEnsureTranscriptToolbarVisible(reason, opts) {
     opts = opts || {};
     if (!qsHasTranscriptResult()) return false;
-    if (!opts.force && window.isTriggering) return false;
+    if (qsTranscriptActionsSuppressedDuringProcessing()) return false;
     try { qsSetProcessingOverlayActive(false); } catch (_) {}
     try {
         if (typeof setTranscriptActionButtonsVisible === 'function') {
             setTranscriptActionButtonsVisible(true);
         }
     } catch (_) {}
-    try { document.body.classList.add('qs-transcript-present'); } catch (_) {}
-    try {
-        if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
-    } catch (_) {}
     qsSyncAppChromeBodyClasses();
+    try { qsScheduleMobileTranscriptLayoutSync(); } catch (_) {}
     if (reason) {
         console.info('[qs-transcript-toolbar] ensured visible', { reason: String(reason) });
     }
     try {
-        const bar = document.querySelector('.transcription-wrapper .controls-bar.is-visible');
-        if (bar && typeof bar.scrollIntoView === 'function') {
-            bar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const isMobile = !!(window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+        if (!isMobile) {
+            const bar = document.querySelector('.transcription-wrapper .controls-bar.is-visible');
+            if (bar && typeof bar.scrollIntoView === 'function') {
+                bar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
         }
     } catch (_) {}
     return true;
@@ -10226,6 +10543,7 @@ function qsInvokeHandleJobUpdate(data) {
 }
 
 function setTranscriptActionButtonsVisible(visible) {
+    visible = !!visible && !qsTranscriptActionsSuppressedDuringProcessing();
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
     const translateBtn = document.getElementById('btn-translate');
@@ -10271,10 +10589,22 @@ function setTranscriptActionButtonsVisible(visible) {
             && !(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled());
         document.body.classList.toggle('qs-session-complete', sessionComplete);
     } catch (_) {}
+    const subStyleSelector = document.getElementById('subtitle-style-selector');
+    if (subStyleSelector) {
+        const showAa = qsShouldShowSubtitleStyleAa();
+        if (showAa) {
+            qsApplySubtitleStyleAaDomVisible(true);
+            try { document.body.classList.toggle('qs-video-transcript-session', qsUploadIsVideoSession()); } catch (_) {}
+        } else if (!visible) {
+            qsApplySubtitleStyleAaDomVisible(false);
+            try { document.body.classList.remove('qs-video-transcript-session'); } catch (_) {}
+        }
+    }
     try { qsSyncMusicModeBottomToggleUi(); } catch (_) {}
     try { qsSyncRegularRecordUi(); } catch (_) {}
     if (visible) {
         const syncAa = () => {
+            try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
             try {
                 if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
             } catch (_) {}
@@ -10285,8 +10615,13 @@ function setTranscriptActionButtonsVisible(visible) {
         } catch (_) {
             setTimeout(syncAa, 0);
         }
+        setTimeout(syncAa, 150);
+        setTimeout(syncAa, 600);
+    } else {
+        try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
     }
     qsSyncAppChromeBodyClasses();
+    try { qsScheduleMobileTranscriptLayoutSync(); } catch (_) {}
     try { syncTranscriptCopyButtonUi(); } catch (_) {}
 }
 
@@ -10466,6 +10801,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         window.uploadWasVideo = false;
+        qsPersistUploadWasVideoFlag(false);
         window.originalFileName = String(file.name || '').replace(/\.json$/i, '') || 'transcript';
         if (isMedicalModeEnabled()) {
             window._medicalHasResult = true;
@@ -11125,6 +11461,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const objectUrl = URL.createObjectURL(file);
         window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'medical_recording';
         window.uploadWasVideo = false;
+        qsPersistUploadWasVideoFlag(false);
         setLocalPreviewAudio(objectUrl, file.type || session.filetype || 'audio/webm');
 
         const headers = {
@@ -11842,6 +12179,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Mobile layout hides upload CTA for video; same for audio-only (mp3) once the player is shown.
             document.body.classList.toggle('mobile-video-session', !!(isMobile && (hasLoadedVideo || hasLoadedAudio)));
         } catch (_) {}
+        try { qsScheduleMobileTranscriptLayoutSync(); } catch (_) {}
         syncLandingLogoSize();
     }
     window.syncMobileVideoSessionState = syncMobileVideoSessionState;
@@ -13755,51 +14093,38 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     };
     
     window.showSubtitleStyleSelector = function() {
+        qsSyncSubtitleStyleAaVisibility();
         const selector = document.getElementById('subtitle-style-selector');
-        if (!selector) return;
-        const hide = () => {
-            selector.classList.remove('is-visible', 'is-open');
-            selector.style.display = 'none';
-        };
-        if (!document.body.classList.contains('has-transcript-actions')) {
-            hide();
-            return;
+        if (!selector || !selector.classList.contains('is-visible')) return;
+        try { selector.querySelector('#caption-style-timeline-ui')?.remove(); } catch (_) {}
+        selector.classList.remove('is-open');
+        if (typeof window.syncSubtitleDrawerGlobalPositionUI === 'function') {
+            window.syncSubtitleDrawerGlobalPositionUI();
         }
-        if (window.uploadWasVideo !== true) {
-            hide();
-            return;
+        if (typeof window.syncSubtitleDrawerColorUI === 'function') {
+            window.syncSubtitleDrawerColorUI();
         }
-        const video = document.getElementById('main-video');
-        const videoWrapper = document.getElementById('video-wrapper');
-        const videoVisible = !!(videoWrapper && videoWrapper.classList.contains('visible'));
-        if (video && videoVisible && window.currentSegments && window.currentSegments.length > 0) {
-            try { selector.querySelector('#caption-style-timeline-ui')?.remove(); } catch (_) {}
-            selector.classList.add('is-visible');
-            selector.style.display = 'flex';
-            selector.classList.remove('is-open');
-            if (typeof window.syncSubtitleDrawerGlobalPositionUI === 'function') {
-                window.syncSubtitleDrawerGlobalPositionUI();
-            }
-            if (typeof window.syncSubtitleDrawerColorUI === 'function') {
-                window.syncSubtitleDrawerColorUI();
-            }
+        if (typeof window.applySubtitleStyle === 'function') {
             window.applySubtitleStyle(window.currentSubtitleStyle);
-        } else {
-            hide();
         }
     };
 
     window.hideSubtitleStyleSelector = function() {
         const selector = document.getElementById('subtitle-style-selector');
-        if (selector) {
-            selector.classList.remove('is-visible', 'is-open');
-            selector.style.display = 'none';
+        if (!selector) return;
+        selector.classList.remove('is-open');
+        const keepToolbarAa = typeof qsShouldShowSubtitleStyleAa === 'function' && qsShouldShowSubtitleStyleAa();
+        if (keepToolbarAa) {
+            qsApplySubtitleStyleAaDomVisible(true);
+            return;
         }
+        qsApplySubtitleStyleAaDomVisible(false);
+        try { document.body.classList.remove('qs-video-transcript-session'); } catch (_) {}
     };
 
     window.toggleSubtitleStyleDrawer = function(forceOpen) {
         const selector = document.getElementById('subtitle-style-selector');
-        if (!selector || selector.style.display === 'none') return;
+        if (!selector || !selector.classList.contains('is-visible')) return;
         const drawer = document.getElementById('subtitle-style-drawer');
         const toggleBtn = document.getElementById('subtitle-style-toggle');
 
@@ -14082,6 +14407,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         track.addEventListener('load', syncAfterLoad);
         setTimeout(syncAfterLoad, 0);
         setTimeout(syncAfterLoad, 120);
+        try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
     };
 
     window.toggleEditMode = function() {
@@ -14533,6 +14859,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const objectUrl = URL.createObjectURL(file);
                         window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'media';
                         window.uploadWasVideo = !!isVideo && !isMedicalModeEnabled();
+                        qsPersistUploadWasVideoFlag(!!window.uploadWasVideo);
                         if (isVideo) {
                             const src = document.getElementById('video-source');
                             const video = document.getElementById('main-video');
@@ -14629,6 +14956,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (placeholderElUpload) placeholderElUpload.style.display = 'none';
 
                 window.uploadWasVideo = !!isVideo;
+                qsPersistUploadWasVideoFlag(!!isVideo);
                 let objectUrl = null;
                 if (!skipLocalBlobPreview) {
                     objectUrl = URL.createObjectURL(file);

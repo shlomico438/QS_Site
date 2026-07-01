@@ -492,10 +492,26 @@ def _resolve_static_asset_version():
 
 STATIC_ASSET_VERSION = _resolve_static_asset_version()
 
+# Recompute from file mtimes at most once per _STATIC_VERSION_TTL_SEC so a long-running
+# server process (no restart on static file edits) still picks up CSS/JS changes quickly,
+# without doing filesystem stats on every single request.
+_STATIC_VERSION_TTL_SEC = 5
+_static_asset_version_cache = {'value': STATIC_ASSET_VERSION, 'checked_at': 0.0}
+
+
+def _get_static_asset_version():
+    if os.environ.get('QS_STATIC_VERSION'):
+        return STATIC_ASSET_VERSION
+    now = time.time()
+    if (now - _static_asset_version_cache['checked_at']) >= _STATIC_VERSION_TTL_SEC:
+        _static_asset_version_cache['value'] = _resolve_static_asset_version()
+        _static_asset_version_cache['checked_at'] = now
+    return _static_asset_version_cache['value']
+
 
 @app.context_processor
 def _inject_static_asset_version():
-    return {'static_asset_version': STATIC_ASSET_VERSION}
+    return {'static_asset_version': _get_static_asset_version()}
 
 
 # Configuration for automation
