@@ -5792,15 +5792,66 @@ html[dir="rtl"] .upload-status {
     max-height: 100% !important;
     overflow: hidden !important;
   }
+  body.has-transcript-actions:not(.medical-mode) {
+    height: 100% !important;
+    overflow: hidden !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) main.main-content {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    overflow: hidden !important;
+  }
   body.has-transcript-actions .main-app-container:not(.medical-mode) {
     flex: 1 1 auto !important;
     min-height: 0 !important;
     overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
   }
   body.has-transcript-actions .transcription-wrapper {
     flex: 1 1 auto !important;
     min-height: 0 !important;
     overflow: hidden !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) #video-wrapper,
+  body.has-transcript-actions:not(.medical-mode) #audio-player-container {
+    flex: 0 0 auto !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    margin-bottom: 0 !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .switches-top-bar {
+    flex: 0 0 auto !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcript-area-wrap {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .medical-transcript-shell {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) #transcript-window {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow-y: auto !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .controls-bar {
+    flex: 0 0 auto !important;
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone {
