@@ -27,9 +27,9 @@
     {% else %}
     <meta name="description" content="{% block page_description %}QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.{% endblock %}">
     {% endif %}
-    <link rel="alternate" hreflang="he" href="https://www.getquickscribe.com">
+    <link rel="alternate" hreflang="he" href="https://www.getquickscribe.com/he">
     <link rel="alternate" hreflang="en" href="https://www.getquickscribe.com/en">
-    <link rel="alternate" hreflang="x-default" href="https://www.getquickscribe.com">
+    <link rel="alternate" hreflang="x-default" href="https://www.getquickscribe.com/he">
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ static_asset_version }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}?v={{ static_asset_version }}">
@@ -215,7 +215,7 @@
                 var path = String(window.location.pathname || '/');
                 if (path === '/en' || path === '/en/') {
                     urlLocale = 'en';
-                } else if (path === '/' || path === '') {
+                } else if (path === '/he' || path === '/he/' || path === '/' || path === '') {
                     urlLocale = 'he';
                 }
                 var params = new URLSearchParams(window.location.search || '');

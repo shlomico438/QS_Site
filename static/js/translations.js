@@ -663,7 +663,7 @@ function resolveLocale() {
     try {
         const path = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
         if (path === '/en') return 'en';
-        if (path === '/') return 'he';
+        if (path === '/he' || path === '/') return 'he';
     } catch (_) {}
     try {
         const stored = String(localStorage.getItem('locale') || '').toLowerCase().split('-')[0];
@@ -695,9 +695,9 @@ window.setLocale = async function(code) {
         if (typeof window !== 'undefined' && window.location && window.history && typeof window.history.replaceState === 'function') {
             const u = new URL(window.location.href);
             const path = String(u.pathname || '/');
-            const isHomePath = (path === '/' || path === '/en' || path === '/en/');
+            const isHomePath = (path === '/' || path === '/he' || path === '/he/' || path === '/en' || path === '/en/');
             if (isHomePath) {
-                u.pathname = (code === 'en') ? '/en' : '/';
+                u.pathname = (code === 'en') ? '/en' : '/he';
                 u.searchParams.delete('lang');
             } else {
                 u.searchParams.set('lang', code);

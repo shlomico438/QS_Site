@@ -590,7 +590,7 @@ def _cardcom_create_low_profile(
     amount_ils = float(bundle['amount_ils'])
     base = _public_base(req)
     is_he = not str(locale or '').lower().startswith('en')
-    success_path = '/' if is_he else '/en'
+    success_path = '/he' if is_he else '/en'
     sim_token = uuid.uuid4().hex if _simulation_mode() else None
     row = {
         'order_id': order_id,

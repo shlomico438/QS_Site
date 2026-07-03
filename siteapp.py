@@ -4915,7 +4915,7 @@ def api_stripe_create_checkout_session():
             return jsonify({"error": "Unknown credit bundle"}), 400
         locale = str(data.get("locale") or "").strip().lower()
         pricing = _stripe_bundle_checkout(bundle, locale)
-        success_path = "/en" if _stripe_locale_is_english(locale) else "/"
+        success_path = "/en" if _stripe_locale_is_english(locale) else "/he"
         base_url = str(request.url_root or "").rstrip("/")
         success_url = f"{base_url}{success_path}?stripe_success=1&session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = f"{base_url}{success_path}?stripe_cancelled=1"
@@ -5094,7 +5094,15 @@ def index():
     if q_lang == 'en':
         return redirect(url_for('index_en'), code=301)
     if q_lang == 'he':
-        return redirect(url_for('index'), code=301)
+        return redirect(url_for('index_he'), code=301)
+    return render_template('index.html', medical_entry=False)
+
+
+@app.route('/he')
+@app.route('/he/')
+def index_he():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect(url_for('index_he'), code=301)
     return render_template('index.html', medical_entry=False)
 
 

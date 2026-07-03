@@ -201,7 +201,7 @@ function qsResolveAppLocale() {
     try {
         const path = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
         if (path === '/en') return 'en';
-        if (path === '/') return 'he';
+        if (path === '/he' || path === '/') return 'he';
     } catch (_) {}
     const win = String(window.currentLocale || '').toLowerCase().split('-')[0];
     const dom = String((document.documentElement && document.documentElement.lang) || '').toLowerCase().split('-')[0];
@@ -2121,7 +2121,7 @@ function qsNavLogoTargetPath() {
         (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
         'he'
     ).toLowerCase().split('-')[0];
-    return locale === 'en' ? '/en' : '/';
+    return locale === 'en' ? '/en' : '/he';
 }
 
 function qsSyncNavLogoHref() {
@@ -5675,7 +5675,7 @@ async function initOpenInApp(jobId) {
 async function runOpenQueryIfPresent() {
     try {
         const p = (window.location && window.location.pathname) ? String(window.location.pathname).replace(/\/+$/, '') || '/' : '/';
-        if (p !== '/' && p !== '/medical') return;
+        if (p !== '/' && p !== '/he' && p !== '/en' && p !== '/medical') return;
         const search = (window.location && window.location.search) || '';
         const m = search.match(/[?&]open=([^&]+)/);
         if (!m || !m[1]) return;
@@ -8802,7 +8802,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Home page: "Open in app" — load job by ?open=jobId (retried from SIGNED_IN if session is not ready yet)
     const pathname = typeof window.location !== 'undefined' ? String(window.location.pathname || '').replace(/\/+$/, '') || '/' : '/';
-    const isMainAppHome = pathname === '/';
+    const isMainAppHome = pathname === '/' || pathname === '/he' || pathname === '/en';
     const isMedicalEntry = pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
         try {
