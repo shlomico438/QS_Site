@@ -5089,12 +5089,11 @@ def handle_exception(e):
 # --- WEB ROUTES ---
 @app.route('/')
 def index():
-    # Legacy query-based locale support for SEO-friendly canonical paths.
+    # Legacy ?lang= URLs are served in place (no redirect) for GSC/indexing.
+    # Path-based locales: /he and /en remain available as canonical alternates.
     q_lang = str(request.args.get('lang') or '').strip().lower()
     if q_lang == 'en':
         return redirect(url_for('index_en'), code=301)
-    if q_lang == 'he':
-        return redirect(url_for('index_he'), code=301)
     return render_template('index.html', medical_entry=False)
 
 
@@ -5130,6 +5129,11 @@ def favicon_ico():
     if not os.path.isfile(path):
         return ('', 204)
     return send_from_directory(static_dir, 'favicon.png', mimetype='image/png')
+
+
+@app.route('/robots.txt')
+def robots_txt():
+    return send_from_directory(app.static_folder, 'robots.txt', mimetype='text/plain')
 
 
 @app.route('/about')
