@@ -7159,31 +7159,35 @@ async function qsPersistFormattedDocToS3() {
 }
 
 async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId) {
-    const hint = typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '';
     const userId = await qsCurrentUserId();
-    const base = () => ({
-        target_lang: targetLang,
-        jobId: jobId || undefined,
+    const payload = {
+        ...qsCleanupRequestBase(targetLang, jobId),
         userId: userId || undefined,
-        isMedical: typeof effectiveIsMedicalForFormatting === 'function' ? effectiveIsMedicalForFormatting() : false,
         mode: 'summary',
-        ...(hint ? { input_s3_key: hint } : {}),
-    });
+        text: fullText,
+    };
+    const segs = window.currentSegments || [];
+    if (segs.length && !payload.isMedical) payload.segments = segs;
     const t0 = performance.now();
     const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...base(), text: fullText })
+        body: JSON.stringify(payload),
     });
-    const fmt = await res.json().catch(() => ({}));
+    const raw = await res.json().catch(() => ({}));
+    if (Array.isArray(raw.segments) && raw.segments.length) {
+        qsApplyCorrectedSegmentsFromGpt(raw.segments);
+    }
+    const fmt = raw && !raw.error ? normalizeFormattedFields(raw) : raw;
     const elapsedMs = Math.round(performance.now() - t0);
-    const summarySec = Number(fmt && fmt.summary_generation_time);
+    const summarySec = Number(raw && raw.summary_generation_time);
     qsTrackEvent('summary_generation_time', {
         duration_ms: elapsedMs,
         summary_generation_time: Number.isFinite(summarySec) ? summarySec : undefined,
         ok: !!(res.ok && fmt && !fmt.error),
+        unified: true,
     });
-    return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt: fmt && !fmt.error ? normalizeFormattedFields(fmt) : fmt };
+    return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt };
 }
 
 async function fetchTranscriptFormatChunksPlan(fullText) {
@@ -7292,6 +7296,28 @@ async function runFormatTranscriptCleanupChunked(fullText, targetLang, jobId) {
     });
     if (!clean) return { ok: false, res: null, fmt: null };
     return { ok: true, res: { status: 200 }, fmt: normalizeFormattedFields({ clean_transcript: clean }) };
+}
+
+function qsApplyCorrectedSegmentsFromGpt(correctedSegments) {
+    if (!Array.isArray(correctedSegments) || !correctedSegments.length) return false;
+    const mapped = correctedSegments.map((s) => {
+        const copy = { ...(s || {}) };
+        const t = String(copy.translated_text || copy.text || '').trim();
+        if (t) copy.text = t;
+        return copy;
+    });
+    const hasWordModel =
+        Array.isArray(window.currentWords) &&
+        Array.isArray(window.currentCaptions) &&
+        window.currentWords.length > 0 &&
+        window.currentCaptions.length > 0;
+    if (hasWordModel && mapped.length === window.currentCaptions.length) {
+        _applyCueTextsOntoWordModel(mapped, window.currentWords, window.currentCaptions);
+        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+    } else {
+        window.currentSegments = mapped;
+    }
+    return true;
 }
 
 function qsApplyCleanupResult(cleanTranscript) {
@@ -7462,19 +7488,20 @@ async function ensureFormattedViaApiForExport() {
                 safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
             }
         } else {
-            if (needSummary) {
+            if (needSummary || needClean) {
                 const { ok, res, fmt } = await runFormatSummaryOnlyRequest(fullText, targetLang, jobId);
                 if (!ok || !fmt || typeof fmt !== 'object') {
                     const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
-                    console.warn('[export] summary format failed', res.status, errMsg);
+                    console.warn('[export] unified format failed', res.status, errMsg);
                     if (typeof showStatus === 'function') {
-                        showStatus('יצירת הסיכום נכשלה: ' + errMsg.slice(0, 200), true);
+                        showStatus('יצירת הסיכום ועיצוב התמלול נכשלו: ' + errMsg.slice(0, 200), true);
                     }
                     return false;
                 }
                 safeFmt = { ...safeFmt, ...fmt };
+                if (hasCleanTranscript()) window._qsCleanupDone = true;
             }
-            if (needClean) {
+            if (needClean && !hasCleanTranscript()) {
                 const cleanupOk = await runTranscriptCleanupShared({ rerender: false });
                 if (!cleanupOk || !hasCleanTranscript()) {
                     const errMsg = window._qsCleanupFailed ? 'cleanup failed or timed out' : 'no clean transcript';
@@ -12878,7 +12905,7 @@ document.addEventListener('DOMContentLoaded', () => {
             qsStartSummaryPipelineProgress();
         }
 
-        /** Keep toolbar hidden until summary GPT completes (cleanup is lazy on Transcript tab). */
+        /** Keep toolbar hidden until unified GPT (summary + grammar) completes. */
         const deferToolbarUntilGptDone = true;
         const summaryAlreadyDone = qsJobSummaryAlreadyDone(jobId);
         if (!summaryAlreadyDone) {
@@ -12957,7 +12984,7 @@ document.addEventListener('DOMContentLoaded', () => {
             console.info('[qs-processing-ui] summary_gpt_skip (already done for job)', { jobId });
         }
 
-        // Summary GPT first; transcript cleanup runs lazily when the user opens the Transcript tab.
+        // Unified GPT after transcription: summary + grammar (doc + subtitles) in one request.
         const runPostTranscriptionFormatting = async () => {
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return false;
@@ -12967,7 +12994,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.info('[GPT] format_transcript_summary start', {
                     chars: fullText.length,
                     medical: medFmt,
-                    mode: medFmt ? 'unified' : 'summary_only'
+                    mode: medFmt ? 'unified' : 'unified_with_segments',
+                    segment_count: (window.currentSegments || []).length,
                 });
                 const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId);
                 if (!ok || !fmt || typeof fmt !== 'object') return false;
@@ -12976,11 +13004,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.warn('[medical] format guardrail: rejecting hallucinated summary for short transcript');
                     safeFmt = _medicalMinimalFormattedDocFromTranscript(fullText) || fmt;
                 }
-                const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
-                    ? window.currentFormattedDoc
-                    : {};
                 const rawFmt = {
-                    clean_transcript: medFmt ? String(safeFmt.clean_transcript || '').trim() : String(prev.clean_transcript || '').trim(),
+                    clean_transcript: String(safeFmt.clean_transcript || '').trim(),
                     overview: String(safeFmt.overview || '').trim(),
                     key_points: Array.isArray(safeFmt.key_points)
                         ? safeFmt.key_points.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
@@ -12994,7 +13019,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
                 window._qsDocPreferSegmentsAfterEdit = false;
-                if (medFmt && hasCleanTranscript()) window._qsCleanupDone = true;
+                if (hasCleanTranscript()) window._qsCleanupDone = true;
                 if (jobId) {
                     window._qsSummaryGptDoneJobId = jobId;
                     window._lastProcessedJobId = jobId;

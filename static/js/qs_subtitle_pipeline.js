@@ -166,7 +166,7 @@ export function reflowCaptionsSemantic(words, captions) {
  */
 export function layoutCuesForDisplay(cues, videoEl, styleKey) {
     const style = String(styleKey || 'tiktok').toLowerCase();
-    const maxLines = style === 'tiktok' ? 2 : 3;
+    const maxLines = 2;
     const config = buildLayoutConfig(videoEl, { styleKey: style, maxLines });
     const out = [];
     const list = cues || [];

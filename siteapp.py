@@ -6744,6 +6744,43 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
     )
 
 
+def _run_standard_unified_format_with_segments(
+    transcript_text,
+    segments,
+    target_lang='he',
+    is_music=False,
+    user_id=None,
+):
+    """Standard jobs: unified clean+summary GPT plus per-segment grammar (subtitles) in one workflow."""
+    transcript_text = str(transcript_text or "").strip()
+    if not transcript_text:
+        raise RuntimeError("empty transcript")
+    seg_list = [s for s in (segments or []) if isinstance(s, dict)]
+    if seg_list:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            fut_unified = executor.submit(
+                _format_transcript_and_summary_via_openai,
+                transcript_text,
+                target_lang=target_lang,
+                is_medical=False,
+                is_music=is_music,
+                user_id=user_id,
+            )
+            fut_segments = executor.submit(translate_segments, seg_list, target_lang=target_lang)
+            out = dict(fut_unified.result() or {})
+            corrected, seg_meta = fut_segments.result()
+            out['segments'] = corrected
+            out['segment_correction_meta'] = seg_meta
+        return out
+    return _format_transcript_and_summary_via_openai(
+        transcript_text,
+        target_lang=target_lang,
+        is_medical=False,
+        is_music=is_music,
+        user_id=user_id,
+    )
+
+
 # --- TRANSLATE SEGMENTS (GPT via Node script from package.json) ---
 def translate_segments(segments, target_lang='he'):
     """Run Node translate script to add translated_text to each segment.
@@ -7260,10 +7297,10 @@ def _format_request_is_music_context(data, job_id=None):
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export.
 
-    mode=summary: summary + action items only (standard jobs; faster time-to-value).
-    mode=cleanup: transcript cleanup only (lazy, on Transcript tab).
-    Default (no mode): medical → unified clean+summary; standard → summary only.
-    mode=summary_only: legacy alias for summary (was unified; now summary-focused).
+    mode=summary: unified clean transcript + summary + action items; optional segment grammar when segments[] sent.
+    mode=cleanup: transcript cleanup only (legacy fallback for old jobs).
+    Default (no mode): medical/music → unified clean+summary; standard → unified + segment correction when segments[] sent.
+    mode=summary_only: legacy alias for summary.
     mode=clean_chunk: legacy grammar-only chunk (deprecated).
     """
     t0 = time.time()
@@ -7318,20 +7355,6 @@ def api_format_transcript_summary():
                 timing_user_id = timing_user_id or last_user_id
         if timing_job_id:
             _update_job_timings(timing_job_id, user_id=timing_user_id, gpt_format_sec=elapsed)
-
-    def _run_summary_focused(raw):
-        summ_input = _truncate_transcript_for_unified_gpt(raw)
-        summary_timeout = int(
-            os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
-            or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '180')
-            or 180
-        )
-        return _format_summary_focused_openai(
-            summ_input,
-            target_lang=target_lang,
-            timeout_sec=summary_timeout,
-            read_retries=read_retries,
-        )
 
     def _run_cleanup_only(raw):
         cleanup_timeout = int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '180') or 180)
@@ -7404,16 +7427,28 @@ def api_format_transcript_summary():
                     user_id=req_user_id,
                 )
             else:
-                out = _run_summary_focused(raw)
+                segments = data.get('segments') or []
+                out = _run_standard_unified_format_with_segments(
+                    raw,
+                    segments,
+                    target_lang=target_lang,
+                    is_music=is_music_format,
+                    user_id=req_user_id,
+                )
             elapsed = time.time() - t_summary
             _apply_summary_timing(elapsed)
             payload = {
                 "overview": out.get("overview") or "",
                 "key_points": out.get("key_points") or [],
                 "action_items": out.get("action_items") or [],
+                "clean_transcript": out.get("clean_transcript") or "",
                 "summary_generation_time": round(float(elapsed), 3),
                 "gpt_format_sec": round(float(elapsed), 3),
             }
+            if isinstance(out.get("segments"), list):
+                payload["segments"] = out["segments"]
+            if out.get("segment_correction_meta"):
+                payload["segment_correction_meta"] = out["segment_correction_meta"]
             if is_medical:
                 payload["clean_transcript"] = out.get("clean_transcript") or ""
                 for k in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
@@ -7456,7 +7491,13 @@ def api_format_transcript_summary():
             )
         else:
             t_summary = time.time()
-            out = _run_summary_focused(raw_text)
+            out = _run_standard_unified_format_with_segments(
+                raw_text,
+                segments if isinstance(segments, list) else [],
+                target_lang=target_lang,
+                is_music=is_music_format,
+                user_id=req_user_id,
+            )
             elapsed = time.time() - t_summary
             out['summary_generation_time'] = round(float(elapsed), 3)
             out['gpt_format_sec'] = round(float(elapsed), 3)
