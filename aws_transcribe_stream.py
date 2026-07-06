@@ -1,6 +1,15 @@
 """Real-time medical transcription via AWS Transcribe Streaming.
 
-Client WebSocket protocol (/ws/transcribe):
+Primary transport: Socket.IO events (medical_transcribe_*), same origin as job updates.
+Fallback: raw WebSocket /ws/transcribe (local dev; may not work behind some CDNs).
+
+Socket.IO protocol:
+  - Client emits medical_transcribe_start {language_code, sample_rate_hz}
+  - Server emits medical_transcribe_event {type: connected|starting|ready|partial|error|transcript}
+  - Client emits medical_transcribe_audio (binary PCM int16 mono)
+  - Client emits medical_transcribe_stop
+
+WebSocket protocol (/ws/transcribe):
   1. Optional JSON text frame to start: {"action":"start","sample_rate_hz":16000}
   2. Binary frames: PCM int16 mono audio (default 16 kHz)
   3. JSON {"action":"stop"} or WebSocket close → server sends final JSON:
@@ -254,89 +263,217 @@ def _parse_start_config(raw: str) -> dict:
     return data
 
 
-def run_transcribe_websocket_session(ws) -> dict:
-    """Handle one browser/client WebSocket: PCM in → AWS Transcribe → transcript out."""
-    region = DEFAULT_REGION
-    language_code = DEFAULT_LANGUAGE
-    sample_rate_hz = DEFAULT_SAMPLE_RATE
-    session: Optional[AwsTranscribeStreamSession] = None
-    audio_pending: List[bytes] = []
-    session_live = False
-    start_error: Optional[str] = None
-    start_lock = threading.Lock()
-    start_scheduled = False
-    result_payload = {
-        'type': 'transcript',
-        'transcript': '',
-        'partials': [],
-        'language_code': language_code,
-        'sample_rate_hz': sample_rate_hz,
-        'error': None,
-    }
-
-    logger.info('transcribe ws session opened')
+def _run_on_hub(callback) -> None:
     try:
-        _ws_send_json(ws, {'type': 'connected', 'engine': 'aws_transcribe_stream'})
-    except Exception as e:
-        logger.warning('transcribe ws connected frame failed: %s', e)
+        import gevent
+        hub = gevent.get_hub()
+        if hub is not None and getattr(hub, 'loop', None) is not None:
+            hub.loop.run_callback(callback)
+            return
+    except Exception:
+        pass
+    callback()
 
-    def _on_partial(text: str) -> None:
+
+class TranscribeStreamBridge:
+    """Shared orchestration for one live transcribe client (WS or Socket.IO)."""
+
+    def __init__(self, send_json: Callable[[dict], None]):
+        self._send = send_json
+        self.region = DEFAULT_REGION
+        self.language_code = DEFAULT_LANGUAGE
+        self.sample_rate_hz = DEFAULT_SAMPLE_RATE
+        self.session: Optional[AwsTranscribeStreamSession] = None
+        self.audio_pending: List[bytes] = []
+        self.session_live = False
+        self.start_lock = threading.Lock()
+        self.start_scheduled = False
+
+    def send_connected(self) -> None:
+        self._send({'type': 'connected', 'engine': 'aws_transcribe_stream'})
+
+    def _on_partial(self, text: str) -> None:
         try:
-            _ws_send_json_from_hub(ws, {'type': 'partial', 'text': text})
-        except WebSocketError:
-            pass
+            self._send({'type': 'partial', 'text': text})
         except Exception:
             logger.debug('Failed to send partial transcript to client', exc_info=True)
 
-    def _flush_pending_audio() -> None:
-        if not session or not session_live:
+    def _flush_pending_audio(self) -> None:
+        if not self.session or not self.session_live:
             return
-        for chunk in audio_pending:
+        for chunk in self.audio_pending:
             try:
-                session.feed_audio(chunk)
+                self.session.feed_audio(chunk)
             except Exception as e:
                 logger.warning('Failed to feed buffered audio to AWS: %s', e)
                 break
-        audio_pending.clear()
+        self.audio_pending.clear()
 
-    def _begin_session_in_os_thread() -> None:
-        nonlocal session_live, start_error
-        if not session:
+    def _begin_session_in_os_thread(self) -> None:
+        if not self.session:
             return
         try:
-            session._start_blocking(30.0)
-            session_live = True
-            _ws_send_json_from_hub(ws, {
+            self.session._start_blocking(30.0)
+            self.session_live = True
+            self._send({
                 'type': 'ready',
-                'language_code': session.language_code,
-                'sample_rate_hz': session.sample_rate_hz,
+                'language_code': self.session.language_code,
+                'sample_rate_hz': self.session.sample_rate_hz,
             })
             logger.info('transcribe aws ready (from os thread)')
-            try:
-                import gevent
-                gevent.get_hub().loop.run_callback(_flush_pending_audio)
-            except Exception:
-                _flush_pending_audio()
+            _run_on_hub(self._flush_pending_audio)
         except BaseException as e:
             logger.exception('AWS Transcribe stream start failed')
-            start_error = str(e)[:500]
-            _ws_send_json_from_hub(ws, {'type': 'error', 'error': start_error})
+            self._send({'type': 'error', 'error': str(e)[:500]})
 
-    def _schedule_session_start() -> None:
-        nonlocal start_scheduled
-        with start_lock:
-            if start_scheduled:
+    def _schedule_session_start(self) -> None:
+        with self.start_lock:
+            if self.start_scheduled:
                 return
-            start_scheduled = True
-        _TRANSCRIBE_THREAD_LAUNCHER.submit(_begin_session_in_os_thread)
+            self.start_scheduled = True
+        _TRANSCRIBE_THREAD_LAUNCHER.submit(self._begin_session_in_os_thread)
 
-    def _make_session() -> AwsTranscribeStreamSession:
+    def _make_session(self) -> AwsTranscribeStreamSession:
         return AwsTranscribeStreamSession(
-            region=region,
-            language_code=language_code,
-            sample_rate_hz=sample_rate_hz,
-            on_partial=_on_partial,
+            region=self.region,
+            language_code=self.language_code,
+            sample_rate_hz=self.sample_rate_hz,
+            on_partial=self._on_partial,
         )
+
+    def handle_start_config(self, cfg: dict) -> None:
+        if not isinstance(cfg, dict):
+            return
+        action = str(cfg.get('action') or 'start').strip().lower()
+        if action not in ('start', 'config'):
+            return
+        self.language_code = str(cfg.get('language_code') or self.language_code).strip() or self.language_code
+        self.sample_rate_hz = int(cfg.get('sample_rate_hz') or self.sample_rate_hz)
+        self.region = str(cfg.get('region') or self.region).strip() or self.region
+        if self.session is None:
+            logger.info(
+                'transcribe start action lang=%s rate=%s',
+                self.language_code,
+                self.sample_rate_hz,
+            )
+            self._send({
+                'type': 'starting',
+                'language_code': self.language_code,
+                'sample_rate_hz': self.sample_rate_hz,
+            })
+            self.session = self._make_session()
+            self._schedule_session_start()
+
+    def handle_audio(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        if self.session is None:
+            self.session = self._make_session()
+            self._send({
+                'type': 'starting',
+                'language_code': self.language_code,
+                'sample_rate_hz': self.sample_rate_hz,
+            })
+            self._schedule_session_start()
+        if self.session_live:
+            self.session.feed_audio(chunk)
+        else:
+            self.audio_pending.append(chunk)
+
+    def finish(self) -> dict:
+        result_payload = {
+            'type': 'transcript',
+            'transcript': '',
+            'partials': [],
+            'language_code': self.language_code,
+            'sample_rate_hz': self.sample_rate_hz,
+            'error': None,
+        }
+        if self.session:
+            try:
+                transcript = self.session.stop()
+            except BaseException as e:
+                result_payload['error'] = str(e)[:500]
+                transcript = self.session._transcript or ''
+            result_payload['transcript'] = transcript
+            result_payload['partials'] = self.session.partial_history
+            result_payload['language_code'] = self.session.language_code
+            result_payload['sample_rate_hz'] = self.session.sample_rate_hz
+        return result_payload
+
+
+_SOCKETIO_BRIDGES: dict = {}
+
+
+def cleanup_transcribe_socketio_bridge(sid: str) -> None:
+    bridge = _SOCKETIO_BRIDGES.pop(sid, None)
+    if not bridge:
+        return
+    logger.info('transcribe socketio cleanup sid=%s', sid)
+    try:
+        bridge.finish()
+    except Exception:
+        logger.debug('transcribe socketio cleanup finish failed', exc_info=True)
+
+
+def register_transcribe_socketio_handlers(socketio) -> None:
+    """Medical live transcribe via Socket.IO (works behind CDN/proxy; raw /ws/transcribe may not)."""
+    from flask import request
+
+    def _emit_to_sid(sid: str, payload: dict) -> None:
+        def _do() -> None:
+            try:
+                socketio.emit('medical_transcribe_event', payload, room=sid)
+            except Exception as e:
+                logger.warning('transcribe socketio emit failed sid=%s: %s', sid, e)
+
+        _run_on_hub(_do)
+
+    @socketio.on('medical_transcribe_start')
+    def on_medical_transcribe_start(data):
+        sid = request.sid
+        logger.info('transcribe socketio start sid=%s', sid)
+        cleanup_transcribe_socketio_bridge(sid)
+        bridge = TranscribeStreamBridge(lambda payload: _emit_to_sid(sid, payload))
+        _SOCKETIO_BRIDGES[sid] = bridge
+        bridge.send_connected()
+        cfg = data if isinstance(data, dict) else {}
+        bridge.handle_start_config({**cfg, 'action': 'start'})
+
+    @socketio.on('medical_transcribe_audio')
+    def on_medical_transcribe_audio(data):
+        sid = request.sid
+        bridge = _SOCKETIO_BRIDGES.get(sid)
+        if not bridge:
+            return
+        if isinstance(data, (bytes, bytearray)):
+            chunk = bytes(data)
+        elif isinstance(data, list):
+            chunk = bytes(data)
+        else:
+            return
+        bridge.handle_audio(chunk)
+
+    @socketio.on('medical_transcribe_stop')
+    def on_medical_transcribe_stop():
+        sid = request.sid
+        bridge = _SOCKETIO_BRIDGES.pop(sid, None)
+        if not bridge:
+            return
+        logger.info('transcribe socketio stop sid=%s', sid)
+        result = bridge.finish()
+        _emit_to_sid(sid, result)
+
+
+def run_transcribe_websocket_session(ws) -> dict:
+    """Handle one browser/client WebSocket: PCM in → AWS Transcribe → transcript out."""
+    logger.info('transcribe ws session opened')
+    bridge = TranscribeStreamBridge(lambda payload: _ws_send_json_from_hub(ws, payload))
+
+    try:
+        bridge.send_connected()
+    except Exception as e:
+        logger.warning('transcribe ws connected frame failed: %s', e)
 
     try:
         while not getattr(ws, 'closed', False):
@@ -349,60 +486,22 @@ def run_transcribe_websocket_session(ws) -> dict:
                 cfg = _parse_start_config(message)
                 action = str(cfg.get('action') or '').strip().lower()
                 if action in ('start', 'config'):
-                    language_code = str(cfg.get('language_code') or language_code).strip() or language_code
-                    sample_rate_hz = int(cfg.get('sample_rate_hz') or sample_rate_hz)
-                    region = str(cfg.get('region') or region).strip() or region
-                    if session is None:
-                        logger.info('transcribe ws start action lang=%s rate=%s', language_code, sample_rate_hz)
-                        _ws_send_json(ws, {
-                            'type': 'starting',
-                            'language_code': language_code,
-                            'sample_rate_hz': sample_rate_hz,
-                        })
-                        session = _make_session()
-                        _schedule_session_start()
+                    bridge.handle_start_config(cfg)
                     continue
                 if action == 'stop':
                     break
                 continue
 
             if isinstance(message, (bytes, bytearray)):
-                chunk = bytes(message)
-                if session is None:
-                    session = _make_session()
-                    _ws_send_json(ws, {
-                        'type': 'starting',
-                        'language_code': language_code,
-                        'sample_rate_hz': sample_rate_hz,
-                    })
-                    _schedule_session_start()
-                if session_live:
-                    session.feed_audio(chunk)
-                else:
-                    audio_pending.append(chunk)
+                bridge.handle_audio(bytes(message))
 
-        if session:
-            try:
-                transcript = session.stop()
-            except BaseException as e:
-                result_payload['error'] = str(e)[:500]
-                transcript = session._transcript or ''
-            result_payload['transcript'] = transcript
-            result_payload['partials'] = session.partial_history
-            result_payload['language_code'] = session.language_code
-            result_payload['sample_rate_hz'] = session.sample_rate_hz
+        result_payload = bridge.finish()
         _ws_send_json(ws, result_payload)
         return result_payload
 
     except WebSocketError as e:
         logger.info('Transcribe WebSocket closed: %s', e)
-        if session:
-            try:
-                result_payload['transcript'] = session.stop()
-                result_payload['partials'] = session.partial_history
-            except BaseException as stop_err:
-                result_payload['error'] = str(stop_err)[:500]
-                result_payload['transcript'] = getattr(session, '_transcript', '') or ''
+        result_payload = bridge.finish()
         try:
             _ws_send_json(ws, result_payload)
         except Exception:
@@ -410,6 +509,7 @@ def run_transcribe_websocket_session(ws) -> dict:
         return result_payload
     except BaseException as e:
         logger.exception('Transcribe WebSocket session error')
+        result_payload = bridge.finish()
         result_payload['error'] = str(e)[:500]
         try:
             _ws_send_json(ws, result_payload)

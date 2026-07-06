@@ -9316,6 +9316,7 @@ def api_medical_transcription_config():
         'stream_fallback_disabled': use_stream,
         'transcribe_stream_language': _medical_transcribe_stream_language(),
         'transcribe_stream_sample_rate_hz': 16000,
+        'transcribe_stream_transport': 'socketio',
         'sagemaker_fallback': True,
         'medical_transcription_engine': (
             'aws_transcribe_stream' if use_stream else (
@@ -11758,8 +11759,12 @@ def upload_full_file_legacy():
 
 # --- WEBSOCKET EVENT HANDLERS ---
 try:
-    from aws_transcribe_stream import register_transcribe_websocket_routes
+    from aws_transcribe_stream import (
+        register_transcribe_socketio_handlers,
+        register_transcribe_websocket_routes,
+    )
     register_transcribe_websocket_routes(app)
+    register_transcribe_socketio_handlers(socketio)
 except ImportError as _transcribe_stream_import_err:
     logging.warning(
         "aws_transcribe_stream not loaded (pip install amazon-transcribe): %s",
@@ -11782,6 +11787,11 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     print("CLIENT DISCONNECTED")
+    try:
+        from aws_transcribe_stream import cleanup_transcribe_socketio_bridge
+        cleanup_transcribe_socketio_bridge(request.sid)
+    except Exception:
+        pass
 
 # --- HEALTH CHECK ROUTE ---
 @app.route('/health')

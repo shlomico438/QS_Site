@@ -11659,9 +11659,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const cfg = await qsFetchMedicalTranscriptionConfig();
         if (!cfg || !cfg.use_aws_transcribe_stream) return null;
         const languageCode = String(cfg.transcribe_stream_language || 'he-IL');
+        const transport = String(cfg.transcribe_stream_transport || 'socketio').toLowerCase();
         const stream = new MedicalAwsTranscribeStream({
             languageCode,
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
+            transport,
             onPartial: (t) => renderMedicalLiveStreamTranscript(t),
             onStatus: (s) => renderMedicalLiveStreamStatus(s),
         });

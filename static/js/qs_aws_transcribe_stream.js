@@ -1,6 +1,6 @@
 /**
- * Medical live transcription via Site WebSocket → AWS Transcribe Streaming.
- * PCM int16 mono @ 16 kHz to /ws/transcribe.
+ * Medical live transcription via Socket.IO (primary) or /ws/transcribe fallback.
+ * PCM int16 mono @ 16 kHz → AWS Transcribe Streaming.
  */
 
 function qsTranscribeStreamWsUrl() {
@@ -28,13 +28,40 @@ function qsDownsampleFloat32(buffer, fromRate, toRate) {
     return out;
 }
 
+function qsGetGlobalSocket() {
+    try {
+        if (typeof socket !== 'undefined' && socket) return socket;
+    } catch (_) {}
+    return null;
+}
+
+function qsWaitForSocketConnected(sock, timeoutMs = 15000) {
+    if (!sock) return Promise.reject(new Error('socket_unavailable'));
+    if (sock.connected) return Promise.resolve(sock);
+    return new Promise((resolve, reject) => {
+        const t = setTimeout(() => {
+            sock.off('connect', onConnect);
+            reject(new Error('socket_connect_timeout'));
+        }, timeoutMs);
+        function onConnect() {
+            clearTimeout(t);
+            sock.off('connect', onConnect);
+            resolve(sock);
+        }
+        sock.on('connect', onConnect);
+    });
+}
+
 export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
         this.languageCode = options.languageCode || 'he-IL';
         this.sampleRateHz = Number(options.sampleRateHz) || 16000;
+        this.transport = options.transport || 'socketio';
         this.onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
         this.onStatus = typeof options.onStatus === 'function' ? options.onStatus : null;
         this._ws = null;
+        this._socket = null;
+        this._socketEventHandler = null;
         this._audioCtx = null;
         this._source = null;
         this._processor = null;
@@ -71,13 +98,7 @@ export class MedicalAwsTranscribeStream {
         resolve();
     }
 
-    _handleMessage(raw) {
-        let msg;
-        try {
-            msg = JSON.parse(raw);
-        } catch (_) {
-            return;
-        }
+    _handleServerMessage(msg) {
         if (!msg || typeof msg !== 'object') return;
         if (msg.type === 'connected') {
             console.info('[transcribe-stream] server connected');
@@ -126,6 +147,23 @@ export class MedicalAwsTranscribeStream {
         }
     }
 
+    _canSendAudio() {
+        if (this._feedPaused) return false;
+        if (this._socket) return Boolean(this._socket.connected);
+        return this._ws && this._ws.readyState === WebSocket.OPEN;
+    }
+
+    _sendAudioChunk(pcmArrayBuffer) {
+        if (!this._canSendAudio()) return;
+        try {
+            if (this._socket) {
+                this._socket.emit('medical_transcribe_audio', pcmArrayBuffer);
+            } else if (this._ws) {
+                this._ws.send(pcmArrayBuffer);
+            }
+        } catch (_) {}
+    }
+
     _beginAudioCapture(mediaStream) {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         this._audioCtx = new AudioCtx();
@@ -135,13 +173,11 @@ export class MedicalAwsTranscribeStream {
         this._mutedGain.gain.value = 0;
 
         this._processor.onaudioprocess = (ev) => {
-            if (this._feedPaused || !this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+            if (!this._canSendAudio()) return;
             const input = ev.inputBuffer.getChannelData(0);
             const pcm = qsDownsampleFloat32(input, this._audioCtx.sampleRate, this.sampleRateHz);
             if (!pcm.length) return;
-            try {
-                this._ws.send(qsFloat32ToPcm16(pcm));
-            } catch (_) {}
+            this._sendAudioChunk(qsFloat32ToPcm16(pcm));
         };
 
         this._source.connect(this._processor);
@@ -149,8 +185,53 @@ export class MedicalAwsTranscribeStream {
         this._mutedGain.connect(this._audioCtx.destination);
     }
 
-    async start(mediaStream) {
-        if (!mediaStream) throw new Error('media_stream_required');
+    _teardownSocketIo() {
+        if (this._socket && this._socketEventHandler) {
+            try { this._socket.off('medical_transcribe_event', this._socketEventHandler); } catch (_) {}
+        }
+        this._socketEventHandler = null;
+        this._socket = null;
+    }
+
+    async _startSocketIo(mediaStream) {
+        const sock = qsGetGlobalSocket();
+        if (!sock) throw new Error('socket_unavailable');
+        await qsWaitForSocketConnected(sock);
+
+        this._socket = sock;
+        this._ready = false;
+        this._socketEventHandler = (msg) => this._handleServerMessage(msg);
+        sock.on('medical_transcribe_event', this._socketEventHandler);
+
+        const readyPromise = new Promise((resolve, reject) => {
+            this._startResolve = resolve;
+            this._startReject = reject;
+        });
+
+        console.info('[transcribe-stream] connecting via socket.io');
+        this._emitStatus('connecting');
+        sock.emit('medical_transcribe_start', {
+            action: 'start',
+            sample_rate_hz: this.sampleRateHz,
+            language_code: this.languageCode,
+        });
+
+        this._beginAudioCapture(mediaStream);
+
+        const readyTimer = setTimeout(() => {
+            this._rejectStart(new Error('transcribe_stream_not_ready'));
+        }, 45000);
+
+        try {
+            await readyPromise;
+        } finally {
+            clearTimeout(readyTimer);
+            this._startResolve = null;
+            this._startReject = null;
+        }
+    }
+
+    async _startWebSocket(mediaStream) {
         const wsUrl = qsTranscribeStreamWsUrl();
         console.info('[transcribe-stream] connecting', wsUrl);
         this._emitStatus('connecting');
@@ -163,7 +244,11 @@ export class MedicalAwsTranscribeStream {
             this._startReject = reject;
         });
 
-        this._ws.onmessage = (ev) => this._handleMessage(ev.data);
+        this._ws.onmessage = (ev) => {
+            try {
+                this._handleServerMessage(JSON.parse(ev.data));
+            } catch (_) {}
+        };
 
         await new Promise((resolve, reject) => {
             const t = setTimeout(() => reject(new Error('transcribe_ws_connect_timeout')), 15000);
@@ -191,7 +276,6 @@ export class MedicalAwsTranscribeStream {
             language_code: this.languageCode,
         }));
 
-        // Stream PCM immediately (server buffers until AWS is ready — keeps the socket alive).
         this._beginAudioCapture(mediaStream);
 
         const readyTimer = setTimeout(() => {
@@ -204,6 +288,16 @@ export class MedicalAwsTranscribeStream {
             clearTimeout(readyTimer);
             this._startResolve = null;
             this._startReject = null;
+        }
+    }
+
+    async start(mediaStream) {
+        if (!mediaStream) throw new Error('media_stream_required');
+        const useSocketIo = this.transport !== 'websocket' && Boolean(qsGetGlobalSocket());
+        if (useSocketIo) {
+            await this._startSocketIo(mediaStream);
+        } else {
+            await this._startWebSocket(mediaStream);
         }
     }
 
@@ -223,6 +317,30 @@ export class MedicalAwsTranscribeStream {
             if (this._mutedGain) this._mutedGain.disconnect();
             if (this._audioCtx) await this._audioCtx.close();
         } catch (_) {}
+
+        if (this._socket) {
+            const resultPromise = new Promise((resolve, reject) => {
+                this._stopResolve = resolve;
+                this._stopReject = reject;
+                setTimeout(() => {
+                    if (this._stopResolve) {
+                        this._stopResolve = null;
+                        resolve({
+                            transcript: this._finalTranscript,
+                            partials: this._partials.slice(),
+                        });
+                    }
+                }, 30000);
+            });
+            try {
+                if (this._socket.connected) {
+                    this._socket.emit('medical_transcribe_stop');
+                }
+            } catch (_) {}
+            const result = await resultPromise;
+            this._teardownSocketIo();
+            return result;
+        }
 
         if (!this._ws || this._ws.readyState === WebSocket.CLOSED) {
             return { transcript: this._finalTranscript, partials: this._partials.slice() };
@@ -262,6 +380,12 @@ export class MedicalAwsTranscribeStream {
             if (this._audioCtx) void this._audioCtx.close();
         } catch (_) {}
         try {
+            if (this._socket && this._socket.connected) {
+                this._socket.emit('medical_transcribe_stop');
+            }
+        } catch (_) {}
+        this._teardownSocketIo();
+        try {
             if (this._ws) this._ws.close();
         } catch (_) {}
         this._ws = null;
@@ -280,7 +404,7 @@ export async function qsFetchMedicalTranscriptionConfig() {
             return data;
         }
     } catch (_) {}
-    return { use_aws_transcribe_stream: true };
+    return { use_aws_transcribe_stream: true, transcribe_stream_transport: 'socketio' };
 }
 
 export function qsMedicalUseAwsTranscribeStream() {
