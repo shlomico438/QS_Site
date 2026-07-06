@@ -15,13 +15,17 @@ import asyncio
 import json
 import logging
 import os
+import queue
+import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, List, Optional
 
 from amazon_transcribe.client import TranscribeStreamingClient
 from amazon_transcribe.handlers import TranscriptResultStreamHandler
 from amazon_transcribe.model import TranscriptEvent
-from flask import Flask, request
+from flask import Flask, jsonify, request
 
 try:
     from geventwebsocket.exceptions import WebSocketError
@@ -33,6 +37,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_LANGUAGE = 'he-IL'
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_REGION = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+
+# gevent greenlets must not call threading.Thread.start() directly (blocks until the thread exits).
+_TRANSCRIBE_THREAD_LAUNCHER = ThreadPoolExecutor(max_workers=4, thread_name_prefix='aws-transcribe-launch')
 
 
 class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
@@ -108,19 +115,28 @@ class AwsTranscribeStreamSession:
         self._handler: Optional[_CollectingTranscriptHandler] = None
         self._transcript = ''
         self._error: Optional[BaseException] = None
-        self._stream_ready = threading.Event()
-        self._finished = threading.Event()
+        self._ready_q: queue.Queue = queue.Queue(maxsize=1)
+        self._finished_q: queue.Queue = queue.Queue(maxsize=1)
         self._closed = False
 
     def start(self, timeout_sec: float = 30.0) -> None:
         if self._thread:
             return
-        self._thread = threading.Thread(target=self._thread_main, name='aws-transcribe-stream', daemon=True)
-        self._thread.start()
-        if not self._stream_ready.wait(timeout=timeout_sec):
-            raise TimeoutError('AWS Transcribe stream did not start in time')
+
+        def _launch_worker() -> None:
+            worker = threading.Thread(target=self._thread_main, name='aws-transcribe-stream', daemon=True)
+            worker.start()
+            self._thread = worker
+
+        _TRANSCRIBE_THREAD_LAUNCHER.submit(_launch_worker)
+        t_wait = time.time()
+        try:
+            self._ready_q.get(timeout=timeout_sec)
+        except queue.Empty:
+            raise TimeoutError(f'AWS Transcribe stream did not start in time ({round(time.time() - t_wait, 3)}s)')
         if self._error:
             raise self._error
+        logger.info('AWS Transcribe stream ready in %.3fs', time.time() - t_wait)
 
     def feed_audio(self, chunk: bytes) -> None:
         if self._closed or not chunk:
@@ -140,7 +156,10 @@ class AwsTranscribeStreamSession:
                 fut.result(timeout=15)
             except Exception as e:
                 logger.warning('Failed to signal end-of-stream to AWS: %s', e)
-        self._finished.wait(timeout=timeout_sec)
+        try:
+            self._finished_q.get(timeout=timeout_sec)
+        except queue.Empty:
+            pass
         if self._error:
             raise self._error
         return self._transcript
@@ -160,8 +179,14 @@ class AwsTranscribeStreamSession:
             self._error = e
             logger.exception('AWS Transcribe streaming session failed')
         finally:
-            self._stream_ready.set()
-            self._finished.set()
+            try:
+                self._ready_q.put_nowait(True)
+            except queue.Full:
+                pass
+            try:
+                self._finished_q.put_nowait(True)
+            except queue.Full:
+                pass
             try:
                 self._loop.close()
             except Exception:
@@ -175,7 +200,11 @@ class AwsTranscribeStreamSession:
             media_sample_rate_hz=self.sample_rate_hz,
             media_encoding='pcm',
         )
-        self._stream_ready.set()
+        logger.info('AWS Transcribe stream accepted by AWS')
+        try:
+            self._ready_q.put_nowait(True)
+        except queue.Full:
+            pass
         self._handler = _CollectingTranscriptHandler(
             stream.output_stream,
             on_partial=self.on_partial,
@@ -212,10 +241,18 @@ def _parse_start_config(raw: str) -> dict:
 
 def run_transcribe_websocket_session(ws) -> dict:
     """Handle one browser/client WebSocket: PCM in → AWS Transcribe → transcript out."""
+    try:
+        import gevent
+    except ImportError:
+        gevent = None
+
     region = DEFAULT_REGION
     language_code = DEFAULT_LANGUAGE
     sample_rate_hz = DEFAULT_SAMPLE_RATE
     session: Optional[AwsTranscribeStreamSession] = None
+    audio_pending: List[bytes] = []
+    session_live = False
+    start_error: Optional[str] = None
     result_payload = {
         'type': 'transcript',
         'transcript': '',
@@ -233,6 +270,52 @@ def run_transcribe_websocket_session(ws) -> dict:
         except Exception:
             logger.debug('Failed to send partial transcript to client', exc_info=True)
 
+    def _flush_pending_audio() -> None:
+        if not session or not session_live:
+            return
+        for chunk in audio_pending:
+            try:
+                session.feed_audio(chunk)
+            except Exception as e:
+                logger.warning('Failed to feed buffered audio to AWS: %s', e)
+                break
+        audio_pending.clear()
+
+    def _begin_session_async() -> None:
+        nonlocal session_live, start_error
+        if not session:
+            return
+        try:
+            session.start()
+            session_live = True
+            _ws_send_json(ws, {
+                'type': 'ready',
+                'language_code': session.language_code,
+                'sample_rate_hz': session.sample_rate_hz,
+            })
+            _flush_pending_audio()
+        except BaseException as e:
+            logger.exception('AWS Transcribe stream start failed')
+            start_error = str(e)[:500]
+            try:
+                _ws_send_json(ws, {'type': 'error', 'error': start_error})
+            except Exception:
+                pass
+
+    def _schedule_session_start() -> None:
+        if gevent is not None:
+            gevent.spawn(_begin_session_async)
+        else:
+            _begin_session_async()
+
+    def _make_session() -> AwsTranscribeStreamSession:
+        return AwsTranscribeStreamSession(
+            region=region,
+            language_code=language_code,
+            sample_rate_hz=sample_rate_hz,
+            on_partial=_on_partial,
+        )
+
     try:
         while not getattr(ws, 'closed', False):
             message = ws.receive()
@@ -247,48 +330,27 @@ def run_transcribe_websocket_session(ws) -> dict:
                     sample_rate_hz = int(cfg.get('sample_rate_hz') or sample_rate_hz)
                     region = str(cfg.get('region') or region).strip() or region
                     if session is None:
-                        session = AwsTranscribeStreamSession(
-                            region=region,
-                            language_code=language_code,
-                            sample_rate_hz=sample_rate_hz,
-                            on_partial=_on_partial,
-                        )
-                        try:
-                            session.start()
-                        except BaseException as e:
-                            logger.exception('AWS Transcribe stream start failed')
-                            _ws_send_json(ws, {'type': 'error', 'error': str(e)[:500]})
-                            raise
                         _ws_send_json(ws, {
-                            'type': 'ready',
+                            'type': 'starting',
                             'language_code': language_code,
                             'sample_rate_hz': sample_rate_hz,
                         })
+                        session = _make_session()
+                        _schedule_session_start()
                     continue
                 if action == 'stop':
                     break
                 continue
 
             if isinstance(message, (bytes, bytearray)):
+                chunk = bytes(message)
                 if session is None:
-                    session = AwsTranscribeStreamSession(
-                        region=region,
-                        language_code=language_code,
-                        sample_rate_hz=sample_rate_hz,
-                        on_partial=_on_partial,
-                    )
-                    try:
-                        session.start()
-                    except BaseException as e:
-                        logger.exception('AWS Transcribe stream start failed')
-                        _ws_send_json(ws, {'type': 'error', 'error': str(e)[:500]})
-                        raise
-                    _ws_send_json(ws, {
-                        'type': 'ready',
-                        'language_code': language_code,
-                        'sample_rate_hz': sample_rate_hz,
-                    })
-                session.feed_audio(bytes(message))
+                    session = _make_session()
+                    _schedule_session_start()
+                if session_live:
+                    session.feed_audio(chunk)
+                else:
+                    audio_pending.append(chunk)
 
         if session:
             try:
@@ -329,6 +391,42 @@ def run_transcribe_websocket_session(ws) -> dict:
 
 def register_transcribe_websocket_routes(app: Flask) -> None:
     """Register /ws/transcribe (requires GeventWebSocketWorker — see Procfile)."""
+
+    @app.route('/api/transcribe_stream_health', methods=['GET'])
+    def api_transcribe_stream_health():
+        """Probe AWS Transcribe Streaming from the running server (gunicorn + gevent)."""
+        region = DEFAULT_REGION
+        language = DEFAULT_LANGUAGE
+        try:
+            from gevent import monkey as _gevent_monkey
+            gevent_patched = bool(_gevent_monkey.is_module_patched('threading'))
+        except Exception:
+            gevent_patched = 'gevent' in sys.modules
+        t0 = time.time()
+        session = AwsTranscribeStreamSession(region=region, language_code=language)
+        try:
+            session.start(timeout_sec=25)
+            start_sec = round(time.time() - t0, 3)
+            # Brief silence so AWS does not 15s-timeout before we stop.
+            session.feed_audio(b'\x00\x00' * (DEFAULT_SAMPLE_RATE * 2 // 5))
+            session.stop(timeout_sec=30)
+            return jsonify({
+                'ok': True,
+                'region': region,
+                'language_code': language,
+                'start_sec': start_sec,
+                'gevent_threading_patched': gevent_patched,
+            }), 200
+        except BaseException as e:
+            logger.exception('transcribe_stream_health failed')
+            return jsonify({
+                'ok': False,
+                'region': region,
+                'language_code': language,
+                'error': str(e)[:500],
+                'start_sec': round(time.time() - t0, 3),
+                'gevent_threading_patched': gevent_patched,
+            }), 500
 
     @app.route('/ws/transcribe')
     def ws_transcribe_route():

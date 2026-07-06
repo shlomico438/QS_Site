@@ -56,6 +56,9 @@ export class MedicalAwsTranscribeStream {
             return;
         }
         if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'starting') {
+            return;
+        }
         if (msg.type === 'error') {
             const err = String(msg.error || msg.message || 'transcribe_stream_error');
             if (this._startReject) {
