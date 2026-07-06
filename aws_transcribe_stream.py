@@ -189,13 +189,29 @@ class AwsTranscribeStreamSession:
         fut = _TRANSCRIBE_THREAD_LAUNCHER.submit(self._start_blocking, timeout_sec)
         fut.result(timeout=timeout_sec + 10)
 
+    def _enqueue_audio(self, chunk: Optional[bytes]) -> None:
+        """Schedule audio on the asyncio loop without blocking the caller (gevent-safe)."""
+        if not self._loop or not self._audio_q:
+            raise RuntimeError('Transcribe stream not started')
+
+        def _put() -> None:
+            try:
+                self._audio_q.put_nowait(chunk)
+            except asyncio.QueueFull:
+                if chunk is None:
+                    logger.warning('AWS Transcribe queue full at stop; end marker delayed')
+                else:
+                    logger.warning(
+                        'AWS Transcribe audio queue full; dropping chunk (%d bytes)',
+                        len(chunk) if chunk else 0,
+                    )
+
+        self._loop.call_soon_threadsafe(_put)
+
     def feed_audio(self, chunk: bytes) -> None:
         if self._closed or not chunk:
             return
-        if not self._loop or not self._audio_q:
-            raise RuntimeError('Transcribe stream not started')
-        fut = asyncio.run_coroutine_threadsafe(self._audio_q.put(bytes(chunk)), self._loop)
-        fut.result(timeout=10)
+        self._enqueue_audio(bytes(chunk))
 
     def stop(self, timeout_sec: float = 120.0) -> str:
         if self._closed:
@@ -203,8 +219,7 @@ class AwsTranscribeStreamSession:
         self._closed = True
         if self._loop and self._audio_q:
             try:
-                fut = asyncio.run_coroutine_threadsafe(self._audio_q.put(None), self._loop)
-                fut.result(timeout=15)
+                self._enqueue_audio(None)
             except Exception as e:
                 logger.warning('Failed to signal end-of-stream to AWS: %s', e)
         try:
@@ -372,7 +387,7 @@ class TranscribeStreamBridge:
                 'region': self.session.region,
             })
             logger.info('transcribe aws ready region=%s (from os thread)', self.session.region)
-            _run_on_hub(self._flush_pending_audio)
+            self._flush_pending_audio()
         except BaseException as e:
             logger.exception('AWS Transcribe stream start failed')
             self._emit({
