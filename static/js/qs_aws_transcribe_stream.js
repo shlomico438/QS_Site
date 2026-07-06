@@ -127,6 +127,10 @@ export class MedicalAwsTranscribeStream {
         if (msg.type === 'partial') {
             const t = String(msg.text || '').trim();
             if (t) {
+                if (!this._loggedPartial) {
+                    this._loggedPartial = true;
+                    console.info('[transcribe-stream] first partial received');
+                }
                 this._partials.push(t);
                 if (this.onPartial) this.onPartial(t);
             }
@@ -149,7 +153,7 @@ export class MedicalAwsTranscribeStream {
     }
 
     _canSendAudio() {
-        if (this._feedPaused) return false;
+        if (this._feedPaused || !this._ready) return false;
         if (this._socket) return Boolean(this._socket.connected);
         return this._ws && this._ws.readyState === WebSocket.OPEN;
     }
@@ -157,10 +161,13 @@ export class MedicalAwsTranscribeStream {
     _sendAudioChunk(pcmArrayBuffer) {
         if (!this._canSendAudio()) return;
         try {
+            const payload = pcmArrayBuffer instanceof ArrayBuffer
+                ? new Uint8Array(pcmArrayBuffer)
+                : pcmArrayBuffer;
             if (this._socket) {
-                this._socket.emit('medical_transcribe_audio', pcmArrayBuffer);
+                this._socket.emit('medical_transcribe_audio', payload);
             } else if (this._ws) {
-                this._ws.send(pcmArrayBuffer);
+                this._ws.send(payload);
             }
         } catch (_) {}
     }
@@ -217,8 +224,6 @@ export class MedicalAwsTranscribeStream {
             language_code: this.languageCode,
         });
 
-        this._beginAudioCapture(mediaStream);
-
         const readyTimer = setTimeout(() => {
             this._rejectStart(new Error('transcribe_stream_not_ready'));
         }, 45000);
@@ -230,6 +235,8 @@ export class MedicalAwsTranscribeStream {
             this._startResolve = null;
             this._startReject = null;
         }
+
+        this._beginAudioCapture(mediaStream);
     }
 
     async _startWebSocket(mediaStream) {
@@ -277,8 +284,6 @@ export class MedicalAwsTranscribeStream {
             language_code: this.languageCode,
         }));
 
-        this._beginAudioCapture(mediaStream);
-
         const readyTimer = setTimeout(() => {
             this._rejectStart(new Error('transcribe_stream_not_ready'));
         }, 45000);
@@ -290,6 +295,8 @@ export class MedicalAwsTranscribeStream {
             this._startResolve = null;
             this._startReject = null;
         }
+
+        this._beginAudioCapture(mediaStream);
     }
 
     async start(mediaStream) {

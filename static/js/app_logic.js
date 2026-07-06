@@ -495,6 +495,10 @@ function qsEnsureMedicalProgressPanel(hideBanner) {
 
 /** Warmup progress bar over transcript (after save while GPU warms; not during live recording waveform). */
 function qsShowMedicalWarmupProgressDuringRecording() {
+    if (
+        typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()
+        && typeof qsMedicalUseAwsTranscribeStream === 'function' && qsMedicalUseAwsTranscribeStream()
+    ) return;
     if (window.__QS_MEDICAL_WARMUP_STATE === 'ready') return;
     window.__QS_MEDICAL_RECORDING_WARMUP_BAR = true;
     const panel = document.getElementById('processing-state-panel');
@@ -11610,6 +11614,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!tw) return;
         const text = String(partialText || '').trim();
         if (!text) return;
+        window._medicalLiveStreamText = text;
         tw.classList.remove('medical-wave-active');
         const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
         const isRtl = locale.startsWith('he') || locale.startsWith('ar');
@@ -12136,7 +12141,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const tw = document.getElementById('transcript-window');
             if (tw) {
                 tw.classList.remove('medical-wave-active');
+                window._medicalLiveStreamText = '';
                 renderMedicalLiveStreamStatus('connecting');
+            }
+            if (qsMedicalStreamOnlyMode()) {
+                qsHideMedicalRecordingWarmupProgress();
+                if (typeof qsHidePipelineBarChrome === 'function') qsHidePipelineBarChrome();
             }
             if (!qsMedicalStreamOnlyMode()) {
                 void beginMedicalRecordingWarmup((rec.mimeType || recOpts.mimeType || 'audio/webm').toLowerCase());
@@ -12309,7 +12319,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 try { rec.start(); } catch (_) { throw startErr; }
             }
             window._medicalRecorder = rec;
-            startMedicalWaveform(stream, { preserveExistingWave: resumeFromInterruption });
+            if (!qsMedicalStreamOnlyMode()) {
+                startMedicalWaveform(stream, { preserveExistingWave: resumeFromInterruption });
+            }
         } catch (e) {
             if (stream) (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
             detachMedicalRecordingTimerSlot();
@@ -12359,7 +12371,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setMedicalRecordingVisualState('recording');
             renderMedicalRecordingTimer();
             const stream = rec.stream;
-            if (stream) startMedicalWaveform(stream);
+            if (stream && !qsMedicalStreamOnlyMode()) startMedicalWaveform(stream);
             if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.resume();
             return;
         }
@@ -12419,6 +12431,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setMedicalRecordingVisualState('idle');
             if (
                 isMedicalModeEnabled()
+                && !qsMedicalStreamOnlyMode()
                 && window.__QS_MEDICAL_WARMUP_STATE !== 'ready'
             ) {
                 qsShowMedicalWarmupProgressDuringRecording();

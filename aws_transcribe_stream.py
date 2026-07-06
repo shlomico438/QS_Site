@@ -106,6 +106,17 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         self._current_partial = ''
         self._on_partial = on_partial
 
+    def _notify_live(self) -> None:
+        if not self._on_partial:
+            return
+        text = self.full_transcript
+        if not text:
+            return
+        try:
+            self._on_partial(text)
+        except Exception:
+            logger.debug('partial callback failed', exc_info=True)
+
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
         results = transcript_event.transcript.results
         for result in results:
@@ -121,15 +132,11 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
             if result.is_partial:
                 self._current_partial = text
                 self._partial_history.append(text)
-                if self._on_partial:
-                    try:
-                        self._on_partial(text)
-                    except Exception:
-                        logger.debug('partial callback failed', exc_info=True)
             else:
                 self._final_parts.append(text)
                 self._current_partial = ''
                 self._partial_history.append(text)
+            self._notify_live()
 
     @property
     def full_transcript(self) -> str:
@@ -319,6 +326,30 @@ def _parse_start_config(raw: str) -> dict:
     return data
 
 
+def _coerce_audio_chunk(data) -> Optional[bytes]:
+    """Normalize Socket.IO / WebSocket binary payloads to raw PCM bytes."""
+    if data is None:
+        return None
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        return bytes(data)
+    if isinstance(data, list):
+        try:
+            return bytes(data)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(data, dict):
+        for key in ('data', 'buffer', 'audio', 'chunk'):
+            val = data.get(key)
+            if isinstance(val, (bytes, bytearray, memoryview)):
+                return bytes(val)
+            if isinstance(val, list):
+                try:
+                    return bytes(val)
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
 def _run_on_hub(callback) -> None:
     try:
         import gevent
@@ -345,6 +376,8 @@ class TranscribeStreamBridge:
         self.session_live = False
         self.start_lock = threading.Lock()
         self.start_scheduled = False
+        self._logged_first_partial = False
+        self._audio_chunks_received = 0
 
     def close(self) -> None:
         self._alive = False
@@ -359,6 +392,9 @@ class TranscribeStreamBridge:
 
     def _on_partial(self, text: str) -> None:
         try:
+            if not getattr(self, '_logged_first_partial', False):
+                self._logged_first_partial = True
+                logger.info('transcribe first partial (%d chars)', len(text))
             self._emit({'type': 'partial', 'text': text})
         except Exception:
             logger.debug('Failed to send partial transcript to client', exc_info=True)
@@ -439,6 +475,11 @@ class TranscribeStreamBridge:
     def handle_audio(self, chunk: bytes) -> None:
         if not chunk:
             return
+        self._audio_chunks_received += 1
+        if self._audio_chunks_received == 1:
+            logger.info('transcribe first audio chunk (%d bytes)', len(chunk))
+        elif self._audio_chunks_received % 200 == 0:
+            logger.debug('transcribe audio chunks received: %d', self._audio_chunks_received)
         if self.session is None:
             self.session = self._make_session()
             self._emit({
@@ -520,11 +561,14 @@ def register_transcribe_socketio_handlers(socketio) -> None:
         bridge = _SOCKETIO_BRIDGES.get(sid)
         if not bridge:
             return
-        if isinstance(data, (bytes, bytearray)):
-            chunk = bytes(data)
-        elif isinstance(data, list):
-            chunk = bytes(data)
-        else:
+        chunk = _coerce_audio_chunk(data)
+        if not chunk:
+            if data is not None:
+                logger.warning(
+                    'transcribe socketio audio ignored sid=%s type=%s',
+                    sid,
+                    type(data).__name__,
+                )
             return
         bridge.handle_audio(chunk)
 
