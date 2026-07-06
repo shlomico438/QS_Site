@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -45,7 +46,39 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LANGUAGE = 'he-IL'
 DEFAULT_SAMPLE_RATE = 16000
-DEFAULT_REGION = (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+_TRANSCRIBE_STREAM_REGION_FALLBACK = 'eu-north-1'
+# AWS regions (not R2 "auto", not full endpoint URLs).
+_AWS_REGION_RE = re.compile(
+    r'^[a-z]{2}(-gov)?-(east|west|north|south|central|northeast|southeast|southwest|northwest)-\d+$'
+)
+
+
+def transcribe_stream_region() -> str:
+    """AWS region for Transcribe Streaming (never use R2's AWS_REGION=auto)."""
+    invalid_sources = []
+    for key in (
+        'MEDICAL_TRANSCRIBE_STREAM_REGION',
+        'AWS_TRANSCRIBE_REGION',
+        'AWS_REGION',
+        'AWS_DEFAULT_REGION',
+    ):
+        raw = (os.environ.get(key) or '').strip()
+        if not raw:
+            continue
+        if _AWS_REGION_RE.match(raw):
+            return raw
+        invalid_sources.append(f'{key}={raw!r}')
+    if invalid_sources:
+        logger.warning(
+            'Invalid transcribe region env (%s); using %s. '
+            'Set MEDICAL_TRANSCRIBE_STREAM_REGION=eu-north-1 (or your SageMaker region).',
+            ', '.join(invalid_sources),
+            _TRANSCRIBE_STREAM_REGION_FALLBACK,
+        )
+    return _TRANSCRIBE_STREAM_REGION_FALLBACK
+
+
+DEFAULT_REGION = transcribe_stream_region()
 
 # gevent greenlets must not call threading.Thread.start() or queue.get() directly.
 _TRANSCRIBE_THREAD_LAUNCHER = ThreadPoolExecutor(max_workers=8, thread_name_prefix='aws-transcribe')
@@ -205,6 +238,7 @@ class AwsTranscribeStreamSession:
 
     async def _async_run(self) -> str:
         self._audio_q = asyncio.Queue()
+        logger.info('AWS Transcribe stream connecting region=%s lang=%s', self.region, self.language_code)
         client = TranscribeStreamingClient(region=self.region)
         stream = await client.start_stream_transcription(
             language_code=self.language_code,
@@ -280,7 +314,7 @@ class TranscribeStreamBridge:
 
     def __init__(self, send_json: Callable[[dict], None]):
         self._send = send_json
-        self.region = DEFAULT_REGION
+        self.region = transcribe_stream_region()
         self.language_code = DEFAULT_LANGUAGE
         self.sample_rate_hz = DEFAULT_SAMPLE_RATE
         self.session: Optional[AwsTranscribeStreamSession] = None
@@ -524,7 +558,7 @@ def register_transcribe_websocket_routes(app: Flask) -> None:
     @app.route('/api/transcribe_stream_health', methods=['GET'])
     def api_transcribe_stream_health():
         """Probe AWS Transcribe Streaming from the running server (gunicorn + gevent)."""
-        region = DEFAULT_REGION
+        region = transcribe_stream_region()
         language = DEFAULT_LANGUAGE
         try:
             from gevent import monkey as _gevent_monkey

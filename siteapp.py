@@ -9294,6 +9294,14 @@ def _medical_transcribe_stream_language():
     return (os.environ.get('MEDICAL_TRANSCRIBE_STREAM_LANGUAGE') or 'he-IL').strip() or 'he-IL'
 
 
+def _medical_transcribe_stream_region():
+    try:
+        from aws_transcribe_stream import transcribe_stream_region
+        return transcribe_stream_region()
+    except ImportError:
+        return (os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION') or os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+
+
 def _segments_from_stream_transcript(transcript, duration_sec):
     text = str(transcript or '').strip()
     if not text:
@@ -9315,6 +9323,7 @@ def api_medical_transcription_config():
         'use_aws_transcribe_stream': use_stream,
         'stream_fallback_disabled': use_stream,
         'transcribe_stream_language': _medical_transcribe_stream_language(),
+        'transcribe_stream_region': _medical_transcribe_stream_region(),
         'transcribe_stream_sample_rate_hz': 16000,
         'transcribe_stream_transport': 'socketio',
         'sagemaker_fallback': True,
