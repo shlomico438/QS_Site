@@ -128,6 +128,26 @@ DEFAULT_REGION = transcribe_stream_region()
 _TRANSCRIBE_THREAD_LAUNCHER = ThreadPoolExecutor(max_workers=8, thread_name_prefix='aws-transcribe')
 
 
+def _pcm16_level(chunk: bytes) -> tuple[int, int]:
+    """Return RMS and peak for little-endian signed 16-bit PCM."""
+    if not chunk:
+        return 0, 0
+    even_len = len(chunk) - (len(chunk) % 2)
+    if even_len <= 0:
+        return 0, 0
+    pcm = chunk[:even_len]
+    total = 0
+    peak = 0
+    samples = even_len // 2
+    for i in range(0, even_len, 2):
+        sample = int.from_bytes(pcm[i:i + 2], byteorder='little', signed=True)
+        abs_sample = abs(sample)
+        total += sample * sample
+        if abs_sample > peak:
+            peak = abs_sample
+    return int((total / samples) ** 0.5) if samples else 0, peak
+
+
 class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
     """Accumulate AWS transcript events into a final string."""
 
@@ -271,7 +291,13 @@ class AwsTranscribeStreamSession:
         try:
             self._finished_q.get(timeout=timeout_sec)
         except queue.Empty:
-            pass
+            logger.warning(
+                'AWS Transcribe stream stop timed out after %.1fs chunks_fed=%d bytes_fed=%d transcript_len=%d',
+                timeout_sec,
+                self._chunks_fed_to_aws,
+                self._bytes_fed_to_aws,
+                len(self._handler.full_transcript if self._handler else ''),
+            )
         if self._error:
             raise self._error
         return self._transcript
@@ -425,6 +451,8 @@ class TranscribeStreamBridge:
         self.start_scheduled = False
         self._logged_first_partial = False
         self._audio_chunks_received = 0
+        self._last_audio_rms = 0
+        self._last_audio_peak = 0
 
     def close(self) -> None:
         self._alive = False
@@ -523,10 +551,23 @@ class TranscribeStreamBridge:
         if not chunk:
             return
         self._audio_chunks_received += 1
+        rms, peak = _pcm16_level(chunk)
+        self._last_audio_rms = rms
+        self._last_audio_peak = peak
         if self._audio_chunks_received == 1:
-            logger.info('transcribe first audio chunk (%d bytes)', len(chunk))
+            logger.info(
+                'transcribe first audio chunk (%d bytes rms=%d peak=%d)',
+                len(chunk),
+                rms,
+                peak,
+            )
         elif self._audio_chunks_received % 50 == 0:
-            logger.info('transcribe audio chunks received: %d', self._audio_chunks_received)
+            logger.info(
+                'transcribe audio chunks received: %d rms=%d peak=%d',
+                self._audio_chunks_received,
+                rms,
+                peak,
+            )
         if self.session is None:
             self.session = self._make_session()
             self._emit({
@@ -628,9 +669,11 @@ def register_transcribe_socketio_handlers(socketio) -> None:
         logger.info('transcribe socketio stop sid=%s', sid)
         result = bridge.finish()
         logger.info(
-            'transcribe socketio done sid=%s chunks=%d transcript_len=%d partials=%d error=%s',
+            'transcribe socketio done sid=%s chunks=%d last_rms=%d last_peak=%d transcript_len=%d partials=%d error=%s',
             sid,
             bridge._audio_chunks_received,
+            bridge._last_audio_rms,
+            bridge._last_audio_peak,
             len(str(result.get('transcript') or '')),
             len(result.get('partials') or []),
             result.get('error'),

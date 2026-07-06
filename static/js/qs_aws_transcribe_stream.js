@@ -75,6 +75,8 @@ export class MedicalAwsTranscribeStream {
         this._stopResolve = null;
         this._stopReject = null;
         this._chunksSent = 0;
+        this._lastRms = 0;
+        this._lastPeak = 0;
         this._audioWatchdog = null;
     }
 
@@ -194,10 +196,26 @@ export class MedicalAwsTranscribeStream {
             const input = ev.inputBuffer.getChannelData(0);
             const pcm = qsDownsampleFloat32(input, this._audioCtx.sampleRate, this.sampleRateHz);
             if (!pcm.length) return;
+            let sumSq = 0;
+            let peak = 0;
+            for (let i = 0; i < pcm.length; i++) {
+                const v = Math.abs(pcm[i]);
+                sumSq += v * v;
+                if (v > peak) peak = v;
+            }
+            this._lastRms = Math.sqrt(sumSq / pcm.length);
+            this._lastPeak = peak;
             this._sendAudioChunk(qsFloat32ToPcm16(pcm));
             this._chunksSent += 1;
             if (this._chunksSent === 1 || this._chunksSent % 100 === 0) {
-                console.info('[transcribe-stream] audio chunks sent:', this._chunksSent);
+                console.info(
+                    '[transcribe-stream] audio chunks sent:',
+                    this._chunksSent,
+                    'rms:',
+                    this._lastRms.toFixed(4),
+                    'peak:',
+                    this._lastPeak.toFixed(4)
+                );
             }
         };
 
@@ -394,7 +412,7 @@ export class MedicalAwsTranscribeStream {
                             partials: this._partials.slice(),
                         });
                     }
-                }, 30000);
+                }, 90000);
             });
             try {
                 if (this._socket.connected) {
@@ -404,7 +422,16 @@ export class MedicalAwsTranscribeStream {
             const result = await resultPromise;
             this._teardownSocketIo();
             await this._closeAudioContext();
-            console.info('[transcribe-stream] stopped; chunks sent:', chunksSent, 'transcript chars:', String(result.transcript || '').length);
+            console.info(
+                '[transcribe-stream] stopped; chunks sent:',
+                chunksSent,
+                'last rms:',
+                this._lastRms.toFixed(4),
+                'last peak:',
+                this._lastPeak.toFixed(4),
+                'transcript chars:',
+                String(result.transcript || '').length
+            );
             return result;
         }
 
@@ -424,7 +451,7 @@ export class MedicalAwsTranscribeStream {
                         partials: this._partials.slice(),
                     });
                 }
-            }, 30000);
+            }, 90000);
         });
 
         try {
@@ -437,7 +464,16 @@ export class MedicalAwsTranscribeStream {
         try { this._ws.close(); } catch (_) {}
         this._ws = null;
         await this._closeAudioContext();
-        console.info('[transcribe-stream] stopped; chunks sent:', chunksSent, 'transcript chars:', String(result.transcript || '').length);
+        console.info(
+            '[transcribe-stream] stopped; chunks sent:',
+            chunksSent,
+            'last rms:',
+            this._lastRms.toFixed(4),
+            'last peak:',
+            this._lastPeak.toFixed(4),
+            'transcript chars:',
+            String(result.transcript || '').length
+        );
         return result;
     }
 
