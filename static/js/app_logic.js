@@ -12114,14 +12114,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!qsMedicalStreamOnlyMode()) {
                 void beginMedicalRecordingWarmup((rec.mimeType || recOpts.mimeType || 'audio/webm').toLowerCase());
             }
-            try {
-                await startMedicalAwsTranscribeStream(stream);
-            } catch (streamStartErr) {
+            void startMedicalAwsTranscribeStream(stream).catch((streamStartErr) => {
+                console.error('[medical] AWS Transcribe stream failed (recording continues)', streamStartErr);
                 if (qsMedicalStreamOnlyMode()) {
-                    (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
-                    throw streamStartErr;
+                    try {
+                        if (window._medicalRecorder) window._medicalRecorder.stop();
+                    } catch (_) {}
+                    if (typeof showStatus === 'function') {
+                        showStatus(`AWS Transcribe stream: ${(streamStartErr && streamStartErr.message) || streamStartErr}`, true);
+                    }
                 }
-            }
+            });
         }
         const localChunks = [];
         if (!preserveChunks) {

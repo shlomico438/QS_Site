@@ -57,10 +57,12 @@ export class MedicalAwsTranscribeStream {
         }
         if (!msg || typeof msg !== 'object') return;
         if (msg.type === 'starting') {
+            console.info('[transcribe-stream] server starting aws');
             return;
         }
         if (msg.type === 'error') {
             const err = String(msg.error || msg.message || 'transcribe_stream_error');
+            console.error('[transcribe-stream] server error', err);
             if (this._startReject) {
                 const reject = this._startReject;
                 this._startReject = null;
@@ -70,6 +72,7 @@ export class MedicalAwsTranscribeStream {
             return;
         }
         if (msg.type === 'ready') {
+            console.info('[transcribe-stream] server ready');
             this._ready = true;
             if (this._startResolve) {
                 const resolve = this._startResolve;
@@ -106,6 +109,7 @@ export class MedicalAwsTranscribeStream {
     async start(mediaStream) {
         if (!mediaStream) throw new Error('media_stream_required');
         const wsUrl = qsTranscribeStreamWsUrl();
+        console.info('[transcribe-stream] connecting', wsUrl);
         this._ws = new WebSocket(wsUrl);
         this._ws.binaryType = 'arraybuffer';
         this._ready = false;
@@ -121,11 +125,16 @@ export class MedicalAwsTranscribeStream {
             const t = setTimeout(() => reject(new Error('transcribe_ws_connect_timeout')), 15000);
             this._ws.onopen = () => {
                 clearTimeout(t);
+                console.info('[transcribe-stream] websocket open');
                 resolve();
             };
-            this._ws.onerror = () => {
+            this._ws.onerror = (ev) => {
                 clearTimeout(t);
+                console.error('[transcribe-stream] websocket error', ev);
                 reject(new Error('transcribe_ws_error'));
+            };
+            this._ws.onclose = (ev) => {
+                console.warn('[transcribe-stream] websocket closed', ev.code, ev.reason);
             };
         });
 
