@@ -145,6 +145,9 @@ export class MedicalAwsTranscribeStream {
             if (Array.isArray(msg.partials)) {
                 this._partials = msg.partials.map((p) => String(p || '')).filter(Boolean);
             }
+            if (!this._finalTranscript && this._partials.length) {
+                this._finalTranscript = String(this._partials[this._partials.length - 1] || '').trim();
+            }
             if (msg.error) {
                 if (this._stopReject) this._stopReject(new Error(String(msg.error)));
             } else if (this._stopResolve) {
@@ -180,11 +183,7 @@ export class MedicalAwsTranscribeStream {
         if (this._processor) return;
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) throw new Error('audio_context_unavailable');
-        try {
-            this._audioCtx = new AudioCtx({ sampleRate: this.sampleRateHz });
-        } catch (_) {
-            this._audioCtx = new AudioCtx();
-        }
+        this._audioCtx = new AudioCtx();
         this._source = this._audioCtx.createMediaStreamSource(mediaStream);
         this._processor = this._audioCtx.createScriptProcessor(4096, 1, 1);
         this._mutedGain = this._audioCtx.createGain();

@@ -11529,7 +11529,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function createMedicalUploadSession(mimeRaw) {
-        const mime = String(mimeRaw || 'audio/webm').trim() || 'audio/webm';
+        const mime = normalizeMedicalUploadMime(mimeRaw);
         const ext = medicalBlobExtensionFromMime(mime);
         if (typeof window.qsDismissActiveJob === 'function') {
             window.qsDismissActiveJob();
@@ -11933,6 +11933,14 @@ document.addEventListener('DOMContentLoaded', () => {
         return 'webm';
     }
 
+    function normalizeMedicalUploadMime(mimeRaw) {
+        const mime = String(mimeRaw || 'audio/webm').trim().toLowerCase() || 'audio/webm';
+        if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) return 'audio/mp4';
+        if (mime.includes('ogg')) return 'audio/ogg';
+        if (mime.includes('webm')) return 'audio/webm';
+        return mime.split(';')[0] || 'audio/webm';
+    }
+
     function encodeAudioBufferToWavBlob(buffers) {
         const valid = (buffers || []).filter(Boolean);
         if (!valid.length) return null;
@@ -12134,7 +12142,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const resumeFromInterruption = !!(options && options.resumeFromInterruption);
         let stream = null;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: true,
+                }
+            });
             if (resumeFromInterruption) {
                 // iOS can hand back a stream while the phone call still owns the mic. Do not accept muted/ended tracks.
                 await new Promise((resolve) => setTimeout(resolve, 220));

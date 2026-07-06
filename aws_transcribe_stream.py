@@ -287,7 +287,7 @@ class AwsTranscribeStreamSession:
 
     def stop(self, timeout_sec: float = 120.0) -> str:
         if self._closed:
-            return self._transcript
+            return self.best_transcript
         self._closed = True
         if self._loop and self._audio_q:
             try:
@@ -306,7 +306,21 @@ class AwsTranscribeStreamSession:
             )
         if self._error:
             raise self._error
+        self._transcript = self.best_transcript
         return self._transcript
+
+    @property
+    def best_transcript(self) -> str:
+        if self._transcript:
+            return self._transcript
+        if self._handler:
+            text = self._handler.full_transcript
+            if text:
+                return text
+            history = self._handler.partial_history
+            if history:
+                return str(history[-1] or '').strip()
+        return ''
 
     @property
     def partial_history(self) -> List[str]:
@@ -604,10 +618,12 @@ class TranscribeStreamBridge:
         }
         if self.session:
             try:
-                transcript = self.session.stop()
+                transcript = self.session.stop(timeout_sec=12.0)
             except BaseException as e:
                 result_payload['error'] = str(e)[:500]
-                transcript = self.session._transcript or ''
+                transcript = self.session.best_transcript
+            if not transcript:
+                transcript = self.session.best_transcript
             result_payload['transcript'] = transcript
             result_payload['partials'] = self.session.partial_history
             result_payload['language_code'] = self.session.language_code
