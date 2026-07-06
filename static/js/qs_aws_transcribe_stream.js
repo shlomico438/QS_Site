@@ -24,7 +24,31 @@ function qsDownsampleFloat32(buffer, fromRate, toRate) {
     const ratio = fromRate / toRate;
     const len = Math.round(buffer.length / ratio);
     const out = new Float32Array(len);
-    for (let i = 0; i < len; i++) out[i] = buffer[Math.floor(i * ratio)];
+    for (let i = 0; i < len; i++) {
+        const start = Math.floor(i * ratio);
+        const end = Math.min(buffer.length, Math.floor((i + 1) * ratio));
+        let sum = 0;
+        let count = 0;
+        for (let j = start; j < end; j++) {
+            sum += buffer[j];
+            count += 1;
+        }
+        out[i] = count ? (sum / count) : buffer[Math.min(start, buffer.length - 1)];
+    }
+    return out;
+}
+
+function qsApplySpeechGain(float32, rms, peak) {
+    if (!float32 || !float32.length) return float32;
+    if (!Number.isFinite(rms) || rms <= 0.002) return float32;
+    const targetRms = 0.055;
+    const maxPeak = Math.max(0.001, Number(peak) || 0.001);
+    const gain = Math.max(1, Math.min(6, targetRms / rms, 0.92 / maxPeak));
+    if (gain <= 1.05) return float32;
+    const out = new Float32Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+        out[i] = Math.max(-1, Math.min(1, float32[i] * gain));
+    }
     return out;
 }
 
@@ -69,6 +93,7 @@ export class MedicalAwsTranscribeStream {
         this._feedPaused = false;
         this._finalTranscript = '';
         this._partials = [];
+        this._partialUpdates = 0;
         this._ready = false;
         this._startResolve = null;
         this._startReject = null;
@@ -77,6 +102,7 @@ export class MedicalAwsTranscribeStream {
         this._chunksSent = 0;
         this._lastRms = 0;
         this._lastPeak = 0;
+        this._lastGain = 1;
         this._audioWatchdog = null;
     }
 
@@ -131,9 +157,12 @@ export class MedicalAwsTranscribeStream {
         if (msg.type === 'partial') {
             const t = String(msg.text || '').trim();
             if (t) {
+                this._partialUpdates += 1;
                 if (!this._loggedPartial) {
                     this._loggedPartial = true;
                     console.info('[transcribe-stream] first partial received');
+                } else if (this._partialUpdates <= 5 || this._partialUpdates % 10 === 0) {
+                    console.info('[transcribe-stream] partial update:', this._partialUpdates, 'chars:', t.length);
                 }
                 this._partials.push(t);
                 if (this.onPartial) this.onPartial(t);
@@ -204,7 +233,9 @@ export class MedicalAwsTranscribeStream {
             }
             this._lastRms = Math.sqrt(sumSq / pcm.length);
             this._lastPeak = peak;
-            this._sendAudioChunk(qsFloat32ToPcm16(pcm));
+            const boosted = qsApplySpeechGain(pcm, this._lastRms, this._lastPeak);
+            this._lastGain = boosted === pcm ? 1 : Math.max(1, Math.min(6, 0.055 / Math.max(this._lastRms, 0.002)));
+            this._sendAudioChunk(qsFloat32ToPcm16(boosted));
             this._chunksSent += 1;
             if (this._chunksSent === 1 || this._chunksSent % 100 === 0) {
                 console.info(
@@ -213,7 +244,9 @@ export class MedicalAwsTranscribeStream {
                     'rms:',
                     this._lastRms.toFixed(4),
                     'peak:',
-                    this._lastPeak.toFixed(4)
+                    this._lastPeak.toFixed(4),
+                    'gain:',
+                    this._lastGain.toFixed(2)
                 );
             }
         };
@@ -428,6 +461,8 @@ export class MedicalAwsTranscribeStream {
                 this._lastRms.toFixed(4),
                 'last peak:',
                 this._lastPeak.toFixed(4),
+                'last gain:',
+                this._lastGain.toFixed(2),
                 'transcript chars:',
                 String(result.transcript || '').length
             );
@@ -470,6 +505,8 @@ export class MedicalAwsTranscribeStream {
             this._lastRms.toFixed(4),
             'last peak:',
             this._lastPeak.toFixed(4),
+            'last gain:',
+            this._lastGain.toFixed(2),
             'transcript chars:',
             String(result.transcript || '').length
         );

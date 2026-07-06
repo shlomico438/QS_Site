@@ -168,6 +168,7 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         self._partial_history: List[str] = []
         self._current_partial = ''
         self._on_partial = on_partial
+        self._event_count = 0
 
     def _notify_live(self) -> None:
         if not self._on_partial:
@@ -192,6 +193,7 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
                     break
             if not text:
                 continue
+            self._event_count += 1
             if result.is_partial:
                 self._current_partial = text
                 self._partial_history.append(text)
@@ -199,6 +201,14 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
                 self._final_parts.append(text)
                 self._current_partial = ''
                 self._partial_history.append(text)
+            if self._event_count <= 3 or self._event_count % 10 == 0 or not result.is_partial:
+                logger.info(
+                    'AWS transcript event count=%d partial=%s text_len=%d full_len=%d',
+                    self._event_count,
+                    bool(result.is_partial),
+                    len(text),
+                    len(self.full_transcript),
+                )
             self._notify_live()
 
     @property
