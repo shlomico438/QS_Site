@@ -275,6 +275,10 @@ def run_transcribe_websocket_session(ws) -> dict:
     }
 
     logger.info('transcribe ws session opened')
+    try:
+        _ws_send_json(ws, {'type': 'connected', 'engine': 'aws_transcribe_stream'})
+    except Exception as e:
+        logger.warning('transcribe ws connected frame failed: %s', e)
 
     def _on_partial(text: str) -> None:
         try:
@@ -338,6 +342,7 @@ def run_transcribe_websocket_session(ws) -> dict:
         while not getattr(ws, 'closed', False):
             message = ws.receive()
             if message is None:
+                logger.info('transcribe ws receive None (peer closed)')
                 break
 
             if isinstance(message, str):

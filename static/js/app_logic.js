@@ -11619,6 +11619,27 @@ document.addEventListener('DOMContentLoaded', () => {
         tw.innerHTML = `<div class="medical-live-transcript" dir="${dir}" style="text-align:${align};padding:12px 16px;white-space:pre-wrap;line-height:1.5;">${esc(text)}</div>`;
     }
 
+    function renderMedicalLiveStreamStatus(statusKey) {
+        if (!isMedicalModeEnabled()) return;
+        const tw = document.getElementById('transcript-window');
+        if (!tw) return;
+        const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+        const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+        const dir = isRtl ? 'rtl' : 'ltr';
+        const align = isRtl ? 'right' : 'left';
+        const key = String(statusKey || '').toLowerCase();
+        let label = '';
+        if (key === 'connecting' || key === 'starting') {
+            label = (typeof window.t === 'function' ? window.t('medical_stream_connecting') : '') || (isRtl ? 'מתחבר לתמלול חי…' : 'Connecting live transcription…');
+        } else if (key === 'listening') {
+            label = (typeof window.t === 'function' ? window.t('medical_stream_listening') : '') || (isRtl ? 'מאזין…' : 'Listening…');
+        }
+        if (!label) return;
+        tw.classList.remove('medical-wave-active');
+        const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        tw.innerHTML = `<div class="medical-live-transcript medical-live-status" dir="${dir}" style="text-align:${align};padding:12px 16px;opacity:0.75;font-style:italic;">${esc(label)}</div>`;
+    }
+
     function abortMedicalAwsTranscribeStream() {
         try {
             if (window._medicalAwsTranscribeStream) {
@@ -11642,6 +11663,7 @@ document.addEventListener('DOMContentLoaded', () => {
             languageCode,
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
             onPartial: (t) => renderMedicalLiveStreamTranscript(t),
+            onStatus: (s) => renderMedicalLiveStreamStatus(s),
         });
         try {
             await stream.start(mediaStream);
@@ -12110,12 +12132,25 @@ document.addEventListener('DOMContentLoaded', () => {
         const rec = Object.keys(recOpts).length ? new MediaRecorder(stream, recOpts) : new MediaRecorder(stream);
         if (isMedicalModeEnabled() && !preserveChunks) {
             const tw = document.getElementById('transcript-window');
-            if (tw) tw.classList.add('medical-wave-active');
+            if (tw) {
+                tw.classList.remove('medical-wave-active');
+                renderMedicalLiveStreamStatus('connecting');
+            }
             if (!qsMedicalStreamOnlyMode()) {
                 void beginMedicalRecordingWarmup((rec.mimeType || recOpts.mimeType || 'audio/webm').toLowerCase());
             }
             void startMedicalAwsTranscribeStream(stream).catch((streamStartErr) => {
                 console.error('[medical] AWS Transcribe stream failed (recording continues)', streamStartErr);
+                const tw = document.getElementById('transcript-window');
+                if (tw) {
+                    const msg = String((streamStartErr && streamStartErr.message) || streamStartErr || 'stream failed');
+                    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+                    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+                    const dir = isRtl ? 'rtl' : 'ltr';
+                    const align = isRtl ? 'right' : 'left';
+                    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    tw.innerHTML = `<div class="medical-live-transcript" dir="${dir}" style="text-align:${align};padding:12px 16px;color:#b91c1c;">${esc(msg)}</div>`;
+                }
                 if (qsMedicalStreamOnlyMode()) {
                     try {
                         if (window._medicalRecorder) window._medicalRecorder.stop();
