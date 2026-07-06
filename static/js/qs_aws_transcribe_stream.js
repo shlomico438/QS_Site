@@ -105,7 +105,7 @@ export class MedicalAwsTranscribeStream {
             this._emitStatus('connecting');
             return;
         }
-        if msg.type === 'starting') {
+        if (msg.type === 'starting') {
             console.info('[transcribe-stream] server starting aws', msg.region ? `region=${msg.region}` : '');
             this._emitStatus('starting');
             return;
