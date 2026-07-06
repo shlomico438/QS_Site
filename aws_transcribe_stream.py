@@ -119,6 +119,8 @@ class AwsTranscribeStreamSession:
         self._thread.start()
         if not self._stream_ready.wait(timeout=timeout_sec):
             raise TimeoutError('AWS Transcribe stream did not start in time')
+        if self._error:
+            raise self._error
 
     def feed_audio(self, chunk: bytes) -> None:
         if self._closed or not chunk:

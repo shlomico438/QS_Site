@@ -212,8 +212,11 @@ def _doctor_prompt_training_config():
         "format_parallel": max(1, min(8, int(os.environ.get('FORMAT_TRANSCRIPT_PARALLEL', '2') or 2))),
         "simulation_mode": SIMULATION_MODE,
         "medical_transcription_engine": (
-            "sagemaker" if _medical_uses_sagemaker_transcription() else "runpod"
+            'aws_transcribe_stream' if _medical_use_aws_transcribe_stream() else (
+                'sagemaker' if _medical_uses_sagemaker_transcription() else 'runpod'
+            )
         ),
+        "medical_use_aws_transcribe_stream": _medical_use_aws_transcribe_stream(),
         "sagemaker_medical_endpoint": _sagemaker_medical_endpoint_name(),
         "runpod_skip_warmup": _runpod_skip_warmup(),
         "aws_skip_warmup": _aws_skip_warmup(),
@@ -9281,6 +9284,145 @@ def _submit_medical_sagemaker_session_warmup(user_id, public_base=None, force=Fa
     return True, 'started', job_id
 
 
+def _medical_use_aws_transcribe_stream():
+    """Medical encounters: live AWS Transcribe Streaming (default on). Set MEDICAL_USE_AWS_TRANSCRIBE_STREAM=false for SageMaker-only."""
+    raw = str(os.environ.get('MEDICAL_USE_AWS_TRANSCRIBE_STREAM', 'true')).strip().lower()
+    return raw in ('1', 'true', 'yes', 'on')
+
+
+def _medical_transcribe_stream_language():
+    return (os.environ.get('MEDICAL_TRANSCRIBE_STREAM_LANGUAGE') or 'he-IL').strip() or 'he-IL'
+
+
+def _segments_from_stream_transcript(transcript, duration_sec):
+    text = str(transcript or '').strip()
+    if not text:
+        return []
+    try:
+        end = float(duration_sec or 0)
+    except (TypeError, ValueError):
+        end = 0.0
+    if end <= 0:
+        end = max(1.0, len(text.split()) * 0.35)
+    return [{'start': 0.0, 'end': round(end, 3), 'text': text}]
+
+
+@app.route('/api/medical_transcription_config', methods=['GET'])
+def api_medical_transcription_config():
+    """Client config: AWS Transcribe Streaming vs SageMaker fallback."""
+    use_stream = _medical_use_aws_transcribe_stream()
+    return jsonify({
+        'use_aws_transcribe_stream': use_stream,
+        'transcribe_stream_language': _medical_transcribe_stream_language(),
+        'transcribe_stream_sample_rate_hz': 16000,
+        'sagemaker_fallback': True,
+        'medical_transcription_engine': (
+            'aws_transcribe_stream' if use_stream else (
+                'sagemaker' if _medical_uses_sagemaker_transcription() else 'runpod'
+            )
+        ),
+    }), 200
+
+
+@app.route('/api/medical/complete_stream_transcription', methods=['POST'])
+def api_medical_complete_stream_transcription():
+    """Finalize a medical job transcribed live via /ws/transcribe (no SageMaker)."""
+    t0 = time.time()
+    data = request.json or {}
+    job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
+    s3_key = str(data.get('s3Key') or data.get('input_s3_key') or '').strip()
+    user_id = str(data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key) or '').strip()
+    transcript = str(data.get('transcript') or '').strip()
+    duration_sec = data.get('duration_sec') or data.get('durationSec') or 0
+    bucket = str(data.get('bucket') or '').strip() or None
+
+    if not job_id or not s3_key:
+        return jsonify({'error': 'jobId and s3Key required'}), 400
+    if not transcript:
+        return jsonify({'error': 'transcript required'}), 400
+    if not _medical_use_aws_transcribe_stream():
+        return jsonify({'error': 'aws_transcribe_stream_disabled'}), 400
+
+    is_medical = True
+    try:
+        _require_medical_kms_or_raise(is_medical)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+    segments = data.get('segments')
+    if not isinstance(segments, list) or not segments:
+        segments = _segments_from_stream_transcript(transcript, duration_sec)
+    if not segments:
+        return jsonify({'error': 'could not build segments'}), 400
+
+    credit_reserve = _reserve_credits_before_gpu(
+        user_id, job_id, bucket, s3_key, is_medical=is_medical, request_data=data,
+    )
+    if not credit_reserve.get('ok'):
+        return jsonify({
+            'status': 'error',
+            'error': credit_reserve.get('error'),
+            'message': credit_reserve.get('message'),
+            **_credit_fields_for_api(credit_reserve),
+        }), int(credit_reserve.get('http_status') or 402)
+
+    upload_complete[job_id] = True
+    _mark_upload_complete(job_id)
+    pending_trigger[job_id] = 'triggered'
+    _set_trigger_state(job_id, 'triggered')
+    pending_job_info[job_id] = {
+        'input_s3_key': s3_key,
+        'bucket': bucket,
+        'is_medical': True,
+        'user_id': user_id,
+        'engine': 'aws_transcribe_stream',
+    }
+
+    payload = {
+        'jobId': job_id,
+        'status': 'completed',
+        'engine': 'aws_transcribe_stream',
+        'result': {'segments': segments},
+        'segments': segments,
+    }
+
+    _stash_deferred_credit_context(job_id, user_id, s3_key, pending_info=pending_job_info.get(job_id))
+    job_results_cache[job_id] = payload
+    socketio.emit('job_status_update', payload, room=job_id)
+
+    public_base = _public_base_url(request)
+    t = threading.Thread(
+        target=_finalize_gpu_callback_background,
+        kwargs={
+            'job_id': job_id,
+            'data': payload,
+            'segments': segments,
+            'result': payload.get('result') or {},
+            'input_s3_key': s3_key,
+            'user_id': user_id,
+            't0': t0,
+            'public_base': public_base,
+            'pending_info': pending_job_info.get(job_id),
+        },
+        daemon=True,
+    )
+    t.start()
+
+    logging.info(
+        'medical stream transcription complete job_id=%s segments=%s chars=%s',
+        job_id,
+        len(segments),
+        len(transcript),
+    )
+    return jsonify({
+        'status': 'completed',
+        'jobId': job_id,
+        'engine': 'aws_transcribe_stream',
+        'segments': segments,
+        **_credit_fields_for_api(credit_reserve),
+    }), 200
+
+
 @app.route('/api/medical_session_warmup', methods=['POST'])
 def medical_session_warmup():
     """Wake SageMaker when a registered doctor opens medical mode (not tied to a patient upload)."""
@@ -9294,6 +9436,15 @@ def medical_session_warmup():
         return jsonify({"status": "error", "message": "Invalid userId"}), 400
 
     force = str(data.get('force') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+    if _medical_use_aws_transcribe_stream():
+        ep = _medical_endpoint_status_payload()
+        return jsonify({
+            'status': 'skipped',
+            'reason': 'aws_transcribe_stream_primary',
+            'warmup_status': ep.get('status'),
+            'endpoint_ready': True,
+            'engine': 'aws_transcribe_stream',
+        }), 200
     public_base = _public_base_url(request)
     started, reason, warmup_job_id = _submit_medical_sagemaker_session_warmup(
         user_id, public_base=public_base, force=force,
@@ -10087,7 +10238,7 @@ def trigger_processing():
                 **_trigger_credit_fields,
             }), 202
 
-        if is_medical and _medical_uses_sagemaker_transcription():
+        if is_medical and _medical_uses_sagemaker_transcription() and not _medical_use_aws_transcribe_stream():
             task = data.get('task', 'transcribe')
             language = data.get('language', 'he')
             upload_complete[job_id] = True
