@@ -74,6 +74,8 @@ export class MedicalAwsTranscribeStream {
         this._startReject = null;
         this._stopResolve = null;
         this._stopReject = null;
+        this._chunksSent = 0;
+        this._audioWatchdog = null;
     }
 
     _emitStatus(text) {
@@ -172,13 +174,20 @@ export class MedicalAwsTranscribeStream {
         } catch (_) {}
     }
 
-    _beginAudioCapture(mediaStream) {
+    _setupAudioGraph(mediaStream) {
+        if (this._processor) return;
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        this._audioCtx = new AudioCtx();
+        if (!AudioCtx) throw new Error('audio_context_unavailable');
+        try {
+            this._audioCtx = new AudioCtx({ sampleRate: this.sampleRateHz });
+        } catch (_) {
+            this._audioCtx = new AudioCtx();
+        }
         this._source = this._audioCtx.createMediaStreamSource(mediaStream);
         this._processor = this._audioCtx.createScriptProcessor(4096, 1, 1);
         this._mutedGain = this._audioCtx.createGain();
         this._mutedGain.gain.value = 0;
+        this._chunksSent = 0;
 
         this._processor.onaudioprocess = (ev) => {
             if (!this._canSendAudio()) return;
@@ -186,11 +195,62 @@ export class MedicalAwsTranscribeStream {
             const pcm = qsDownsampleFloat32(input, this._audioCtx.sampleRate, this.sampleRateHz);
             if (!pcm.length) return;
             this._sendAudioChunk(qsFloat32ToPcm16(pcm));
+            this._chunksSent += 1;
+            if (this._chunksSent === 1 || this._chunksSent % 100 === 0) {
+                console.info('[transcribe-stream] audio chunks sent:', this._chunksSent);
+            }
         };
 
         this._source.connect(this._processor);
         this._processor.connect(this._mutedGain);
         this._mutedGain.connect(this._audioCtx.destination);
+    }
+
+    async _activateAudioCapture() {
+        if (!this._audioCtx) return;
+        try {
+            if (this._audioCtx.state === 'suspended') {
+                await this._audioCtx.resume();
+            }
+        } catch (e) {
+            console.warn('[transcribe-stream] AudioContext resume failed', e);
+        }
+        if (this._audioCtx.state !== 'running') {
+            console.warn('[transcribe-stream] AudioContext not running:', this._audioCtx.state);
+        } else {
+            console.info('[transcribe-stream] AudioContext running at', this._audioCtx.sampleRate, 'Hz');
+        }
+        if (this._audioWatchdog) clearInterval(this._audioWatchdog);
+        this._audioWatchdog = setInterval(() => {
+            if (this._feedPaused || !this._audioCtx) return;
+            if (this._audioCtx.state === 'suspended') {
+                void this._audioCtx.resume().catch(() => {});
+            }
+        }, 2000);
+    }
+
+    _teardownAudioGraph() {
+        if (this._audioWatchdog) {
+            clearInterval(this._audioWatchdog);
+            this._audioWatchdog = null;
+        }
+        try {
+            if (this._processor) this._processor.disconnect();
+            if (this._source) this._source.disconnect();
+            if (this._mutedGain) this._mutedGain.disconnect();
+        } catch (_) {}
+        this._processor = null;
+        this._source = null;
+        this._mutedGain = null;
+    }
+
+    async _closeAudioContext() {
+        this._teardownAudioGraph();
+        if (!this._audioCtx) return;
+        try {
+            await this._audioCtx.close();
+        } catch (_) {}
+        this._audioCtx = null;
     }
 
     _teardownSocketIo() {
@@ -236,7 +296,7 @@ export class MedicalAwsTranscribeStream {
             this._startReject = null;
         }
 
-        this._beginAudioCapture(mediaStream);
+        await this._activateAudioCapture();
     }
 
     async _startWebSocket(mediaStream) {
@@ -296,11 +356,13 @@ export class MedicalAwsTranscribeStream {
             this._startReject = null;
         }
 
-        this._beginAudioCapture(mediaStream);
+        await this._activateAudioCapture();
     }
 
     async start(mediaStream) {
         if (!mediaStream) throw new Error('media_stream_required');
+        // Create the audio graph synchronously while still inside the user-gesture call stack.
+        this._setupAudioGraph(mediaStream);
         const useSocketIo = this.transport !== 'websocket' && Boolean(qsGetGlobalSocket());
         if (useSocketIo) {
             await this._startSocketIo(mediaStream);
@@ -319,13 +381,7 @@ export class MedicalAwsTranscribeStream {
 
     async stop() {
         this._feedPaused = true;
-        try {
-            if (this._processor) this._processor.disconnect();
-            if (this._source) this._source.disconnect();
-            if (this._mutedGain) this._mutedGain.disconnect();
-            if (this._audioCtx) await this._audioCtx.close();
-        } catch (_) {}
-
+        const chunksSent = this._chunksSent;
         if (this._socket) {
             const resultPromise = new Promise((resolve, reject) => {
                 this._stopResolve = resolve;
@@ -347,10 +403,13 @@ export class MedicalAwsTranscribeStream {
             } catch (_) {}
             const result = await resultPromise;
             this._teardownSocketIo();
+            await this._closeAudioContext();
+            console.info('[transcribe-stream] stopped; chunks sent:', chunksSent, 'transcript chars:', String(result.transcript || '').length);
             return result;
         }
 
         if (!this._ws || this._ws.readyState === WebSocket.CLOSED) {
+            await this._closeAudioContext();
             return { transcript: this._finalTranscript, partials: this._partials.slice() };
         }
 
@@ -377,16 +436,13 @@ export class MedicalAwsTranscribeStream {
         const result = await resultPromise;
         try { this._ws.close(); } catch (_) {}
         this._ws = null;
+        await this._closeAudioContext();
+        console.info('[transcribe-stream] stopped; chunks sent:', chunksSent, 'transcript chars:', String(result.transcript || '').length);
         return result;
     }
 
     abort() {
         this._feedPaused = true;
-        try {
-            if (this._processor) this._processor.disconnect();
-            if (this._source) this._source.disconnect();
-            if (this._audioCtx) void this._audioCtx.close();
-        } catch (_) {}
         try {
             if (this._socket && this._socket.connected) {
                 this._socket.emit('medical_transcribe_stop');
@@ -397,6 +453,7 @@ export class MedicalAwsTranscribeStream {
             if (this._ws) this._ws.close();
         } catch (_) {}
         this._ws = null;
+        void this._closeAudioContext();
     }
 }
 
@@ -421,4 +478,8 @@ export function qsMedicalUseAwsTranscribeStream() {
         return cfg.use_aws_transcribe_stream;
     }
     return true;
+}
+
+export function qsGetMedicalTranscriptionConfigCached() {
+    return _medicalStreamConfigCache;
 }

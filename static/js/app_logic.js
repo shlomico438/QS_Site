@@ -8,6 +8,7 @@ import {
 import {
     MedicalAwsTranscribeStream,
     qsFetchMedicalTranscriptionConfig,
+    qsGetMedicalTranscriptionConfigCached,
     qsMedicalUseAwsTranscribeStream,
 } from './qs_aws_transcribe_stream.js'
 
@@ -11661,7 +11662,16 @@ document.addEventListener('DOMContentLoaded', () => {
     async function startMedicalAwsTranscribeStream(mediaStream) {
         abortMedicalAwsTranscribeStream();
         if (!isMedicalModeEnabled() || !qsMedicalUseAwsTranscribeStream()) return null;
-        const cfg = await qsFetchMedicalTranscriptionConfig();
+        let cfg = qsGetMedicalTranscriptionConfigCached();
+        if (!cfg) {
+            cfg = {
+                use_aws_transcribe_stream: true,
+                transcribe_stream_language: 'he-IL',
+                transcribe_stream_transport: 'socketio',
+                transcribe_stream_sample_rate_hz: 16000,
+            };
+            void qsFetchMedicalTranscriptionConfig();
+        }
         if (!cfg || !cfg.use_aws_transcribe_stream) return null;
         const languageCode = String(cfg.transcribe_stream_language || 'he-IL');
         const transport = String(cfg.transcribe_stream_transport || 'socketio').toLowerCase();
@@ -12226,11 +12236,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 return;
             }
-            // Recording is complete once onstop has delivered the last chunk. Stop the live
-            // stream before warmup/upload waits so the mic indicator and waveform do not linger.
+            // Finish live transcribe before stopping mic tracks so AWS receives end-of-stream cleanly.
             stopMedicalWaveform(false);
-            (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
             let shouldSubmit = false;
+            let streamResult = null;
             try {
                 if (!window._medicalRecorderPaused) {
                     window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
@@ -12238,25 +12247,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 stopMedicalRecordingTimer();
                 setMedicalRecordingVisualState('idle');
                 shouldSubmit = !!window._medicalSubmitOnStop;
+                const hadLiveTranscribe = !!window._medicalAwsTranscribeStream;
+                if (hadLiveTranscribe) {
+                    try {
+                        streamResult = await window._medicalAwsTranscribeStream.stop();
+                        const tx = String((streamResult && streamResult.transcript) || '').trim()
+                            || (Array.isArray(streamResult && streamResult.partials)
+                                ? streamResult.partials.map((p) => String(p || '').trim()).filter(Boolean).join(' ')
+                                : '');
+                        if (tx && streamResult) streamResult.transcript = tx;
+                    } catch (streamErr) {
+                        window._medicalAwsTranscribeStream = null;
+                        if (shouldSubmit && qsMedicalStreamOnlyMode()) {
+                            throw new Error(`AWS Transcribe stream stop failed: ${(streamErr && streamErr.message) || streamErr}`);
+                        }
+                        console.warn('[medical] AWS Transcribe stream stop failed', streamErr);
+                        streamResult = null;
+                    }
+                    window._medicalAwsTranscribeStream = null;
+                }
                 const prefix = isMedicalModeEnabled() ? 'medical_recording' : 'transcript_record';
                 if (shouldSubmit) {
                     window.__QS_MEDICAL_LAST_RECORDING_MS = Math.max(0, Number(window._medicalRecordingAccumMs || 0));
                     const streamOnly = qsMedicalStreamOnlyMode();
-                    let streamResult = null;
-                    let streamOk = false;
-                    if (window._medicalAwsTranscribeStream) {
-                        try {
-                            streamResult = await window._medicalAwsTranscribeStream.stop();
-                            streamOk = !!(streamResult && String(streamResult.transcript || '').trim());
-                        } catch (streamErr) {
-                            window._medicalAwsTranscribeStream = null;
-                            if (streamOnly) {
-                                throw new Error(`AWS Transcribe stream stop failed: ${(streamErr && streamErr.message) || streamErr}`);
-                            }
-                            console.warn('[medical] AWS Transcribe stream stop failed', streamErr);
-                        }
-                        window._medicalAwsTranscribeStream = null;
-                    } else if (streamOnly) {
+                    const streamOk = !!(streamResult && String(streamResult.transcript || '').trim());
+                    if (streamOnly && !hadLiveTranscribe) {
                         throw new Error('AWS Transcribe stream did not start — check WebSocket /ws/transcribe and IAM');
                     }
                     const file = await buildMedicalRecordingFile(prefix, mime);
@@ -12283,6 +12298,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (e) {
                 if (typeof showStatus === 'function') showStatus(`Recording upload failed: ${e.message || e}`, true);
             } finally {
+                (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
                 window._medicalRecorder = null;
                 window._medicalRecorderChunks = [];
                 window._medicalRecorderSegments = [];

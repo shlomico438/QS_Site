@@ -174,6 +174,8 @@ class AwsTranscribeStreamSession:
         self._ready_q: queue.Queue = queue.Queue(maxsize=1)
         self._finished_q: queue.Queue = queue.Queue(maxsize=1)
         self._closed = False
+        self._chunks_fed_to_aws = 0
+        self._bytes_fed_to_aws = 0
 
     def _start_blocking(self, timeout_sec: float = 30.0) -> None:
         """Run only from an OS thread (ThreadPoolExecutor worker)."""
@@ -290,9 +292,17 @@ class AwsTranscribeStreamSession:
                 if chunk is None:
                     await stream.input_stream.end_stream()
                     return
+                self._chunks_fed_to_aws += 1
+                self._bytes_fed_to_aws += len(chunk)
                 await stream.input_stream.send_audio_event(audio_chunk=chunk)
 
         await asyncio.gather(_feed_aws(), self._handler.handle_events())
+        logger.info(
+            'AWS Transcribe stream finished chunks_fed=%d bytes_fed=%d transcript_len=%d',
+            self._chunks_fed_to_aws,
+            self._bytes_fed_to_aws,
+            len(self._handler.full_transcript if self._handler else ''),
+        )
         return self._handler.full_transcript
 
 
@@ -478,8 +488,8 @@ class TranscribeStreamBridge:
         self._audio_chunks_received += 1
         if self._audio_chunks_received == 1:
             logger.info('transcribe first audio chunk (%d bytes)', len(chunk))
-        elif self._audio_chunks_received % 200 == 0:
-            logger.debug('transcribe audio chunks received: %d', self._audio_chunks_received)
+        elif self._audio_chunks_received % 50 == 0:
+            logger.info('transcribe audio chunks received: %d', self._audio_chunks_received)
         if self.session is None:
             self.session = self._make_session()
             self._emit({
@@ -580,6 +590,14 @@ def register_transcribe_socketio_handlers(socketio) -> None:
             return
         logger.info('transcribe socketio stop sid=%s', sid)
         result = bridge.finish()
+        logger.info(
+            'transcribe socketio done sid=%s chunks=%d transcript_len=%d partials=%d error=%s',
+            sid,
+            bridge._audio_chunks_received,
+            len(str(result.get('transcript') or '')),
+            len(result.get('partials') or []),
+            result.get('error'),
+        )
         _emit_to_sid(sid, result)
 
 
