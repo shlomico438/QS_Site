@@ -44,6 +44,12 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+try:
+    from gevent import monkey as _gevent_monkey
+    _REAL_THREAD = _gevent_monkey.get_original('threading', 'Thread')
+except Exception:  # pragma: no cover
+    _REAL_THREAD = threading.Thread
+
 DEFAULT_LANGUAGE = 'he-IL'
 DEFAULT_SAMPLE_RATE = 16000
 _TRANSCRIBE_STREAM_REGION_FALLBACK = 'eu-west-1'
@@ -238,7 +244,7 @@ class AwsTranscribeStreamSession:
         """Run only from an OS thread (ThreadPoolExecutor worker)."""
         if self._thread:
             return
-        worker = threading.Thread(target=self._thread_main, name='aws-transcribe-stream', daemon=True)
+        worker = _REAL_THREAD(target=self._thread_main, name='aws-transcribe-stream', daemon=True)
         worker.start()
         self._thread = worker
         t_wait = time.time()
@@ -512,7 +518,12 @@ class TranscribeStreamBridge:
             if self.start_scheduled:
                 return
             self.start_scheduled = True
-        _TRANSCRIBE_THREAD_LAUNCHER.submit(self._begin_session_in_os_thread)
+        starter = _REAL_THREAD(
+            target=self._begin_session_in_os_thread,
+            name='aws-transcribe-start',
+            daemon=True,
+        )
+        starter.start()
 
     def _make_session(self) -> AwsTranscribeStreamSession:
         return AwsTranscribeStreamSession(
