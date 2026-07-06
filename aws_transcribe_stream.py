@@ -253,7 +253,12 @@ def run_transcribe_websocket_session(ws) -> dict:
                             sample_rate_hz=sample_rate_hz,
                             on_partial=_on_partial,
                         )
-                        session.start()
+                        try:
+                            session.start()
+                        except BaseException as e:
+                            logger.exception('AWS Transcribe stream start failed')
+                            _ws_send_json(ws, {'type': 'error', 'error': str(e)[:500]})
+                            raise
                         _ws_send_json(ws, {
                             'type': 'ready',
                             'language_code': language_code,
@@ -272,7 +277,12 @@ def run_transcribe_websocket_session(ws) -> dict:
                         sample_rate_hz=sample_rate_hz,
                         on_partial=_on_partial,
                     )
-                    session.start()
+                    try:
+                        session.start()
+                    except BaseException as e:
+                        logger.exception('AWS Transcribe stream start failed')
+                        _ws_send_json(ws, {'type': 'error', 'error': str(e)[:500]})
+                        raise
                     _ws_send_json(ws, {
                         'type': 'ready',
                         'language_code': language_code,

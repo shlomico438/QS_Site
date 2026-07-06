@@ -42,6 +42,8 @@ export class MedicalAwsTranscribeStream {
         this._finalTranscript = '';
         this._partials = [];
         this._ready = false;
+        this._startResolve = null;
+        this._startReject = null;
         this._stopResolve = null;
         this._stopReject = null;
     }
@@ -54,8 +56,24 @@ export class MedicalAwsTranscribeStream {
             return;
         }
         if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'error') {
+            const err = String(msg.error || msg.message || 'transcribe_stream_error');
+            if (this._startReject) {
+                const reject = this._startReject;
+                this._startReject = null;
+                this._startResolve = null;
+                reject(new Error(err));
+            }
+            return;
+        }
         if (msg.type === 'ready') {
             this._ready = true;
+            if (this._startResolve) {
+                const resolve = this._startResolve;
+                this._startResolve = null;
+                this._startReject = null;
+                resolve();
+            }
             return;
         }
         if (msg.type === 'partial') {
@@ -87,16 +105,19 @@ export class MedicalAwsTranscribeStream {
         const wsUrl = qsTranscribeStreamWsUrl();
         this._ws = new WebSocket(wsUrl);
         this._ws.binaryType = 'arraybuffer';
+        this._ready = false;
+
+        const readyPromise = new Promise((resolve, reject) => {
+            this._startResolve = resolve;
+            this._startReject = reject;
+        });
+
+        this._ws.onmessage = (ev) => this._handleMessage(ev.data);
 
         await new Promise((resolve, reject) => {
             const t = setTimeout(() => reject(new Error('transcribe_ws_connect_timeout')), 15000);
             this._ws.onopen = () => {
                 clearTimeout(t);
-                this._ws.send(JSON.stringify({
-                    action: 'start',
-                    sample_rate_hz: this.sampleRateHz,
-                    language_code: this.languageCode,
-                }));
                 resolve();
             };
             this._ws.onerror = () => {
@@ -105,7 +126,28 @@ export class MedicalAwsTranscribeStream {
             };
         });
 
-        this._ws.onmessage = (ev) => this._handleMessage(ev.data);
+        this._ws.send(JSON.stringify({
+            action: 'start',
+            sample_rate_hz: this.sampleRateHz,
+            language_code: this.languageCode,
+        }));
+
+        const readyTimer = setTimeout(() => {
+            if (this._startReject) {
+                const reject = this._startReject;
+                this._startReject = null;
+                this._startResolve = null;
+                reject(new Error('transcribe_stream_not_ready'));
+            }
+        }, 45000);
+
+        try {
+            await readyPromise;
+        } finally {
+            clearTimeout(readyTimer);
+            this._startResolve = null;
+            this._startReject = null;
+        }
 
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         this._audioCtx = new AudioCtx();
@@ -127,12 +169,6 @@ export class MedicalAwsTranscribeStream {
         this._source.connect(this._processor);
         this._processor.connect(this._mutedGain);
         this._mutedGain.connect(this._audioCtx.destination);
-
-        const readyDeadline = Date.now() + 15000;
-        while (!this._ready && Date.now() < readyDeadline) {
-            await new Promise((r) => setTimeout(r, 50));
-        }
-        if (!this._ready) throw new Error('transcribe_stream_not_ready');
     }
 
     pause() {

@@ -11596,6 +11596,10 @@ document.addEventListener('DOMContentLoaded', () => {
         window._medicalAwsTranscribeStream = null;
     }
 
+    function qsMedicalStreamOnlyMode() {
+        return isMedicalModeEnabled() && qsMedicalUseAwsTranscribeStream();
+    }
+
     async function startMedicalAwsTranscribeStream(mediaStream) {
         abortMedicalAwsTranscribeStream();
         if (!isMedicalModeEnabled() || !qsMedicalUseAwsTranscribeStream()) return null;
@@ -11612,9 +11616,13 @@ document.addEventListener('DOMContentLoaded', () => {
             window._medicalAwsTranscribeStream = stream;
             return stream;
         } catch (e) {
-            console.warn('[medical] AWS Transcribe stream start failed; SageMaker fallback', e);
+            const msg = String((e && e.message) || e || 'transcribe_stream_start_failed');
+            console.error('[medical] AWS Transcribe stream start failed', e);
             abortMedicalAwsTranscribeStream();
-            return null;
+            if (typeof showStatus === 'function') {
+                showStatus(`AWS Transcribe stream: ${msg}`, true);
+            }
+            throw e;
         }
     }
 
@@ -12067,7 +12075,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const tw = document.getElementById('transcript-window');
             if (tw) tw.classList.add('medical-wave-active');
             void beginMedicalRecordingWarmup((rec.mimeType || recOpts.mimeType || 'audio/webm').toLowerCase());
-            void startMedicalAwsTranscribeStream(stream);
+            try {
+                await startMedicalAwsTranscribeStream(stream);
+            } catch (streamStartErr) {
+                if (qsMedicalStreamOnlyMode()) {
+                    (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
+                    throw streamStartErr;
+                }
+            }
         }
         const localChunks = [];
         if (!preserveChunks) {
@@ -12137,6 +12152,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const prefix = isMedicalModeEnabled() ? 'medical_recording' : 'transcript_record';
                 if (shouldSubmit) {
                     window.__QS_MEDICAL_LAST_RECORDING_MS = Math.max(0, Number(window._medicalRecordingAccumMs || 0));
+                    const streamOnly = qsMedicalStreamOnlyMode();
                     let streamResult = null;
                     let streamOk = false;
                     if (window._medicalAwsTranscribeStream) {
@@ -12144,9 +12160,15 @@ document.addEventListener('DOMContentLoaded', () => {
                             streamResult = await window._medicalAwsTranscribeStream.stop();
                             streamOk = !!(streamResult && String(streamResult.transcript || '').trim());
                         } catch (streamErr) {
-                            console.warn('[medical] AWS Transcribe stream stop failed; SageMaker fallback', streamErr);
+                            window._medicalAwsTranscribeStream = null;
+                            if (streamOnly) {
+                                throw new Error(`AWS Transcribe stream stop failed: ${(streamErr && streamErr.message) || streamErr}`);
+                            }
+                            console.warn('[medical] AWS Transcribe stream stop failed', streamErr);
                         }
                         window._medicalAwsTranscribeStream = null;
+                    } else if (streamOnly) {
+                        throw new Error('AWS Transcribe stream did not start — check WebSocket /ws/transcribe and IAM');
                     }
                     const file = await buildMedicalRecordingFile(prefix, mime);
                     let uploadedViaWarmup = false;
@@ -12158,6 +12180,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         );
                     }
                     if (!uploadedViaWarmup) {
+                        if (streamOnly) {
+                            throw new Error(streamOk
+                                ? 'AWS Transcribe stream upload failed'
+                                : 'AWS Transcribe stream returned no transcript');
+                        }
                         uploadedViaWarmup = isMedicalModeEnabled()
                             ? await uploadWarmedMedicalRecordingFile(file)
                             : false;
@@ -12263,7 +12290,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 void window.qsMaybeMedicalSessionWarmup();
             }
         } catch (e) {
-            if (typeof showStatus === 'function') showStatus(`Microphone access failed: ${e.message || e}`, true);
+            const msg = String((e && e.message) || e);
+            const isStreamErr = /transcribe/i.test(msg);
+            if (typeof showStatus === 'function') {
+                showStatus(isStreamErr ? msg : `Microphone access failed: ${msg}`, true);
+            }
         } finally {
             window._medicalRecordingToggleBusy = false;
         }

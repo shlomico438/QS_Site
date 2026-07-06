@@ -9313,6 +9313,7 @@ def api_medical_transcription_config():
     use_stream = _medical_use_aws_transcribe_stream()
     return jsonify({
         'use_aws_transcribe_stream': use_stream,
+        'stream_fallback_disabled': use_stream,
         'transcribe_stream_language': _medical_transcribe_stream_language(),
         'transcribe_stream_sample_rate_hz': 16000,
         'sagemaker_fallback': True,
