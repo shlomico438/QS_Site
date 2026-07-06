@@ -9299,7 +9299,7 @@ def _medical_transcribe_stream_region():
         from aws_transcribe_stream import transcribe_stream_region
         return transcribe_stream_region()
     except ImportError:
-        return (os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION') or os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+        return (os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION') or os.environ.get('AWS_TRANSCRIBE_REGION') or 'eu-west-1').strip()
 
 
 def _segments_from_stream_transcript(transcript, duration_sec):

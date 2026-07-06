@@ -46,7 +46,27 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LANGUAGE = 'he-IL'
 DEFAULT_SAMPLE_RATE = 16000
-_TRANSCRIBE_STREAM_REGION_FALLBACK = 'eu-north-1'
+_TRANSCRIBE_STREAM_REGION_FALLBACK = 'eu-west-1'
+# Amazon Transcribe Streaming is not available in every AWS/SageMaker region.
+# Keep this allowlist separate from AWS_REGION because medical SageMaker runs in eu-north-1.
+_TRANSCRIBE_STREAM_SUPPORTED_REGIONS = {
+    'af-south-1',
+    'ap-northeast-1',
+    'ap-northeast-2',
+    'ap-south-1',
+    'ap-southeast-1',
+    'ap-southeast-2',
+    'ca-central-1',
+    'eu-central-1',
+    'eu-west-1',
+    'eu-west-2',
+    'sa-east-1',
+    'us-east-1',
+    'us-east-2',
+    'us-gov-east-1',
+    'us-gov-west-1',
+    'us-west-2',
+}
 # AWS regions (not R2 "auto", not full endpoint URLs).
 _AWS_REGION_RE = re.compile(
     r'^[a-z]{2}(-gov)?-(east|west|north|south|central|northeast|southeast|southwest|northwest)-\d+$'
@@ -56,6 +76,7 @@ _AWS_REGION_RE = re.compile(
 def transcribe_stream_region() -> str:
     """AWS region for Transcribe Streaming (never use R2's AWS_REGION=auto)."""
     invalid_sources = []
+    unsupported_sources = []
     for key in (
         'MEDICAL_TRANSCRIBE_STREAM_REGION',
         'AWS_TRANSCRIBE_REGION',
@@ -65,13 +86,23 @@ def transcribe_stream_region() -> str:
         raw = (os.environ.get(key) or '').strip()
         if not raw:
             continue
-        if _AWS_REGION_RE.match(raw):
+        if _AWS_REGION_RE.match(raw) and raw in _TRANSCRIBE_STREAM_SUPPORTED_REGIONS:
             return raw
-        invalid_sources.append(f'{key}={raw!r}')
+        if _AWS_REGION_RE.match(raw):
+            unsupported_sources.append(f'{key}={raw!r}')
+        else:
+            invalid_sources.append(f'{key}={raw!r}')
+    if unsupported_sources:
+        logger.warning(
+            'Unsupported AWS Transcribe Streaming region env (%s); using %s. '
+            'Use a streaming-supported region such as eu-west-1, eu-central-1, or eu-west-2.',
+            ', '.join(unsupported_sources),
+            _TRANSCRIBE_STREAM_REGION_FALLBACK,
+        )
     if invalid_sources:
         logger.warning(
             'Invalid transcribe region env (%s); using %s. '
-            'Set MEDICAL_TRANSCRIBE_STREAM_REGION=eu-north-1 (or your SageMaker region).',
+            'Set MEDICAL_TRANSCRIBE_STREAM_REGION=eu-west-1 (or another AWS Transcribe Streaming region).',
             ', '.join(invalid_sources),
             _TRANSCRIBE_STREAM_REGION_FALLBACK,
         )
@@ -80,8 +111,14 @@ def transcribe_stream_region() -> str:
 
 def normalize_transcribe_region(region: Optional[str]) -> str:
     raw = str(region or '').strip()
-    if raw and _AWS_REGION_RE.match(raw):
+    if raw and _AWS_REGION_RE.match(raw) and raw in _TRANSCRIBE_STREAM_SUPPORTED_REGIONS:
         return raw
+    if raw and _AWS_REGION_RE.match(raw):
+        logger.warning(
+            'Unsupported AWS Transcribe Streaming region %r; using %s',
+            raw,
+            _TRANSCRIBE_STREAM_REGION_FALLBACK,
+        )
     return transcribe_stream_region()
 
 

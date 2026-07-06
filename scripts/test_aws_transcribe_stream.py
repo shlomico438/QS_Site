@@ -51,7 +51,7 @@ def main() -> int:
     parser.add_argument('--language', default='he-IL', help='AWS language code (default: he-IL)')
     parser.add_argument('--sample-rate', type=int, default=16000, help='Sample rate Hz (default: 16000)')
     parser.add_argument('--chunk-ms', type=int, default=100, help='Simulated realtime chunk size in ms')
-    parser.add_argument('--region', default=None, help='AWS region (default: AWS_REGION or eu-north-1)')
+    parser.add_argument('--region', default=None, help='AWS Transcribe Streaming region (default: MEDICAL_TRANSCRIBE_STREAM_REGION/AWS_TRANSCRIBE_REGION or eu-west-1)')
     args = parser.parse_args()
 
     pcm_path = os.path.abspath(args.pcm_file)
@@ -59,7 +59,12 @@ def main() -> int:
         print(f'File not found: {pcm_path}', file=sys.stderr)
         return 1
 
-    region = (args.region or os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+    region = (
+        args.region
+        or os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION')
+        or os.environ.get('AWS_TRANSCRIBE_REGION')
+        or 'eu-west-1'
+    ).strip()
     data = open(pcm_path, 'rb').read()
     if not data:
         print('PCM file is empty', file=sys.stderr)
