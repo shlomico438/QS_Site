@@ -105,14 +105,15 @@ export class MedicalAwsTranscribeStream {
             this._emitStatus('connecting');
             return;
         }
-        if (msg.type === 'starting') {
-            console.info('[transcribe-stream] server starting aws');
+        if msg.type === 'starting') {
+            console.info('[transcribe-stream] server starting aws', msg.region ? `region=${msg.region}` : '');
             this._emitStatus('starting');
             return;
         }
         if (msg.type === 'error') {
             const err = String(msg.error || msg.message || 'transcribe_stream_error');
-            console.error('[transcribe-stream] server error', err);
+            const region = msg.region ? ` (region=${msg.region})` : '';
+            console.error('[transcribe-stream] server error', err + region);
             this._rejectStart(new Error(err));
             return;
         }

@@ -78,6 +78,13 @@ def transcribe_stream_region() -> str:
     return _TRANSCRIBE_STREAM_REGION_FALLBACK
 
 
+def normalize_transcribe_region(region: Optional[str]) -> str:
+    raw = str(region or '').strip()
+    if raw and _AWS_REGION_RE.match(raw):
+        return raw
+    return transcribe_stream_region()
+
+
 DEFAULT_REGION = transcribe_stream_region()
 
 # gevent greenlets must not call threading.Thread.start() or queue.get() directly.
@@ -142,12 +149,12 @@ class AwsTranscribeStreamSession:
     def __init__(
         self,
         *,
-        region: str = DEFAULT_REGION,
+        region: Optional[str] = None,
         language_code: str = DEFAULT_LANGUAGE,
         sample_rate_hz: int = DEFAULT_SAMPLE_RATE,
         on_partial: Optional[Callable[[str], None]] = None,
     ):
-        self.region = region
+        self.region = normalize_transcribe_region(region)
         self.language_code = language_code
         self.sample_rate_hz = int(sample_rate_hz or DEFAULT_SAMPLE_RATE)
         self.on_partial = on_partial
@@ -314,6 +321,7 @@ class TranscribeStreamBridge:
 
     def __init__(self, send_json: Callable[[dict], None]):
         self._send = send_json
+        self._alive = True
         self.region = transcribe_stream_region()
         self.language_code = DEFAULT_LANGUAGE
         self.sample_rate_hz = DEFAULT_SAMPLE_RATE
@@ -323,12 +331,20 @@ class TranscribeStreamBridge:
         self.start_lock = threading.Lock()
         self.start_scheduled = False
 
+    def close(self) -> None:
+        self._alive = False
+
+    def _emit(self, payload: dict) -> None:
+        if not self._alive:
+            return
+        self._send(payload)
+
     def send_connected(self) -> None:
-        self._send({'type': 'connected', 'engine': 'aws_transcribe_stream'})
+        self._emit({'type': 'connected', 'engine': 'aws_transcribe_stream'})
 
     def _on_partial(self, text: str) -> None:
         try:
-            self._send({'type': 'partial', 'text': text})
+            self._emit({'type': 'partial', 'text': text})
         except Exception:
             logger.debug('Failed to send partial transcript to client', exc_info=True)
 
@@ -349,16 +365,21 @@ class TranscribeStreamBridge:
         try:
             self.session._start_blocking(30.0)
             self.session_live = True
-            self._send({
+            self._emit({
                 'type': 'ready',
                 'language_code': self.session.language_code,
                 'sample_rate_hz': self.session.sample_rate_hz,
+                'region': self.session.region,
             })
-            logger.info('transcribe aws ready (from os thread)')
+            logger.info('transcribe aws ready region=%s (from os thread)', self.session.region)
             _run_on_hub(self._flush_pending_audio)
         except BaseException as e:
             logger.exception('AWS Transcribe stream start failed')
-            self._send({'type': 'error', 'error': str(e)[:500]})
+            self._emit({
+                'type': 'error',
+                'error': str(e)[:500],
+                'region': getattr(self.session, 'region', self.region),
+            })
 
     def _schedule_session_start(self) -> None:
         with self.start_lock:
@@ -383,17 +404,19 @@ class TranscribeStreamBridge:
             return
         self.language_code = str(cfg.get('language_code') or self.language_code).strip() or self.language_code
         self.sample_rate_hz = int(cfg.get('sample_rate_hz') or self.sample_rate_hz)
-        self.region = str(cfg.get('region') or self.region).strip() or self.region
+        self.region = normalize_transcribe_region(cfg.get('region') or self.region)
         if self.session is None:
             logger.info(
-                'transcribe start action lang=%s rate=%s',
+                'transcribe start action lang=%s rate=%s region=%s',
                 self.language_code,
                 self.sample_rate_hz,
+                self.region,
             )
-            self._send({
+            self._emit({
                 'type': 'starting',
                 'language_code': self.language_code,
                 'sample_rate_hz': self.sample_rate_hz,
+                'region': self.region,
             })
             self.session = self._make_session()
             self._schedule_session_start()
@@ -403,10 +426,11 @@ class TranscribeStreamBridge:
             return
         if self.session is None:
             self.session = self._make_session()
-            self._send({
+            self._emit({
                 'type': 'starting',
                 'language_code': self.language_code,
                 'sample_rate_hz': self.sample_rate_hz,
+                'region': self.region,
             })
             self._schedule_session_start()
         if self.session_live:
@@ -443,6 +467,7 @@ def cleanup_transcribe_socketio_bridge(sid: str) -> None:
     bridge = _SOCKETIO_BRIDGES.pop(sid, None)
     if not bridge:
         return
+    bridge.close()
     logger.info('transcribe socketio cleanup sid=%s', sid)
     try:
         bridge.finish()
@@ -579,6 +604,10 @@ def register_transcribe_websocket_routes(app: Flask) -> None:
                 'language_code': language,
                 'start_sec': start_sec,
                 'gevent_threading_patched': gevent_patched,
+                'aws_region_env': (os.environ.get('AWS_REGION') or '').strip() or None,
+                'medical_transcribe_stream_region_env': (
+                    os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION') or ''
+                ).strip() or None,
             }), 200
         except BaseException as e:
             logger.exception('transcribe_stream_health failed')
@@ -589,6 +618,10 @@ def register_transcribe_websocket_routes(app: Flask) -> None:
                 'error': str(e)[:500],
                 'start_sec': round(time.time() - t0, 3),
                 'gevent_threading_patched': gevent_patched,
+                'aws_region_env': (os.environ.get('AWS_REGION') or '').strip() or None,
+                'medical_transcribe_stream_region_env': (
+                    os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION') or ''
+                ).strip() or None,
             }), 500
 
     @app.route('/ws/transcribe')
