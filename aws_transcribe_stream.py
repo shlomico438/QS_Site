@@ -237,6 +237,11 @@ def _pcm16_level(chunk: bytes) -> tuple[int, int]:
     return int((total / samples) ** 0.5) if samples else 0, peak
 
 
+def _is_transcribe_audio_timeout(err: Optional[BaseException]) -> bool:
+    msg = str(err or '').lower()
+    return 'timed out' in msg and 'no new audio' in msg
+
+
 class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
     """Accumulate AWS transcript events into a final string."""
 
@@ -425,6 +430,13 @@ class AwsTranscribeStreamSession:
                 len(self._handler.full_transcript if self._handler else ''),
             )
         if self._error:
+            if _is_transcribe_audio_timeout(self._error) and self.best_transcript:
+                logger.warning(
+                    'AWS Transcribe stream ended with audio timeout; preserving transcript (%d chars)',
+                    len(self.best_transcript),
+                )
+                self._transcript = self.best_transcript
+                return self._transcript
             raise self._error
         self._transcript = self.best_transcript
         return self._transcript
@@ -460,13 +472,20 @@ class AwsTranscribeStreamSession:
         try:
             self._transcript = self._loop.run_until_complete(self._async_run())
         except BaseException as e:
-            self._error = e
-            logger.exception('AWS Transcribe streaming session failed')
-            if not self._aws_accepted and self.on_error:
-                try:
-                    self.on_error(e)
-                except Exception:
-                    logger.debug('AWS Transcribe on_error callback failed', exc_info=True)
+            if _is_transcribe_audio_timeout(e) and self.best_transcript:
+                logger.warning(
+                    'AWS Transcribe stream audio timeout with transcript preserved (%d chars)',
+                    len(self.best_transcript),
+                )
+                self._transcript = self.best_transcript
+            else:
+                self._error = e
+                logger.exception('AWS Transcribe streaming session failed')
+                if not self._aws_accepted and self.on_error:
+                    try:
+                        self.on_error(e)
+                    except Exception:
+                        logger.debug('AWS Transcribe on_error callback failed', exc_info=True)
         finally:
             if self._aws_accepted:
                 _mark_transcribe_inactive(self, 'thread_finished')
@@ -838,6 +857,14 @@ class TranscribeStreamBridge:
             result_payload['partials'] = self.session.partial_history
             result_payload['language_code'] = self.session.language_code
             result_payload['sample_rate_hz'] = self.session.sample_rate_hz
+            if result_payload['error'] and transcript and _is_transcribe_audio_timeout(
+                Exception(result_payload['error'])
+            ):
+                logger.warning(
+                    'transcribe finish ignoring audio-timeout error; transcript_len=%d',
+                    len(transcript),
+                )
+                result_payload['error'] = None
             logger.info(
                 'transcribe socketio finish received=%d queued=%d fed=%d transcript_len=%d',
                 self._audio_chunks_received,

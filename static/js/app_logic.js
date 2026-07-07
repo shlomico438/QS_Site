@@ -10901,8 +10901,9 @@ document.addEventListener('DOMContentLoaded', () => {
         medicalTabsWrap.style.display = showTabs ? 'flex' : 'none';
         if (medicalCopyBtn) {
             if (isMedicalModeEnabled()) {
-                medicalCopyBtn.style.display = (showTabs || hasLiveStream) ? 'inline-flex' : 'none';
-                if (showTabs || hasLiveStream) {
+                // During live streaming, copy lives inside the transcript editor only.
+                medicalCopyBtn.style.display = showTabs ? 'inline-flex' : 'none';
+                if (showTabs) {
                     const T = typeof window.t === 'function' ? window.t : (k) => k;
                     const label = T('medical_copy') || 'Copy';
                     medicalCopyBtn.setAttribute('aria-label', label);
@@ -12336,11 +12337,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (tx && streamResult) streamResult.transcript = tx;
                     } catch (streamErr) {
                         window._medicalAwsTranscribeStream = null;
-                        if (shouldSubmit && qsMedicalStreamOnlyMode()) {
+                        const fallbackTx = String(window._medicalLiveStreamText || '').trim();
+                        if (fallbackTx) {
+                            streamResult = { transcript: fallbackTx, partials: [] };
+                            console.warn('[medical] AWS Transcribe stream stop had error; using live transcript', streamErr);
+                        } else if (shouldSubmit && qsMedicalStreamOnlyMode()) {
                             throw new Error(`AWS Transcribe stream stop failed: ${(streamErr && streamErr.message) || streamErr}`);
+                        } else {
+                            console.warn('[medical] AWS Transcribe stream stop failed', streamErr);
+                            streamResult = null;
                         }
-                        console.warn('[medical] AWS Transcribe stream stop failed', streamErr);
-                        streamResult = null;
                     }
                     window._medicalAwsTranscribeStream = null;
                 }

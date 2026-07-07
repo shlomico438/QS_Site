@@ -178,12 +178,13 @@ export class MedicalAwsTranscribeStream {
             if (!this._finalTranscript && this._partials.length) {
                 this._finalTranscript = String(this._partials[this._partials.length - 1] || '').trim();
             }
-            if (msg.error) {
+            if (msg.error && !this._finalTranscript) {
                 if (this._stopReject) this._stopReject(new Error(String(msg.error)));
             } else if (this._stopResolve) {
                 this._stopResolve({
                     transcript: this._finalTranscript,
                     partials: this._partials.slice(),
+                    warning: msg.error ? String(msg.error) : null,
                 });
             }
         }
