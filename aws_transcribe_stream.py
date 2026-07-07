@@ -473,19 +473,21 @@ class AwsTranscribeStreamSession:
             self._ready_q.put_nowait(True)
         except _REAL_QUEUE_FULL:
             pass
-        if self.on_ready:
-            try:
-                self.on_ready()
-            except Exception:
-                logger.debug('AWS Transcribe on_ready callback failed', exc_info=True)
         self._handler = _CollectingTranscriptHandler(
             stream.output_stream,
             on_partial=self.on_partial,
         )
 
         async def _feed_aws() -> None:
+            # Poll the real OS-thread queue from this asyncio worker thread.
+            # asyncio.to_thread(queue.get) deadlocks under gevent (fed=0, AWS 15s timeout).
+            logger.info('transcribe AWS feed loop started session=%s', self.session_id)
             while True:
-                chunk = await asyncio.to_thread(self._thread_audio_q.get)
+                try:
+                    chunk = self._thread_audio_q.get_nowait()
+                except _REAL_QUEUE_EMPTY:
+                    await asyncio.sleep(0.002)
+                    continue
                 if chunk is None:
                     await stream.input_stream.end_stream()
                     return
@@ -501,6 +503,13 @@ class AwsTranscribeStreamSession:
                         self._bytes_fed_to_aws,
                     )
                 await stream.input_stream.send_audio_event(audio_chunk=chunk)
+
+        feed_task = asyncio.create_task(_feed_aws())
+        if self.on_ready:
+            try:
+                self.on_ready()
+            except Exception:
+                logger.debug('AWS Transcribe on_ready callback failed', exc_info=True)
 
         async def _max_session_guard() -> None:
             await asyncio.sleep(_transcribe_max_session_sec())
@@ -520,7 +529,7 @@ class AwsTranscribeStreamSession:
 
         guard_task = asyncio.create_task(_max_session_guard())
         try:
-            await asyncio.gather(_feed_aws(), self._handler.handle_events())
+            await asyncio.gather(feed_task, self._handler.handle_events())
         finally:
             guard_task.cancel()
         logger.info(
