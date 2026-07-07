@@ -57,6 +57,11 @@ try:
     # must run on the gevent hub (main thread).  Running it from an OS thread deadlocks on the
     # first I/O await.  Grab the original selector so we can build a real asyncio loop.
     _REAL_SELECTOR_CLASS = _gevent_monkey.get_original('selectors', 'DefaultSelector')
+    # Capture the main gevent hub at import time (we are on the main thread here).
+    # _run_on_hub uses hub.loop.run_callback which is thread-safe in libev and always
+    # dispatches to the main event loop even when called from an asyncio OS thread.
+    import gevent as _gevent_mod
+    _MAIN_GEVENT_HUB = _gevent_mod.get_hub()
 except Exception:  # pragma: no cover
     import selectors as _selectors_mod
     _REAL_THREAD = threading.Thread
@@ -65,6 +70,7 @@ except Exception:  # pragma: no cover
     _REAL_QUEUE_EMPTY = queue.Empty
     _REAL_QUEUE_FULL = queue.Full
     _REAL_SELECTOR_CLASS = _selectors_mod.DefaultSelector
+    _MAIN_GEVENT_HUB = None
     try:
         import _thread
         _REAL_START_NEW_THREAD = _thread.start_new_thread
@@ -528,12 +534,15 @@ class AwsTranscribeStreamSession:
                 if not drained:
                     await asyncio.sleep(0.005)
 
-        feed_task = asyncio.create_task(_feed_aws())
+        # Call on_ready directly — it schedules the Socket.IO 'ready' emit via
+        # _run_on_hub (main gevent hub), which is safe from this asyncio OS thread.
         if self.on_ready:
             try:
-                self._loop.call_soon(self.on_ready)
+                self.on_ready()
             except Exception:
                 logger.debug('AWS Transcribe on_ready callback failed', exc_info=True)
+
+        feed_task = asyncio.create_task(_feed_aws())
 
         async def _max_session_guard() -> None:
             await asyncio.sleep(_transcribe_max_session_sec())
@@ -618,16 +627,19 @@ def _coerce_audio_chunk(data) -> Optional[bytes]:
 
 
 def _run_on_hub(callback) -> None:
-    """Schedule callback on the gevent hub (safe from asyncio / OS worker threads)."""
+    """Schedule callback on the main gevent hub (safe from asyncio OS threads).
+
+    hub.loop.run_callback() is thread-safe in libev: it uses an async watcher to
+    wake the main event loop from any OS thread.  gevent.spawn() must NOT be used
+    here because get_hub() is thread-local — from an asyncio OS thread it returns a
+    per-thread mini-hub that is never started, so the callback would never fire.
+    """
     try:
-        import gevent
-        from gevent import getcurrent
-        hub = gevent.get_hub()
-        if hub is not None and getcurrent() is hub:
-            callback()
-            return
-        gevent.spawn(callback)
-        return
+        if _MAIN_GEVENT_HUB is not None:
+            loop = getattr(_MAIN_GEVENT_HUB, 'loop', None)
+            if loop is not None:
+                loop.run_callback(callback)
+                return
     except Exception:
         pass
     callback()
