@@ -53,12 +53,18 @@ try:
     _REAL_QUEUE = _gevent_monkey.get_original('queue', 'Queue')
     _REAL_QUEUE_EMPTY = _gevent_monkey.get_original('queue', 'Empty')
     _REAL_QUEUE_FULL = _gevent_monkey.get_original('queue', 'Full')
+    # gevent ≥21 patches asyncio.new_event_loop() to return a GeventSelectorEventLoop that
+    # must run on the gevent hub (main thread).  Running it from an OS thread deadlocks on the
+    # first I/O await.  Grab the original selector so we can build a real asyncio loop.
+    _REAL_SELECTOR_CLASS = _gevent_monkey.get_original('selectors', 'DefaultSelector')
 except Exception:  # pragma: no cover
+    import selectors as _selectors_mod
     _REAL_THREAD = threading.Thread
     _REAL_LOCK = threading.Lock
     _REAL_QUEUE = queue.Queue
     _REAL_QUEUE_EMPTY = queue.Empty
     _REAL_QUEUE_FULL = queue.Full
+    _REAL_SELECTOR_CLASS = _selectors_mod.DefaultSelector
     try:
         import _thread
         _REAL_START_NEW_THREAD = _thread.start_new_thread
@@ -437,7 +443,13 @@ class AwsTranscribeStreamSession:
         return []
 
     def _thread_main(self) -> None:
-        self._loop = asyncio.new_event_loop()
+        # Build a genuine asyncio SelectorEventLoop using the original pre-gevent selector.
+        # asyncio.new_event_loop() returns a GeventSelectorEventLoop in gevent ≥21 which
+        # must run on the gevent hub — calling it from an OS thread deadlocks on I/O awaits.
+        try:
+            self._loop = asyncio.SelectorEventLoop(_REAL_SELECTOR_CLASS())
+        except Exception:
+            self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
             self._transcript = self._loop.run_until_complete(self._async_run())
@@ -501,6 +513,7 @@ class AwsTranscribeStreamSession:
                         logger.info('transcribe end-of-stream marker reached fed=%d', self._chunks_fed_to_aws)
                         await stream.input_stream.end_stream()
                         return
+                    await stream.input_stream.send_audio_event(audio_chunk=chunk)
                     self._chunks_fed_to_aws += 1
                     self._bytes_fed_to_aws += len(chunk)
                     if self._chunks_fed_to_aws == 1:
@@ -512,7 +525,6 @@ class AwsTranscribeStreamSession:
                             self._chunks_queued,
                             self._bytes_fed_to_aws,
                         )
-                    await stream.input_stream.send_audio_event(audio_chunk=chunk)
                 if not drained:
                     await asyncio.sleep(0.005)
 
