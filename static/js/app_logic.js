@@ -11750,34 +11750,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function resolveMedicalStreamTranscript(streamResult) {
+        const live = String(window._medicalLiveStreamText || '').trim();
+        const fromFinal = String((streamResult && streamResult.transcript) || '').trim();
+        const fromPartials = Array.isArray(streamResult && streamResult.partials)
+            ? streamResult.partials.map((p) => String(p || '').trim()).filter(Boolean).join(' ')
+            : '';
+        const candidates = [live, fromFinal, fromPartials].filter(Boolean);
+        if (!candidates.length) return '';
+        return candidates.reduce((best, cur) => (cur.length > best.length ? cur : best));
+    }
+
     async function uploadWarmedMedicalRecordingWithStream(file, streamResult, durationMs) {
-        const transcript = String((streamResult && streamResult.transcript) || '').trim();
+        const transcript = resolveMedicalStreamTranscript(streamResult);
         if (!transcript) return false;
 
-        let session = window._medicalWarmupSession;
-        if (!session && window._medicalWarmupPromise) {
-            try {
-                session = await window._medicalWarmupPromise;
-            } catch (_) {
-                session = null;
-            }
-        }
-        if (!session || !session.url || !session.s3Key || !session.jobId) {
-            const mime = String(file.type || 'audio/webm').toLowerCase();
-            session = await createMedicalUploadSession(mime);
-            window._medicalWarmupSession = session;
-        }
+        const mime = normalizeMedicalUploadMime(file.type || 'audio/webm');
+        const session = await createMedicalUploadSession(mime);
         if (!session || !session.url || !session.s3Key || !session.jobId) return false;
 
         const objectUrl = URL.createObjectURL(file);
         window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'medical_recording';
         window.uploadWasVideo = false;
         qsPersistUploadWasVideoFlag(false);
-        setLocalPreviewAudio(objectUrl, file.type || session.filetype || 'audio/webm');
+        setLocalPreviewAudio(objectUrl, session.filetype || mime);
 
-        const headers = buildMedicalUploadHeaders(session, file);
         showProgressBar();
-        qsSetProgressBarPct(10);
+        qsSetProgressBarPct(20);
         const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : 'Uploading...') || '').replace(/\.\.\.?$/, '');
         if (mainBtn) {
             mainBtn.disabled = true;
@@ -11785,10 +11784,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         setDiarizationBusyState(true);
         setTranscriptActionButtonsVisible(false);
-        const putRes = await fetch(session.url, { method: 'PUT', headers, body: file });
-        if (!putRes.ok) throw new Error(`Recording upload failed: HTTP ${putRes.status}`);
-        qsSetProgressBarPct(60);
-        if (mainBtn) mainBtn.innerText = uploadLabel;
 
         localStorage.setItem('lastS3Key', session.s3Key);
         localStorage.setItem('pendingS3Key', session.s3Key);
@@ -11797,8 +11792,6 @@ document.addEventListener('DOMContentLoaded', () => {
         window._qsSummaryGptDoneJobId = null;
         window._qsCreditsDeferredForJobId = null;
         qsResetCleanupState();
-        const dbId = localStorage.getItem('lastJobDbId');
-        if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
 
         let warmUserId = window.__QS_MEDICAL_WARMUP_USER_ID;
         try {
@@ -11831,7 +11824,7 @@ document.addEventListener('DOMContentLoaded', () => {
             throw new Error(msg);
         }
         qsApplyTriggerCreditFields(completeData);
-        qsSetProgressBarPct(100);
+        qsSetProgressBarPct(70);
 
         if (typeof window.qsSetActiveJob === 'function') {
             window.qsSetActiveJob(session.jobId);
@@ -11852,6 +11845,42 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof window.handleJobUpdate === 'function') {
             await window.handleJobUpdate(payload);
         }
+
+        const headers = buildMedicalUploadHeaders(session, file);
+        try {
+            qsUploadTraceErr('medical_stream_put_start', { jobId: session.jobId, bytes: file.size, mime: headers['Content-Type'] });
+            const putRes = await fetch(session.url, {
+                method: 'PUT',
+                headers,
+                body: file,
+                mode: 'cors',
+                credentials: 'omit',
+            });
+            if (!putRes.ok) {
+                const errText = await putRes.text().catch(() => '');
+                qsUploadTraceErr('medical_stream_put_failed', {
+                    jobId: session.jobId,
+                    status: putRes.status,
+                    errText: String(errText || '').slice(0, 300),
+                });
+                console.warn('[medical] audio archive PUT failed', putRes.status, errText);
+                if (typeof showStatus === 'function') {
+                    showStatus('Transcript saved; audio archive upload failed.', true, { duration: 6000 });
+                }
+            } else {
+                qsUploadTraceErr('medical_stream_put_done', { jobId: session.jobId, bytes: file.size });
+                const dbId = localStorage.getItem('lastJobDbId');
+                if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
+            }
+        } catch (putErr) {
+            qsUploadTraceErr('medical_stream_put_error', { jobId: session.jobId, err: String((putErr && putErr.message) || putErr) });
+            console.warn('[medical] audio archive PUT error', putErr);
+            if (typeof showStatus === 'function') {
+                showStatus('Transcript saved; audio archive upload failed.', true, { duration: 6000 });
+            }
+        }
+
+        qsSetProgressBarPct(100);
         window._medicalLiveStreamText = '';
         window._medicalWarmupSession = null;
         window._medicalWarmupPromise = null;
@@ -11994,7 +12023,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const signed = { ...((session && session.signedHeaders) || {}) };
         delete signed['Content-Type'];
         delete signed['content-type'];
-        return { ...signed, 'Content-Type': uploadMime };
+        return {
+            'Content-Type': uploadMime,
+            ...signed,
+        };
     }
 
     function encodeAudioBufferToWavBlob(buffers) {
@@ -12079,7 +12111,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             console.warn('[medical] failed to stitch recording segments as wav; falling back to raw segments', e);
         }
-        const mime = fallbackMime || (segments[0] && segments[0].type) || 'audio/webm';
+        const mime = normalizeMedicalUploadMime(fallbackMime || (segments[0] && segments[0].type) || 'audio/webm');
         const ext = medicalBlobExtensionFromMime(mime);
         return new File(segments, `${prefix}_${Date.now()}.${ext}`, { type: mime });
     }

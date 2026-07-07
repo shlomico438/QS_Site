@@ -1393,7 +1393,9 @@ def _s3_key_likely_video_container(s3_key):
 def _guess_upload_content_type(filename, file_type):
     """Normalize Content-Type for S3 uploads when the browser omits or mislabels audio (esp. .m4a)."""
     name = str(filename or '').lower()
-    ft = str(file_type or '').strip()
+    ft = str(file_type or '').strip().lower()
+    if ';' in ft:
+        ft = ft.split(';', 1)[0].strip()
     if name.endswith('.m4a'):
         return ft if ft.lower().startswith('audio/') else 'audio/mp4'
     if name.endswith('.mp3'):

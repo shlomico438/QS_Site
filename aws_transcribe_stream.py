@@ -323,6 +323,7 @@ class AwsTranscribeStreamSession:
         on_partial: Optional[Callable[[str], None]] = None,
         on_ready: Optional[Callable[[], None]] = None,
         on_error: Optional[Callable[[BaseException], None]] = None,
+        on_finished: Optional[Callable[['AwsTranscribeStreamSession', str], None]] = None,
     ):
         self.session_id = uuid.uuid4().hex[:12]
         self._created_at = time.time()
@@ -332,6 +333,7 @@ class AwsTranscribeStreamSession:
         self.on_partial = on_partial
         self.on_ready = on_ready
         self.on_error = on_error
+        self.on_finished = on_finished
         # Use a plain deque for cross-thread audio transfer.
         # deque.append / deque.popleft are GIL-atomic in CPython — no locks needed,
         # safe from any gevent greenlet or real OS thread without gevent interference.
@@ -349,6 +351,7 @@ class AwsTranscribeStreamSession:
         self._chunks_fed_to_aws = 0
         self._bytes_fed_to_aws = 0
         self._aws_accepted = False
+        self._ended_max_duration = False
 
     def _start_blocking(self, timeout_sec: float = 30.0) -> None:
         """Run only from an OS thread (ThreadPoolExecutor worker)."""
@@ -469,8 +472,13 @@ class AwsTranscribeStreamSession:
         except Exception:
             self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        end_reason = 'ended'
         try:
             self._transcript = self._loop.run_until_complete(self._async_run())
+            if self._ended_max_duration:
+                end_reason = 'max_duration'
+            elif self._closed:
+                end_reason = 'stopped'
         except BaseException as e:
             if _is_transcribe_audio_timeout(e) and self.best_transcript:
                 logger.warning(
@@ -478,8 +486,12 @@ class AwsTranscribeStreamSession:
                     len(self.best_transcript),
                 )
                 self._transcript = self.best_transcript
+                end_reason = 'audio_timeout'
+            elif _is_transcribe_audio_timeout(e):
+                end_reason = 'audio_timeout'
             else:
                 self._error = e
+                end_reason = 'error'
                 logger.exception('AWS Transcribe streaming session failed')
                 if not self._aws_accepted and self.on_error:
                     try:
@@ -489,6 +501,14 @@ class AwsTranscribeStreamSession:
         finally:
             if self._aws_accepted:
                 _mark_transcribe_inactive(self, 'thread_finished')
+            finished_cb = self.on_finished
+            if finished_cb:
+                def _notify_finished() -> None:
+                    try:
+                        finished_cb(self, end_reason)
+                    except Exception:
+                        logger.debug('AWS Transcribe on_finished callback failed', exc_info=True)
+                _run_on_hub(_notify_finished)
             try:
                 self._ready_q.put_nowait(True)
             except _REAL_QUEUE_FULL:
@@ -567,6 +587,7 @@ class AwsTranscribeStreamSession:
             await asyncio.sleep(_transcribe_max_session_sec())
             if self._closed:
                 return
+            self._ended_max_duration = True
             self._closed = True
             logger.warning(
                 'AWS Transcribe stream max duration reached session=%s chunks_fed=%d bytes_fed=%d',
@@ -683,6 +704,45 @@ class TranscribeStreamBridge:
         self._audio_chunks_received = 0
         self._last_audio_rms = 0
         self._last_audio_peak = 0
+        self._committed_segments: List[str] = []
+        self._combined_partials: List[str] = []
+        self._aws_session_count = 0
+        self._rollover_lock = _REAL_LOCK()
+        self._ever_ready = False
+
+    def _combined_transcript(self, current_session_text: str = '') -> str:
+        parts = list(self._committed_segments)
+        current = str(current_session_text or '').strip()
+        if current:
+            parts.append(current)
+        return ' '.join(p.strip() for p in parts if p.strip()).strip()
+
+    def _commit_session_transcript(self, session: Optional['AwsTranscribeStreamSession']) -> None:
+        if not session:
+            return
+        text = str(session.best_transcript or '').strip()
+        if not text:
+            return
+        if self._committed_segments and self._committed_segments[-1] == text:
+            return
+        self._committed_segments.append(text)
+
+    def _roll_over_session(self, reason: str) -> None:
+        if not self._alive:
+            return
+        with self._rollover_lock:
+            self.session_live = False
+            with self.start_lock:
+                self.start_scheduled = False
+            self.session = self._make_session()
+            logger.info(
+                'transcribe starting replacement aws session #%d after %s (committed_len=%d pending_audio=%d)',
+                self._aws_session_count,
+                reason,
+                len(self._combined_transcript('')),
+                len(self.audio_pending),
+            )
+            self._schedule_session_start()
 
     def close(self) -> None:
         self._alive = False
@@ -703,12 +763,33 @@ class TranscribeStreamBridge:
 
     def _on_partial(self, text: str) -> None:
         try:
+            combined = self._combined_transcript(text)
+            if not combined:
+                return
             if not getattr(self, '_logged_first_partial', False):
                 self._logged_first_partial = True
-                logger.info('transcribe first partial (%d chars)', len(text))
-            self._emit({'type': 'partial', 'text': text})
+                logger.info('transcribe first partial (%d chars)', len(combined))
+            self._combined_partials.append(combined)
+            self._emit({'type': 'partial', 'text': combined})
         except Exception:
             logger.debug('Failed to send partial transcript to client', exc_info=True)
+
+    def _on_session_finished(self, session: 'AwsTranscribeStreamSession', reason: str) -> None:
+        if not self._alive:
+            return
+        if session is not self.session:
+            return
+        if reason in ('audio_timeout', 'max_duration'):
+            self._commit_session_transcript(session)
+            logger.info(
+                'transcribe aws session ended (%s); transparent rollover for client (committed_len=%d)',
+                reason,
+                len(self._combined_transcript('')),
+            )
+            self._roll_over_session(reason)
+            return
+        if reason == 'error':
+            logger.error('transcribe aws session ended with error while recording active')
 
     def _flush_pending_audio(self) -> None:
         if not self.session or not self.session_live:
@@ -724,14 +805,23 @@ class TranscribeStreamBridge:
     def _on_session_ready(self) -> None:
         if not self.session:
             return
+        was_live = self.session_live
         self.session_live = True
-        self._emit({
-            'type': 'ready',
-            'language_code': self.session.language_code,
-            'sample_rate_hz': self.session.sample_rate_hz,
-            'region': self.session.region,
-        })
-        logger.info('transcribe aws ready region=%s (from aws thread)', self.session.region)
+        if not self._ever_ready:
+            self._ever_ready = True
+            self._emit({
+                'type': 'ready',
+                'language_code': self.session.language_code,
+                'sample_rate_hz': self.session.sample_rate_hz,
+                'region': self.session.region,
+            })
+            logger.info('transcribe aws ready region=%s (from aws thread)', self.session.region)
+        elif not was_live:
+            logger.info(
+                'transcribe aws rollover ready session=%s (#%d)',
+                self.session.session_id,
+                self._aws_session_count,
+            )
         self._flush_pending_audio()
 
     def _on_session_error(self, err: BaseException) -> None:
@@ -766,6 +856,7 @@ class TranscribeStreamBridge:
         _start_real_os_thread(self._begin_session_in_os_thread, 'aws-transcribe-start')
 
     def _make_session(self) -> AwsTranscribeStreamSession:
+        self._aws_session_count += 1
         return AwsTranscribeStreamSession(
             region=self.region,
             language_code=self.language_code,
@@ -773,6 +864,7 @@ class TranscribeStreamBridge:
             on_partial=self._on_partial,
             on_ready=self._on_session_ready,
             on_error=self._on_session_error,
+            on_finished=self._on_session_finished,
         )
 
     def handle_start_config(self, cfg: dict) -> None:
@@ -853,24 +945,25 @@ class TranscribeStreamBridge:
                 transcript = self.session.best_transcript
             if not transcript:
                 transcript = self.session.best_transcript
-            result_payload['transcript'] = transcript
-            result_payload['partials'] = self.session.partial_history
+            result_payload['transcript'] = self._combined_transcript(transcript or '')
+            result_payload['partials'] = self._combined_partials or self.session.partial_history
             result_payload['language_code'] = self.session.language_code
             result_payload['sample_rate_hz'] = self.session.sample_rate_hz
-            if result_payload['error'] and transcript and _is_transcribe_audio_timeout(
+            if result_payload['error'] and result_payload['transcript'] and _is_transcribe_audio_timeout(
                 Exception(result_payload['error'])
             ):
                 logger.warning(
                     'transcribe finish ignoring audio-timeout error; transcript_len=%d',
-                    len(transcript),
+                    len(result_payload['transcript']),
                 )
                 result_payload['error'] = None
             logger.info(
-                'transcribe socketio finish received=%d queued=%d fed=%d transcript_len=%d',
+                'transcribe socketio finish received=%d queued=%d fed=%d transcript_len=%d aws_sessions=%d',
                 self._audio_chunks_received,
                 getattr(self.session, '_chunks_queued', 0),
                 getattr(self.session, '_chunks_fed_to_aws', 0),
-                len(transcript or ''),
+                len(result_payload['transcript'] or ''),
+                self._aws_session_count,
             )
         return result_payload
 
