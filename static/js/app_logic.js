@@ -11689,6 +11689,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             const msg = String((e && e.message) || e || 'transcribe_stream_start_failed');
             console.error('[medical] AWS Transcribe stream start failed', e);
+            try { stream.abort(); } catch (_) {}
             abortMedicalAwsTranscribeStream();
             if (typeof showStatus === 'function') {
                 showStatus(`AWS Transcribe stream: ${msg}`, true);

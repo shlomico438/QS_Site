@@ -47,8 +47,30 @@ logger = logging.getLogger(__name__)
 try:
     from gevent import monkey as _gevent_monkey
     _REAL_THREAD = _gevent_monkey.get_original('threading', 'Thread')
+    _REAL_START_NEW_THREAD = _gevent_monkey.get_original('_thread', 'start_new_thread')
 except Exception:  # pragma: no cover
     _REAL_THREAD = threading.Thread
+    try:
+        import _thread
+        _REAL_START_NEW_THREAD = _thread.start_new_thread
+    except Exception:
+        _REAL_START_NEW_THREAD = None
+
+
+def _start_real_os_thread(target: Callable[[], None], name: str) -> None:
+    """Start target in a real OS thread, bypassing gevent-patched Thread.start()."""
+    def _runner() -> None:
+        try:
+            threading.current_thread().name = name
+        except Exception:
+            pass
+        target()
+
+    if _REAL_START_NEW_THREAD is not None:
+        _REAL_START_NEW_THREAD(_runner, ())
+        return
+    worker = _REAL_THREAD(target=_runner, name=name, daemon=True)
+    worker.start()
 
 DEFAULT_LANGUAGE = 'he-IL'
 DEFAULT_SAMPLE_RATE = 16000
@@ -297,9 +319,8 @@ class AwsTranscribeStreamSession:
         """Run only from an OS thread (ThreadPoolExecutor worker)."""
         if self._thread:
             return
-        worker = _REAL_THREAD(target=self._thread_main, name='aws-transcribe-stream', daemon=True)
-        worker.start()
-        self._thread = worker
+        self._thread = True  # Marker only; low-level threads do not expose a joinable Thread object.
+        _start_real_os_thread(self._thread_main, 'aws-transcribe-stream')
         t_wait = time.time()
         try:
             self._ready_q.get(timeout=timeout_sec)
@@ -323,8 +344,7 @@ class AwsTranscribeStreamSession:
                 except queue.Full:
                     pass
 
-        worker = _REAL_THREAD(target=_run, name='aws-transcribe-start-blocking', daemon=True)
-        worker.start()
+        _start_real_os_thread(_run, 'aws-transcribe-start-blocking')
         try:
             result = done_q.get(timeout=timeout_sec + 10)
         except queue.Empty:
@@ -553,8 +573,9 @@ def _run_on_hub(callback) -> None:
 class TranscribeStreamBridge:
     """Shared orchestration for one live transcribe client (WS or Socket.IO)."""
 
-    def __init__(self, send_json: Callable[[dict], None]):
+    def __init__(self, send_json: Callable[[dict], None], on_fatal: Optional[Callable[[], None]] = None):
         self._send = send_json
+        self._on_fatal = on_fatal
         self._alive = True
         self.region = transcribe_stream_region()
         self.language_code = DEFAULT_LANGUAGE
@@ -621,18 +642,18 @@ class TranscribeStreamBridge:
                 'error': str(e)[:500],
                 'region': getattr(self.session, 'region', self.region),
             })
+            if self._on_fatal:
+                try:
+                    self._on_fatal()
+                except Exception:
+                    logger.debug('transcribe fatal cleanup callback failed', exc_info=True)
 
     def _schedule_session_start(self) -> None:
         with self.start_lock:
             if self.start_scheduled:
                 return
             self.start_scheduled = True
-        starter = _REAL_THREAD(
-            target=self._begin_session_in_os_thread,
-            name='aws-transcribe-start',
-            daemon=True,
-        )
-        starter.start()
+        _start_real_os_thread(self._begin_session_in_os_thread, 'aws-transcribe-start')
 
     def _make_session(self) -> AwsTranscribeStreamSession:
         return AwsTranscribeStreamSession(
@@ -759,7 +780,10 @@ def register_transcribe_socketio_handlers(socketio) -> None:
         sid = request.sid
         logger.info('transcribe socketio start sid=%s', sid)
         cleanup_transcribe_socketio_bridge(sid)
-        bridge = TranscribeStreamBridge(lambda payload: _emit_to_sid(sid, payload))
+        bridge = TranscribeStreamBridge(
+            lambda payload: _emit_to_sid(sid, payload),
+            on_fatal=lambda: _SOCKETIO_BRIDGES.pop(sid, None),
+        )
         _SOCKETIO_BRIDGES[sid] = bridge
         bridge.send_connected()
         cfg = data if isinstance(data, dict) else {}
