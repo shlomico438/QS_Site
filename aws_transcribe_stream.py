@@ -47,9 +47,17 @@ logger = logging.getLogger(__name__)
 try:
     from gevent import monkey as _gevent_monkey
     _REAL_THREAD = _gevent_monkey.get_original('threading', 'Thread')
+    _REAL_LOCK = _gevent_monkey.get_original('threading', 'Lock')
     _REAL_START_NEW_THREAD = _gevent_monkey.get_original('_thread', 'start_new_thread')
+    _REAL_QUEUE = _gevent_monkey.get_original('queue', 'Queue')
+    _REAL_QUEUE_EMPTY = _gevent_monkey.get_original('queue', 'Empty')
+    _REAL_QUEUE_FULL = _gevent_monkey.get_original('queue', 'Full')
 except Exception:  # pragma: no cover
     _REAL_THREAD = threading.Thread
+    _REAL_LOCK = threading.Lock
+    _REAL_QUEUE = queue.Queue
+    _REAL_QUEUE_EMPTY = queue.Empty
+    _REAL_QUEUE_FULL = queue.Full
     try:
         import _thread
         _REAL_START_NEW_THREAD = _thread.start_new_thread
@@ -154,7 +162,7 @@ DEFAULT_REGION = transcribe_stream_region()
 
 # gevent greenlets must not call patched threading.Thread.start() for the AWS asyncio loop.
 _ACTIVE_TRANSCRIBE_SESSIONS = {}
-_ACTIVE_TRANSCRIBE_LOCK = threading.Lock()
+_ACTIVE_TRANSCRIBE_LOCK = _REAL_LOCK()
 
 
 def _transcribe_max_session_sec() -> float:
@@ -308,8 +316,8 @@ class AwsTranscribeStreamSession:
         self._handler: Optional[_CollectingTranscriptHandler] = None
         self._transcript = ''
         self._error: Optional[BaseException] = None
-        self._ready_q: queue.Queue = queue.Queue(maxsize=1)
-        self._finished_q: queue.Queue = queue.Queue(maxsize=1)
+        self._ready_q = _REAL_QUEUE(maxsize=1)
+        self._finished_q = _REAL_QUEUE(maxsize=1)
         self._closed = False
         self._chunks_fed_to_aws = 0
         self._bytes_fed_to_aws = 0
@@ -324,7 +332,7 @@ class AwsTranscribeStreamSession:
         t_wait = time.time()
         try:
             self._ready_q.get(timeout=timeout_sec)
-        except queue.Empty:
+        except _REAL_QUEUE_EMPTY:
             raise TimeoutError(f'AWS Transcribe stream did not start in time ({round(time.time() - t_wait, 3)}s)')
         if self._error:
             raise self._error
@@ -332,7 +340,7 @@ class AwsTranscribeStreamSession:
 
     def start(self, timeout_sec: float = 30.0) -> None:
         """Blocking start safe from HTTP handlers / health checks (not gevent WS greenlets)."""
-        done_q: queue.Queue = queue.Queue(maxsize=1)
+        done_q = _REAL_QUEUE(maxsize=1)
 
         def _run() -> None:
             try:
@@ -341,13 +349,13 @@ class AwsTranscribeStreamSession:
             except BaseException as e:
                 try:
                     done_q.put_nowait(e)
-                except queue.Full:
+                except _REAL_QUEUE_FULL:
                     pass
 
         _start_real_os_thread(_run, 'aws-transcribe-start-blocking')
         try:
             result = done_q.get(timeout=timeout_sec + 10)
-        except queue.Empty:
+        except _REAL_QUEUE_EMPTY:
             raise TimeoutError(f'AWS Transcribe stream did not start in time ({timeout_sec + 10:.1f}s)')
         if isinstance(result, BaseException):
             raise result
@@ -387,7 +395,7 @@ class AwsTranscribeStreamSession:
                 logger.warning('Failed to signal end-of-stream to AWS: %s', e)
         try:
             self._finished_q.get(timeout=timeout_sec)
-        except queue.Empty:
+        except _REAL_QUEUE_EMPTY:
             logger.warning(
                 'AWS Transcribe stream stop timed out after %.1fs chunks_fed=%d bytes_fed=%d transcript_len=%d',
                 timeout_sec,
@@ -432,11 +440,11 @@ class AwsTranscribeStreamSession:
                 _mark_transcribe_inactive(self, 'thread_finished')
             try:
                 self._ready_q.put_nowait(True)
-            except queue.Full:
+            except _REAL_QUEUE_FULL:
                 pass
             try:
                 self._finished_q.put_nowait(True)
-            except queue.Full:
+            except _REAL_QUEUE_FULL:
                 pass
             try:
                 self._loop.close()
@@ -457,7 +465,7 @@ class AwsTranscribeStreamSession:
         _mark_transcribe_active(self)
         try:
             self._ready_q.put_nowait(True)
-        except queue.Full:
+        except _REAL_QUEUE_FULL:
             pass
         self._handler = _CollectingTranscriptHandler(
             stream.output_stream,
@@ -583,7 +591,7 @@ class TranscribeStreamBridge:
         self.session: Optional[AwsTranscribeStreamSession] = None
         self.audio_pending: List[bytes] = []
         self.session_live = False
-        self.start_lock = threading.Lock()
+        self.start_lock = _REAL_LOCK()
         self.start_scheduled = False
         self._logged_first_partial = False
         self._audio_chunks_received = 0
