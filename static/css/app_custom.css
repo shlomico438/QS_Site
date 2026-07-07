@@ -3314,6 +3314,38 @@ body.has-transcript-actions .main-app-container.medical-mode #transcript-window 
   background: #ffffff;
 }
 
+.medical-live-transcript-shell {
+  display: flex;
+  flex-direction: column;
+}
+
+.medical-live-transcript-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 12px 0;
+}
+
+.medical-live-transcript-shell[dir="rtl"] .medical-live-transcript-toolbar {
+  justify-content: flex-start;
+}
+
+.medical-live-transcript-copy {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.medical-live-transcript-copy:hover {
+  background: #f8fafc;
+}
+
 /* Medical training: light placeholder when textarea has no label */
 .qs-medical-training-textarea::placeholder {
   color: #94a3b8;

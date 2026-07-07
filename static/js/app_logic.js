@@ -6291,7 +6291,10 @@ function buildTranscriptPlainBodyForExport() {
 }
 
 function getMedicalActiveTabTextForCopy() {
+    const live = String(window._medicalLiveStreamText || '').trim();
     const active = String(window.medicalActiveTab || 'summary');
+    const hasSegments = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
+    if (live && (active === 'transcript' || !hasSegments)) return live;
     if (active === 'summary') {
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
         const mc = String(fmt.medical_chief_complaint || '').trim();
@@ -10893,16 +10896,23 @@ document.addEventListener('DOMContentLoaded', () => {
             )
         );
         const hasTranscript = hasSegments || hasWordModel;
+        const hasLiveStream = !!String(window._medicalLiveStreamText || '').trim();
         const showTabs = isMedicalModeEnabled() && (hasTranscript || hasFormattedSummary || window._medicalHasResult === true);
         medicalTabsWrap.style.display = showTabs ? 'flex' : 'none';
         if (medicalCopyBtn) {
             if (isMedicalModeEnabled()) {
-                medicalCopyBtn.style.display = showTabs ? 'inline-flex' : 'none';
+                medicalCopyBtn.style.display = (showTabs || hasLiveStream) ? 'inline-flex' : 'none';
+                if (showTabs || hasLiveStream) {
+                    const T = typeof window.t === 'function' ? window.t : (k) => k;
+                    const label = T('medical_copy') || 'Copy';
+                    medicalCopyBtn.setAttribute('aria-label', label);
+                    medicalCopyBtn.setAttribute('title', label);
+                }
             } else {
                 medicalCopyBtn.style.removeProperty('display');
             }
         }
-        if (!showTabs) return;
+        if (!showTabs && !hasLiveStream) return;
         // In medical mode, summary should be the main/default tab, including simulation.
         if (!window.medicalActiveTab) {
             window.medicalActiveTab = hasFormattedSummary ? 'summary' : 'transcript';
@@ -11622,7 +11632,48 @@ document.addEventListener('DOMContentLoaded', () => {
         const dir = isRtl ? 'rtl' : 'ltr';
         const align = isRtl ? 'right' : 'left';
         const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        tw.innerHTML = `<div class="medical-live-transcript" dir="${dir}" style="text-align:${align};padding:12px 16px;white-space:pre-wrap;line-height:1.5;">${esc(text)}</div>`;
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        const copyLabel = esc(T('medical_copy') || (isRtl ? 'העתק' : 'Copy'));
+        tw.innerHTML = (
+            `<div class="medical-live-transcript-shell" dir="${dir}">` +
+            `<div class="medical-live-transcript-toolbar" contenteditable="false">` +
+            `<button type="button" class="medical-live-transcript-copy" data-medical-copy-live ` +
+            `aria-label="${copyLabel}" title="${copyLabel}">` +
+            `<span class="medical-copy-icon" aria-hidden="true"></span></button></div>` +
+            `<div class="medical-live-transcript" style="text-align:${align};padding:4px 16px 12px;white-space:pre-wrap;line-height:1.5;">${esc(text)}</div>` +
+            `</div>`
+        );
+        try { updateMedicalTabUi(); } catch (_) {}
+    }
+
+    async function copyMedicalLiveStreamText() {
+        const text = String(window._medicalLiveStreamText || '').trim();
+        const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+        const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        if (!text) {
+            if (typeof showStatus === 'function') {
+                showStatus(T('medical_no_text_to_copy') || (isRtl ? 'אין טקסט להעתקה' : 'No text to copy'), true);
+            }
+            return;
+        }
+        if (typeof requireUserForCopyOrDownload === 'function') {
+            const ok = await requireUserForCopyOrDownload();
+            if (!ok) return;
+        }
+        try {
+            await navigator.clipboard.writeText(text);
+            if (typeof showStatus === 'function') {
+                showStatus(T('text_copied') || (isRtl ? 'הטקסט הועתק.' : 'Text copied.'), false, { duration: 2500 });
+            }
+            try {
+                if (typeof ensureJobRecordOnExport === 'function') await ensureJobRecordOnExport();
+            } catch (_) {}
+        } catch (_) {
+            if (typeof showStatus === 'function') {
+                showStatus(isRtl ? 'העתקה נכשלה.' : 'Copy failed.', true);
+            }
+        }
     }
 
     function renderMedicalLiveStreamStatus(statusKey) {
@@ -11723,10 +11774,7 @@ document.addEventListener('DOMContentLoaded', () => {
         qsPersistUploadWasVideoFlag(false);
         setLocalPreviewAudio(objectUrl, file.type || session.filetype || 'audio/webm');
 
-        const headers = {
-            'Content-Type': session.filetype || file.type || 'audio/webm',
-            ...(session.signedHeaders || {})
-        };
+        const headers = buildMedicalUploadHeaders(session, file);
         showProgressBar();
         qsSetProgressBarPct(10);
         const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : 'Uploading...') || '').replace(/\.\.\.?$/, '');
@@ -11803,6 +11851,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof window.handleJobUpdate === 'function') {
             await window.handleJobUpdate(payload);
         }
+        window._medicalLiveStreamText = '';
         window._medicalWarmupSession = null;
         window._medicalWarmupPromise = null;
         return true;
@@ -11828,10 +11877,7 @@ document.addEventListener('DOMContentLoaded', () => {
         qsPersistUploadWasVideoFlag(false);
         setLocalPreviewAudio(objectUrl, file.type || session.filetype || 'audio/webm');
 
-        const headers = {
-            'Content-Type': session.filetype || file.type || 'audio/webm',
-            ...(session.signedHeaders || {})
-        };
+        const headers = buildMedicalUploadHeaders(session, file);
         showProgressBar();
         qsSetProgressBarPct(10);
         const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : 'Uploading...') || '').replace(/\.\.\.?$/, '');
@@ -11942,6 +11988,14 @@ document.addEventListener('DOMContentLoaded', () => {
         return mime.split(';')[0] || 'audio/webm';
     }
 
+    function buildMedicalUploadHeaders(session, file) {
+        const uploadMime = normalizeMedicalUploadMime((session && session.filetype) || (file && file.type));
+        const signed = { ...((session && session.signedHeaders) || {}) };
+        delete signed['Content-Type'];
+        delete signed['content-type'];
+        return { ...signed, 'Content-Type': uploadMime };
+    }
+
     function encodeAudioBufferToWavBlob(buffers) {
         const valid = (buffers || []).filter(Boolean);
         if (!valid.length) return null;
@@ -12005,8 +12059,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const segments = (window._medicalRecorderSegments || []).filter((b) => b && b.size > 0);
         if (segments.length <= 1) {
             const only = segments[0] || new Blob(window._medicalRecorderChunks || [], { type: fallbackMime || 'audio/webm' });
-            const ext = medicalBlobExtensionFromMime(only.type || fallbackMime);
-            return new File([only], `${prefix}_${Date.now()}.${ext}`, { type: only.type || fallbackMime || 'audio/webm' });
+            const normalizedType = normalizeMedicalUploadMime(only.type || fallbackMime);
+            const ext = medicalBlobExtensionFromMime(normalizedType);
+            return new File([only], `${prefix}_${Date.now()}.${ext}`, { type: normalizedType });
         }
         try {
             const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -12498,6 +12553,16 @@ document.addEventListener('DOMContentLoaded', () => {
             window.medicalActiveTab = 'summary';
             updateMedicalTabUi();
             renderTranscriptFromCues(window.currentSegments || []);
+        });
+    }
+    const transcriptWindowForLiveCopy = document.getElementById('transcript-window');
+    if (transcriptWindowForLiveCopy && !transcriptWindowForLiveCopy._qsMedicalLiveCopyWired) {
+        transcriptWindowForLiveCopy._qsMedicalLiveCopyWired = true;
+        transcriptWindowForLiveCopy.addEventListener('click', (e) => {
+            const btn = e.target && e.target.closest ? e.target.closest('[data-medical-copy-live]') : null;
+            if (!btn) return;
+            e.preventDefault();
+            void copyMedicalLiveStreamText();
         });
     }
     if (medicalCopyBtn) {
