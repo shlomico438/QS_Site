@@ -112,11 +112,15 @@ def _record_mic_pcm(args) -> bytes:
     except ImportError as e:
         raise RuntimeError('Mic mode requires: pip install sounddevice numpy') from e
 
+    device = args.device
+    if isinstance(device, str) and device.strip().isdigit():
+        device = int(device.strip())
+
     if args.list_devices:
         print(sd.query_devices())
         return b''
 
-    native_rate = int(args.native_rate or sd.query_devices(args.device, 'input')['default_samplerate'])
+    native_rate = int(args.native_rate or sd.query_devices(device, 'input')['default_samplerate'])
     blocksize = max(256, int(native_rate * args.chunk_ms / 1000))
     duration = max(1.0, float(args.duration or 30.0))
     audio_q: queue.Queue = queue.Queue()
@@ -128,7 +132,7 @@ def _record_mic_pcm(args) -> bytes:
             print(f'mic status: {status}', file=sys.stderr)
         audio_q.put(indata.copy())
 
-    print(f'Mic device: {args.device if args.device is not None else "default"}')
+    print(f'Mic device: {device if device is not None else "default"}')
     print(f'Native mic rate: {native_rate} Hz')
     print(f'Target AWS rate: {args.sample_rate} Hz')
     print(f'Chunk: {args.chunk_ms} ms (~{blocksize} native frames)')
@@ -142,7 +146,7 @@ def _record_mic_pcm(args) -> bytes:
         channels=1,
         dtype='float32',
         blocksize=blocksize,
-        device=args.device,
+        device=device,
         callback=callback,
     ):
         while time.time() - start < duration:

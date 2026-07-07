@@ -12147,9 +12147,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 audio: {
                     echoCancellation: false,
                     noiseSuppression: false,
-                    autoGainControl: true,
+                    autoGainControl: false,
+                    channelCount: 1,
+                    sampleRate: 48000,
                 }
             });
+            try {
+                const track = stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+                if (track && typeof track.getSettings === 'function') {
+                    console.info('[medical] app mic settings', track.getSettings());
+                }
+            } catch (_) {}
             if (resumeFromInterruption) {
                 // iOS can hand back a stream while the phone call still owns the mic. Do not accept muted/ended tracks.
                 await new Promise((resolve) => setTimeout(resolve, 220));
