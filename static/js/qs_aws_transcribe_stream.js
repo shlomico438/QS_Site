@@ -41,9 +41,9 @@ function qsDownsampleFloat32(buffer, fromRate, toRate) {
 function qsApplySpeechGain(float32, rms, peak) {
     if (!float32 || !float32.length) return float32;
     if (!Number.isFinite(rms) || rms <= 0.002) return float32;
-    const targetRms = 0.055;
+    const targetRms = 0.03;
     const maxPeak = Math.max(0.001, Number(peak) || 0.001);
-    const gain = Math.max(1, Math.min(6, targetRms / rms, 0.92 / maxPeak));
+    const gain = Math.max(1, Math.min(3, targetRms / rms, 0.92 / maxPeak));
     if (gain <= 1.05) return float32;
     const out = new Float32Array(float32.length);
     for (let i = 0; i < float32.length; i++) {
@@ -80,7 +80,7 @@ export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
         this.languageCode = options.languageCode || 'he-IL';
         this.sampleRateHz = Number(options.sampleRateHz) || 16000;
-        this.applySpeechGain = options.applySpeechGain === true;
+        this.applySpeechGain = options.applySpeechGain !== false;
         this.transport = options.transport || 'socketio';
         this.onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
         this.onStatus = typeof options.onStatus === 'function' ? options.onStatus : null;
@@ -245,7 +245,7 @@ export class MedicalAwsTranscribeStream {
             this._lastRms = Math.sqrt(sumSq / pcm.length);
             this._lastPeak = peak;
             const audioPcm = this.applySpeechGain ? qsApplySpeechGain(pcm, this._lastRms, this._lastPeak) : pcm;
-            this._lastGain = audioPcm === pcm ? 1 : Math.max(1, Math.min(6, 0.055 / Math.max(this._lastRms, 0.002)));
+            this._lastGain = audioPcm === pcm ? 1 : Math.max(1, Math.min(3, 0.03 / Math.max(this._lastRms, 0.002)));
             this._sendAudioChunk(qsFloat32ToPcm16(audioPcm));
             this._chunksSent += 1;
             if (this._chunksSent === 1 || this._chunksSent % 100 === 0) {
