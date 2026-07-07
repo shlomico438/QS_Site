@@ -214,15 +214,25 @@ export class MedicalAwsTranscribeStream {
         if (!AudioCtx) throw new Error('audio_context_unavailable');
         this._audioCtx = new AudioCtx();
         this._source = this._audioCtx.createMediaStreamSource(mediaStream);
-        this._processor = this._audioCtx.createScriptProcessor(4096, 1, 1);
+        // Request stereo input so we can explicitly downmix when devices ignore channelCount=1.
+        this._processor = this._audioCtx.createScriptProcessor(4096, 2, 1);
         this._mutedGain = this._audioCtx.createGain();
         this._mutedGain.gain.value = 0;
         this._chunksSent = 0;
 
         this._processor.onaudioprocess = (ev) => {
             if (!this._canSendAudio()) return;
-            const input = ev.inputBuffer.getChannelData(0);
-            const pcm = qsDownsampleFloat32(input, this._audioCtx.sampleRate, this.sampleRateHz);
+            const inBuf = ev.inputBuffer;
+            const channels = inBuf.numberOfChannels || 1;
+            let mono = inBuf.getChannelData(0);
+            if (channels > 1) {
+                // Some webcams deliver stronger voice on one channel; average to stable mono.
+                const ch1 = inBuf.getChannelData(1);
+                const mixed = new Float32Array(mono.length);
+                for (let i = 0; i < mono.length; i++) mixed[i] = 0.5 * (mono[i] + ch1[i]);
+                mono = mixed;
+            }
+            const pcm = qsDownsampleFloat32(mono, this._audioCtx.sampleRate, this.sampleRateHz);
             if (!pcm.length) return;
             let sumSq = 0;
             let peak = 0;
