@@ -80,6 +80,7 @@ export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
         this.languageCode = options.languageCode || 'he-IL';
         this.sampleRateHz = Number(options.sampleRateHz) || 16000;
+        this.applySpeechGain = options.applySpeechGain === true;
         this.transport = options.transport || 'socketio';
         this.onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
         this.onStatus = typeof options.onStatus === 'function' ? options.onStatus : null;
@@ -243,9 +244,9 @@ export class MedicalAwsTranscribeStream {
             }
             this._lastRms = Math.sqrt(sumSq / pcm.length);
             this._lastPeak = peak;
-            const boosted = qsApplySpeechGain(pcm, this._lastRms, this._lastPeak);
-            this._lastGain = boosted === pcm ? 1 : Math.max(1, Math.min(6, 0.055 / Math.max(this._lastRms, 0.002)));
-            this._sendAudioChunk(qsFloat32ToPcm16(boosted));
+            const audioPcm = this.applySpeechGain ? qsApplySpeechGain(pcm, this._lastRms, this._lastPeak) : pcm;
+            this._lastGain = audioPcm === pcm ? 1 : Math.max(1, Math.min(6, 0.055 / Math.max(this._lastRms, 0.002)));
+            this._sendAudioChunk(qsFloat32ToPcm16(audioPcm));
             this._chunksSent += 1;
             if (this._chunksSent === 1 || this._chunksSent % 100 === 0) {
                 console.info(

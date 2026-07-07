@@ -314,7 +314,8 @@ class AwsTranscribeStreamSession:
         self.on_partial = on_partial
         self.on_ready = on_ready
         self.on_error = on_error
-        self._audio_q: Optional[asyncio.Queue] = None
+        # Gevent Socket.IO handlers must not use asyncio.Queue/call_soon_threadsafe directly.
+        self._thread_audio_q = _REAL_QUEUE()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._handler: Optional[_CollectingTranscriptHandler] = None
@@ -323,6 +324,7 @@ class AwsTranscribeStreamSession:
         self._ready_q = _REAL_QUEUE(maxsize=1)
         self._finished_q = _REAL_QUEUE(maxsize=1)
         self._closed = False
+        self._chunks_queued = 0
         self._chunks_fed_to_aws = 0
         self._bytes_fed_to_aws = 0
         self._aws_accepted = False
@@ -371,45 +373,34 @@ class AwsTranscribeStreamSession:
         self._thread = True
         _start_real_os_thread(self._thread_main, 'aws-transcribe-stream')
 
-    def _enqueue_audio(self, chunk: Optional[bytes]) -> None:
-        """Schedule audio on the asyncio loop without blocking the caller (gevent-safe)."""
-        if not self._loop or not self._audio_q:
-            raise RuntimeError('Transcribe stream not started')
-
-        def _put() -> None:
-            try:
-                self._audio_q.put_nowait(chunk)
-            except asyncio.QueueFull:
-                if chunk is None:
-                    logger.warning('AWS Transcribe queue full at stop; end marker delayed')
-                else:
-                    logger.warning(
-                        'AWS Transcribe audio queue full; dropping chunk (%d bytes)',
-                        len(chunk) if chunk else 0,
-                    )
-
-        self._loop.call_soon_threadsafe(_put)
+    def _queue_audio(self, chunk: Optional[bytes]) -> None:
+        """Enqueue PCM for the AWS asyncio worker (safe from gevent greenlets)."""
+        if chunk is None:
+            self._thread_audio_q.put(None)
+            return
+        self._chunks_queued += 1
+        self._thread_audio_q.put(bytes(chunk))
 
     def feed_audio(self, chunk: bytes) -> None:
         if self._closed or not chunk:
             return
-        self._enqueue_audio(bytes(chunk))
+        self._queue_audio(bytes(chunk))
 
     def stop(self, timeout_sec: float = 120.0) -> str:
         if self._closed:
             return self.best_transcript
         self._closed = True
-        if self._loop and self._audio_q:
-            try:
-                self._enqueue_audio(None)
-            except Exception as e:
-                logger.warning('Failed to signal end-of-stream to AWS: %s', e)
+        try:
+            self._queue_audio(None)
+        except Exception as e:
+            logger.warning('Failed to signal end-of-stream to AWS: %s', e)
         try:
             self._finished_q.get(timeout=timeout_sec)
         except _REAL_QUEUE_EMPTY:
             logger.warning(
-                'AWS Transcribe stream stop timed out after %.1fs chunks_fed=%d bytes_fed=%d transcript_len=%d',
+                'AWS Transcribe stream stop timed out after %.1fs queued=%d chunks_fed=%d bytes_fed=%d transcript_len=%d',
                 timeout_sec,
+                self._chunks_queued,
                 self._chunks_fed_to_aws,
                 self._bytes_fed_to_aws,
                 len(self._handler.full_transcript if self._handler else ''),
@@ -468,7 +459,6 @@ class AwsTranscribeStreamSession:
                 pass
 
     async def _async_run(self) -> str:
-        self._audio_q = asyncio.Queue()
         logger.info('AWS Transcribe stream connecting region=%s lang=%s', self.region, self.language_code)
         client = TranscribeStreamingClient(region=self.region)
         stream = await client.start_stream_transcription(
@@ -495,12 +485,21 @@ class AwsTranscribeStreamSession:
 
         async def _feed_aws() -> None:
             while True:
-                chunk = await self._audio_q.get()
+                chunk = await asyncio.to_thread(self._thread_audio_q.get)
                 if chunk is None:
                     await stream.input_stream.end_stream()
                     return
                 self._chunks_fed_to_aws += 1
                 self._bytes_fed_to_aws += len(chunk)
+                if self._chunks_fed_to_aws == 1:
+                    logger.info('transcribe first chunk fed to AWS (%d bytes)', len(chunk))
+                elif self._chunks_fed_to_aws % 50 == 0:
+                    logger.info(
+                        'transcribe chunks fed to AWS: %d queued=%d bytes_fed=%d',
+                        self._chunks_fed_to_aws,
+                        self._chunks_queued,
+                        self._bytes_fed_to_aws,
+                    )
                 await stream.input_stream.send_audio_event(audio_chunk=chunk)
 
         async def _max_session_guard() -> None:
@@ -515,8 +514,8 @@ class AwsTranscribeStreamSession:
                 self._bytes_fed_to_aws,
             )
             try:
-                await self._audio_q.put(None)
-            except Exception:
+                self._thread_audio_q.put_nowait(None)
+            except _REAL_QUEUE_FULL:
                 logger.debug('Failed to enqueue max-duration end marker', exc_info=True)
 
         guard_task = asyncio.create_task(_max_session_guard())
@@ -525,7 +524,8 @@ class AwsTranscribeStreamSession:
         finally:
             guard_task.cancel()
         logger.info(
-            'AWS Transcribe stream finished chunks_fed=%d bytes_fed=%d transcript_len=%d',
+            'AWS Transcribe stream finished queued=%d fed=%d bytes_fed=%d transcript_len=%d',
+            self._chunks_queued,
             self._chunks_fed_to_aws,
             self._bytes_fed_to_aws,
             len(self._handler.full_transcript if self._handler else ''),
@@ -775,7 +775,7 @@ class TranscribeStreamBridge:
         }
         if self.session:
             try:
-                transcript = self.session.stop(timeout_sec=12.0)
+                transcript = self.session.stop(timeout_sec=30.0)
             except BaseException as e:
                 result_payload['error'] = str(e)[:500]
                 transcript = self.session.best_transcript
@@ -785,6 +785,13 @@ class TranscribeStreamBridge:
             result_payload['partials'] = self.session.partial_history
             result_payload['language_code'] = self.session.language_code
             result_payload['sample_rate_hz'] = self.session.sample_rate_hz
+            logger.info(
+                'transcribe socketio finish received=%d queued=%d fed=%d transcript_len=%d',
+                self._audio_chunks_received,
+                getattr(self.session, '_chunks_queued', 0),
+                getattr(self.session, '_chunks_fed_to_aws', 0),
+                len(transcript or ''),
+            )
         return result_payload
 
 
