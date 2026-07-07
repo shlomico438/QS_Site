@@ -21,6 +21,7 @@ IAM: transcribe:StartStreamTranscription
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -314,8 +315,11 @@ class AwsTranscribeStreamSession:
         self.on_partial = on_partial
         self.on_ready = on_ready
         self.on_error = on_error
-        # Gevent Socket.IO handlers must not use asyncio.Queue/call_soon_threadsafe directly.
-        self._thread_audio_q = _REAL_QUEUE()
+        # Use a plain deque for cross-thread audio transfer.
+        # deque.append / deque.popleft are GIL-atomic in CPython — no locks needed,
+        # safe from any gevent greenlet or real OS thread without gevent interference.
+        self._audio_deque: collections.deque = collections.deque()
+        self._audio_deque_has_sentinel = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._handler: Optional[_CollectingTranscriptHandler] = None
@@ -374,12 +378,15 @@ class AwsTranscribeStreamSession:
         _start_real_os_thread(self._thread_main, 'aws-transcribe-stream')
 
     def _queue_audio(self, chunk: Optional[bytes]) -> None:
-        """Enqueue PCM for the AWS asyncio worker (safe from gevent greenlets)."""
+        """Enqueue PCM for the AWS asyncio worker (safe from gevent greenlets or OS threads).
+        Uses a deque whose append/popleft are GIL-atomic in CPython — no locks required."""
         if chunk is None:
-            self._thread_audio_q.put(None)
+            if not self._audio_deque_has_sentinel:
+                self._audio_deque_has_sentinel = True
+                self._audio_deque.append(None)
             return
         self._chunks_queued += 1
-        self._thread_audio_q.put(bytes(chunk))
+        self._audio_deque.append(bytes(chunk))
 
     def feed_audio(self, chunk: bytes) -> None:
         if self._closed or not chunk:
@@ -479,18 +486,19 @@ class AwsTranscribeStreamSession:
         )
 
         async def _feed_aws() -> None:
-            # Poll the real OS-thread queue from this asyncio worker thread.
-            # asyncio.to_thread(queue.get) deadlocks under gevent (fed=0, AWS 15s timeout).
+            # Poll the lock-free deque from this asyncio worker thread.
+            # deque.popleft() is GIL-atomic: no gevent lock involvement.
             logger.info('transcribe AWS feed loop started session=%s', self.session_id)
             while True:
                 drained = 0
-                while True:
+                while self._audio_deque:
                     try:
-                        chunk = self._thread_audio_q.get_nowait()
-                    except _REAL_QUEUE_EMPTY:
+                        chunk = self._audio_deque.popleft()
+                    except IndexError:
                         break
                     drained += 1
                     if chunk is None:
+                        logger.info('transcribe end-of-stream marker reached fed=%d', self._chunks_fed_to_aws)
                         await stream.input_stream.end_stream()
                         return
                     self._chunks_fed_to_aws += 1
@@ -506,7 +514,7 @@ class AwsTranscribeStreamSession:
                         )
                     await stream.input_stream.send_audio_event(audio_chunk=chunk)
                 if not drained:
-                    await asyncio.sleep(0.002)
+                    await asyncio.sleep(0.005)
 
         feed_task = asyncio.create_task(_feed_aws())
         if self.on_ready:
@@ -526,10 +534,7 @@ class AwsTranscribeStreamSession:
                 self._chunks_fed_to_aws,
                 self._bytes_fed_to_aws,
             )
-            try:
-                self._thread_audio_q.put_nowait(None)
-            except _REAL_QUEUE_FULL:
-                logger.debug('Failed to enqueue max-duration end marker', exc_info=True)
+            self._queue_audio(None)
 
         guard_task = asyncio.create_task(_max_session_guard())
         try:
