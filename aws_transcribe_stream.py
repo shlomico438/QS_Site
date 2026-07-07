@@ -303,6 +303,8 @@ class AwsTranscribeStreamSession:
         language_code: str = DEFAULT_LANGUAGE,
         sample_rate_hz: int = DEFAULT_SAMPLE_RATE,
         on_partial: Optional[Callable[[str], None]] = None,
+        on_ready: Optional[Callable[[], None]] = None,
+        on_error: Optional[Callable[[BaseException], None]] = None,
     ):
         self.session_id = uuid.uuid4().hex[:12]
         self._created_at = time.time()
@@ -310,6 +312,8 @@ class AwsTranscribeStreamSession:
         self.language_code = language_code
         self.sample_rate_hz = int(sample_rate_hz or DEFAULT_SAMPLE_RATE)
         self.on_partial = on_partial
+        self.on_ready = on_ready
+        self.on_error = on_error
         self._audio_q: Optional[asyncio.Queue] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -359,6 +363,13 @@ class AwsTranscribeStreamSession:
             raise TimeoutError(f'AWS Transcribe stream did not start in time ({timeout_sec + 10:.1f}s)')
         if isinstance(result, BaseException):
             raise result
+
+    def start_background(self) -> None:
+        """Start the AWS asyncio worker; readiness is reported via on_ready callback."""
+        if self._thread:
+            return
+        self._thread = True
+        _start_real_os_thread(self._thread_main, 'aws-transcribe-stream')
 
     def _enqueue_audio(self, chunk: Optional[bytes]) -> None:
         """Schedule audio on the asyncio loop without blocking the caller (gevent-safe)."""
@@ -435,6 +446,11 @@ class AwsTranscribeStreamSession:
         except BaseException as e:
             self._error = e
             logger.exception('AWS Transcribe streaming session failed')
+            if not self._aws_accepted and self.on_error:
+                try:
+                    self.on_error(e)
+                except Exception:
+                    logger.debug('AWS Transcribe on_error callback failed', exc_info=True)
         finally:
             if self._aws_accepted:
                 _mark_transcribe_inactive(self, 'thread_finished')
@@ -467,6 +483,11 @@ class AwsTranscribeStreamSession:
             self._ready_q.put_nowait(True)
         except _REAL_QUEUE_FULL:
             pass
+        if self.on_ready:
+            try:
+                self.on_ready()
+            except Exception:
+                logger.debug('AWS Transcribe on_ready callback failed', exc_info=True)
         self._handler = _CollectingTranscriptHandler(
             stream.output_stream,
             on_partial=self.on_partial,
@@ -629,32 +650,42 @@ class TranscribeStreamBridge:
                 break
         self.audio_pending.clear()
 
+    def _on_session_ready(self) -> None:
+        if not self.session:
+            return
+        self.session_live = True
+        self._emit({
+            'type': 'ready',
+            'language_code': self.session.language_code,
+            'sample_rate_hz': self.session.sample_rate_hz,
+            'region': self.session.region,
+        })
+        logger.info('transcribe aws ready region=%s (from aws thread)', self.session.region)
+        self._flush_pending_audio()
+
+    def _on_session_error(self, err: BaseException) -> None:
+        logger.error(
+            'AWS Transcribe stream start failed',
+            exc_info=(type(err), err, err.__traceback__),
+        )
+        self._emit({
+            'type': 'error',
+            'error': str(err)[:500],
+            'region': getattr(self.session, 'region', self.region),
+        })
+        if self._on_fatal:
+            try:
+                self._on_fatal()
+            except Exception:
+                logger.debug('transcribe fatal cleanup callback failed', exc_info=True)
+
     def _begin_session_in_os_thread(self) -> None:
         if not self.session:
             return
         try:
-            self.session._start_blocking(30.0)
-            self.session_live = True
-            self._emit({
-                'type': 'ready',
-                'language_code': self.session.language_code,
-                'sample_rate_hz': self.session.sample_rate_hz,
-                'region': self.session.region,
-            })
-            logger.info('transcribe aws ready region=%s (from os thread)', self.session.region)
-            self._flush_pending_audio()
+            self.session.start_background()
         except BaseException as e:
-            logger.exception('AWS Transcribe stream start failed')
-            self._emit({
-                'type': 'error',
-                'error': str(e)[:500],
-                'region': getattr(self.session, 'region', self.region),
-            })
-            if self._on_fatal:
-                try:
-                    self._on_fatal()
-                except Exception:
-                    logger.debug('transcribe fatal cleanup callback failed', exc_info=True)
+            self._on_session_error(e)
 
     def _schedule_session_start(self) -> None:
         with self.start_lock:
@@ -669,6 +700,8 @@ class TranscribeStreamBridge:
             language_code=self.language_code,
             sample_rate_hz=self.sample_rate_hz,
             on_partial=self._on_partial,
+            on_ready=self._on_session_ready,
+            on_error=self._on_session_error,
         )
 
     def handle_start_config(self, cfg: dict) -> None:
