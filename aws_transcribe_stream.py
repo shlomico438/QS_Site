@@ -29,7 +29,7 @@ import re
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+import uuid
 from typing import Callable, List, Optional
 
 from amazon_transcribe.client import TranscribeStreamingClient
@@ -130,8 +130,48 @@ def normalize_transcribe_region(region: Optional[str]) -> str:
 
 DEFAULT_REGION = transcribe_stream_region()
 
-# gevent greenlets must not call threading.Thread.start() or queue.get() directly.
-_TRANSCRIBE_THREAD_LAUNCHER = ThreadPoolExecutor(max_workers=8, thread_name_prefix='aws-transcribe')
+# gevent greenlets must not call patched threading.Thread.start() for the AWS asyncio loop.
+_ACTIVE_TRANSCRIBE_SESSIONS = {}
+_ACTIVE_TRANSCRIBE_LOCK = threading.Lock()
+
+
+def _transcribe_max_session_sec() -> float:
+    try:
+        return max(15.0, float(os.environ.get('MEDICAL_TRANSCRIBE_STREAM_MAX_SEC', '900') or 900))
+    except (TypeError, ValueError):
+        return 900.0
+
+
+def _mark_transcribe_active(session: 'AwsTranscribeStreamSession') -> None:
+    with _ACTIVE_TRANSCRIBE_LOCK:
+        _ACTIVE_TRANSCRIBE_SESSIONS[session.session_id] = {
+            'session_id': session.session_id,
+            'started_at': session._created_at,
+            'accepted_at': time.time(),
+            'region': session.region,
+            'language_code': session.language_code,
+            'sample_rate_hz': session.sample_rate_hz,
+        }
+        active = len(_ACTIVE_TRANSCRIBE_SESSIONS)
+    logger.info('AWS Transcribe active sessions=%d session=%s', active, session.session_id)
+
+
+def _mark_transcribe_inactive(session: 'AwsTranscribeStreamSession', reason: str) -> None:
+    with _ACTIVE_TRANSCRIBE_LOCK:
+        _ACTIVE_TRANSCRIBE_SESSIONS.pop(session.session_id, None)
+        active = len(_ACTIVE_TRANSCRIBE_SESSIONS)
+    logger.info('AWS Transcribe inactive sessions=%d session=%s reason=%s', active, session.session_id, reason)
+
+
+def active_transcribe_sessions_snapshot() -> dict:
+    now = time.time()
+    with _ACTIVE_TRANSCRIBE_LOCK:
+        sessions = []
+        for info in _ACTIVE_TRANSCRIBE_SESSIONS.values():
+            item = dict(info)
+            item['age_sec'] = round(now - float(item.get('accepted_at') or item.get('started_at') or now), 3)
+            sessions.append(item)
+    return {'active_count': len(sessions), 'sessions': sessions}
 
 
 def _pcm16_level(chunk: bytes) -> tuple[int, int]:
@@ -234,6 +274,8 @@ class AwsTranscribeStreamSession:
         sample_rate_hz: int = DEFAULT_SAMPLE_RATE,
         on_partial: Optional[Callable[[str], None]] = None,
     ):
+        self.session_id = uuid.uuid4().hex[:12]
+        self._created_at = time.time()
         self.region = normalize_transcribe_region(region)
         self.language_code = language_code
         self.sample_rate_hz = int(sample_rate_hz or DEFAULT_SAMPLE_RATE)
@@ -249,6 +291,7 @@ class AwsTranscribeStreamSession:
         self._closed = False
         self._chunks_fed_to_aws = 0
         self._bytes_fed_to_aws = 0
+        self._aws_accepted = False
 
     def _start_blocking(self, timeout_sec: float = 30.0) -> None:
         """Run only from an OS thread (ThreadPoolExecutor worker)."""
@@ -268,8 +311,26 @@ class AwsTranscribeStreamSession:
 
     def start(self, timeout_sec: float = 30.0) -> None:
         """Blocking start safe from HTTP handlers / health checks (not gevent WS greenlets)."""
-        fut = _TRANSCRIBE_THREAD_LAUNCHER.submit(self._start_blocking, timeout_sec)
-        fut.result(timeout=timeout_sec + 10)
+        done_q: queue.Queue = queue.Queue(maxsize=1)
+
+        def _run() -> None:
+            try:
+                self._start_blocking(timeout_sec)
+                done_q.put_nowait(None)
+            except BaseException as e:
+                try:
+                    done_q.put_nowait(e)
+                except queue.Full:
+                    pass
+
+        worker = _REAL_THREAD(target=_run, name='aws-transcribe-start-blocking', daemon=True)
+        worker.start()
+        try:
+            result = done_q.get(timeout=timeout_sec + 10)
+        except queue.Empty:
+            raise TimeoutError(f'AWS Transcribe stream did not start in time ({timeout_sec + 10:.1f}s)')
+        if isinstance(result, BaseException):
+            raise result
 
     def _enqueue_audio(self, chunk: Optional[bytes]) -> None:
         """Schedule audio on the asyncio loop without blocking the caller (gevent-safe)."""
@@ -347,6 +408,8 @@ class AwsTranscribeStreamSession:
             self._error = e
             logger.exception('AWS Transcribe streaming session failed')
         finally:
+            if self._aws_accepted:
+                _mark_transcribe_inactive(self, 'thread_finished')
             try:
                 self._ready_q.put_nowait(True)
             except queue.Full:
@@ -370,6 +433,8 @@ class AwsTranscribeStreamSession:
             media_encoding='pcm',
         )
         logger.info('AWS Transcribe stream accepted by AWS')
+        self._aws_accepted = True
+        _mark_transcribe_active(self)
         try:
             self._ready_q.put_nowait(True)
         except queue.Full:
@@ -389,7 +454,27 @@ class AwsTranscribeStreamSession:
                 self._bytes_fed_to_aws += len(chunk)
                 await stream.input_stream.send_audio_event(audio_chunk=chunk)
 
-        await asyncio.gather(_feed_aws(), self._handler.handle_events())
+        async def _max_session_guard() -> None:
+            await asyncio.sleep(_transcribe_max_session_sec())
+            if self._closed:
+                return
+            self._closed = True
+            logger.warning(
+                'AWS Transcribe stream max duration reached session=%s chunks_fed=%d bytes_fed=%d',
+                self.session_id,
+                self._chunks_fed_to_aws,
+                self._bytes_fed_to_aws,
+            )
+            try:
+                await self._audio_q.put(None)
+            except Exception:
+                logger.debug('Failed to enqueue max-duration end marker', exc_info=True)
+
+        guard_task = asyncio.create_task(_max_session_guard())
+        try:
+            await asyncio.gather(_feed_aws(), self._handler.handle_events())
+        finally:
+            guard_task.cancel()
         logger.info(
             'AWS Transcribe stream finished chunks_fed=%d bytes_fed=%d transcript_len=%d',
             self._chunks_fed_to_aws,
@@ -817,6 +902,11 @@ def register_transcribe_websocket_routes(app: Flask) -> None:
                     os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION') or ''
                 ).strip() or None,
             }), 500
+
+    @app.route('/api/transcribe_stream_active', methods=['GET'])
+    def api_transcribe_stream_active():
+        """Non-PHI debug view of currently accepted AWS Transcribe Streaming sessions."""
+        return jsonify(active_transcribe_sessions_snapshot()), 200
 
     @app.route('/ws/transcribe')
     def ws_transcribe_route():
