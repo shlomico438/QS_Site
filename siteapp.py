@@ -67,8 +67,30 @@ def _standard_s3_bucket_name():
     return (os.environ.get('S3_BUCKET') or '').strip()
 
 
+def _sanitize_aws_region(raw, default='eu-north-1'):
+    """AWS S3 needs a real region (e.g. eu-north-1). Reject R2's 'auto'."""
+    region = str(raw or '').strip()
+    if not region or region.lower() == 'auto':
+        return default
+    return region
+
+
 def _aws_region():
-    return (os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+    # Production often sets AWS_REGION=auto for Cloudflare R2 — never use that for AWS S3.
+    return _sanitize_aws_region(
+        os.environ.get('AWS_DEFAULT_REGION') or os.environ.get('AWS_REGION'),
+        'eu-north-1',
+    )
+
+
+def _medical_aws_region():
+    """HIPAA medical bucket region (never inherit R2's AWS_REGION=auto)."""
+    return _sanitize_aws_region(
+        os.environ.get('MEDICAL_S3_REGION')
+        or os.environ.get('AWS_DEFAULT_REGION')
+        or os.environ.get('AWS_REGION'),
+        'eu-north-1',
+    )
 
 
 def _r2_region():
@@ -115,7 +137,7 @@ def _s3_region_for_bucket(bucket):
     b = str(bucket or '').strip()
     medical = _medical_s3_bucket_name()
     if medical and b == medical:
-        return (os.environ.get('MEDICAL_S3_REGION') or os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+        return _medical_aws_region()
     if _bucket_uses_r2(bucket):
         return _r2_region()
     return _aws_region()
@@ -149,6 +171,8 @@ def _s3_boto_client(for_upload=False, bucket=None):
     """S3-compatible client: R2 for S3_BUCKET (RunPod), AWS for medical / SageMaker manifests."""
     use_r2 = _bucket_uses_r2(bucket)
     region = _s3_region_for_bucket(bucket)
+    if not use_r2:
+        region = _sanitize_aws_region(region, 'eu-north-1')
     config_kw = {'signature_version': 's3v4'}
     if for_upload and bucket and _s3_upload_accelerate_enabled_for_bucket(bucket):
         config_kw['s3'] = {'use_accelerate_endpoint': True}
@@ -163,6 +187,7 @@ def _s3_boto_client(for_upload=False, bucket=None):
         'region_name': region,
         'config': Config(**config_kw),
     }
+    # Never attach R2 endpoint_url to AWS/medical clients (that yields s3.auto.amazonaws.com).
     endpoint = _r2_endpoint_url() if use_r2 else None
     if endpoint:
         client_kw['endpoint_url'] = endpoint
