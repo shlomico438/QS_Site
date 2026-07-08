@@ -16623,7 +16623,7 @@ function renderTranscriptFromCues(cues) {
         if (isMedical) {
             const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
             const medicalEmptyTitle = T('medical_secure_clinical_session') || 'Secure clinical session';
-            const medicalEmptyHint = T('medical_start_recording_hint') || 'Start recording with the button below. The transcript will appear here after recording and processing finish.';
+            const medicalEmptyHint = T('medical_start_recording_hint') || 'Start recording with the button below. The transcript will appear as you speak.';
             container.innerHTML = `
                 <div style="color:#64748b; text-align:center; margin-top:32px; line-height:1.75; font-size:0.95rem; direction:${textDirection};">
                     <div style="font-weight:600; color:#0f766e;">${medicalEmptyTitle}</div>

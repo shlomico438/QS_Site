@@ -76,6 +76,9 @@ function qsWaitForSocketConnected(sock, timeoutMs = 15000) {
     });
 }
 
+/** Max PCM held while waiting for AWS ready (~8s @ 16 kHz mono int16). */
+const QS_PRE_READY_BUFFER_MAX_BYTES = 16000 * 2 * 8;
+
 export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
         this.languageCode = options.languageCode || 'he-IL';
@@ -105,6 +108,9 @@ export class MedicalAwsTranscribeStream {
         this._lastPeak = 0;
         this._lastGain = 1;
         this._audioWatchdog = null;
+        this._preReadyBuffer = [];
+        this._preReadyBufferBytes = 0;
+        this._preReadyChunksBuffered = 0;
     }
 
     _emitStatus(text) {
@@ -151,6 +157,7 @@ export class MedicalAwsTranscribeStream {
         if (msg.type === 'ready') {
             console.info('[transcribe-stream] server ready');
             this._ready = true;
+            this._flushPreReadyBuffer();
             this._emitStatus('listening');
             this._resolveStart();
             return;
@@ -190,23 +197,65 @@ export class MedicalAwsTranscribeStream {
         }
     }
 
-    _canSendAudio() {
+    _canCaptureAudio() {
+        return !this._feedPaused && Boolean(this._processor);
+    }
+
+    _canSendLiveAudio() {
         if (this._feedPaused || !this._ready) return false;
         if (this._socket) return Boolean(this._socket.connected);
         return this._ws && this._ws.readyState === WebSocket.OPEN;
     }
 
+    _emitAudioPayload(payload) {
+        if (this._socket) {
+            this._socket.emit('medical_transcribe_audio', payload);
+        } else if (this._ws) {
+            this._ws.send(payload);
+        }
+    }
+
+    _bufferPreReadyChunk(pcmArrayBuffer) {
+        const buf = pcmArrayBuffer instanceof ArrayBuffer ? pcmArrayBuffer : pcmArrayBuffer.buffer;
+        const bytes = buf.byteLength;
+        if (!bytes) return;
+        this._preReadyBuffer.push(buf);
+        this._preReadyBufferBytes += bytes;
+        this._preReadyChunksBuffered += 1;
+        while (this._preReadyBufferBytes > QS_PRE_READY_BUFFER_MAX_BYTES && this._preReadyBuffer.length) {
+            const dropped = this._preReadyBuffer.shift();
+            this._preReadyBufferBytes -= dropped.byteLength;
+        }
+    }
+
+    _flushPreReadyBuffer() {
+        if (!this._preReadyBuffer.length) return;
+        const count = this._preReadyBuffer.length;
+        const bytes = this._preReadyBufferBytes;
+        try {
+            for (const chunk of this._preReadyBuffer) {
+                this._emitAudioPayload(new Uint8Array(chunk));
+                this._chunksSent += 1;
+            }
+        } catch (_) {}
+        console.info('[transcribe-stream] flushed pre-ready buffer:', count, 'chunks,', bytes, 'bytes');
+        this._preReadyBuffer = [];
+        this._preReadyBufferBytes = 0;
+    }
+
+    _clearPreReadyBuffer() {
+        this._preReadyBuffer = [];
+        this._preReadyBufferBytes = 0;
+        this._preReadyChunksBuffered = 0;
+    }
+
     _sendAudioChunk(pcmArrayBuffer) {
-        if (!this._canSendAudio()) return;
+        if (!this._canSendLiveAudio()) return;
         try {
             const payload = pcmArrayBuffer instanceof ArrayBuffer
                 ? new Uint8Array(pcmArrayBuffer)
                 : pcmArrayBuffer;
-            if (this._socket) {
-                this._socket.emit('medical_transcribe_audio', payload);
-            } else if (this._ws) {
-                this._ws.send(payload);
-            }
+            this._emitAudioPayload(payload);
         } catch (_) {}
     }
 
@@ -221,9 +270,10 @@ export class MedicalAwsTranscribeStream {
         this._mutedGain = this._audioCtx.createGain();
         this._mutedGain.gain.value = 0;
         this._chunksSent = 0;
+        this._clearPreReadyBuffer();
 
         this._processor.onaudioprocess = (ev) => {
-            if (!this._canSendAudio()) return;
+            if (!this._canCaptureAudio()) return;
             const inBuf = ev.inputBuffer;
             const channels = inBuf.numberOfChannels || 1;
             let mono = inBuf.getChannelData(0);
@@ -247,9 +297,24 @@ export class MedicalAwsTranscribeStream {
             this._lastPeak = peak;
             const audioPcm = this.applySpeechGain ? qsApplySpeechGain(pcm, this._lastRms, this._lastPeak) : pcm;
             this._lastGain = audioPcm === pcm ? 1 : Math.max(1, Math.min(3, 0.03 / Math.max(this._lastRms, 0.002)));
-            this._sendAudioChunk(qsFloat32ToPcm16(audioPcm));
-            this._chunksSent += 1;
-            if (this._chunksSent === 1 || this._chunksSent % 100 === 0) {
+            const pcmBuf = qsFloat32ToPcm16(audioPcm);
+            if (this._ready && this._canSendLiveAudio()) {
+                this._sendAudioChunk(pcmBuf);
+                this._chunksSent += 1;
+            } else if (!this._ready) {
+                this._bufferPreReadyChunk(pcmBuf);
+                if (this._preReadyChunksBuffered === 1 || this._preReadyChunksBuffered % 20 === 0) {
+                    console.info(
+                        '[transcribe-stream] buffering pre-ready audio:',
+                        this._preReadyChunksBuffered,
+                        'chunks,',
+                        this._preReadyBufferBytes,
+                        'bytes'
+                    );
+                }
+            }
+            const totalChunks = this._chunksSent + this._preReadyChunksBuffered;
+            if (totalChunks === 1 || this._chunksSent === 1 || (this._chunksSent > 0 && this._chunksSent % 100 === 0)) {
                 console.info(
                     '[transcribe-stream] audio chunks sent:',
                     this._chunksSent,
@@ -357,8 +422,6 @@ export class MedicalAwsTranscribeStream {
             this._startResolve = null;
             this._startReject = null;
         }
-
-        await this._activateAudioCapture();
     }
 
     async _startWebSocket(mediaStream) {
@@ -417,14 +480,14 @@ export class MedicalAwsTranscribeStream {
             this._startResolve = null;
             this._startReject = null;
         }
-
-        await this._activateAudioCapture();
     }
 
     async start(mediaStream) {
         if (!mediaStream) throw new Error('media_stream_required');
         // Create the audio graph synchronously while still inside the user-gesture call stack.
         this._setupAudioGraph(mediaStream);
+        // Start capturing immediately; buffer PCM until AWS reports ready.
+        await this._activateAudioCapture();
         const useSocketIo = this.transport !== 'websocket' && Boolean(qsGetGlobalSocket());
         if (useSocketIo) {
             await this._startSocketIo(mediaStream);
@@ -443,6 +506,7 @@ export class MedicalAwsTranscribeStream {
 
     async stop() {
         this._feedPaused = true;
+        this._clearPreReadyBuffer();
         const chunksSent = this._chunksSent;
         if (this._socket) {
             const resultPromise = new Promise((resolve, reject) => {
@@ -527,6 +591,7 @@ export class MedicalAwsTranscribeStream {
 
     abort() {
         this._feedPaused = true;
+        this._clearPreReadyBuffer();
         try {
             if (this._socket && this._socket.connected) {
                 this._socket.emit('medical_transcribe_stop');
