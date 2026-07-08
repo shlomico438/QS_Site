@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 
-<html lang="he" dir="rtl">
+<html lang="he" dir="rtl"{% if medical_entry | default(false) %} class="qs-medical-entry"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,6 +13,25 @@
       gtag('config', 'AW-1000570995');
     </script>
     {% set is_medical_head = medical_entry | default(false) %}
+    {% if is_medical_head %}
+    <script>
+      window.__QS_MEDICAL_URL_ENTRY = true;
+      window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
+      window.isMedicalMode = true;
+      try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
+      try { localStorage.setItem('qs_medical_mode', '1'); } catch (e) {}
+      document.documentElement.classList.add('qs-medical-entry');
+    </script>
+    <style>
+      /* Paint medical chrome before app_logic.js finishes loading (avoids 1–2s regular-mode flash). */
+      html.qs-medical-entry #seo-home-content,
+      html.qs-medical-entry #qs-music-mode-bottom-wrap,
+      html.qs-medical-entry #main-btn,
+      html.qs-medical-entry #regular-record-btn { display: none !important; }
+      html.qs-medical-entry #medical-session-header,
+      html.qs-medical-entry #medical-recording-wrap { display: block !important; }
+    </style>
+    {% endif %}
     <title>{% block page_title %}{% if is_medical_head %}QuickScribe Medical | תיעוד רפואי חכם{% else %}תמלול אוטומטי בעברית ויצירת כתוביות לסרטונים | QuickScribe{% endif %}{% endblock %}</title>
     {% if is_medical_head %}
     <meta name="description" content="הפיכת הקלטות מפגש רפואי לטקסט מדוייק וסיכומי ביקור מותאמים אישית בשניות. חסכו זמן יקר בתיעוד הרפואי.">
@@ -47,7 +66,7 @@
     {% block head_extra %}{% endblock %}
 </head>
 
-<body style="display:flex; flex-direction:column; height:100vh; min-height:0;">
+<body class="{% if medical_entry | default(false) %}medical-mode{% endif %}" style="display:flex; flex-direction:column; height:100vh; min-height:0;">
 
     <!-- Two-tier site header: utility bar (session/locale) + main marketing navigation -->
     <header class="site-header navbar" id="site-header" dir="ltr">

@@ -2216,11 +2216,23 @@ if (document.readyState === 'loading') {
 })();
 
 try {
-    if (typeof window !== 'undefined' && window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH) {
+    if (typeof window !== 'undefined' && (
+        window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH ||
+        window.__QS_MEDICAL_URL_ENTRY === true ||
+        (window.location && String(window.location.pathname || '').replace(/\/+$/, '') === '/medical')
+    )) {
+        window.__QS_MEDICAL_URL_ENTRY = true;
+        window.isMedicalMode = true;
         if (typeof _qsSetMedicalLanding === 'function') {
             _qsSetMedicalLanding();
         }
         setMedicalMode(true);
+        try {
+            document.documentElement.classList.add('qs-medical-entry');
+            if (document.body) document.body.classList.add('medical-mode');
+            const mac = document.getElementById('main-app-container');
+            if (mac) mac.classList.add('medical-mode');
+        } catch (_) {}
         try { delete window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH; } catch (_) { window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = false; }
     }
 } catch (_) {}
@@ -11211,6 +11223,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         if (mainAppContainer) mainAppContainer.classList.toggle('medical-mode', on);
+        try {
+            document.body.classList.toggle('medical-mode', on);
+            document.documentElement.classList.toggle('qs-medical-entry', on);
+        } catch (_) {}
         if (medicalHeader) medicalHeader.style.display = on ? '' : 'none';
         if (medicalTitle) medicalTitle.textContent = T('medical_session_secure_recording') || 'Secure medical recording session';
         if (medicalSubtitle) medicalSubtitle.textContent = T('medical_session_hipaa_active') || 'Clinical transcription with HIPAA mode active';

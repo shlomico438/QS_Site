@@ -7,12 +7,18 @@
 <script>
 window.__QS_MEDICAL_URL_ENTRY = true;
 window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
+window.isMedicalMode = true;
 try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
+try { localStorage.setItem('qs_medical_mode', '1'); } catch (e) {}
+try {
+  document.documentElement.classList.add('qs-medical-entry');
+  document.body.classList.add('medical-mode');
+} catch (e) {}
 </script>
 {% endif %}
 
 <div class="app-mode">
-    <div class="main-app-container" id="main-app-container">
+    <div class="main-app-container{% if medical_entry %} medical-mode{% endif %}" id="main-app-container">
         <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content" style="display:none;">
             <div class="seo-landing-hero seo-landing-band seo-landing-bg-white">
                 <div class="seo-landing-inner">
@@ -383,7 +389,7 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
             </div>
         </div>
 
-        <section id="medical-session-header" style="display:none; margin-bottom:14px; text-align:center;">
+        <section id="medical-session-header" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:14px; text-align:center;">
             <h2 id="medical-session-title" style="margin:0; color:#0f766e;" data-i18n="medical_session_secure_recording">Secure medical recording session</h2>
             <p id="medical-session-subtitle" style="margin:4px 0 0; color:#0f766e;" data-i18n="medical_session_hipaa_active">Clinical transcription with HIPAA mode active</p>
         </section>
@@ -720,16 +726,16 @@ try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
         <div class="upload-zone">
             <div class="upload-controls-row">
                 <input type="file" id="fileInput" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" hidden>
-                <div id="qs-music-mode-bottom-wrap" class="qs-music-mode-bottom-wrap">
+                <div id="qs-music-mode-bottom-wrap" class="qs-music-mode-bottom-wrap"{% if medical_entry %} style="display:none;"{% endif %}>
                     <label class="qs-music-mode-bottom-option" for="qs-music-mode-bottom-checkbox">
                         <input type="checkbox" id="qs-music-mode-bottom-checkbox" class="qs-music-mode-bottom-checkbox" />
                         <span class="qs-music-mode-bottom-title" data-i18n="upload_music_mode_short">מוזיקה</span>
                     </label>
                 </div>
-                <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process">התחל כאן</button>
+                <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
                 <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
             </div>
-            <div id="medical-recording-wrap" style="display:none; margin-bottom:12px;">
+            <div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
                 <div class="medical-record-controls">
                     <div id="medical-cancel-stack" class="medical-side-action-stack" style="display:none;">
                         <button id="medical-cancel-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_delete_recording" aria-label="מחק הקלטה">
