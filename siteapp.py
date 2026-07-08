@@ -95,13 +95,30 @@ def _r2_configured():
     )
 
 
+def _medical_s3_bucket_name():
+    return (MEDICAL_S3_BUCKET or '').strip()
+
+
 def _bucket_uses_r2(bucket):
     """Only the standard RunPod bucket uses R2; medical and other buckets use AWS S3."""
     if not _r2_configured():
         return False
     b = str(bucket or '').strip()
+    medical = _medical_s3_bucket_name()
+    if medical and b == medical:
+        return False
     standard = _standard_s3_bucket_name()
     return bool(standard and b == standard)
+
+
+def _s3_region_for_bucket(bucket):
+    b = str(bucket or '').strip()
+    medical = _medical_s3_bucket_name()
+    if medical and b == medical:
+        return (os.environ.get('MEDICAL_S3_REGION') or os.environ.get('AWS_REGION') or 'eu-north-1').strip()
+    if _bucket_uses_r2(bucket):
+        return _r2_region()
+    return _aws_region()
 
 
 def _s3_storage_credentials_configured(bucket):
@@ -131,7 +148,7 @@ def _s3_upload_accelerate_enabled_for_bucket(bucket):
 def _s3_boto_client(for_upload=False, bucket=None):
     """S3-compatible client: R2 for S3_BUCKET (RunPod), AWS for medical / SageMaker manifests."""
     use_r2 = _bucket_uses_r2(bucket)
-    region = _r2_region() if use_r2 else _aws_region()
+    region = _s3_region_for_bucket(bucket)
     config_kw = {'signature_version': 's3v4'}
     if for_upload and bucket and _s3_upload_accelerate_enabled_for_bucket(bucket):
         config_kw['s3'] = {'use_accelerate_endpoint': True}
@@ -3213,12 +3230,18 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
 
     body = json.dumps(transcript, ensure_ascii=False).encode('utf-8')
     s3_client = _s3_boto_client(bucket=profile["bucket"])
-    s3_client.put_object(
-        Bucket=profile["bucket"],
-        Key=result_s3_key,
-        Body=body,
-        ContentType='application/json'
-    )
+    put_kw = {
+        'Bucket': profile["bucket"],
+        'Key': result_s3_key,
+        'Body': body,
+        'ContentType': 'application/json',
+    }
+    if profile["is_medical"]:
+        kms_arn = _kms_key_arn()
+        if kms_arn:
+            put_kw['ServerSideEncryption'] = 'aws:kms'
+            put_kw['SSEKMSKeyId'] = kms_arn
+    s3_client.put_object(**put_kw)
     # Legacy debug cleanup: remove sidecar pre-align artifact if it exists.
     # Canonical transcript storage is a single key: <base>.json.
     legacy_pre_align_key = base + '.pre_align.json'
@@ -8737,6 +8760,10 @@ def sign_s3():
         s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
         if _s3_upload_accelerate_enabled_for_bucket(bucket):
             logging.info("sign_s3 upload presign via S3 Transfer Acceleration")
+        logging.info(
+            "sign_s3 presign bucket=%s use_r2=%s region=%s is_medical=%s",
+            bucket, _bucket_uses_r2(bucket), _s3_region_for_bucket(bucket), is_medical,
+        )
 
         presigned_url = s3_client.generate_presigned_url(
             'put_object',

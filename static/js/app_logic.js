@@ -11802,10 +11802,15 @@ document.addEventListener('DOMContentLoaded', () => {
     function resolveMedicalStreamTranscript(streamResult) {
         const live = String(window._medicalLiveStreamText || '').trim();
         const fromFinal = String((streamResult && streamResult.transcript) || '').trim();
-        const fromPartials = Array.isArray(streamResult && streamResult.partials)
-            ? streamResult.partials.map((p) => String(p || '').trim()).filter(Boolean).join(' ')
-            : '';
-        const candidates = [live, fromFinal, fromPartials].filter(Boolean);
+        let fromPartial = '';
+        if (Array.isArray(streamResult && streamResult.partials) && streamResult.partials.length) {
+            const partials = streamResult.partials
+                .map((p) => String(p || '').trim())
+                .filter(Boolean);
+            // Partials are cumulative snapshots — use the latest only, never join them.
+            fromPartial = partials[partials.length - 1] || '';
+        }
+        const candidates = [live, fromFinal, fromPartial].filter(Boolean);
         if (!candidates.length) return '';
         return candidates.reduce((best, cur) => (cur.length > best.length ? cur : best));
     }
@@ -13331,6 +13336,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const hasSegments = Array.isArray(rawResult.segments) && rawResult.segments.length > 0
             || (output && Array.isArray(output.segments) && output.segments.length > 0);
         const isFailedJob = jobStatus === 'failed' || (!!jobError && !hasSegments);
+        if (
+            isFailedJob &&
+            jobId &&
+            window._lastProcessedJobId === jobId &&
+            typeof qsHasTranscriptResult === 'function' &&
+            qsHasTranscriptResult()
+        ) {
+            console.warn('[qs] ignoring background persist failure; transcript already shown', { jobId, jobError });
+            if (jobId) window._handleJobUpdateInFlight = null;
+            return;
+        }
 
         // 1. SHOW PLAYER: same layout (video-wrapper) for both audio (m4a) and video so transcript is visible in parallel
         const playerContainer = document.getElementById('audio-player-container');
@@ -13473,6 +13489,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (_) {}
         }
         const flatWordSegments = (output && output.word_segments) || rawResult.word_segments || (rawResult.result && rawResult.result.word_segments);
+        const isMedicalStreamJob = qsJobEngineFromPayload(rawResult) === 'aws_transcribe_stream' ||
+            !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
         // Real word timestamps → word/caption model (coerces numeric strings; optional flat `word_segments`).
         const wordModel = _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
         if (wordModel) {
@@ -13483,7 +13501,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             window.currentWords = null;
             window.currentCaptions = null;
-            segments = splitLongSegments(segments, 40);
+            if (!isMedicalStreamJob) {
+                segments = splitLongSegments(segments, 40);
+            }
             window.currentSegments = segments;
         }
 
@@ -13505,7 +13525,11 @@ document.addEventListener('DOMContentLoaded', () => {
             setTranscriptActionButtonsVisible(true);
             qsEnsureTranscriptToolbarVisible('medical_stream_transcript_ready', { force: true });
             if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
-            if (typeof renderMedicalTranscriptMainView === 'function') {
+            const plainText = String((window.currentSegments[0] && window.currentSegments[0].text) || '').trim()
+                || String(buildTranscriptPlainBodyForExport() || '').trim();
+            if (plainText && typeof renderMedicalPlainStreamTranscript === 'function') {
+                renderMedicalPlainStreamTranscript(plainText);
+            } else if (typeof renderMedicalTranscriptMainView === 'function') {
                 renderMedicalTranscriptMainView();
             } else if (typeof renderTranscriptFromCues === 'function') {
                 renderTranscriptFromCues(window.currentSegments || []);
@@ -16454,6 +16478,27 @@ function _medicalHasFormattedSummaryContent() {
     if (String(fmt.overview || '').trim()) return true;
     const kp = fmt.key_points;
     return Array.isArray(kp) && kp.some((p) => String(p || '').trim());
+}
+
+/**
+ * Medical stream: one plain paragraph (matches live editor, not subtitle rows).
+ */
+function renderMedicalPlainStreamTranscript(text) {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow || !isMedicalModeEnabled()) return;
+    const clean = String(text || '').trim();
+    if (!clean) return;
+    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const textDirection = isRtl ? 'rtl' : 'ltr';
+    const textAlign = isRtl ? 'right' : 'left';
+    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    transcriptWindow.innerHTML =
+        `<div class="medical-live-transcript qs-medical-plain-paragraph" dir="${textDirection}" ` +
+        `style="text-align:${textAlign};padding:12px 16px;line-height:1.72;white-space:pre-wrap;">${esc(clean)}</div>`;
+    transcriptWindow.style.direction = textDirection;
+    transcriptWindow.style.textAlign = textAlign;
+    transcriptWindow.contentEditable = 'false';
 }
 
 /**
