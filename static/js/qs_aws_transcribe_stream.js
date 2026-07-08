@@ -504,6 +504,17 @@ export class MedicalAwsTranscribeStream {
         this._feedPaused = false;
     }
 
+    _resolveStopWithLocalFallback(timeoutMs = 12000) {
+        const partials = this._partials.slice();
+        const localTranscript = String(this._finalTranscript || '').trim()
+            || (partials.length ? String(partials[partials.length - 1] || '').trim() : '');
+        return {
+            transcript: localTranscript,
+            partials,
+            warning: 'stop_response_timeout',
+        };
+    }
+
     async stop() {
         this._feedPaused = true;
         this._clearPreReadyBuffer();
@@ -515,12 +526,10 @@ export class MedicalAwsTranscribeStream {
                 setTimeout(() => {
                     if (this._stopResolve) {
                         this._stopResolve = null;
-                        resolve({
-                            transcript: this._finalTranscript,
-                            partials: this._partials.slice(),
-                        });
+                        console.warn('[transcribe-stream] stop response timeout; using live transcript');
+                        resolve(this._resolveStopWithLocalFallback());
                     }
-                }, 90000);
+                }, 12000);
             });
             try {
                 if (this._socket.connected) {
@@ -556,12 +565,10 @@ export class MedicalAwsTranscribeStream {
             setTimeout(() => {
                 if (this._stopResolve) {
                     this._stopResolve = null;
-                    resolve({
-                        transcript: this._finalTranscript,
-                        partials: this._partials.slice(),
-                    });
+                    console.warn('[transcribe-stream] stop response timeout; using live transcript');
+                    resolve(this._resolveStopWithLocalFallback());
                 }
-            }, 90000);
+            }, 12000);
         });
 
         try {

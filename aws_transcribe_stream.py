@@ -927,7 +927,8 @@ class TranscribeStreamBridge:
         else:
             self.audio_pending.append(chunk)
 
-    def finish(self, stop_timeout_sec: float = 30.0) -> dict:
+    def finish(self, stop_timeout_sec: float = 8.0) -> dict:
+        """Return the live transcript immediately; drain AWS session in the background."""
         result_payload = {
             'type': 'transcript',
             'transcript': '',
@@ -937,34 +938,43 @@ class TranscribeStreamBridge:
             'error': None,
         }
         self.close()
-        if self.session:
+        sess = self.session
+        if not sess:
+            return result_payload
+
+        transcript = self._combined_transcript(sess.best_transcript or '')
+        if not transcript and self._combined_partials:
+            transcript = str(self._combined_partials[-1] or '').strip()
+        partials = list(self._combined_partials) if self._combined_partials else list(sess.partial_history or [])
+        result_payload['transcript'] = transcript
+        result_payload['partials'] = partials
+        result_payload['language_code'] = sess.language_code
+        result_payload['sample_rate_hz'] = sess.sample_rate_hz
+        logger.info(
+            'transcribe finish fast path transcript_len=%d partials=%d fed=%d (aws drain async)',
+            len(transcript or ''),
+            len(partials),
+            getattr(sess, '_chunks_fed_to_aws', 0),
+        )
+
+        def _drain_aws() -> None:
             try:
-                transcript = self.session.stop(timeout_sec=stop_timeout_sec)
+                final_tx = sess.stop(timeout_sec=stop_timeout_sec)
+                if final_tx and len(final_tx) > len(transcript or ''):
+                    logger.info(
+                        'transcribe async stop longer transcript (%d -> %d chars)',
+                        len(transcript or ''),
+                        len(final_tx),
+                    )
             except BaseException as e:
-                result_payload['error'] = str(e)[:500]
-                transcript = self.session.best_transcript
-            if not transcript:
-                transcript = self.session.best_transcript
-            result_payload['transcript'] = self._combined_transcript(transcript or '')
-            result_payload['partials'] = self._combined_partials or self.session.partial_history
-            result_payload['language_code'] = self.session.language_code
-            result_payload['sample_rate_hz'] = self.session.sample_rate_hz
-            if result_payload['error'] and result_payload['transcript'] and _is_transcribe_audio_timeout(
-                Exception(result_payload['error'])
-            ):
-                logger.warning(
-                    'transcribe finish ignoring audio-timeout error; transcript_len=%d',
-                    len(result_payload['transcript']),
-                )
-                result_payload['error'] = None
-            logger.info(
-                'transcribe socketio finish received=%d queued=%d fed=%d transcript_len=%d aws_sessions=%d',
-                self._audio_chunks_received,
-                getattr(self.session, '_chunks_queued', 0),
-                getattr(self.session, '_chunks_fed_to_aws', 0),
-                len(result_payload['transcript'] or ''),
-                self._aws_session_count,
-            )
+                if _is_transcribe_audio_timeout(e) and sess.best_transcript:
+                    logger.debug('transcribe async stop audio timeout (ignored)')
+                elif isinstance(e, TimeoutError):
+                    logger.debug('transcribe async stop timed out after %.1fs', stop_timeout_sec)
+                else:
+                    logger.debug('transcribe async stop: %s', e)
+
+        threading.Thread(target=_drain_aws, daemon=True).start()
         return result_payload
 
 
@@ -1035,7 +1045,7 @@ def register_transcribe_socketio_handlers(socketio) -> None:
             return
         logger.info('transcribe socketio stop sid=%s', sid)
         bridge.close()
-        result = bridge.finish(stop_timeout_sec=45.0)
+        result = bridge.finish(stop_timeout_sec=8.0)
         logger.info(
             'transcribe socketio done sid=%s chunks=%d last_rms=%d last_peak=%d transcript_len=%d partials=%d error=%s',
             sid,
