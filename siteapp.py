@@ -96,17 +96,12 @@ def _r2_configured():
 
 
 def _bucket_uses_r2(bucket):
-    """Standard RunPod bucket on R2; medical + SageMaker manifest buckets stay on AWS."""
+    """Only the standard RunPod bucket uses R2; medical and other buckets use AWS S3."""
     if not _r2_configured():
         return False
     b = str(bucket or '').strip()
-    med = (MEDICAL_S3_BUCKET or '').strip()
-    if med and b == med:
-        return False
-    sage_bucket = (os.environ.get('SAGEMAKER_REQUEST_BUCKET') or '').strip()
-    if sage_bucket and b == sage_bucket:
-        return False
-    return True
+    standard = _standard_s3_bucket_name()
+    return bool(standard and b == standard)
 
 
 def _s3_storage_credentials_configured(bucket):
@@ -8085,6 +8080,11 @@ def api_export_docx():
 def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base, pending_info=None):
     """S3 persist, DB timings, email — runs after HTTP 200 ack so the worker is not blocked."""
     result_s3_key = None
+    is_medical_job = bool(
+        ('/raw-audio/' in str(input_s3_key or ''))
+        or ('/summaries/' in str(input_s3_key or ''))
+        or str(input_s3_key or '').startswith('medical/')
+    )
     try:
         if input_s3_key:
             transcript_payload = {"segments": segments}
@@ -8100,7 +8100,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                     input_s3_key.rsplit('/', 1)[-1][:80],
                 )
             result_s3_key = _put_transcript_json_to_s3(
-                user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt'
+                user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt', is_medical=is_medical_job
             )
             result_dict = dict(data.get('result') or result) if isinstance(result, dict) else {}
             result_dict['result_s3_key'] = result_s3_key
