@@ -5434,6 +5434,24 @@ async function initOpenInApp(jobId) {
             .maybeSingle());
     }
     if (error || !job || !job.input_s3_key) {
+        if (!tryByUuidFirst && jobIdStr) {
+            ({ data: job, error } = await supabase
+                .from('jobs')
+                .select('id, input_s3_key')
+                .eq('id', jobIdStr)
+                .eq('user_id', user.id)
+                .maybeSingle());
+        }
+        if (!job && !tryByUuidFirst && jobIdStr) {
+            ({ data: job, error } = await supabase
+                .from('jobs')
+                .select('id, input_s3_key')
+                .eq('runpod_job_id', jobIdStr)
+                .eq('user_id', user.id)
+                .maybeSingle());
+        }
+    }
+    if (error || !job || !job.input_s3_key) {
         if (typeof showStatus === 'function') showStatus('Could not load file.', true);
         return;
     }
@@ -5443,7 +5461,7 @@ async function initOpenInApp(jobId) {
         if (typeof setMedicalMode === 'function') setMedicalMode(true);
     }
     if (isMedicalModeEnabled()) {
-        window.medicalActiveTab = 'summary';
+        window.medicalActiveTab = 'transcript';
         window._medicalHasResult = true;
         try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
     }
@@ -5453,6 +5471,9 @@ async function initOpenInApp(jobId) {
     const { data: keyRow } = await supabase.from('jobs').select('result_s3_key').eq('id', resolvedJobId).eq('user_id', user.id).maybeSingle();
     let resultKeyToFetch = (keyRow && keyRow.result_s3_key) ? String(keyRow.result_s3_key).trim() : '';
     const derivedResultKey = deriveTranscriptJsonKeyFromInputS3Key(job.input_s3_key);
+    if (!resultKeyToFetch && derivedResultKey) {
+        resultKeyToFetch = derivedResultKey;
+    }
     if (resultKeyToFetch && derivedResultKey && !transcriptResultKeyMatchesInput(job.input_s3_key, resultKeyToFetch)) {
         console.warn('[word-edit] open-in-app: result_s3_key does not match input_s3_key; using derived transcript key', {
             input_s3_key: job.input_s3_key,
@@ -5580,12 +5601,14 @@ async function initOpenInApp(jobId) {
             isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
         })
     });
-    const json = await res.json();
-    if (!json.url) {
-        if (typeof showStatus === 'function') showStatus(json.error || 'Failed to get file link', true);
-        return;
+    const json = await res.json().catch(() => ({}));
+    const mediaUrl = json.url ? qsNormalizeAbsoluteMediaUrl(json.url) : '';
+    if (!mediaUrl) {
+        console.warn('[qs] open-in-app: media presign failed', { status: res.status, error: json.error });
+        if (typeof showStatus === 'function') {
+            showStatus(json.error || 'Failed to get file link', true);
+        }
     }
-    const mediaUrl = qsNormalizeAbsoluteMediaUrl(json.url);
     const filename = decodeURIComponent((job.input_s3_key || '').split('/').pop() || 'file');
     window.originalFileName = filename.replace(/\.[^.]+$/, '') || 'file';
     const forceMedicalAudio =
@@ -5604,6 +5627,7 @@ async function initOpenInApp(jobId) {
     const placeholderEl = document.getElementById('placeholder');
     if (placeholderEl) placeholderEl.style.display = 'none';
 
+    if (mediaUrl) {
         if (isVideo) {
         const videoWrapper = document.getElementById('video-wrapper');
         const videoPlayer = document.getElementById('video-player-container');
@@ -5672,6 +5696,7 @@ async function initOpenInApp(jobId) {
             mainAudio.load();
         }
     }
+    }
 
     document.querySelectorAll('.controls-bar').forEach(bar => { if (bar) bar.style.display = ''; });
     const hasTranscriptOrSummary = hasTranscriptForOpen || initOpenAppHasLoadedTranscriptPayload();
@@ -5687,11 +5712,8 @@ async function initOpenInApp(jobId) {
     if (!isMedicalModeEnabled()) {
         try { clearOpenJobStandardSummaryHost(); } catch (_) {}
         try { syncStandardFormatTabs(); } catch (_) {}
-        const hasSummary = hasStandardFormattedSummary();
-        if (hasTranscriptForOpen && hasSummary) {
-            setFormatViewMode('summary');
-            renderStandardSummaryView();
-        } else if (hasTranscriptForOpen) {
+        if (hasTranscriptForOpen) {
+            setFormatViewMode('doc');
             const hasWordModel =
                 Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
                 window.currentWords.length > 0 && window.currentCaptions.length > 0;
@@ -8917,11 +8939,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isMainAppHome = pathname === '/' || pathname === '/he' || pathname === '/en';
     const isMedicalEntry = pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
+        const openMatch = (window.location.search || '').match(/[?&]open=([^&]+)/);
+        const hasOpenQuery = !!(openMatch && decodeURIComponent(openMatch[1] || '').trim());
+        if (typeof runOpenQueryIfPresent === 'function') {
+            await runOpenQueryIfPresent();
+        }
         try {
             const activeJobId = typeof window.qsGetActiveJobForResume === 'function'
                 ? window.qsGetActiveJobForResume()
                 : String(localStorage.getItem('activeJobId') || '').trim();
-            if (activeJobId) {
+            if (activeJobId && !hasOpenQuery && !window.__qsOpenHandledFor) {
                 window.isTriggering = true;
                 if (typeof window.startJobStatusPolling === 'function') {
                     window.startJobStatusPolling(activeJobId);
@@ -8931,9 +8958,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } catch (_) {}
             }
         } catch (_) {}
-        if (typeof runOpenQueryIfPresent === 'function') {
-            await runOpenQueryIfPresent();
-        }
         if (typeof maybeShowInitialRegistrationPrompt === 'function') {
             setTimeout(() => {
                 void maybeShowInitialRegistrationPrompt();
@@ -10898,7 +10922,7 @@ document.addEventListener('DOMContentLoaded', () => {
             void runUserRequestedTranslation();
         });
     }
-    window.medicalActiveTab = window.medicalActiveTab || 'summary';
+    window.medicalActiveTab = window.medicalActiveTab || 'transcript';
     window._medicalRecorder = null;
     window._medicalRecorderChunks = [];
     window._medicalRecorderSegments = [];
@@ -10962,13 +10986,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         if (!showTabs && !hasLiveStream) return;
-        // In medical mode, summary should be the main/default tab, including simulation.
+        // Transcript is the default; summary is optional and only if the doctor opens that tab.
         if (!window.medicalActiveTab) {
-            window.medicalActiveTab = (hasFormattedSummary && !awaitingStreamSummary) ? 'summary' : 'transcript';
+            window.medicalActiveTab = 'transcript';
         }
-        const isSummary = String(
-            window.medicalActiveTab || (awaitingStreamSummary || !hasFormattedSummary ? 'transcript' : 'summary')
-        ) === 'summary';
+        const isSummary = String(window.medicalActiveTab || 'transcript') === 'summary';
         if (medicalTabTranscript) medicalTabTranscript.classList.toggle('is-active', !isSummary);
         if (medicalTabSummary) medicalTabSummary.classList.toggle('is-active', isSummary);
         try { if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn(); } catch (_) {}
@@ -11264,7 +11286,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const hasLoadedPayload = typeof initOpenAppHasLoadedTranscriptPayload === 'function'
                 ? initOpenAppHasLoadedTranscriptPayload()
                 : false;
-            if (!hasLoadedPayload) window.medicalActiveTab = 'summary';
+            if (!hasLoadedPayload) window.medicalActiveTab = 'transcript';
             try {
                 if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
                 if (typeof window.toggleSubtitleStyleDrawer === 'function') window.toggleSubtitleStyleDrawer(false);

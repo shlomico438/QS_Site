@@ -3021,7 +3021,7 @@ def get_presigned_url():
             if cdn_url and cdn_url.lower().startswith('https://'):
                 return jsonify({"url": cdn_url, "via": "cdn"})
 
-        s3_client = _s3_boto_client(for_upload=False)
+        s3_client = _s3_boto_client(for_upload=False, bucket=bucket)
         params = {
             'Bucket': bucket,
             'Key': s3_key
