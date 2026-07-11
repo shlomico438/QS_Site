@@ -3192,6 +3192,28 @@ def _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='gpt'):
     return _put_transcript_json_to_s3(user_id, input_s3_key, {"segments": segments}, stage=stage)
 
 
+def _segments_to_plain_text(segments):
+    """Join segment texts for GPT summary/format (server-side persist on gpu callback)."""
+    if not isinstance(segments, list):
+        return ''
+    parts = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        t = str(seg.get('text') or '').strip()
+        if t:
+            parts.append(t)
+    return '\n'.join(parts)
+
+
+def _gpu_callback_server_format_enabled(is_medical_job):
+    """Run GPT summary on the server so output JSON + email links include formatted."""
+    if is_medical_job:
+        return False
+    v = (os.environ.get('GPT_FORMAT_ON_GPU_CALLBACK') or 'true').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
 def _flatten_words_from_segments(segments):
     """Flatten WhisperX-style segment words into flat words[] + captions[].
 
@@ -8133,6 +8155,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         or ('/summaries/' in str(input_s3_key or ''))
         or str(input_s3_key or '').startswith('medical/')
     )
+    server_gpt_sec = None
     try:
         if input_s3_key:
             transcript_payload = {"segments": segments}
@@ -8147,6 +8170,31 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                     "gpu_callback: merged existing formatted onto new segments (input_s3_key suffix=%s)",
                     input_s3_key.rsplit('/', 1)[-1][:80],
                 )
+            elif _gpu_callback_server_format_enabled(is_medical_job):
+                plain = _segments_to_plain_text(segments)
+                if plain.strip():
+                    try:
+                        t_fmt = time.time()
+                        fmt = _format_transcript_and_summary_via_openai(
+                            plain,
+                            target_lang='he',
+                            is_medical=False,
+                            user_id=user_id,
+                        )
+                        norm = _normalize_formatted_dict_for_storage(fmt)
+                        if norm:
+                            transcript_payload["formatted"] = norm
+                            logging.info(
+                                "gpu_callback: server-side formatted saved (overview_len=%s, input_s3_key suffix=%s)",
+                                len(str(norm.get('overview') or '')),
+                                input_s3_key.rsplit('/', 1)[-1][:80],
+                            )
+                        server_gpt_sec = round(time.time() - t_fmt, 3)
+                    except Exception as fmt_err:
+                        logging.warning(
+                            "gpu_callback: server-side GPT format failed (segments still saved): %s",
+                            fmt_err,
+                        )
             result_s3_key = _put_transcript_json_to_s3(
                 user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt', is_medical=is_medical_job
             )
@@ -8196,7 +8244,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         download_sec=worker_timing.get("download_sec"),
         runpod_wakeup_sec=worker_timing.get("wakeup_sec") or waiting_for_run,
         runpod_process_sec=runpod_process,
-        gpt_sec=worker_timing.get("gpt_sec"),
+        gpt_sec=server_gpt_sec if server_gpt_sec is not None else worker_timing.get("gpt_sec"),
         total_sec=total_sec,
     )
 

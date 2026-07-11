@@ -5713,14 +5713,33 @@ async function initOpenInApp(jobId) {
         try { clearOpenJobStandardSummaryHost(); } catch (_) {}
         try { syncStandardFormatTabs(); } catch (_) {}
         if (hasTranscriptForOpen) {
-            setFormatViewMode('doc');
-            const hasWordModel =
-                Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
-                window.currentWords.length > 0 && window.currentCaptions.length > 0;
-            if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
-                renderWordCaptionEditor();
-            } else if (typeof window.render === 'function') {
-                window.render();
+            const hasSummary = hasStandardFormattedSummary();
+            const renderOpenTranscriptView = () => {
+                const hasWordModel =
+                    Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
+                    window.currentWords.length > 0 && window.currentCaptions.length > 0;
+                if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
+                    renderWordCaptionEditor();
+                } else if (typeof window.render === 'function') {
+                    window.render();
+                }
+            };
+            if (hasSummary) {
+                setFormatViewMode('summary');
+                renderStandardSummaryView();
+            } else {
+                setFormatViewMode('doc');
+                renderOpenTranscriptView();
+                if (typeof ensureFormattedViaApiForExport === 'function') {
+                    void ensureFormattedViaApiForExport().then((ok) => {
+                        if (ok && hasStandardFormattedSummary()) {
+                            setFormatViewMode('summary');
+                            renderStandardSummaryView();
+                        }
+                    }).catch((err) => {
+                        console.warn('[qs] open-in-app: summary generation failed', err);
+                    });
+                }
             }
         }
     } else if (typeof window.render === 'function') {
@@ -8909,6 +8928,13 @@ if (toggleAuthBtn) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    window.__qsSimulationMode = false;
+    try {
+        fetch('/api/simulation_mode', { cache: 'no-store' })
+            .then((r) => (r.ok ? r.json() : {}))
+            .then((j) => { window.__qsSimulationMode = j.simulation === true; })
+            .catch(() => {});
+    } catch (_) {}
     // 1. Navbar auth first so signed-in CTA → Personal Area before i18n pass
     await setupNavbarAuth();
     if (typeof window.applyTranslations === 'function') window.applyTranslations();
@@ -11001,6 +11027,55 @@ document.addEventListener('DOMContentLoaded', () => {
         qsSyncRegularRecordUi();
     }
 
+    function qsLocalDebugDropEnabled() {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return true;
+        if (!window.__qsSimulationMode) return false;
+        try {
+            const p = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
+            return p === '/' || p === '/he' || p === '/en';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function isLocalDebugMediaFile(file) {
+        return !!(file && (
+            (typeof qsIsAudioMediaFile === 'function' && qsIsAudioMediaFile(file)) ||
+            (typeof qsIsVideoMediaFile === 'function' && qsIsVideoMediaFile(file))
+        ));
+    }
+
+    function qsAttachLocalMediaToLoadedTranscript(file) {
+        if (!file || typeof initOpenAppHasLoadedTranscriptPayload !== 'function') return false;
+        if (!initOpenAppHasLoadedTranscriptPayload()) return false;
+        let isAudio = typeof qsIsAudioMediaFile === 'function' && qsIsAudioMediaFile(file);
+        let isVideo = !isAudio && typeof qsIsVideoMediaFile === 'function' && qsIsVideoMediaFile(file);
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            isAudio = true;
+            isVideo = false;
+        }
+        if (!isVideo && !isAudio) return false;
+        if (typeof qsShowLocalUploadMediaPreview === 'function') {
+            qsShowLocalUploadMediaPreview(file);
+        }
+        const placeholderEl = document.getElementById('placeholder');
+        if (placeholderEl) placeholderEl.style.display = 'none';
+        document.querySelectorAll('.controls-bar').forEach((bar) => { if (bar) bar.style.display = ''; });
+        if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(true);
+        if (mainBtn) {
+            mainBtn.disabled = false;
+            mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
+        }
+        if (typeof setDiarizationBusyState === 'function') setDiarizationBusyState(false);
+        if (typeof hideProgressBar === 'function') hideProgressBar();
+        try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
+        if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
+        if (typeof window.applyMedicalModeUi === 'function') {
+            try { window.applyMedicalModeUi(); } catch (_) {}
+        }
+        return true;
+    }
+
     async function loadTranscriptJsonFile(file, options = {}) {
         if (!file) return false;
         const text = await file.text();
@@ -11100,9 +11175,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return Array.isArray(points) && points.some((p) => String(p || '').trim());
     }
 
-    function medicalJsonDropFileFromEvent(e) {
+    function debugDropFilesFromEvent(e) {
         const files = e && e.dataTransfer && e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
-        return files.find(isTranscriptJsonFile) || files.find(isMedicalAudioFile) || files[0] || null;
+        return {
+            json: files.find(isTranscriptJsonFile) || null,
+            media: files.find(isLocalDebugMediaFile) || null,
+        };
     }
 
     function isTranscriptJsonFile(file) {
@@ -11124,28 +11202,44 @@ document.addEventListener('DOMContentLoaded', () => {
         return types.some((t) => String(t || '').toLowerCase() === 'files');
     }
 
-    function handleMedicalJsonDropEvent(e, evtName) {
-        if (!isMedicalModeEnabled() || !medicalJsonDragHasFile(e)) return;
+    async function handleDebugLocalDropEvent(e, evtName) {
+        if (!qsLocalDebugDropEnabled() || !medicalJsonDragHasFile(e)) return;
         e.preventDefault();
         e.stopPropagation();
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
         if (evtName !== 'drop') return;
-        if (e._qsMedicalJsonDropHandled) return;
-        e._qsMedicalJsonDropHandled = true;
+        if (e._qsDebugLocalDropHandled) return;
+        e._qsDebugLocalDropHandled = true;
         if (window.isTriggering) {
             if (typeof showStatus === 'function') showStatus('A transcription is already running.', true);
             return;
         }
-        const file = medicalJsonDropFileFromEvent(e);
-        if (!file) return;
-        if (isTranscriptJsonFile(file)) {
-            loadTranscriptJsonFile(file, { source: 'medical_drop', skipScroll: true }).catch((err) => {
-                console.warn('Medical JSON transcript load failed', err);
-                if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${err.message || err}`, true);
-            });
+        const { json: jsonFile, media: mediaFile } = debugDropFilesFromEvent(e);
+        if (!jsonFile && !mediaFile) {
+            if (typeof showStatus === 'function') {
+                showStatus('Please drop a JSON transcript and/or video/audio file (MP4, MOV, M4A, etc.).', true);
+            }
             return;
         }
-        if (isMedicalAudioFile(file)) {
+
+        const onMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+
+        if (jsonFile) {
+            try {
+                await loadTranscriptJsonFile(jsonFile, {
+                    source: onMedical ? 'medical_drop' : 'simulation_drop',
+                    skipScroll: true
+                });
+            } catch (err) {
+                console.warn('Debug JSON transcript load failed', err);
+                if (typeof showStatus === 'function') showStatus(`Failed to load JSON: ${err.message || err}`, true);
+                return;
+            }
+        }
+
+        if (!mediaFile) return;
+
+        if (onMedical && isMedicalAudioFile(mediaFile) && !jsonFile) {
             const rec = window._medicalRecorder;
             if (rec && rec.state && rec.state !== 'inactive') {
                 if (typeof showStatus === 'function') showStatus('Finish or cancel the current recording before uploading audio.', true);
@@ -11156,17 +11250,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
                 window.__QS_FILE_PICKER_PURPOSE = 'new_upload';
             } catch (_) {}
-            pushFileIntoPickerAndUpload(file).catch((err) => {
+            pushFileIntoPickerAndUpload(mediaFile).catch((err) => {
                 console.warn('Medical audio upload failed', err);
                 if (typeof showStatus === 'function') showStatus(`Failed to upload audio: ${err.message || err}`, true);
             });
             return;
         }
-        if (typeof showStatus === 'function') showStatus('Please drop a JSON transcript or audio file (M4A, MP3, WAV, etc.).', true);
+
+        if (qsAttachLocalMediaToLoadedTranscript(mediaFile)) {
+            if (typeof showStatus === 'function') {
+                showStatus('Local media attached (no upload).', false, { duration: 5000 });
+            }
+        } else if (!jsonFile) {
+            if (typeof showStatus === 'function') {
+                showStatus('Drop a JSON transcript first, then video or audio.', true);
+            }
+        }
     }
 
     ['dragenter', 'dragover', 'drop'].forEach((evtName) => {
-        document.addEventListener(evtName, (e) => handleMedicalJsonDropEvent(e, evtName), true);
+        document.addEventListener(evtName, (e) => handleDebugLocalDropEvent(e, evtName), true);
     });
 
     window.applyMedicalModeUi = function() {
@@ -13491,7 +13594,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         /** Keep toolbar hidden until unified GPT (summary + grammar) completes. */
         const deferToolbarUntilGptDone = true;
-        const summaryAlreadyDone = qsJobSummaryAlreadyDone(jobId);
+        const summaryAlreadyDone = qsJobSummaryAlreadyDone(jobId) || hasStandardFormattedSummary();
         const deferMedicalStreamSummary = qsShouldDeferMedicalStreamSummary(rawResult) && !summaryAlreadyDone;
         if (deferMedicalStreamSummary) {
             window.isTriggering = false;
@@ -15582,88 +15685,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 // Do not trigger this for normal New Session uploads; stale transcript state can otherwise hijack iOS picker selections.
                 const pickerPurpose = String(window.__QS_FILE_PICKER_PURPOSE || 'new_upload');
                 const allowLocalMediaAttach = !!window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON && pickerPurpose === 'attach_local_media';
-                if (allowLocalMediaAttach && typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload()) {
-                    let isAudio = qsIsAudioMediaFile(file);
-                    let isVideo = !isAudio && qsIsVideoMediaFile(file);
-                    if (isMedicalModeEnabled()) {
-                        isAudio = true;
-                        isVideo = false;
+                if (allowLocalMediaAttach && qsAttachLocalMediaToLoadedTranscript(file)) {
+                    if (typeof showStatus === 'function') {
+                        showStatus('Local media attached (no upload).', false, { duration: 5000 });
                     }
-                    if (isVideo || isAudio) {
-                        const objectUrl = URL.createObjectURL(file);
-                        window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'media';
-                        window.uploadWasVideo = !!isVideo && !isMedicalModeEnabled();
-                        qsPersistUploadWasVideoFlag(!!window.uploadWasVideo);
-                        if (isVideo) {
-                            const src = document.getElementById('video-source');
-                            const video = document.getElementById('main-video');
-                            if (src) {
-                                src.src = objectUrl;
-                                const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
-                                src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
-                            }
-                            if (video) {
-                                video.style.position = 'relative';
-                                video.style.zIndex = '1002';
-                                video.controls = true;
-                                video.load();
-                                video.pause();
-                                try { video.focus(); } catch (e) {}
-                            }
-                            const videoWrapper = document.getElementById('video-wrapper');
-                            const videoPlayer = document.getElementById('video-player-container');
-                            const playerContainer = document.getElementById('audio-player-container');
-                            if (playerContainer) playerContainer.style.display = 'none';
-                            if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
-                            if (video) video.style.display = '';
-                            if (videoPlayer) videoPlayer.style.display = 'block';
-                        } else {
-                            const audioContainer = document.getElementById('audio-player-container');
-                            const videoWrapper = document.getElementById('video-wrapper');
-                            const videoPlayer = document.getElementById('video-player-container');
-                            const video = document.getElementById('main-video');
-                            const audioSource = document.getElementById('audio-source');
-                            const mainAudio = document.getElementById('main-audio');
-                            if (videoWrapper) {
-                                videoWrapper.style.display = 'none';
-                                videoWrapper.classList.remove('visible');
-                            }
-                            try { document.body.classList.remove('mobile-video-session'); } catch (_) {}
-                            if (video) video.style.display = 'none';
-                            if (audioContainer && videoWrapper && videoPlayer && audioContainer.parentNode === videoPlayer) {
-                                videoWrapper.parentNode.insertBefore(audioContainer, videoWrapper);
-                            }
-                            if (audioContainer) audioContainer.style.display = 'block';
-                            if (audioSource && mainAudio) {
-                                audioSource.src = objectUrl;
-                                audioSource.type = qsMimeForAudioElement(file);
-                                mainAudio.load();
-                            }
-                            if (videoPlayer) videoPlayer.style.display = 'block';
-                        }
-                        const mimeForMov = isMedicalModeEnabled()
-                            ? qsGuessUploadMimeType(file, 'audio/webm')
-                            : ((/\.mov$/i.test(file.name) || String(file.type || '').toLowerCase().includes('quicktime')) ? 'video/mp4' : (file.type || ''));
-                        setLocalPreviewAudio(objectUrl, mimeForMov);
-                        setTranscriptActionButtonsVisible(true);
-                        if (mainBtn) {
-                            mainBtn.disabled = false;
-                            mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');
-                        }
-                        setDiarizationBusyState(false);
-                        hideProgressBar();
-                        try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
-                        if (typeof setMainButtonAction === 'function') setMainButtonAction('upload');
-                        if (typeof window.applyMedicalModeUi === 'function') {
-                            try { window.applyMedicalModeUi(); } catch (_) {}
-                        }
-                        if (typeof showStatus === 'function') {
-                            showStatus('Local media attached (no upload).', false, { duration: 5000 });
-                        }
-                        fileInput.value = '';
-                        try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
-                        return;
-                    }
+                    fileInput.value = '';
+                    try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
+                    return;
                 }
 
                 try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
