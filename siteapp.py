@@ -30,7 +30,7 @@ import threading
 import uuid
 import pathlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 from io import BytesIO
@@ -3632,6 +3632,142 @@ def _user_display_name_from_auth_payload(user_data):
     return name or None
 
 
+def _env_truthy(name, default=True):
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == '':
+        return default
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _new_user_notification_recipients():
+    raw = str(NEW_USER_NOTIFICATION_RECIPIENT or '').strip()
+    if not raw:
+        return []
+    return [part.strip() for part in raw.replace(';', ',').split(',') if part.strip()]
+
+
+def _parse_auth_user_created_at_utc(user_data):
+    if not isinstance(user_data, dict):
+        return None
+    raw = str(user_data.get('created_at') or '').strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith('Z'):
+            raw = raw[:-1] + '+00:00'
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _auth_user_is_recent_registration(user_data, max_hours=None):
+    created = _parse_auth_user_created_at_utc(user_data)
+    if not created:
+        return False
+    hours = int(max_hours if max_hours is not None else NEW_USER_NOTIFICATION_MAX_AGE_HOURS)
+    age = datetime.now(timezone.utc) - created
+    return age.total_seconds() <= hours * 3600
+
+
+def _supabase_admin_merge_user_metadata(user_id, patch_meta):
+    user_id = str(user_id or '').strip()
+    if not user_id or not isinstance(patch_meta, dict) or not patch_meta:
+        return False
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip()
+    if not supabase_url or not service_key:
+        return False
+    headers = {
+        'Authorization': f'Bearer {service_key}',
+        'apikey': service_key,
+        'Content-Type': 'application/json',
+    }
+    try:
+        r_get = requests.get(
+            f"{supabase_url}/auth/v1/admin/users/{user_id}",
+            headers=headers,
+            timeout=10,
+        )
+        if r_get.status_code != 200:
+            return False
+        current = r_get.json() if r_get.text else {}
+        meta = current.get('user_metadata') if isinstance(current, dict) else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        merged = {**meta, **patch_meta}
+        r_put = requests.put(
+            f"{supabase_url}/auth/v1/admin/users/{user_id}",
+            headers=headers,
+            json={'user_metadata': merged},
+            timeout=10,
+        )
+        return r_put.status_code in (200, 201)
+    except Exception as e:
+        logging.warning('_supabase_admin_merge_user_metadata failed user=%s: %s', user_id[:8], e)
+        return False
+
+
+def _send_admin_new_user_registration_email(auth_user):
+    recipients = _new_user_notification_recipients()
+    if not recipients or not isinstance(auth_user, dict):
+        return False
+    user_id = str(auth_user.get('id') or '').strip()
+    email = str(auth_user.get('email') or '').strip()
+    name = _user_display_name_from_auth_payload(auth_user) or '(not provided)'
+    created = str(auth_user.get('created_at') or '').strip() or '(unknown)'
+    provider = str(auth_user.get('app_metadata', {}).get('provider') or 'email').strip()
+    subject = f"QuickScribe — new user registered ({email or user_id[:8]})"
+    body = (
+        "A new user registered on QuickScribe.\n\n"
+        f"User id: {user_id or '(unknown)'}\n"
+        f"Email: {email or '(none)'}\n"
+        f"Name: {name}\n"
+        f"Auth provider: {provider}\n"
+        f"Created at (UTC): {created}\n"
+    )
+    return _send_email_via_zoho(recipients, subject, body, reply_to=email or None)
+
+
+def _maybe_notify_admin_new_registration(auth_user):
+    """Email ops once per new auth.users row (first sign-in within NEW_USER_NOTIFICATION_MAX_AGE_HOURS)."""
+    if not _env_truthy('NEW_USER_NOTIFICATIONS', True):
+        return
+    if not isinstance(auth_user, dict):
+        return
+    meta = auth_user.get('user_metadata') or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    if meta.get('qs_admin_reg_notified'):
+        return
+    if not _auth_user_is_recent_registration(auth_user):
+        return
+    user_id = str(auth_user.get('id') or '').strip()
+    if not user_id:
+        return
+    if not _send_admin_new_user_registration_email(auth_user):
+        logging.warning('new user registration email failed user=%s', user_id[:8])
+        return
+    _supabase_admin_merge_user_metadata(user_id, {'qs_admin_reg_notified': True})
+    logging.info('new user registration email sent user=%s', user_id[:8])
+
+
+def _schedule_admin_new_user_registration_notify(auth_user):
+    if not isinstance(auth_user, dict):
+        return
+    try:
+        payload = dict(auth_user)
+        threading.Thread(
+            target=_maybe_notify_admin_new_registration,
+            args=(payload,),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        logging.warning('schedule new user registration notify failed: %s', e)
+
+
 def _user_credits_get(user_id):
     user_id = str(user_id or '').strip()
     if not user_id:
@@ -4930,6 +5066,7 @@ def api_user_credits_ensure_welcome():
         body = request.get_json(silent=True) or {}
         user_name = str(body.get('user_name') or '').strip() or _user_display_name_from_auth_payload(auth_user)
         row = _user_credits_ensure_welcome(user_id, user_name=user_name)
+        _schedule_admin_new_user_registration_notify(auth_user)
         return jsonify({
             "credit_minutes": int((row or {}).get('credit_minutes') or 0),
             "welcome_granted": bool((row or {}).get('welcome_granted')),
@@ -7906,6 +8043,12 @@ def api_runpod_scale():
 
 
 REGISTRATION_FEEDBACK_RECIPIENT = "shlomi.cohen@getquickscribe.com"
+NEW_USER_NOTIFICATION_RECIPIENT = (
+    os.environ.get('NEW_USER_NOTIFICATION_RECIPIENT') or 'shlomico1234@gmail.com'
+).strip()
+NEW_USER_NOTIFICATION_MAX_AGE_HOURS = max(
+    1, int(os.environ.get('NEW_USER_NOTIFICATION_MAX_AGE_HOURS', '168') or 168)
+)
 SALES_INQUIRY_RECIPIENTS = (
     "shlomi.cohen@getquickscribe.com",
     "info@getquickscribe.com",
