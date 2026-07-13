@@ -2823,6 +2823,11 @@ body.qs-session-complete:not(.medical-mode) #qs-pipeline-phase-wrap {
   display: none !important;
 }
 
+/* Hide upload pipeline bar once transcript toolbar is shown (all modes, incl. medical). */
+body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
+  display: none !important;
+}
+
 .qs-music-mode-bottom-wrap {
   flex: 0 0 auto;
   margin: 0;

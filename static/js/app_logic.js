@@ -9030,6 +9030,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : String(localStorage.getItem('activeJobId') || '').trim();
             if (activeJobId && !hasOpenQuery && !window.__qsOpenHandledFor) {
                 window.isTriggering = true;
+                if (typeof qsStartUnifiedProgressPhase === 'function') qsStartUnifiedProgressPhase('transcribe');
+                if (typeof startProcessingStateUI === 'function') startProcessingStateUI();
                 if (typeof window.startJobStatusPolling === 'function') {
                     window.startJobStatusPolling(activeJobId);
                 }
@@ -9962,7 +9964,9 @@ function qsShowPipelineBarChrome() {
 
 function qsHidePipelineBarChrome() {
     const wrap = document.getElementById('qs-pipeline-phase-wrap');
+    const overlayUnified = document.getElementById('processing-unified-progress');
     if (wrap) wrap.style.display = 'none';
+    if (overlayUnified) overlayUnified.style.display = 'none';
     qsClearUnifiedProgressTimer();
     window.__QS_UNIFIED_PROGRESS_PHASE = null;
     qsSetProgressBarPct(0);
@@ -9979,8 +9983,11 @@ function qsHideUnifiedProgressChrome() {
 /** One bar in the upload zone: phase label + fill (0–100). */
 function qsSetUnifiedProgressPhase(phase, pct) {
     window.__QS_UNIFIED_PROGRESS_PHASE = phase;
+    const label = qsUnifiedPhaseLabel(phase);
     const labelEl = document.getElementById('qs-pipeline-phase-label');
-    if (labelEl) labelEl.textContent = qsUnifiedPhaseLabel(phase);
+    const legacyUnifiedLabel = document.getElementById('qs-unified-phase-label');
+    if (labelEl) labelEl.textContent = label;
+    if (legacyUnifiedLabel) legacyUnifiedLabel.textContent = label;
     if (pct != null) qsSetProgressBarPct(pct);
 }
 
@@ -10207,7 +10214,13 @@ function startProcessingStateUI() {
 
     const phase = window.__QS_UNIFIED_PROGRESS_PHASE;
     const isMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
-    if (phase !== 'transcribe' && phase !== 'summary' && phase !== 'upload' && phase !== 'warmup' && phase !== 'vocal_separation') {
+    const pipelineBusy = !!(window.isTriggering || window.__QS_UPLOAD_PIPELINE_BUSY);
+    if (phase === 'upload' && pipelineBusy) {
+        const next = (!isMedical && qsUserTreatAsMusicForUpload())
+            ? 'vocal_separation'
+            : 'transcribe';
+        qsStartUnifiedProgressPhase(next);
+    } else if (phase !== 'transcribe' && phase !== 'summary' && phase !== 'upload' && phase !== 'warmup' && phase !== 'vocal_separation') {
         const next = (!isMedical && qsUserTreatAsMusicForUpload())
             ? 'vocal_separation'
             : 'transcribe';
@@ -10875,6 +10888,10 @@ function setTranscriptActionButtonsVisible(visible) {
     }
     if (visible) {
         try { qsSetProcessingOverlayActive(false); } catch (_) {}
+        try {
+            if (typeof hideProgressBar === 'function') hideProgressBar();
+            else if (typeof qsHidePipelineBarChrome === 'function') qsHidePipelineBarChrome();
+        } catch (_) {}
     }
     if (!visible) {
         try { qsClearTranscriptEditState(); } catch (_) {}
@@ -13130,6 +13147,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const prev = mainBtn.innerText;
                 mainBtn.disabled = true;
                 mainBtn.innerText = ((typeof window.t === 'function' ? window.t('processing') : 'Processing') || 'Processing').replace(/\.\.\.?$/, '');
+                window.isTriggering = true;
+                qsStartUnifiedProgressPhase('transcribe');
                 startProcessingStateUI();
                 setDiarizationBusyState(true);
                 try {
@@ -13639,7 +13658,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (window.isTriggering) {
+        if (window.isTriggering || window.__QS_UPLOAD_PIPELINE_BUSY || window.__QS_UNIFIED_PROGRESS_PHASE) {
             qsCompleteTranscribePipelineProgress();
             if (!qsShouldDeferMedicalStreamSummary(rawResult)) {
                 qsStartSummaryPipelineProgress();
@@ -13994,6 +14013,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (deferToolbarUntilGptDone) {
             stopProcessingStateUI('handle_job_update_success_pipeline_done');
         }
+        hideProgressBar();
         setTranscriptActionButtonsVisible(true);
         qsEnsureTranscriptToolbarVisible('handle_job_update_success', { force: true });
         try { qsSyncMusicModeBottomToggleUi(); } catch (_) {}
