@@ -1776,31 +1776,52 @@ def _read_qs_trigger_meta(job_id, db_timeout=None):
 def _get_worker_handoff(job_id):
     """Merged in-memory + Supabase handoff for RunPod worker polling after upload."""
     pinfo = dict(pending_job_info.get(job_id) or {})
-    qt = {}
-    if 'options_finalized' not in pinfo and 'worker_ready' not in pinfo:
-        qt = _read_qs_trigger_meta(job_id, db_timeout=_worker_handoff_db_timeout_sec())
+    # Always read DB: multi-instance Koyeb may have stale early-GPU False in memory on another worker.
+    qt = _read_qs_trigger_meta(job_id, db_timeout=_worker_handoff_db_timeout_sec())
 
-    def _pick(key):
-        if key in pinfo and pinfo.get(key) is not None:
-            return pinfo.get(key)
-        return qt.get(key)
+    def _pick_bool(key):
+        pv = pinfo.get(key) if key in pinfo else None
+        qv = qt.get(key) if isinstance(qt, dict) else None
+        if pv is True or qv is True:
+            return True
+        if pv is False:
+            return False
+        return bool(qv)
 
-    tx_opts = pinfo.get("transcription_options")
-    if not isinstance(tx_opts, dict):
-        tx_opts = _pick("transcription_options")
-    if not isinstance(tx_opts, dict):
+    def _pick_str(key):
+        for src in (pinfo, qt if isinstance(qt, dict) else {}):
+            val = src.get(key) if isinstance(src, dict) else None
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        return None
+
+    pinfo_opts = pinfo.get("transcription_options") if isinstance(pinfo.get("transcription_options"), dict) else {}
+    qt_opts = qt.get("transcription_options") if isinstance(qt, dict) else {}
+    opts_finalized = _pick_bool("options_finalized")
+    if opts_finalized and qt_opts:
+        tx_opts = {**pinfo_opts, **qt_opts} if pinfo_opts else dict(qt_opts)
+    elif pinfo_opts:
+        tx_opts = dict(pinfo_opts)
+    elif qt_opts:
+        tx_opts = dict(qt_opts)
+    else:
         tx_opts = {}
 
+    worker_ready = _pick_bool("worker_ready")
+    pending_reason = None if worker_ready else _pick_str("worker_pending_reason")
+
     return {
-        "options_finalized": bool(_pick("options_finalized")),
-        "worker_ready": bool(_pick("worker_ready")),
-        "worker_pending_reason": str(_pick("worker_pending_reason") or "").strip() or None,
+        "options_finalized": opts_finalized,
+        "worker_ready": worker_ready,
+        "worker_pending_reason": pending_reason,
         "transcription_options": tx_opts,
         "transcription_s3_key": (
-            str(_pick("transcription_s3_key") or _pick("input_s3_key") or pinfo.get("input_s3_key") or "").strip()
+            _pick_str("transcription_s3_key")
+            or _pick_str("input_s3_key")
+            or str(pinfo.get("input_s3_key") or "").strip()
             or None
         ),
-        "input_s3_key": str(pinfo.get("input_s3_key") or _pick("input_s3_key") or "").strip() or None,
+        "input_s3_key": str(pinfo.get("input_s3_key") or (qt.get("input_s3_key") if isinstance(qt, dict) else "") or "").strip() or None,
     }
 
 
@@ -1827,7 +1848,54 @@ def _set_worker_handoff(job_id, **fields):
             except Exception as e:
                 logging.warning("_set_worker_handoff persist failed job_id=%s: %s", job_id, e)
 
-        threading.Thread(target=_run, daemon=True).start()
+        # Worker handoff must be visible across Koyeb instances before GPU poll returns.
+        if fields.get("worker_ready") is True:
+            _run()
+        else:
+            threading.Thread(target=_run, daemon=True).start()
+
+
+def _job_upload_complete_from_db(job_id_value: str) -> bool:
+    """Multi-instance: infer upload done from jobs row when in-memory flag is on another worker."""
+    try:
+        supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+        service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+        if not supabase_url or not service_key or not job_id_value:
+            return False
+        from urllib.parse import quote
+        jid = quote(str(job_id_value), safe='')
+        url = (
+            f"{supabase_url}/rest/v1/jobs"
+            f"?runpod_job_id=eq.{jid}"
+            f"&select=status,metadata,updated_at"
+            f"&order=updated_at.desc"
+            f"&limit=1"
+        )
+        headers = {
+            "apikey": service_key,
+            "Authorization": f"Bearer {service_key}",
+            "Accept": "application/json",
+        }
+        r = _supabase_http_request(
+            'GET', url, headers=headers, timeout=_worker_handoff_db_timeout_sec(),
+        )
+        if r.status_code != 200:
+            return False
+        rows = r.json() if r.content else []
+        if not rows:
+            return False
+        row = rows[0] if isinstance(rows[0], dict) else {}
+        status_val = str(row.get("status") or "").strip().lower()
+        if status_val in ("uploaded", "processing", "processed", "completed", "exported"):
+            return True
+        md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+        if qt.get("upload_complete"):
+            return True
+        md_upload = str(md.get("upload_status") or "").strip().lower()
+        return md_upload in ("complete", "completed", "uploaded", "done")
+    except Exception:
+        return False
 
 
 def _worker_upload_status_response(job_id):
@@ -1836,6 +1904,9 @@ def _worker_upload_status_response(job_id):
     if not upload_done:
         file_timings = _get_trigger_timings(job_id, db_timeout=_worker_handoff_db_timeout_sec())
         upload_done = bool(file_timings.get("upload_complete"))
+    if not upload_done and _job_upload_complete_from_db(job_id):
+        upload_complete[job_id] = True
+        upload_done = True
     pinfo = dict(pending_job_info.get(job_id) or {})
     input_key = str(pinfo.get('input_s3_key') or '')
     is_medical_job = bool(pinfo.get('is_medical')) or ('/raw-audio/' in input_key)
@@ -1872,9 +1943,11 @@ def _worker_upload_status_response(job_id):
         reason = handoff.get("worker_pending_reason")
         if reason:
             out["pending_reason"] = reason
+        out["options_finalized"] = bool(handoff.get("options_finalized"))
         return out
     out["status"] = "complete"
     out["worker_ready"] = True
+    out["options_finalized"] = True
     tx_opts = handoff.get("transcription_options")
     if isinstance(tx_opts, dict) and tx_opts:
         out["transcription_options"] = tx_opts
@@ -10251,64 +10324,25 @@ def gpu_started():
 @app.route('/api/upload_status', methods=['GET'])
 def upload_status():
     """Worker polls this until upload is complete. Set when trigger_processing is called (after frontend upload)."""
-    def _is_upload_complete_in_db(job_id_value: str) -> bool:
-        try:
-            supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
-            service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
-            if not supabase_url or not service_key or not job_id_value:
-                return False
-            from urllib.parse import quote
-            jid = quote(str(job_id_value), safe='')
-            url = (
-                f"{supabase_url}/rest/v1/jobs"
-                f"?runpod_job_id=eq.{jid}"
-                f"&select=status,metadata,updated_at"
-                f"&order=updated_at.desc"
-                f"&limit=1"
-            )
-            headers = {
-                "apikey": service_key,
-                "Authorization": f"Bearer {service_key}",
-                "Accept": "application/json",
-            }
-            r = _supabase_http_request(
-                'GET', url, headers=headers, timeout=_worker_handoff_db_timeout_sec(),
-            )
-            if r.status_code != 200:
-                return False
-            rows = r.json() if r.content else []
-            if not rows:
-                return False
-            row = rows[0] if isinstance(rows[0], dict) else {}
-            status_val = str(row.get("status") or "").strip().lower()
-            if status_val in ("uploaded", "processing", "processed", "completed", "exported"):
-                return True
-            md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
-            if qt.get("upload_complete"):
-                return True
-            md_upload = str(md.get("upload_status") or "").strip().lower()
-            return md_upload in ("complete", "completed", "uploaded", "done")
-        except Exception:
-            return False
-
     job_id = request.args.get('job_id')
     if not job_id:
         return jsonify({"error": "job_id required"}), 400
     is_complete = bool(upload_complete.get(job_id))
     # Multi-instance safety: worker polling may hit a different app instance.
     # If in-memory / qs_trigger flag is missing, infer from jobs.status / metadata.
-    if not is_complete and _is_upload_complete_in_db(job_id):
+    if not is_complete and _job_upload_complete_from_db(job_id):
         upload_complete[job_id] = True
         _persist_upload_complete_async(job_id)
         is_complete = True
     payload = _worker_upload_status_response(job_id)
     logging.info(
-        "upload_status job_id=%s upload_complete=%s worker_status=%s worker_ready=%s",
+        "upload_status job_id=%s upload_complete=%s worker_status=%s worker_ready=%s options_finalized=%s pending_reason=%s",
         job_id,
         is_complete,
         payload.get("status"),
         payload.get("worker_ready"),
+        payload.get("options_finalized"),
+        payload.get("pending_reason"),
     )
     return jsonify(payload), 200
 
@@ -10321,10 +10355,12 @@ def job_transcription_options():
         return jsonify({"error": "job_id required"}), 400
     payload = _worker_upload_status_response(job_id)
     logging.info(
-        "job_transcription_options job_id=%s status=%s worker_ready=%s",
+        "job_transcription_options job_id=%s status=%s worker_ready=%s options_finalized=%s pending_reason=%s",
         job_id,
         payload.get("status"),
         payload.get("worker_ready"),
+        payload.get("options_finalized"),
+        payload.get("pending_reason"),
     )
     return jsonify(payload), 200
 
