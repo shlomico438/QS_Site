@@ -2761,50 +2761,7 @@ body.qs-upload-confirm-open {
   margin-bottom: 18px;
 }
 
-.qs-music-mode-container {
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-}
-
-.qs-music-mode-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  cursor: pointer;
-  margin: 0;
-}
-
-.qs-music-mode-checkbox {
-  margin-top: 3px;
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  accent-color: #0d9488;
-}
-
-.qs-music-mode-option-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.qs-music-mode-title {
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.qs-music-mode-desc {
-  font-size: 0.8rem;
-  line-height: 1.45;
-  color: #64748b;
-}
-
-body.qs-session-complete:not(.medical-mode) .qs-music-mode-bottom-wrap,
 body.qs-session-complete:not(.medical-mode) .regular-record-btn,
-body.has-transcript-actions.qs-session-complete:not(.medical-mode) .qs-music-mode-bottom-wrap,
 body.has-transcript-actions.qs-session-complete:not(.medical-mode) .regular-record-btn {
   display: none !important;
 }
@@ -2825,56 +2782,6 @@ body.qs-session-complete:not(.medical-mode) #qs-pipeline-phase-wrap {
 
 /* Hide upload pipeline bar once transcript toolbar is shown (all modes, incl. medical). */
 body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
-  display: none !important;
-}
-
-.qs-music-mode-bottom-wrap {
-  flex: 0 0 auto;
-  margin: 0;
-  min-width: 0;
-}
-
-.qs-music-mode-bottom-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  white-space: nowrap;
-}
-
-.qs-music-mode-bottom-checkbox {
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: #0d9488;
-}
-
-.qs-music-mode-bottom-title {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: #0f172a;
-  line-height: 1;
-}
-
-.qs-music-mode-info-body {
-  margin: 0 0 12px;
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: #475569;
-}
-
-.qs-music-mode-info-body:last-of-type {
-  margin-bottom: 18px;
-}
-
-body.medical-mode .qs-music-mode-bottom-wrap,
-.main-app-container.medical-mode .qs-music-mode-bottom-wrap {
   display: none !important;
 }
 
@@ -4760,12 +4667,6 @@ html[dir="rtl"] .upload-status {
         padding: 0 16px;
         font-size: 17px;
     }
-    .qs-music-mode-bottom-option {
-        padding: 7px 8px;
-    }
-    .qs-music-mode-bottom-title {
-        font-size: 0.76rem;
-    }
     .upload-status { display: none; }
 
     /* 1. Stack the controls vertically (legacy controls-row) */
@@ -6611,7 +6512,7 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
   }
 }
 
-/* Busy state: during upload/transcription, show progress only; hide action buttons and music checkbox. */
+/* Busy state: during upload/transcription, show progress only; hide action buttons. */
 body.qs-app-busy .transcription-wrapper .controls-bar,
 body.qs-app-busy .transcription-wrapper .switches-top-bar,
 body.qs-app-busy #subtitle-style-selector,
@@ -6625,7 +6526,6 @@ body.qs-app-busy .main-app-container > .upload-zone .upload-controls-row,
 body.qs-app-busy .main-app-container > .upload-zone #medical-recording-wrap,
 body.qs-app-busy .main-app-container > .upload-zone .mobile-new-session-btn,
 body.qs-app-busy .main-app-container > .upload-zone .medical-upload-new-session-btn,
-body.qs-app-busy .main-app-container > .upload-zone .qs-music-mode-bottom-wrap,
 body.qs-app-busy .main-app-container > .upload-zone .regular-record-btn,
 body.qs-app-busy .main-app-container > .upload-zone #regular-record-btn,
 body.qs-app-busy .main-app-container > .upload-zone #main-btn,

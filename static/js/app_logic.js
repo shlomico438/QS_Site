@@ -2610,32 +2610,16 @@ function qsUploadTraceErr(phase, detail) {
     } catch (_) {}
 }
 
-/** User choice from upload confirm modal (<5 min files) or default speech for longer clips. */
-function qsSetUserAudioProfileChoice(treatAsMusic) {
-    window.__QS_USER_TREAT_AS_MUSIC = !!treatAsMusic;
-    const bottom = document.getElementById('qs-music-mode-bottom-checkbox');
-    if (bottom) bottom.checked = !!treatAsMusic;
+/** Music/singing upload mode removed from UI — always use standard speech pipeline. */
+function qsSetUserAudioProfileChoice(_treatAsMusic) {
+    window.__QS_USER_TREAT_AS_MUSIC = false;
 }
 
 function qsUserTreatAsMusicForUpload() {
-    const bottom = document.getElementById('qs-music-mode-bottom-checkbox');
-    if (bottom) return !!bottom.checked;
-    const legacy = document.getElementById('qs-music-mode-checkbox');
-    if (legacy) return !!legacy.checked;
-    return !!window.__QS_USER_TREAT_AS_MUSIC;
+    return false;
 }
 
-function qsSyncMusicModeBottomToggleUi() {
-    const wrap = document.getElementById('qs-music-mode-bottom-wrap');
-    if (!wrap) return;
-    const onMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
-    const sessionComplete = !onMedical && !window.isTriggering && (
-        document.body.classList.contains('has-transcript-actions') || qsHasTranscriptResult()
-    );
-    wrap.style.display = (onMedical || sessionComplete) ? 'none' : '';
-    const cb = document.getElementById('qs-music-mode-bottom-checkbox');
-    if (cb) cb.checked = !!window.__QS_USER_TREAT_AS_MUSIC;
-}
+function qsSyncMusicModeBottomToggleUi() {}
 
 function qsSyncRegularRecordUi() {
     const regularRecordBtn = document.getElementById('regular-record-btn');
@@ -2657,84 +2641,10 @@ function qsSyncRegularRecordUi() {
     }
 }
 
-function qsShowMusicModeInfoModal() {
-    const T = typeof window.t === 'function' ? window.t : (k) => k;
-    return new Promise((resolve) => {
-        const backdrop = document.getElementById('qs-music-mode-info-modal');
-        const titleEl = document.getElementById('qs-music-mode-info-title');
-        const bodyEl = document.getElementById('qs-music-mode-info-body');
-        const vocalEl = document.getElementById('qs-music-mode-info-vocal');
-        const cancelBtn = document.getElementById('qs-music-mode-info-cancel');
-        const okBtn = document.getElementById('qs-music-mode-info-ok');
-        if (!backdrop || !cancelBtn || !okBtn) {
-            resolve(true);
-            return;
-        }
-        if (titleEl) titleEl.textContent = T('upload_music_mode_title') || 'Music / Singing Mode';
-        if (bodyEl) bodyEl.textContent = T('upload_music_mode_slow_notice')
-            || 'Processing takes significantly longer than standard speech mode.';
-        if (vocalEl) vocalEl.textContent = T('upload_music_mode_vocal_separation_notice')
-            || 'The system separates vocals from background music to improve transcription accuracy on songs and music-heavy recordings.';
-        cancelBtn.textContent = T('cancel') || 'Cancel';
-        okBtn.textContent = T('upload_music_mode_enable') || 'Enable';
-        let settled = false;
-        const finish = (ok) => {
-            if (settled) return;
-            settled = true;
-            backdrop.classList.remove('is-open');
-            backdrop.style.display = 'none';
-            backdrop.setAttribute('hidden', '');
-            backdrop.setAttribute('aria-hidden', 'true');
-            cancelBtn.onclick = null;
-            okBtn.onclick = null;
-            backdrop.onclick = null;
-            window.removeEventListener('keydown', onKey);
-            document.body.style.overflow = '';
-            resolve(!!ok);
-        };
-        const onKey = (e) => {
-            if (e.key === 'Escape') finish(false);
-        };
-        cancelBtn.onclick = () => finish(false);
-        okBtn.onclick = () => finish(true);
-        backdrop.onclick = (e) => {
-            if (e.target === backdrop) finish(false);
-        };
-        window.addEventListener('keydown', onKey);
-        backdrop.style.display = 'flex';
-        backdrop.removeAttribute('hidden');
-        backdrop.setAttribute('aria-hidden', 'false');
-        backdrop.classList.add('is-open');
-        document.body.style.overflow = 'hidden';
-        try { okBtn.focus(); } catch (_) {}
-    });
-}
-
-function qsWireMusicModeBottomToggleOnce() {
-    const cb = document.getElementById('qs-music-mode-bottom-checkbox');
-    if (!cb || cb.dataset.qsBound === '1') return;
-    cb.dataset.qsBound = '1';
-    cb.addEventListener('change', async () => {
-        if (!cb.checked) {
-            qsSetUserAudioProfileChoice(false);
-            return;
-        }
-        const ok = await qsShowMusicModeInfoModal();
-        if (!ok) {
-            cb.checked = false;
-            qsSetUserAudioProfileChoice(false);
-            return;
-        }
-        qsSetUserAudioProfileChoice(true);
-    });
-}
-
 /** Align with server RUNPOD_DEFER_WARMUP_FILE_BYTES — avoid loading whole File in the browser. */
 const QS_LARGE_UPLOAD_BYTES = 200 * 1024 * 1024;
 /** S3 multipart minimum part size (all parts except the last). Must match siteapp.py. */
 const QS_S3_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
-/** Music-mode confirm popup only for short clips (long/large files skip — probe + modal are slow). */
-const QS_UPLOAD_MUSIC_CONFIRM_MAX_SEC = 300;
 
 function qsShouldShowUploadMusicConfirm(_durationSec) {
     return false;
@@ -10960,8 +10870,6 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    qsWireMusicModeBottomToggleOnce();
-    qsSyncMusicModeBottomToggleUi();
     const transcriptWindow = document.getElementById('transcript-window');
     if (transcriptWindow && transcriptWindow.dataset.qsCopyGuardBound !== '1') {
         transcriptWindow.dataset.qsCopyGuardBound = '1';
@@ -16338,8 +16246,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (typeof qsRefreshUserCredits === 'function') {
                     void qsRefreshUserCredits({ ensureWelcome: true });
                 }
-
-                qsSetUserAudioProfileChoice(qsUserTreatAsMusicForUpload());
 
                 if (!(await qsEnsureMinCreditsForUpload())) {
                     fileInput.value = '';

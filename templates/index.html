@@ -481,17 +481,6 @@ try {
                 <button type="button" id="medical-wake-choice-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
             </div>
         </div>
-        <div id="qs-music-mode-info-modal" class="qs-upload-confirm-backdrop" hidden aria-hidden="true">
-            <div class="qs-upload-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="qs-music-mode-info-title">
-                <h3 id="qs-music-mode-info-title" data-i18n="upload_music_mode_title">Music / Singing Mode</h3>
-                <p id="qs-music-mode-info-body" class="qs-music-mode-info-body" data-i18n="upload_music_mode_slow_notice">Processing takes significantly longer than standard speech mode.</p>
-                <p id="qs-music-mode-info-vocal" class="qs-music-mode-info-body" data-i18n="upload_music_mode_vocal_separation_notice">The system separates vocals from background music to improve transcription accuracy on songs and music-heavy recordings.</p>
-                <div class="qs-upload-confirm-actions">
-                    <button type="button" id="qs-music-mode-info-cancel" class="qs-upload-confirm-btn secondary" data-i18n="cancel">Cancel</button>
-                    <button type="button" id="qs-music-mode-info-ok" class="qs-upload-confirm-btn primary" data-i18n="upload_music_mode_enable">Enable</button>
-                </div>
-            </div>
-        </div>
         <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
                 <h3 id="translation-modal-title">Translate transcript</h3>
@@ -726,12 +715,6 @@ try {
         <div class="upload-zone">
             <div class="upload-controls-row">
                 <input type="file" id="fileInput" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" hidden>
-                <div id="qs-music-mode-bottom-wrap" class="qs-music-mode-bottom-wrap"{% if medical_entry %} style="display:none;"{% endif %}>
-                    <label class="qs-music-mode-bottom-option" for="qs-music-mode-bottom-checkbox">
-                        <input type="checkbox" id="qs-music-mode-bottom-checkbox" class="qs-music-mode-bottom-checkbox" />
-                        <span class="qs-music-mode-bottom-title" data-i18n="upload_music_mode_short">מוזיקה</span>
-                    </label>
-                </div>
                 <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
                 <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
             </div>
