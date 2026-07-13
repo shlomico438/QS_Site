@@ -5,6 +5,7 @@ import shlex
 import struct
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def _split_command(command):
@@ -220,7 +221,8 @@ def _format_subprocess_failure(label, cmd, result):
         detail = (
             "process killed by OS (usually out-of-memory). "
             "Use a larger Koyeb instance (4GB+), keep TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_MODEL=mdx_extra_q, "
-            "and/or lower TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC (default 60)."
+            "and/or lower TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC (default 120) "
+            "or TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_PARALLEL."
         )
     if not detail:
         detail = f"exit code {result.returncode}"
@@ -228,7 +230,8 @@ def _format_subprocess_failure(label, cmd, result):
         oom_hint = (
             "OOM-killed (out of memory). Use a 4GB+ Koyeb instance, "
             "TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_MODEL=mdx_extra_q, "
-            "and/or TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC=60. "
+            "and/or TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC=120 "
+            "or set TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_PARALLEL=1. "
         )
     else:
         oom_hint = ""
@@ -318,6 +321,59 @@ def _find_vocals_file(output_dir):
     return str(candidates[0])
 
 
+def _chunk_parallel_workers(num_chunks):
+    """How many Demucs chunk jobs to run at once (default 4 on RunPod CPU 4 vCPU / 8 GB)."""
+    if num_chunks <= 1:
+        return 1
+    try:
+        parallel = int(os.environ.get("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_PARALLEL", "4") or 4)
+    except (TypeError, ValueError):
+        parallel = 4
+    return max(1, min(parallel, num_chunks))
+
+
+def _run_demucs_chunks(chunks, out_root, model_name, per_chunk_timeout, demucs_env, command_template=None):
+    """Run Demucs on each audio chunk; process up to CHUNK_PARALLEL chunks concurrently."""
+    if not chunks:
+        return []
+
+    parallel = _chunk_parallel_workers(len(chunks))
+    use_custom_template = command_template if len(chunks) == 1 else None
+
+    def _one(idx_chunk):
+        idx, chunk_path, _chunk_offset = idx_chunk
+        chunk_out = out_root / f"chunk_{idx:04d}"
+        vocals_path = _run_demucs_once(
+            chunk_path,
+            chunk_out,
+            model_name,
+            per_chunk_timeout,
+            demucs_env,
+            command_template=use_custom_template,
+        )
+        return idx, vocals_path
+
+    if parallel <= 1 or len(chunks) <= 1:
+        vocals_paths = []
+        for idx, (chunk_path, off) in enumerate(chunks):
+            _idx, path = _one((idx, chunk_path, off))
+            vocals_paths.append(path)
+        return vocals_paths
+
+    print(
+        f"[separate_vocals] demucs parallel={parallel} chunks={len(chunks)}",
+        flush=True,
+    )
+    results = [None] * len(chunks)
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = [pool.submit(_one, (idx, chunk_path, off)) for idx, (chunk_path, off) in enumerate(chunks)]
+        for fut in as_completed(futures):
+            idx, path = fut.result()
+            results[idx] = path
+            print(f"[separate_vocals] chunk {idx + 1}/{len(chunks)} done", flush=True)
+    return results
+
+
 def _build_timeline_aligned_vocals_wav(ffmpeg_path, vocals_path, source_duration_sec, prepend_sec, out_path, timeout_sec=600):
     """Convert vocals to 16 kHz mono WAV, optionally prepend silence, pad to source duration."""
     ff = ffmpeg_path or "ffmpeg"
@@ -389,23 +445,24 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
     source_duration_sec = _probe_media_duration_sec(ff, str(src), timeout_sec=min(120, timeout_sec)) or 0.0
     demucs_input = _normalize_input_for_demucs(ff, str(src), work_dir, timeout_sec=min(600, timeout_sec))
     demucs_env = _subprocess_env_with_ffmpeg(ff, work_dir)
-    chunk_sec = _env_float("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC", 60.0)
+    chunk_sec = _env_float("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC", 120.0)
     chunks = _split_wav_into_chunks(ff, demucs_input, work_dir, chunk_sec, min(600, timeout_sec), demucs_env)
+    parallel = _chunk_parallel_workers(len(chunks))
+    print(
+        f"[separate_vocals] source_duration_sec={source_duration_sec:.1f} "
+        f"chunk_sec={chunk_sec} chunks={len(chunks)} parallel={parallel}",
+        flush=True,
+    )
 
-    vocals_paths = []
     per_chunk_timeout = max(120, int(timeout_sec / max(1, len(chunks))))
-    for idx, (chunk_path, _chunk_offset) in enumerate(chunks):
-        chunk_out = out_root / f"chunk_{idx:04d}"
-        vocals_paths.append(
-            _run_demucs_once(
-                chunk_path,
-                chunk_out,
-                model,
-                per_chunk_timeout,
-                demucs_env,
-                command_template=command_template if len(chunks) == 1 else None,
-            )
-        )
+    vocals_paths = _run_demucs_chunks(
+        chunks,
+        out_root,
+        model,
+        per_chunk_timeout,
+        demucs_env,
+        command_template=command_template,
+    )
 
     if len(vocals_paths) == 1:
         vocals_path = vocals_paths[0]

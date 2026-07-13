@@ -169,8 +169,9 @@ window._getPrimaryMediaElement = function() {
     return a || v;
 };
 window.currentFormattedDoc = null;
-// When true, doc view/export should prefer current edited segments over stale GPT clean_transcript.
+// When true, doc view/export should prefer edited segment text over GPT clean_transcript (text edits only).
 window._qsDocPreferSegmentsAfterEdit = false;
+window._qsEditSessionTextBaseline = null;
 // Per-caption layout + highlight (merged with global defaults). Timeline/keywords UI removed.
 window.globalCaptionLayoutStyle = window.globalCaptionLayoutStyle || null;
 window.currentWords = null;
@@ -6186,17 +6187,20 @@ function extractFormattedFromJobPayload(payload) {
  * If in-memory GPT formatting is missing, reload transcript JSON from S3 (same row as Open in app)
  * so export_docx receives formatted. Logs explain misses for debugging.
  */
-async function hydrateFormattedFromSavedTranscript() {
+async function hydrateFormattedFromSavedTranscript(opts) {
+    const forExport = !!(opts && opts.forExport);
     const fmtMem = window.currentFormattedDoc;
     const hasClean = !!(fmtMem && String(fmtMem.clean_transcript || '').trim());
     const hasSummary = hasStandardFormattedSummary();
-    if (hasClean && hasSummary) {
-        window._qsCleanupDone = true;
-        return true;
-    }
-    if (hasClean) {
-        window._qsCleanupDone = true;
-        return true;
+    if (!forExport) {
+        if (hasClean && hasSummary) {
+            window._qsCleanupDone = true;
+            return true;
+        }
+        if (hasClean) {
+            window._qsCleanupDone = true;
+            return true;
+        }
     }
     try {
         const { data: { user } } = await supabase.auth.getUser();
@@ -6237,12 +6241,19 @@ async function hydrateFormattedFromSavedTranscript() {
                 ? window.currentFormattedDoc
                 : {};
             window.currentFormattedDoc = normalizeFormattedFields({ ...prev, ...trFmt });
-            window._qsDocPreferSegmentsAfterEdit = false;
             if (clen > 0) {
                 window._qsCleanupDone = true;
+                const normFmt = _qsNormalizeTranscriptTextForCompare(
+                    String(trFmt.clean_transcript || '').replace(/\s*\n+\s*/g, ' ')
+                );
+                const normSeg = _qsNormalizeTranscriptTextForCompare(_qsCollectFlatTranscriptText());
+                if (!window._qsDocPreferSegmentsAfterEdit || (normSeg && normFmt === normSeg)) {
+                    window._qsDocPreferSegmentsAfterEdit = false;
+                }
                 console.log('[export] hydrated formatted from S3 (clean_transcript length=%s)', clen);
                 return true;
             }
+            window._qsDocPreferSegmentsAfterEdit = false;
             if (hasStandardFormattedSummary()) {
                 console.log('[export] hydrated summary from S3 (no clean_transcript yet)');
                 return true;
@@ -6294,6 +6305,49 @@ function buildTranscriptTextForGptFormat() {
         ? window.currentFormattedDoc
         : null;
     return String((fmt && fmt.clean_transcript) || '').trim();
+}
+
+function _qsNormalizeTranscriptTextForCompare(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function _qsCollectFlatTranscriptText() {
+    if (Array.isArray(window.currentWords) && window.currentWords.length) {
+        return window.currentWords
+            .map((w) => String((w && w.text) || '').trim())
+            .filter(Boolean)
+            .join(' ');
+    }
+    return (window.currentSegments || [])
+        .map((s) => String((s && s.text) || '').trim())
+        .filter(Boolean)
+        .join(' ');
+}
+
+function _qsCaptureEditSessionTextBaseline() {
+    window._qsEditSessionTextBaseline = _qsNormalizeTranscriptTextForCompare(_qsCollectFlatTranscriptText());
+}
+
+/** After saveEdits: prefer segments on export only when transcript words actually changed. */
+function _qsApplyPreferSegmentsAfterEditIfTextChanged() {
+    const baseline = window._qsEditSessionTextBaseline;
+    const current = _qsNormalizeTranscriptTextForCompare(_qsCollectFlatTranscriptText());
+    if (baseline != null && baseline !== '') {
+        window._qsDocPreferSegmentsAfterEdit = (current !== baseline);
+    }
+    window._qsEditSessionTextBaseline = null;
+}
+
+/** Export/doc body: GPT formatted text unless the user edited words (not timing-only). */
+function qsPickExportTranscriptText(fromFmt, fromSegments, fallback) {
+    const fmt = String(fromFmt || '').trim();
+    const segBody = String(fromSegments || fallback || '').trim();
+    if (!fmt) return segBody;
+    if (!window._qsDocPreferSegmentsAfterEdit) return fmt;
+    const normFmt = _qsNormalizeTranscriptTextForCompare(fmt.replace(/\s*\n+\s*/g, ' '));
+    const normSeg = _qsNormalizeTranscriptTextForCompare(segBody.replace(/\s*\n+\s*/g, ' '));
+    if (normSeg && normSeg !== normFmt) return segBody;
+    return fmt;
 }
 
 /** Paragraph-style transcript body for DOCX/TXT and doc mode (ignore subtitle cue line breaks). */
@@ -8543,7 +8597,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     }
 
     if (type === 'docx' || type === 'txt') {
-        await hydrateFormattedFromSavedTranscript();
+        await hydrateFormattedFromSavedTranscript({ forExport: true });
         const docBase = (String(baseName || '').trim() || 'transcript').replace(/[\\/:*?"<>|]+/g, '_');
         const requestedKinds = Array.isArray(options && options.docxKinds)
             ? options.docxKinds.map((k) => String(k || '').toLowerCase()).filter((k) => k === 'transcript' || k === 'summary')
@@ -8579,7 +8633,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             // Source of truth for transcript export is edited segments/captions.
             const fromSegments = String(buildTranscriptPlainBodyForExport() || '').trim();
             const fromFmt = String((fmt && fmt.clean_transcript) || '').trim();
-            const clean = ((!window._qsDocPreferSegmentsAfterEdit && fromFmt) ? fromFmt : (fromSegments || fromFmt || segmentFlowFallback)).trim();
+            const clean = qsPickExportTranscriptText(fromFmt, fromSegments, segmentFlowFallback).trim();
             const overview = String((fmt && fmt.overview) || '').trim();
             const keyPoints = Array.isArray(fmt && fmt.key_points)
                 ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean)
@@ -9830,7 +9884,7 @@ function wrapTextByMaxChars(text, maxChars) {
 function getDocFormatParagraphs() {
     const fromFmt = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
     const fromSeg = String(buildTranscriptPlainBodyForExport() || '').trim();
-    const clean = (!window._qsDocPreferSegmentsAfterEdit && fromFmt) ? fromFmt : (fromSeg || fromFmt);
+    const clean = qsPickExportTranscriptText(fromFmt, fromSeg, '');
     if (!clean) return [];
     // Match backend DOCX paragraph logic:
     // - Paragraphs split only by blank lines (\n\n)
@@ -14429,6 +14483,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 ? window.currentFormattedDoc
                 : {};
             window.currentFormattedDoc = { ...prev, clean_transcript: clean };
+            window._qsDocPreferSegmentsAfterEdit = false;
             win.contentEditable = 'false';
             win.style.border = "1px solid #e2e8f0";
             win.style.backgroundColor = "transparent";
@@ -14442,8 +14497,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             return;
         }
         const timingOnly = !!window._qsTimingMode;
-        // Edits should immediately drive doc view/export text, even if old GPT formatted text still exists.
-        window._qsDocPreferSegmentsAfterEdit = true;
         // If a token input is currently open, commit it before extracting/saving data.
         // Mobile can lag blur -> commit, so we retry with a short delay and then force-apply.
         try {
@@ -14521,6 +14574,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (editActions) editActions.style.display = 'none';
             try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
             _qsSetSyncModeButtonActive(false);
+            _qsApplyPreferSegmentsAfterEditIfTextChanged();
             return;
         }
 
@@ -14570,6 +14624,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (editActions) editActions.style.display = 'none';
             try { renderWordCaptionEditor(); } catch (_) {}
             window._qsForceLegacyEditMode = false;
+            _qsApplyPreferSegmentsAfterEditIfTextChanged();
             console.log("✅ Word-level edits saved and subtitles re-synced.");
             return;
         }
@@ -14760,10 +14815,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
         if (editActions) editActions.style.display = 'none';
         window._qsForceLegacyEditMode = false;
+        _qsApplyPreferSegmentsAfterEditIfTextChanged();
         console.log("✅ Edits saved and subtitles re-synced.");
     };
 
     window.cancelEdits = function() {
+        window._qsEditSessionTextBaseline = null;
         const win = document.getElementById('transcript-window');
         const editActions = document.getElementById('edit-actions');
         const isMedicalSummaryEdit =
@@ -15272,6 +15329,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (isMedicalSummaryEdit) {
                 window._qsForceLegacyEditMode = false;
                 window.transcriptBackup = win.innerHTML;
+                _qsCaptureEditSessionTextBaseline();
                 _qsSetMedicalSummaryPaneEditable(win, true);
                 win.style.border = "2px solid #1e3a8a";
                 win.style.backgroundColor = "#fff";
@@ -15298,6 +15356,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (isMedicalTranscriptEdit) {
                 window._qsForceLegacyEditMode = false;
                 window.transcriptBackup = win.innerHTML;
+                _qsCaptureEditSessionTextBaseline();
                 win.contentEditable = 'true';
                 win.style.border = "2px solid #1e3a8a";
                 win.style.backgroundColor = "#fff";
@@ -15344,6 +15403,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 } catch (_) {
                     window.wordEditBackup = null;
                 }
+                _qsCaptureEditSessionTextBaseline();
                 try {
                     window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
                 } catch (_) {
@@ -15378,6 +15438,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 } catch (_) {
                     window.transcriptBackup = null;
                 }
+                _qsCaptureEditSessionTextBaseline();
                 try {
                     window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
                 } catch (_) {
@@ -15418,6 +15479,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             // Save a backup in case the user cancels
             window.transcriptBackup = win.innerHTML;
+            _qsCaptureEditSessionTextBaseline();
 
             // Show the Save/Cancel buttons
             if (editActions) editActions.style.display = 'flex';
@@ -15459,6 +15521,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         }
         window._qsTimingModeBackup = _qsCloneTimingStateForBackup();
         window._qsTimingMode = true;
+        _qsCaptureEditSessionTextBaseline();
         window._qsTimingSelectedCi = 0;
         // Word model: same unified screen as pencil (edit + timing)
         if (hasWord && !window._qsForceLegacyEditMode) {
@@ -16575,14 +16638,11 @@ function renderMedicalTranscriptMainView() {
     if (!transcriptWindow) return;
     if (!isMedicalModeEnabled()) return;
     if (String(window.medicalActiveTab || 'summary') !== 'transcript') return;
-    const preferSeg = !!window._qsDocPreferSegmentsAfterEdit;
-    let clean = '';
-    if (!preferSeg) {
-        clean = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
-    }
-    if (!clean) {
-        clean = String(buildTranscriptPlainBodyForExport() || '').trim();
-    }
+    const clean = qsPickExportTranscriptText(
+        (window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '',
+        buildTranscriptPlainBodyForExport(),
+        ''
+    ).trim();
     const timedCues = Array.isArray(window.currentSegments)
         ? window.currentSegments.filter((c) => Number.isFinite(_asTranscriptTime(c && c.start)) && String((c && (c.translated_text || c.text)) || '').trim())
         : [];

@@ -60,6 +60,8 @@ def handle_separate_vocals_task(inp):
 
     if inp.get("chunk_sec") is not None:
         os.environ["TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC"] = str(inp.get("chunk_sec"))
+    if inp.get("chunk_parallel") is not None:
+        os.environ["TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_PARALLEL"] = str(inp.get("chunk_parallel"))
     if inp.get("shifts") is not None:
         os.environ["TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_SHIFTS"] = str(inp.get("shifts"))
 

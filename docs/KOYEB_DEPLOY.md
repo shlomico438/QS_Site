@@ -70,7 +70,7 @@ Local Demucs on Koyeb (fallback only — needs 4GB+ instance):
 Tuning (RunPod CPU or local):
 
 - **Default model**: `mdx_extra_q`
-- **Chunking**: 60s chunks (`TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC`)
+- **Chunking**: 120s chunks (`TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC`), 4 parallel on RunPod CPU 4 vCPU / 8 GB (`TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_PARALLEL`)
 - **Shifts**: `--shifts 0` (`TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_SHIFTS`)
 
 Verify: logs show `Music vocal separation dispatched to RunPod CPU` then `Music vocal separation RunPod complete`, and S3 has `{stem}.vocals.wav`.

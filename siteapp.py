@@ -10020,7 +10020,8 @@ def _queue_vocal_separation_on_runpod(job_id, bucket, source_s3_key, vocals_s3_k
             "source_s3_key": source_s3_key,
             "callback_url": callback_url,
             "model": model_name,
-            "chunk_sec": max(30, int(os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC', '60') or 60)),
+            "chunk_sec": max(30, int(os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC', '120') or 120)),
+            "chunk_parallel": max(1, int(os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_PARALLEL', '4') or 4)),
             "shifts": max(0, int(os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_SHIFTS', '0') or 0)),
         }
     }
