@@ -5313,6 +5313,7 @@ def api_user_credits_ensure_welcome():
         return jsonify({
             "credit_minutes": int((row or {}).get('credit_minutes') or 0),
             "welcome_granted": bool((row or {}).get('welcome_granted')),
+            "welcome_newly_granted": not already_welcomed,
             "user_name": (row or {}).get('user_name'),
             "granted_minutes": WELCOME_CREDIT_MINUTES,
         })

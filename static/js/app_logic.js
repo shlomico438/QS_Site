@@ -2432,6 +2432,12 @@ supabase.auth.onAuthStateChange((event, session) => {
         try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
         window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
+        try {
+            const signedUser = session.user || null;
+            if (signedUser && typeof qsUserIsRecentRegistration === 'function' && qsUserIsRecentRegistration(signedUser)) {
+                qsTrackGoogleAdsRegistrationConversion(signedUser.id);
+            }
+        } catch (_) {}
         try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
         // Warmup is started from setupNavbarAuth / setMedicalMode (avoid duplicate POST on delayed SIGNED_IN).
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
@@ -3695,6 +3701,39 @@ async function qsGetAuthUserForUi(options = {}) {
 }
 window.qsGetAuthUserForUi = qsGetAuthUserForUi;
 
+/** Google Ads Registration conversion (AW-1000570995 / P9OzCNO6_9AcEPOAjt0D). Once per user. */
+function qsTrackGoogleAdsRegistrationConversion(userId) {
+    try {
+        const uid = String(userId || '').trim();
+        if (!uid || typeof window.gtag !== 'function') return false;
+        const key = `qs_ads_reg_conv_${uid}`;
+        try {
+            if (localStorage.getItem(key) === '1') return false;
+        } catch (_) {}
+        window.gtag('event', 'conversion', {
+            send_to: 'AW-1000570995/P9OzCNO6_9AcEPOAjt0D',
+            value: 1.0,
+            currency: 'ILS',
+        });
+        try { localStorage.setItem(key, '1'); } catch (_) {}
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function qsUserIsRecentRegistration(user, maxAgeMs) {
+    try {
+        if (!user || !user.created_at) return false;
+        const created = Date.parse(user.created_at);
+        if (!Number.isFinite(created)) return false;
+        const maxMs = Number.isFinite(maxAgeMs) ? maxAgeMs : (48 * 3600 * 1000);
+        return (Date.now() - created) <= maxMs;
+    } catch (_) {
+        return false;
+    }
+}
+
 async function qsEnsureWelcomeCredits() {
     try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -3722,6 +3761,12 @@ async function qsEnsureWelcomeCredits() {
         }
         qsSyncUserCreditsUi();
         qsApplyDefaultPlanFromCredits();
+        try {
+            const uid = user && user.id ? user.id : '';
+            if (data.welcome_newly_granted || qsUserIsRecentRegistration(user)) {
+                qsTrackGoogleAdsRegistrationConversion(uid);
+            }
+        } catch (_) {}
         return data;
     } catch (err) {
         console.warn('qsEnsureWelcomeCredits failed:', err);
@@ -3837,6 +3882,7 @@ function qsApplyDefaultPlanFromCredits() {
     } catch (_) {}
 }
 window.qsEnsureWelcomeCredits = qsEnsureWelcomeCredits;
+window.qsTrackGoogleAdsRegistrationConversion = qsTrackGoogleAdsRegistrationConversion;
 window.qsRefreshUserCredits = qsRefreshUserCredits;
 window.qsSyncUserCreditsUi = qsSyncUserCreditsUi;
 window.qsApplyDefaultPlanFromCredits = qsApplyDefaultPlanFromCredits;
