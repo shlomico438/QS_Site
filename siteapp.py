@@ -29,6 +29,7 @@ import tempfile
 import threading
 import uuid
 import pathlib
+import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3745,7 +3746,36 @@ def _auth_user_is_recent_registration(user_data, max_hours=None):
     return age.total_seconds() <= hours * 3600
 
 
-def _supabase_admin_merge_user_metadata(user_id, patch_meta):
+def _supabase_admin_get_user(user_id):
+    """Fresh Auth Admin user row (not JWT snapshot)."""
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return None
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip()
+    if not supabase_url or not service_key:
+        return None
+    headers = {
+        'Authorization': f'Bearer {service_key}',
+        'apikey': service_key,
+        'Content-Type': 'application/json',
+    }
+    try:
+        r_get = requests.get(
+            f"{supabase_url}/auth/v1/admin/users/{user_id}",
+            headers=headers,
+            timeout=10,
+        )
+        if r_get.status_code != 200:
+            return None
+        current = r_get.json() if r_get.text else {}
+        return current if isinstance(current, dict) else None
+    except Exception as e:
+        logging.warning('_supabase_admin_get_user failed user=%s: %s', user_id[:8], e)
+        return None
+
+
+def _supabase_admin_merge_user_metadata(user_id, patch_meta, current_user=None):
     user_id = str(user_id or '').strip()
     if not user_id or not isinstance(patch_meta, dict) or not patch_meta:
         return False
@@ -3759,14 +3789,9 @@ def _supabase_admin_merge_user_metadata(user_id, patch_meta):
         'Content-Type': 'application/json',
     }
     try:
-        r_get = requests.get(
-            f"{supabase_url}/auth/v1/admin/users/{user_id}",
-            headers=headers,
-            timeout=10,
-        )
-        if r_get.status_code != 200:
+        current = current_user if isinstance(current_user, dict) else _supabase_admin_get_user(user_id)
+        if not current:
             return False
-        current = r_get.json() if r_get.text else {}
         meta = current.get('user_metadata') if isinstance(current, dict) else {}
         if not isinstance(meta, dict):
             meta = {}
@@ -3781,6 +3806,50 @@ def _supabase_admin_merge_user_metadata(user_id, patch_meta):
     except Exception as e:
         logging.warning('_supabase_admin_merge_user_metadata failed user=%s: %s', user_id[:8], e)
         return False
+
+
+def _claim_admin_new_registration_notify(user_id):
+    """Return True only for the caller that successfully claims notify.
+
+    JWT user_metadata is stale across ensure-welcome calls, so we must read/write
+    Supabase Admin — then claim *before* SMTP so later requests (and most races)
+    do not each send a duplicate.
+    """
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return False
+    current = _supabase_admin_get_user(user_id)
+    if not current:
+        return False
+    meta = current.get('user_metadata') or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    existing = meta.get('qs_admin_reg_notified')
+    if existing:
+        return False
+    claim_token = secrets.token_hex(12)
+    if not _supabase_admin_merge_user_metadata(
+        user_id, {'qs_admin_reg_notified': claim_token}, current_user=current
+    ):
+        return False
+    refreshed = _supabase_admin_get_user(user_id)
+    if not refreshed:
+        return False
+    rmeta = refreshed.get('user_metadata') or {}
+    if not isinstance(rmeta, dict):
+        rmeta = {}
+    if str(rmeta.get('qs_admin_reg_notified') or '') != claim_token:
+        return False
+    # Normalize to boolean True for stable future checks.
+    _supabase_admin_merge_user_metadata(
+        user_id, {'qs_admin_reg_notified': True}, current_user=refreshed
+    )
+    return True
+
+
+# Cross-request single-flight within one instance (Koyeb still needs Admin claim above).
+_NEW_USER_NOTIFY_INFLIGHT = set()
+_NEW_USER_NOTIFY_LOCK = threading.Lock()
 
 
 def _send_admin_new_user_registration_email(auth_user):
@@ -3810,21 +3879,27 @@ def _maybe_notify_admin_new_registration(auth_user):
         return
     if not isinstance(auth_user, dict):
         return
-    meta = auth_user.get('user_metadata') or {}
-    if not isinstance(meta, dict):
-        meta = {}
-    if meta.get('qs_admin_reg_notified'):
-        return
     if not _auth_user_is_recent_registration(auth_user):
         return
     user_id = str(auth_user.get('id') or '').strip()
     if not user_id:
         return
-    if not _send_admin_new_user_registration_email(auth_user):
-        logging.warning('new user registration email failed user=%s', user_id[:8])
-        return
-    _supabase_admin_merge_user_metadata(user_id, {'qs_admin_reg_notified': True})
-    logging.info('new user registration email sent user=%s', user_id[:8])
+    with _NEW_USER_NOTIFY_LOCK:
+        if user_id in _NEW_USER_NOTIFY_INFLIGHT:
+            return
+        _NEW_USER_NOTIFY_INFLIGHT.add(user_id)
+    try:
+        # Must use Admin API — JWT metadata never has qs_admin_reg_notified after we set it.
+        if not _claim_admin_new_registration_notify(user_id):
+            return
+        if not _send_admin_new_user_registration_email(auth_user):
+            logging.warning('new user registration email failed user=%s', user_id[:8])
+            # Leave flag set so we do not email-bomb on SMTP flakes; ops can check logs.
+            return
+        logging.info('new user registration email sent user=%s', user_id[:8])
+    finally:
+        with _NEW_USER_NOTIFY_LOCK:
+            _NEW_USER_NOTIFY_INFLIGHT.discard(user_id)
 
 
 def _schedule_admin_new_user_registration_notify(auth_user):
@@ -3839,6 +3914,97 @@ def _schedule_admin_new_user_registration_notify(auth_user):
         ).start()
     except Exception as e:
         logging.warning('schedule new user registration notify failed: %s', e)
+
+
+def _admin_ops_notification_recipients():
+    """Shared ops inbox for registration + payment alerts."""
+    return _new_user_notification_recipients()
+
+
+def _send_admin_payment_email(payload):
+    recipients = _admin_ops_notification_recipients()
+    if not recipients or not isinstance(payload, dict):
+        return False
+    user_id = str(payload.get('user_id') or '').strip()
+    email = str(payload.get('email') or '').strip()
+    name = str(payload.get('user_name') or '').strip() or '(not provided)'
+    provider = str(payload.get('provider') or '').strip() or 'unknown'
+    minutes = int(payload.get('minutes') or 0)
+    bundle_id = str(payload.get('bundle_id') or '').strip() or '(unknown)'
+    order_ref = str(payload.get('order_ref') or '').strip() or '(unknown)'
+    amount = payload.get('amount')
+    currency = str(payload.get('currency') or '').strip().upper()
+    balance = payload.get('credit_minutes_after')
+    amount_line = ''
+    if amount is not None and str(amount).strip() != '':
+        try:
+            amount_line = f"Amount: {float(amount):.2f} {currency or 'ILS'}\n"
+        except (TypeError, ValueError):
+            amount_line = f"Amount: {amount} {currency or ''}\n".rstrip() + '\n'
+    balance_line = ''
+    if balance is not None:
+        try:
+            balance_line = f"Wallet balance after credit: {int(balance)} minutes\n"
+        except (TypeError, ValueError):
+            balance_line = f"Wallet balance after credit: {balance}\n"
+    subject = f"QuickScribe — payment received ({email or user_id[:8] or 'user'})"
+    body = (
+        "A user completed a credit purchase on QuickScribe.\n\n"
+        f"Provider: {provider}\n"
+        f"User id: {user_id or '(unknown)'}\n"
+        f"Email: {email or '(none)'}\n"
+        f"Name: {name}\n"
+        f"Bundle: {bundle_id}\n"
+        f"Minutes credited: {minutes}\n"
+        f"{amount_line}"
+        f"Order / session: {order_ref}\n"
+        f"{balance_line}"
+    )
+    return _send_email_via_zoho(recipients, subject, body, reply_to=email or None)
+
+
+def _maybe_notify_admin_payment(payload):
+    if not _env_truthy('PAYMENT_NOTIFICATIONS', True):
+        return
+    if not isinstance(payload, dict):
+        return
+    user_id = str(payload.get('user_id') or '').strip()
+    # Enrich email/name from Auth Admin when missing.
+    if user_id and (not payload.get('email') or not payload.get('user_name')):
+        auth_user = _supabase_admin_get_user(user_id)
+        if isinstance(auth_user, dict):
+            if not payload.get('email'):
+                payload['email'] = str(auth_user.get('email') or '').strip()
+            if not payload.get('user_name'):
+                payload['user_name'] = _user_display_name_from_auth_payload(auth_user)
+    if not _send_admin_payment_email(payload):
+        logging.warning(
+            'payment notification email failed user=%s order=%s',
+            (user_id or '')[:8],
+            str(payload.get('order_ref') or '')[:24],
+        )
+        return
+    logging.info(
+        'payment notification email sent user=%s provider=%s minutes=%s',
+        (user_id or '')[:8],
+        payload.get('provider'),
+        payload.get('minutes'),
+    )
+
+
+def _schedule_admin_payment_notify(**kwargs):
+    """Fire-and-forget ops email after a successful (newly credited) payment."""
+    try:
+        payload = dict(kwargs or {})
+        if not payload.get('user_id') or int(payload.get('minutes') or 0) <= 0:
+            return
+        threading.Thread(
+            target=_maybe_notify_admin_payment,
+            args=(payload,),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        logging.warning('schedule payment notify failed: %s', e)
 
 
 def _user_credits_get(user_id):
@@ -5138,8 +5304,12 @@ def api_user_credits_ensure_welcome():
             return jsonify({"error": "Authorization required"}), 401
         body = request.get_json(silent=True) or {}
         user_name = str(body.get('user_name') or '').strip() or _user_display_name_from_auth_payload(auth_user)
+        existing = _user_credits_get(user_id)
+        already_welcomed = bool(existing and existing.get('welcome_granted'))
         row = _user_credits_ensure_welcome(user_id, user_name=user_name)
-        _schedule_admin_new_user_registration_notify(auth_user)
+        # Notify only on first welcome grant — not on every subsequent ensure-welcome call.
+        if not already_welcomed:
+            _schedule_admin_new_user_registration_notify(auth_user)
         return jsonify({
             "credit_minutes": int((row or {}).get('credit_minutes') or 0),
             "welcome_granted": bool((row or {}).get('welcome_granted')),
@@ -5276,6 +5446,20 @@ def api_stripe_confirm_checkout_session():
                 }), 200
         row = _user_credits_add_minutes(user_id, minutes)
         _stripe_credit_purchase_mark_credited(session_id)
+        try:
+            amount_ils = int((bundle or {}).get('amount_ils') or (purchase or {}).get('amount_ils') or 0)
+        except (TypeError, ValueError, AttributeError):
+            amount_ils = 0
+        _schedule_admin_payment_notify(
+            user_id=user_id,
+            provider='stripe',
+            minutes=minutes,
+            amount=amount_ils,
+            currency='ILS',
+            bundle_id=bundle_id,
+            order_ref=session_id,
+            credit_minutes_after=int((row or {}).get('credit_minutes') or 0),
+        )
         return jsonify({
             "ok": True,
             "added_minutes": minutes,

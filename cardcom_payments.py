@@ -739,6 +739,17 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
             'credited_at': _utc_now_iso(),
         })
         row = sa._user_credits_add_minutes(user_id, minutes)
+        sa._schedule_admin_payment_notify(
+            user_id=user_id,
+            provider='cardcom',
+            minutes=minutes,
+            amount=purchase.get('amount_ils'),
+            currency='ILS',
+            bundle_id=bundle_id,
+            order_ref=order_id,
+            email=str(purchase.get('user_email') or '').strip() or None,
+            credit_minutes_after=int((row or {}).get('credit_minutes') or 0),
+        )
         return {
             'ok': True,
             'already_credited': False,
@@ -816,6 +827,17 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
     })
     row = sa._user_credits_add_minutes(user_id, minutes)
     purchase_after = _cardcom_purchase_get(order_id) or purchase
+    sa._schedule_admin_payment_notify(
+        user_id=user_id,
+        provider='cardcom',
+        minutes=minutes,
+        amount=purchase.get('amount_ils') or paid_amount or None,
+        currency='ILS',
+        bundle_id=bundle_id,
+        order_ref=order_id,
+        email=str(purchase.get('user_email') or '').strip() or None,
+        credit_minutes_after=int((row or {}).get('credit_minutes') or 0),
+    )
     return {
         'ok': True,
         'already_credited': False,
