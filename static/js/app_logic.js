@@ -2007,7 +2007,10 @@ function qsShowLocalUploadMediaPreview(file) {
     window.uploadWasVideo = !!isVideo;
     qsPersistUploadWasVideoFlag(!!isVideo);
     window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'media';
-    const skipLocalBlobPreview = typeof qsIsLargeUploadFile === 'function' && qsIsLargeUploadFile(file);
+    // Always blob-preview audio locally (simulation JSON+WAV and normal picks). Large-file skip is video-only.
+    const skipLocalBlobPreview = !isAudio
+        && typeof qsIsLargeUploadFile === 'function'
+        && qsIsLargeUploadFile(file);
     let objectUrl = null;
     if (!skipLocalBlobPreview) {
         objectUrl = URL.createObjectURL(file);
@@ -2043,7 +2046,8 @@ function qsShowLocalUploadMediaPreview(file) {
                 video.pause();
                 try { video.focus(); } catch (_) {}
             }
-        } else if (objectUrl) {
+        } else {
+            // Audio (wav/mp3/m4a/…): always reveal the player chrome; src when blob is ready.
             if (videoWrapper) {
                 videoWrapper.style.display = 'none';
                 videoWrapper.classList.remove('visible');
@@ -2054,9 +2058,9 @@ function qsShowLocalUploadMediaPreview(file) {
                 videoWrapper.parentNode.insertBefore(playerContainer, videoWrapper);
             }
             if (playerContainer) playerContainer.style.display = 'block';
-            if (audioSource && mainAudio) {
+            if (objectUrl && audioSource && mainAudio) {
                 audioSource.src = objectUrl;
-                audioSource.type = typeof qsMimeForAudioElement === 'function' ? qsMimeForAudioElement(file) : (file.type || 'audio/mp4');
+                audioSource.type = typeof qsMimeForAudioElement === 'function' ? qsMimeForAudioElement(file) : (file.type || 'audio/wav');
                 mainAudio.load();
             }
             if (videoPlayer) videoPlayer.style.display = 'block';
@@ -7474,61 +7478,20 @@ function qsApplyCleanupResult(cleanTranscript) {
 /** Single shared cleanup runner — Transcript tab and export await the same in-flight work. */
 async function runTranscriptCleanupShared(options) {
     options = options || {};
-    if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
-        return hasCleanTranscript();
-    }
-    if (window._qsCleanupDone || hasCleanTranscript()) {
+    // GPT "improve readability" cleanup is disabled — use raw transcript / existing clean_transcript.
+    window._qsCleanupInFlight = false;
+    window._qsCleanupFailed = false;
+    window._qsCleanupPromise = null;
+    window._qsCleanupProgress = null;
+    if (hasCleanTranscript()) {
         window._qsCleanupDone = true;
         return true;
     }
-    if (window._qsCleanupPromise) {
-        return window._qsCleanupPromise;
-    }
-    const fullText = buildTranscriptTextForGptFormat();
-    if (!fullText.trim()) return false;
-
-    const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
-    const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
-    window._qsCleanupInFlight = true;
-    window._qsCleanupFailed = false;
-    window._qsCleanupProgress = null;
-    if (options.rerender !== false && typeof window._qsRerenderTranscriptView === 'function') {
-        window._qsRerenderTranscriptView();
-    }
-
-    window._qsCleanupPromise = (async () => {
-        try {
-            const useChunked = fullText.length > QS_CLEANUP_MAX_SINGLE_CHARS;
-            const { ok, fmt } = useChunked
-                ? await runFormatTranscriptCleanupChunked(fullText, targetLang, jobId)
-                : await runFormatTranscriptCleanupRequest(fullText, targetLang, jobId);
-            if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
-                window._qsCleanupFailed = true;
-                return false;
-            }
-            if (!qsApplyCleanupResult(fmt.clean_transcript)) {
-                window._qsCleanupFailed = true;
-                return false;
-            }
-            qsTrackEvent('cleanup_completed', { ok: true, chunked: useChunked });
-            void qsPersistFormattedDocToS3();
-            if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
-            return true;
-        } catch (e) {
-            window._qsCleanupFailed = true;
-            console.warn('[GPT] transcript cleanup failed:', e);
-            return false;
-        } finally {
-            window._qsCleanupInFlight = false;
-            window._qsCleanupPromise = null;
-            window._qsCleanupProgress = null;
-            if (options.rerender !== false && typeof window._qsRerenderTranscriptView === 'function') {
-                window._qsRerenderTranscriptView();
-            }
-        }
-    })();
-
-    return window._qsCleanupPromise;
+    window._qsCleanupDone = true;
+    return !!(
+        (Array.isArray(window.currentSegments) && window.currentSegments.length)
+        || (Array.isArray(window.currentWords) && window.currentWords.length)
+    );
 }
 window.runTranscriptCleanupShared = runTranscriptCleanupShared;
 
@@ -9776,7 +9739,6 @@ function setFormatViewMode(mode) {
     syncStandardFormatTabs();
     if (next === 'doc' && !(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
         qsTrackEvent('transcript_tab_opened');
-        void ensureTranscriptCleanupLazy();
     }
     if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
     try { syncTranscriptCopyButtonUi(); } catch (_) {}
@@ -11080,8 +11042,22 @@ document.addEventListener('DOMContentLoaded', () => {
             isVideo = false;
         }
         if (!isVideo && !isAudio) return false;
+        try { setSeoHomeContentVisibility(false); } catch (_) {}
         if (typeof qsShowLocalUploadMediaPreview === 'function') {
             qsShowLocalUploadMediaPreview(file);
+        }
+        // Re-assert audio player visibility (preview may race with chrome sync).
+        if (isAudio) {
+            const playerContainer = document.getElementById('audio-player-container');
+            const videoWrapper = document.getElementById('video-wrapper');
+            if (videoWrapper) {
+                videoWrapper.style.display = 'none';
+                videoWrapper.classList.remove('visible');
+            }
+            if (playerContainer) {
+                playerContainer.style.display = 'block';
+                try { playerContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
+            }
         }
         const placeholderEl = document.getElementById('placeholder');
         if (placeholderEl) placeholderEl.style.display = 'none';
@@ -11098,6 +11074,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof window.applyMedicalModeUi === 'function') {
             try { window.applyMedicalModeUi(); } catch (_) {}
         }
+        if (typeof syncMobileVideoSessionState === 'function') {
+            try { syncMobileVideoSessionState(); } catch (_) {}
+        }
         return true;
     }
 
@@ -11111,6 +11090,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const trFmt = pickFormattedFromObject(tr);
         window.currentFormattedDoc = trFmt || null;
         window._qsDocPreferSegmentsAfterEdit = false;
+        try { qsResetCleanupState(); window._qsCleanupDone = true; } catch (_) {}
 
         if (words && captions && words.length > 0 && captions.length > 0) {
             window.currentWords = words;
@@ -11138,6 +11118,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.uploadWasVideo = false;
         qsPersistUploadWasVideoFlag(false);
         window.originalFileName = String(file.name || '').replace(/\.json$/i, '') || 'transcript';
+        try { setSeoHomeContentVisibility(false); } catch (_) {}
         if (isMedicalModeEnabled()) {
             window._medicalHasResult = true;
             window.medicalActiveTab = trFmt ? 'summary' : 'transcript';
