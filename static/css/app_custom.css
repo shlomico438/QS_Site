@@ -3337,6 +3337,40 @@ body.has-transcript-actions .main-app-container.medical-mode #transcript-window 
     white-space: pre-wrap;
 }
 
+/* Medical transcript: editable boxes (Enter splits into a new box for per-part copy). */
+.main-app-container.medical-mode #transcript-window .qs-medical-edit-box {
+    display: block !important;
+    margin: 0 0 10px 0 !important;
+    padding: 0 !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 10px !important;
+    background: #ffffff !important;
+    overflow: hidden;
+}
+.main-app-container.medical-mode #transcript-window .qs-medical-edit-box-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 10px 0;
+}
+html[dir="rtl"] .main-app-container.medical-mode #transcript-window .qs-medical-edit-box-toolbar {
+    justify-content: flex-start;
+}
+.main-app-container.medical-mode #transcript-window .qs-medical-edit-box-body {
+    margin: 0 !important;
+    padding: 8px 14px 12px !important;
+    min-height: 2.4em;
+    line-height: 1.72 !important;
+    white-space: pre-wrap;
+    outline: none;
+    cursor: text;
+}
+.main-app-container.medical-mode #transcript-window .qs-medical-edit-box-body:focus {
+    background: #f8fafc;
+}
+.main-app-container.medical-mode #transcript-window.transcript-editing .qs-medical-edit-box {
+    border-color: #93c5fd !important;
+}
+
 /* Active subtitle highlight (desktop + mobile) */
 .active-highlight {
     background-color: #f0f7ff !important;

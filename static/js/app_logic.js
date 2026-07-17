@@ -14428,21 +14428,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             return;
         }
         if (isMedicalTranscriptEdit) {
-            const lines = win
-                ? Array.from(win.querySelectorAll('.qs-medical-plain-paragraph p, p'))
-                    .map((el) => String(el.innerText || '').trim())
-                    .filter(Boolean)
-                : [];
-            const clean = String(lines.join('\n\n')).trim();
-            const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
-                ? window.currentFormattedDoc
-                : {};
-            window.currentFormattedDoc = { ...prev, clean_transcript: clean };
-            window._qsDocPreferSegmentsAfterEdit = false;
-            win.contentEditable = 'false';
-            win.style.border = "1px solid #e2e8f0";
-            win.style.backgroundColor = "transparent";
-            win.classList.remove('transcript-editing', 'transcript-sync-mode');
+            qsPersistMedicalTranscriptBoxesFromDom();
+            if (win) {
+                win.contentEditable = 'false';
+                win.style.border = "1px solid #e2e8f0";
+                win.style.backgroundColor = "transparent";
+                win.classList.remove('transcript-editing', 'transcript-sync-mode');
+            }
             window._qsTimingMode = false;
             window._qsTimingModeBackup = null;
             _qsSetSyncModeButtonActive(false);
@@ -15312,7 +15304,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window._qsForceLegacyEditMode = false;
                 window.transcriptBackup = win.innerHTML;
                 _qsCaptureEditSessionTextBaseline();
-                win.contentEditable = 'true';
+                // Boxes are already contenteditable; highlight edit session + focus first box.
+                win.contentEditable = 'false';
                 win.style.border = "2px solid #1e3a8a";
                 win.style.backgroundColor = "#fff";
                 win.classList.remove('transcript-sync-mode');
@@ -15321,18 +15314,13 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 window._qsTimingModeBackup = null;
                 _qsSetSyncModeButtonActive(false);
                 if (editActions) editActions.style.display = 'flex';
+                win.querySelectorAll('.qs-medical-edit-box-body').forEach((el) => {
+                    el.contentEditable = 'true';
+                });
                 requestAnimationFrame(() => {
-                    const firstP = win.querySelector('.qs-medical-plain-paragraph p, p');
-                    if (firstP) {
-                        const sel = window.getSelection();
-                        if (sel) {
-                            const range = document.createRange();
-                            range.selectNodeContents(firstP);
-                            range.collapse(false);
-                            sel.removeAllRanges();
-                            sel.addRange(range);
-                        }
-                        firstP.focus();
+                    const firstBody = win.querySelector('.qs-medical-edit-box-body');
+                    if (firstBody) {
+                        qsSetCaretInElement(firstBody, String(firstBody.textContent || '').length);
                     }
                 });
                 return;
@@ -16570,21 +16558,11 @@ function renderMedicalPlainStreamTranscript(text) {
     if (!transcriptWindow || !isMedicalModeEnabled()) return;
     const clean = String(text || '').trim();
     if (!clean) return;
-    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
-    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-    const textDirection = isRtl ? 'rtl' : 'ltr';
-    const textAlign = isRtl ? 'right' : 'left';
-    const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    transcriptWindow.innerHTML =
-        `<div class="medical-live-transcript qs-medical-plain-paragraph" dir="${textDirection}" ` +
-        `style="text-align:${textAlign};padding:12px 16px;line-height:1.72;white-space:pre-wrap;">${esc(clean)}</div>`;
-    transcriptWindow.style.direction = textDirection;
-    transcriptWindow.style.textAlign = textAlign;
-    transcriptWindow.contentEditable = 'false';
+    qsRenderMedicalEditableTranscriptBoxes([clean]);
 }
 
 /**
- * Medical "תמלול" tab: prefer GPT `clean_transcript` paragraphs, not word/caption subtitle rows.
+ * Medical "תמלול" tab: editable text boxes. Enter splits into another box for easy copy.
  */
 function renderMedicalTranscriptMainView() {
     const transcriptWindow = document.getElementById('transcript-window');
@@ -16596,32 +16574,269 @@ function renderMedicalTranscriptMainView() {
         buildTranscriptPlainBodyForExport(),
         ''
     ).trim();
-    const timedCues = Array.isArray(window.currentSegments)
-        ? window.currentSegments.filter((c) => Number.isFinite(_asTranscriptTime(c && c.start)) && String((c && (c.translated_text || c.text)) || '').trim())
-        : [];
-    if (!clean && timedCues.length > 0) {
-        renderTranscriptFromCues(window.currentSegments || []);
-        return;
-    }
-    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
-    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-    const textDirection = isRtl ? 'rtl' : 'ltr';
-    const textAlign = isRtl ? 'right' : 'left';
     if (clean) {
         const paragraphs = clean.split(/\r?\n+/).map((l) => String(l || '').trim()).filter(Boolean);
-        const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        transcriptWindow.innerHTML = paragraphs.map((p) => (
-            '<div class="qs-medical-plain-paragraph qs-medical-formatted-transcript" style="display:block; margin-bottom:0.55em;">' +
-            `<p style="margin:0; line-height:1.72; white-space:pre-wrap;" dir="${textDirection}">${esc(p)}</p></div>`
-        )).join('');
-        transcriptWindow.style.direction = textDirection;
-        transcriptWindow.style.textAlign = textAlign;
-        transcriptWindow.contentEditable = 'false';
+        qsRenderMedicalEditableTranscriptBoxes(paragraphs.length ? paragraphs : [clean]);
+        return;
+    }
+    const timedCues = Array.isArray(window.currentSegments)
+        ? window.currentSegments.filter((c) => String((c && (c.translated_text || c.text)) || '').trim())
+        : [];
+    if (timedCues.length > 0) {
+        const paras = timedCues.map((c) => String(c.translated_text || c.text || '').trim()).filter(Boolean);
+        qsRenderMedicalEditableTranscriptBoxes(paras);
         return;
     }
     if (typeof renderTranscriptFromCues === 'function') {
         renderTranscriptFromCues(window.currentSegments || []);
     }
+}
+
+function qsMedicalTranscriptLocaleLayout() {
+    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    return {
+        isRtl,
+        textDirection: isRtl ? 'rtl' : 'ltr',
+        textAlign: isRtl ? 'right' : 'left',
+    };
+}
+
+function qsCollectMedicalTranscriptBoxTexts(win) {
+    const root = win || document.getElementById('transcript-window');
+    if (!root) return [];
+    const boxes = root.querySelectorAll('.qs-medical-edit-box-body');
+    if (boxes.length) {
+        return Array.from(boxes).map((el) => String(el.innerText || '').replace(/\u00a0/g, ' ').trim()).filter(Boolean);
+    }
+    return Array.from(root.querySelectorAll('.qs-medical-plain-paragraph p, p'))
+        .map((el) => String(el.innerText || '').trim())
+        .filter(Boolean);
+}
+
+function qsPersistMedicalTranscriptBoxesFromDom() {
+    const win = document.getElementById('transcript-window');
+    if (!win || !isMedicalModeEnabled()) return;
+    if (String(window.medicalActiveTab || 'summary') !== 'transcript') return;
+    const lines = qsCollectMedicalTranscriptBoxTexts(win);
+    const clean = lines.join('\n\n').trim();
+    const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : {};
+    window.currentFormattedDoc = { ...prev, clean_transcript: clean };
+    window._qsDocPreferSegmentsAfterEdit = false;
+    if (lines.length) {
+        window.currentSegments = lines.map((text, i) => ({
+            start: i,
+            end: i + 1,
+            text,
+            speaker: 'SPEAKER_00',
+        }));
+    }
+}
+
+function qsCreateMedicalTranscriptEditBox(text, layout) {
+    const wrap = document.createElement('div');
+    wrap.className = 'qs-medical-edit-box qs-medical-plain-paragraph';
+    wrap.setAttribute('data-medical-edit-box', '1');
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'qs-medical-edit-box-toolbar';
+    toolbar.contentEditable = 'false';
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const copyLabel = T('medical_copy') || (layout.isRtl ? 'העתק' : 'Copy');
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'medical-live-transcript-copy qs-medical-edit-box-copy';
+    copyBtn.setAttribute('data-medical-copy-box', '1');
+    copyBtn.setAttribute('aria-label', copyLabel);
+    copyBtn.title = copyLabel;
+    copyBtn.innerHTML = '<span class="medical-copy-icon" aria-hidden="true"></span>';
+    toolbar.appendChild(copyBtn);
+
+    const body = document.createElement('div');
+    body.className = 'qs-medical-edit-box-body';
+    body.contentEditable = 'true';
+    body.spellcheck = true;
+    body.setAttribute('role', 'textbox');
+    body.setAttribute('aria-multiline', 'true');
+    body.dir = layout.textDirection;
+    body.style.textAlign = layout.textAlign;
+    body.textContent = String(text || '');
+
+    wrap.appendChild(toolbar);
+    wrap.appendChild(body);
+    return wrap;
+}
+
+function qsRenderMedicalEditableTranscriptBoxes(paragraphs) {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow || !isMedicalModeEnabled()) return;
+    const layout = qsMedicalTranscriptLocaleLayout();
+    const list = Array.isArray(paragraphs) ? paragraphs.map((p) => String(p || '').trim()).filter(Boolean) : [];
+    const blocks = list.length ? list : [''];
+    transcriptWindow.classList.remove('medical-wave-active');
+    transcriptWindow.innerHTML = '';
+    transcriptWindow.contentEditable = 'false';
+    transcriptWindow.style.direction = layout.textDirection;
+    transcriptWindow.style.textAlign = layout.textAlign;
+    const frag = document.createDocumentFragment();
+    blocks.forEach((p) => frag.appendChild(qsCreateMedicalTranscriptEditBox(p, layout)));
+    transcriptWindow.appendChild(frag);
+    qsWireMedicalTranscriptEditorOnce();
+}
+
+function qsCaretOffsetWithin(el) {
+    try {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return 0;
+        const range = sel.getRangeAt(0);
+        if (!el.contains(range.startContainer)) return 0;
+        const pre = range.cloneRange();
+        pre.selectNodeContents(el);
+        pre.setEnd(range.startContainer, range.startOffset);
+        return String(pre.toString() || '').length;
+    } catch (_) {
+        return 0;
+    }
+}
+
+function qsSetCaretInElement(el, offset) {
+    if (!el) return;
+    try {
+        el.focus();
+        const sel = window.getSelection();
+        if (!sel) return;
+        const text = String(el.textContent || '');
+        const n = Math.max(0, Math.min(Number(offset) || 0, text.length));
+        const range = document.createRange();
+        // Prefer a single text node.
+        let node = el.firstChild;
+        if (!node || node.nodeType !== Node.TEXT_NODE) {
+            el.textContent = text;
+            node = el.firstChild;
+        }
+        if (!node) {
+            range.selectNodeContents(el);
+            range.collapse(true);
+        } else {
+            range.setStart(node, n);
+            range.collapse(true);
+        }
+        sel.removeAllRanges();
+        sel.addRange(range);
+    } catch (_) {}
+}
+
+function qsSplitMedicalTranscriptBoxAtCaret(bodyEl) {
+    if (!bodyEl || !bodyEl.classList.contains('qs-medical-edit-box-body')) return;
+    const wrap = bodyEl.closest('[data-medical-edit-box]');
+    if (!wrap || !wrap.parentNode) return;
+    const full = String(bodyEl.innerText || '').replace(/\u00a0/g, ' ');
+    const offset = qsCaretOffsetWithin(bodyEl);
+    const before = full.slice(0, offset).replace(/\s+$/g, '');
+    const after = full.slice(offset).replace(/^\s+/g, '');
+    bodyEl.textContent = before;
+    const layout = qsMedicalTranscriptLocaleLayout();
+    const next = qsCreateMedicalTranscriptEditBox(after, layout);
+    wrap.parentNode.insertBefore(next, wrap.nextSibling);
+    const nextBody = next.querySelector('.qs-medical-edit-box-body');
+    qsSetCaretInElement(nextBody, 0);
+    qsPersistMedicalTranscriptBoxesFromDom();
+}
+
+function qsMergeMedicalTranscriptBoxWithPrevious(bodyEl) {
+    if (!bodyEl || !bodyEl.classList.contains('qs-medical-edit-box-body')) return false;
+    const wrap = bodyEl.closest('[data-medical-edit-box]');
+    if (!wrap) return false;
+    const prev = wrap.previousElementSibling;
+    if (!prev || !prev.matches('[data-medical-edit-box]')) return false;
+    const prevBody = prev.querySelector('.qs-medical-edit-box-body');
+    if (!prevBody) return false;
+    const left = String(prevBody.innerText || '').replace(/\u00a0/g, ' ');
+    const right = String(bodyEl.innerText || '').replace(/\u00a0/g, ' ');
+    const joinAt = left.length;
+    prevBody.textContent = (left + right).replace(/\s{2,}/g, ' ');
+    wrap.remove();
+    qsSetCaretInElement(prevBody, joinAt);
+    qsPersistMedicalTranscriptBoxesFromDom();
+    return true;
+}
+
+async function qsCopyMedicalTranscriptBox(bodyEl) {
+    const text = String((bodyEl && bodyEl.innerText) || '').trim();
+    const layout = qsMedicalTranscriptLocaleLayout();
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (!text) {
+        if (typeof showStatus === 'function') {
+            showStatus(T('medical_no_text_to_copy') || (layout.isRtl ? 'אין טקסט להעתקה' : 'No text to copy'), true);
+        }
+        return;
+    }
+    if (typeof requireUserForCopyOrDownload === 'function') {
+        const ok = await requireUserForCopyOrDownload();
+        if (!ok) return;
+    }
+    try {
+        await navigator.clipboard.writeText(text);
+        if (typeof showStatus === 'function') {
+            showStatus(T('text_copied') || (layout.isRtl ? 'הטקסט הועתק.' : 'Text copied.'), false, { duration: 2500 });
+        }
+    } catch (_) {
+        if (typeof showStatus === 'function') {
+            showStatus(layout.isRtl ? 'העתקה נכשלה.' : 'Copy failed.', true);
+        }
+    }
+}
+
+function qsWireMedicalTranscriptEditorOnce() {
+    const win = document.getElementById('transcript-window');
+    if (!win || win.dataset.qsMedicalEditWired === '1') return;
+    win.dataset.qsMedicalEditWired = '1';
+
+    win.addEventListener('keydown', (e) => {
+        if (!isMedicalModeEnabled()) return;
+        if (String(window.medicalActiveTab || 'summary') !== 'transcript') return;
+        const body = e.target && e.target.closest ? e.target.closest('.qs-medical-edit-box-body') : null;
+        if (!body || !win.contains(body)) return;
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            qsSplitMedicalTranscriptBoxAtCaret(body);
+            return;
+        }
+        if (e.key === 'Backspace' && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+            const offset = qsCaretOffsetWithin(body);
+            const sel = window.getSelection();
+            const collapsed = !!(sel && sel.isCollapsed);
+            if (collapsed && offset === 0) {
+                e.preventDefault();
+                e.stopPropagation();
+                qsMergeMedicalTranscriptBoxWithPrevious(body);
+            }
+        }
+    });
+
+    win.addEventListener('input', (e) => {
+        if (!isMedicalModeEnabled()) return;
+        if (String(window.medicalActiveTab || 'summary') !== 'transcript') return;
+        const body = e.target && e.target.closest ? e.target.closest('.qs-medical-edit-box-body') : null;
+        if (!body || !win.contains(body)) return;
+        if (window._qsMedicalTranscriptPersistTimer) clearTimeout(window._qsMedicalTranscriptPersistTimer);
+        window._qsMedicalTranscriptPersistTimer = setTimeout(() => {
+            qsPersistMedicalTranscriptBoxesFromDom();
+        }, 250);
+    });
+
+    win.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest('[data-medical-copy-box]') : null;
+        if (!btn || !win.contains(btn)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const wrap = btn.closest('[data-medical-edit-box]');
+        const body = wrap && wrap.querySelector('.qs-medical-edit-box-body');
+        void qsCopyMedicalTranscriptBox(body);
+    });
 }
 
 function _medicalHasTranscriptModel(cues) {
