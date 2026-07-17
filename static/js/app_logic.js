@@ -12688,9 +12688,9 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
-                    echoCancellation: { ideal: false },
-                    noiseSuppression: { ideal: false },
-                    autoGainControl: { ideal: false },
+                    autoGainControl: false,
+                    echoCancellation: false,
+                    noiseSuppression: false,
                     channelCount: { ideal: 1 },
                     sampleRate: { ideal: 48000 },
                 }
