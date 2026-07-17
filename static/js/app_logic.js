@@ -11816,35 +11816,123 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function qsStripLockedPrefixesFromStream(streamText, lockedLines) {
+        let rem = String(streamText || '').replace(/\s+/g, ' ').trim();
+        for (const line of lockedLines) {
+            const locked = String(line || '').replace(/\s+/g, ' ').trim();
+            if (!locked) continue;
+            if (rem.startsWith(locked)) {
+                rem = rem.slice(locked.length).replace(/^\s+/, '');
+                continue;
+            }
+            // Soft match: locked text may differ slightly from ASR after doctor edits.
+            const words = locked.split(/\s+/).filter(Boolean);
+            if (words.length >= 2) {
+                const head = words.slice(0, Math.min(4, words.length)).join(' ');
+                if (head && rem.startsWith(head)) {
+                    // Leave remainder as-is when exact locked prefix no longer matches.
+                    break;
+                }
+            }
+        }
+        return rem;
+    }
+
+    function qsSyncMedicalLiveStreamTextFromDom() {
+        const tw = document.getElementById('transcript-window');
+        if (!tw || !tw.classList.contains('qs-medical-boxes-editable')) return;
+        if (typeof qsCollectMedicalTranscriptBoxTexts !== 'function') return;
+        const lines = qsCollectMedicalTranscriptBoxTexts(tw);
+        if (!lines.length) return;
+        window._medicalLiveStreamText = lines.join('\n\n').trim();
+    }
+
     function renderMedicalLiveStreamTranscript(partialText) {
         if (!isMedicalModeEnabled()) return;
         const tw = document.getElementById('transcript-window');
         if (!tw) return;
         const text = String(partialText || '').trim();
         if (!text) return;
+        const prevStream = String(window._medicalLiveStreamText || '');
         window._medicalLiveStreamText = text;
+        window.medicalActiveTab = 'transcript';
         tw.classList.remove('medical-wave-active');
-        tw.classList.remove('qs-medical-boxes-editable');
-        const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
-        const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-        const dir = isRtl ? 'rtl' : 'ltr';
-        const align = isRtl ? 'right' : 'left';
-        const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const T = typeof window.t === 'function' ? window.t : (k) => k;
-        const copyLabel = esc(T('medical_copy') || (isRtl ? 'העתק' : 'Copy'));
-        tw.innerHTML = (
-            `<div class="medical-live-transcript-shell" dir="${dir}">` +
-            `<div class="medical-live-transcript-toolbar" contenteditable="false">` +
-            `<button type="button" class="medical-live-transcript-copy" data-medical-copy-live ` +
-            `aria-label="${copyLabel}" title="${copyLabel}">` +
-            `<span class="medical-copy-icon" aria-hidden="true"></span></button></div>` +
-            `<div class="medical-live-transcript" style="text-align:${align};padding:4px 16px 12px;white-space:pre-wrap;line-height:1.5;">${esc(text)}</div>` +
-            `</div>`
-        );
+
+        const boxes = tw.querySelectorAll('textarea.qs-medical-edit-box-body');
+        const hasEditable = tw.classList.contains('qs-medical-boxes-editable') && boxes.length > 0;
+
+        if (!hasEditable) {
+            if (typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
+                qsRenderMedicalEditableTranscriptBoxes([text]);
+            }
+            window._medicalLiveLastBoxDirty = false;
+            try { updateMedicalTabUi(); } catch (_) {}
+            return;
+        }
+
+        const last = boxes[boxes.length - 1];
+        const lockedTexts = Array.from(boxes)
+            .slice(0, -1)
+            .map((el) => String(el.value || '').trim())
+            .filter(Boolean);
+        const targetLast = lockedTexts.length
+            ? qsStripLockedPrefixesFromStream(text, lockedTexts)
+            : text;
+        const prevRemainder = lockedTexts.length
+            ? qsStripLockedPrefixesFromStream(prevStream, lockedTexts)
+            : prevStream;
+        const curLast = String(last.value || '');
+        const active = document.activeElement === last;
+
+        if (window._medicalLiveLastBoxDirty) {
+            // Doctor edited the live box: keep their text, append only new ASR growth.
+            const streamGrew = text.length > prevStream.length && (
+                !prevStream || text.startsWith(prevStream) || text.indexOf(prevStream) >= 0
+            );
+            if (streamGrew) {
+                let delta = '';
+                if (prevStream && text.startsWith(prevStream)) delta = text.slice(prevStream.length);
+                else if (prevRemainder && targetLast.startsWith(prevRemainder)) delta = targetLast.slice(prevRemainder.length);
+                else if (targetLast.length > curLast.length && targetLast.startsWith(curLast.replace(/\s+/g, ' ').trim())) {
+                    delta = '';
+                }
+                if (delta) {
+                    const selStart = Number(last.selectionStart) || 0;
+                    const selEnd = Number(last.selectionEnd) || 0;
+                    const atEnd = active && selStart >= curLast.length && selEnd >= curLast.length;
+                    last.value = curLast + delta;
+                    if (typeof qsAutosizeMedicalEditTextarea === 'function') qsAutosizeMedicalEditTextarea(last);
+                    if (active) {
+                        try {
+                            if (atEnd) last.setSelectionRange(last.value.length, last.value.length);
+                            else last.setSelectionRange(selStart, selEnd);
+                        } catch (_) {}
+                    }
+                }
+            }
+        } else {
+            const selStart = Number(last.selectionStart) || 0;
+            const selEnd = Number(last.selectionEnd) || 0;
+            const atEnd = active && selStart >= curLast.length && selEnd >= curLast.length;
+            last.value = targetLast;
+            if (typeof qsAutosizeMedicalEditTextarea === 'function') qsAutosizeMedicalEditTextarea(last);
+            if (active) {
+                try {
+                    if (atEnd) last.setSelectionRange(targetLast.length, targetLast.length);
+                    else {
+                        last.setSelectionRange(
+                            Math.min(selStart, targetLast.length),
+                            Math.min(selEnd, targetLast.length)
+                        );
+                    }
+                } catch (_) {}
+            }
+        }
         try { updateMedicalTabUi(); } catch (_) {}
     }
 
     async function copyMedicalLiveStreamText() {
+        qsSyncMedicalLiveStreamTextFromDom();
         const text = String(window._medicalLiveStreamText || '').trim();
         const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
         const isRtl = locale.startsWith('he') || locale.startsWith('ar');
@@ -11878,6 +11966,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!isMedicalModeEnabled()) return;
         const tw = document.getElementById('transcript-window');
         if (!tw) return;
+        // Do not replace editable transcript boxes with a status line once text exists.
+        if (
+            tw.classList.contains('qs-medical-boxes-editable')
+            && tw.querySelector('textarea.qs-medical-edit-box-body')
+            && String(window._medicalLiveStreamText || '').trim()
+        ) {
+            return;
+        }
         const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
         const isRtl = locale.startsWith('he') || locale.startsWith('ar');
         const dir = isRtl ? 'rtl' : 'ltr';
@@ -11891,6 +11987,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (!label) return;
         tw.classList.remove('medical-wave-active');
+        tw.classList.remove('qs-medical-boxes-editable');
         const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         tw.innerHTML = `<div class="medical-live-transcript medical-live-status" dir="${dir}" style="text-align:${align};padding:12px 16px;opacity:0.75;font-style:italic;">${esc(label)}</div>`;
     }
@@ -11948,6 +12045,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function resolveMedicalStreamTranscript(streamResult) {
+        try {
+            if (typeof qsSyncMedicalLiveStreamTextFromDom === 'function') qsSyncMedicalLiveStreamTextFromDom();
+        } catch (_) {}
         const live = String(window._medicalLiveStreamText || '').trim();
         const fromFinal = String((streamResult && streamResult.transcript) || '').trim();
         let fromPartial = '';
@@ -12459,7 +12559,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const tw = document.getElementById('transcript-window');
             if (tw) {
                 tw.classList.remove('medical-wave-active');
+                tw.classList.remove('qs-medical-boxes-editable');
                 window._medicalLiveStreamText = '';
+                window._medicalLiveLastBoxDirty = false;
                 renderMedicalLiveStreamStatus('connecting');
             }
             if (qsMedicalStreamOnlyMode()) {
@@ -16804,8 +16906,16 @@ function qsSplitMedicalTranscriptBoxAtCaret(bodyEl) {
     const next = qsCreateMedicalTranscriptEditBox(after, layout);
     wrap.parentNode.insertBefore(next, wrap.nextSibling);
     const nextBody = next.querySelector('.qs-medical-edit-box-body');
+    // After Enter-split during live ASR, new last box resumes stream sync.
+    window._medicalLiveLastBoxDirty = false;
     qsSetCaretInElement(nextBody, 0);
     qsPersistMedicalTranscriptBoxesFromDom();
+    try {
+        const liveRec = window._medicalRecorder;
+        if (liveRec && (liveRec.state === 'recording' || liveRec.state === 'paused')) {
+            window._medicalLiveStreamText = qsCollectMedicalTranscriptBoxTexts().join('\n\n').trim();
+        }
+    } catch (_) {}
 }
 
 function qsMergeMedicalTranscriptBoxWithPrevious(bodyEl) {
@@ -16893,10 +17003,31 @@ function qsWireMedicalTranscriptEditorOnce() {
         const body = e.target && e.target.closest ? e.target.closest('.qs-medical-edit-box-body') : null;
         if (!body || !win.contains(body)) return;
         qsAutosizeMedicalEditTextarea(body);
+        const boxes = win.querySelectorAll('textarea.qs-medical-edit-box-body');
+        if (boxes.length && body === boxes[boxes.length - 1]) {
+            window._medicalLiveLastBoxDirty = true;
+        }
+        const liveRec = window._medicalRecorder;
+        if (liveRec && (liveRec.state === 'recording' || liveRec.state === 'paused')) {
+            window._medicalLiveStreamText = qsCollectMedicalTranscriptBoxTexts(win).join('\n\n').trim();
+        }
         if (window._qsMedicalTranscriptPersistTimer) clearTimeout(window._qsMedicalTranscriptPersistTimer);
         window._qsMedicalTranscriptPersistTimer = setTimeout(() => {
             qsPersistMedicalTranscriptBoxesFromDom();
         }, 250);
+    });
+
+    // After doctor leaves a box during live ASR, allow full stream sync again only if
+    // the last box still matches what we would sync (no divergent edit left behind).
+    win.addEventListener('focusout', (e) => {
+        const body = e.target && e.target.closest ? e.target.closest('.qs-medical-edit-box-body') : null;
+        if (!body || !win.contains(body)) return;
+        const liveRec = window._medicalRecorder;
+        if (!liveRec || (liveRec.state !== 'recording' && liveRec.state !== 'paused')) return;
+        const boxes = win.querySelectorAll('textarea.qs-medical-edit-box-body');
+        if (!boxes.length || body !== boxes[boxes.length - 1]) return;
+        window._medicalLiveStreamText = qsCollectMedicalTranscriptBoxTexts(win).join('\n\n').trim()
+            || String(window._medicalLiveStreamText || '').trim();
     });
 
     win.addEventListener('click', (e) => {
