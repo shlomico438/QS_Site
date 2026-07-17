@@ -611,6 +611,16 @@ html, body {
         cursor: text;
     }
 
+    /* Medical transcript boxes: textarea editables (immune to parent user-select:none) */
+    #transcript-window.qs-medical-boxes-editable,
+    #transcript-window.qs-medical-boxes-editable .qs-medical-edit-box-body,
+    #transcript-window.qs-medical-boxes-editable textarea.qs-medical-edit-box-body {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+        cursor: text;
+        pointer-events: auto !important;
+    }
+
     .toast-notification {
     position: fixed;
     bottom: 20px;

@@ -3016,7 +3016,7 @@ body.has-transcript-actions .main-app-container.medical-mode #transcript-window 
   padding-top: 58px;
 }
 
-#transcript-window:not(.transcript-editing):not(.transcript-sync-mode) {
+#transcript-window:not(.transcript-editing):not(.transcript-sync-mode):not(.qs-medical-boxes-editable) {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -3338,6 +3338,15 @@ body.has-transcript-actions .main-app-container.medical-mode #transcript-window 
 }
 
 /* Medical transcript: editable boxes (Enter splits into a new box for per-part copy). */
+.main-app-container.medical-mode #transcript-window.qs-medical-boxes-editable,
+.main-app-container.medical-mode #transcript-window.qs-medical-boxes-editable .qs-medical-edit-box-body,
+#transcript-window.qs-medical-boxes-editable,
+#transcript-window.qs-medical-boxes-editable .qs-medical-edit-box-body {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    -webkit-touch-callout: default;
+    cursor: text;
+}
 .main-app-container.medical-mode #transcript-window .qs-medical-edit-box {
     display: block !important;
     margin: 0 0 10px 0 !important;
@@ -3346,16 +3355,22 @@ body.has-transcript-actions .main-app-container.medical-mode #transcript-window 
     border-radius: 10px !important;
     background: #ffffff !important;
     overflow: hidden;
+    pointer-events: auto;
 }
 .main-app-container.medical-mode #transcript-window .qs-medical-edit-box-toolbar {
     display: flex;
     justify-content: flex-end;
     padding: 8px 10px 0;
+    pointer-events: auto;
 }
 html[dir="rtl"] .main-app-container.medical-mode #transcript-window .qs-medical-edit-box-toolbar {
     justify-content: flex-start;
 }
-.main-app-container.medical-mode #transcript-window .qs-medical-edit-box-body {
+.main-app-container.medical-mode #transcript-window .qs-medical-edit-box-body,
+.main-app-container.medical-mode #transcript-window textarea.qs-medical-edit-box-body {
+    display: block !important;
+    box-sizing: border-box !important;
+    width: 100% !important;
     margin: 0 !important;
     padding: 8px 14px 12px !important;
     min-height: 2.4em;
@@ -3363,9 +3378,19 @@ html[dir="rtl"] .main-app-container.medical-mode #transcript-window .qs-medical-
     white-space: pre-wrap;
     outline: none;
     cursor: text;
+    pointer-events: auto !important;
+    resize: none;
+    border: none !important;
+    background: transparent !important;
+    color: inherit;
+    font: inherit;
+    field-sizing: content;
+    -webkit-user-select: text !important;
+    user-select: text !important;
 }
-.main-app-container.medical-mode #transcript-window .qs-medical-edit-box-body:focus {
-    background: #f8fafc;
+.main-app-container.medical-mode #transcript-window .qs-medical-edit-box-body:focus,
+.main-app-container.medical-mode #transcript-window textarea.qs-medical-edit-box-body:focus {
+    background: #f8fafc !important;
 }
 .main-app-container.medical-mode #transcript-window.transcript-editing .qs-medical-edit-box {
     border-color: #93c5fd !important;
