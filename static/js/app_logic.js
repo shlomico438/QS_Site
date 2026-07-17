@@ -11618,6 +11618,164 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function stopMedicalSilenceMuteMonitor() {
+        const mon = window._medicalSilenceMuteMonitor;
+        if (!mon) return;
+        try {
+            if (mon.rafId) cancelAnimationFrame(mon.rafId);
+        } catch (_) {}
+        try {
+            if (mon.sourceNode) mon.sourceNode.disconnect();
+        } catch (_) {}
+        try {
+            if (mon.analyser) mon.analyser.disconnect();
+        } catch (_) {}
+        try {
+            if (mon.audioCtx && mon.audioCtx.state !== 'closed') mon.audioCtx.close();
+        } catch (_) {}
+        window._medicalSilenceMuteMonitor = null;
+        window._medicalSilenceZeroAccumMs = 0;
+    }
+
+    function pauseMedicalRecordingForSilenceMute() {
+        const rec = window._medicalRecorder;
+        if (!rec || rec.state !== 'recording') return;
+        if (window._medicalUserPaused) return;
+        if (window._medicalSilenceMutePaused) return;
+        if (window._medicalSystemRecordingInterrupted) return;
+        window._medicalSilenceMutePaused = true;
+        window._medicalPauseReason = 'silence_mute';
+        window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+        window._medicalRecorderPaused = true;
+        try { rec.pause(); } catch (_) {}
+        setMedicalRecordingVisualState('paused');
+        renderMedicalRecordingTimer();
+        pauseMedicalWaveform();
+        try {
+            if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.pause();
+        } catch (_) {}
+        console.info('[medical] paused on perfect silence (hardware mute fallback)');
+    }
+
+    function resumeMedicalRecordingAfterSilenceMute() {
+        if (!window._medicalSilenceMutePaused) return;
+        if (window._medicalUserPaused) return;
+        if (window._medicalSystemRecordingInterrupted) return;
+        const rec = window._medicalRecorder;
+        if (!rec || rec.state !== 'paused') {
+            window._medicalSilenceMutePaused = false;
+            return;
+        }
+        try { rec.resume(); } catch (_) { return; }
+        window._medicalSilenceMutePaused = false;
+        window._medicalSilenceZeroAccumMs = 0;
+        window._medicalRecordingStartedAt = Date.now();
+        window._medicalRecorderPaused = false;
+        setMedicalRecordingVisualState('recording');
+        renderMedicalRecordingTimer();
+        const stream = rec.stream;
+        if (stream && !qsMedicalStreamOnlyMode()) startMedicalWaveform(stream);
+        try {
+            if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.resume();
+        } catch (_) {}
+        console.info('[medical] resumed after silence mute (audio returned)');
+    }
+
+    /**
+     * Hardware mute often produces digital silence without track mute/unmute events.
+     * Pause the app mic when RMS stays at perfect 0 for 0.5s; resume when audio returns.
+     */
+    function startMedicalSilenceMuteMonitor(stream) {
+        stopMedicalSilenceMuteMonitor();
+        if (!stream) return;
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        let audioCtx;
+        try {
+            audioCtx = new Ctx();
+        } catch (_) {
+            return;
+        }
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0;
+        let sourceNode;
+        try {
+            sourceNode = audioCtx.createMediaStreamSource(stream);
+            sourceNode.connect(analyser);
+        } catch (_) {
+            try { audioCtx.close(); } catch (__) {}
+            return;
+        }
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        window._medicalSilenceZeroAccumMs = 0;
+        window._medicalSilenceMutePaused = false;
+        window._medicalSilenceMonitorStartedAt = Date.now();
+        const mon = {
+            audioCtx,
+            analyser,
+            sourceNode,
+            dataArray,
+            rafId: null,
+            lastTs: 0,
+        };
+        window._medicalSilenceMuteMonitor = mon;
+
+        const tick = (ts) => {
+            const m = window._medicalSilenceMuteMonitor;
+            if (!m || m !== mon) return;
+            m.rafId = requestAnimationFrame(tick);
+            const rec = window._medicalRecorder;
+            if (!rec || rec.state === 'inactive') return;
+            // Warm-up: ignore brief startup silence.
+            if (Date.now() - Number(window._medicalSilenceMonitorStartedAt || 0) < 800) {
+                window._medicalSilenceZeroAccumMs = 0;
+                m.lastTs = ts;
+                return;
+            }
+            if (window._medicalUserPaused || window._medicalSystemRecordingInterrupted) {
+                window._medicalSilenceZeroAccumMs = 0;
+                m.lastTs = ts;
+                return;
+            }
+            try {
+                if (m.audioCtx.state === 'suspended') void m.audioCtx.resume();
+            } catch (_) {}
+            m.analyser.getByteTimeDomainData(m.dataArray);
+            let perfectZero = true;
+            for (let i = 0; i < m.dataArray.length; i++) {
+                if (m.dataArray[i] !== 128) {
+                    perfectZero = false;
+                    break;
+                }
+            }
+            const prev = m.lastTs || ts;
+            let dtMs = Math.max(0, ts - prev);
+            if (dtMs > 250) dtMs = 16;
+            m.lastTs = ts;
+
+            if (perfectZero) {
+                window._medicalSilenceZeroAccumMs = Number(window._medicalSilenceZeroAccumMs || 0) + dtMs;
+                if (
+                    !window._medicalSilenceMutePaused
+                    && rec.state === 'recording'
+                    && window._medicalSilenceZeroAccumMs >= 500
+                ) {
+                    pauseMedicalRecordingForSilenceMute();
+                }
+            } else {
+                window._medicalSilenceZeroAccumMs = 0;
+                if (window._medicalSilenceMutePaused && rec.state === 'paused') {
+                    resumeMedicalRecordingAfterSilenceMute();
+                }
+            }
+        };
+        mon.rafId = requestAnimationFrame(tick);
+        try {
+            if (audioCtx.state === 'suspended') void audioCtx.resume();
+        } catch (_) {}
+    }
+
     function ensureMedicalWaveformCanvas() {
         const transcriptWindow = document.getElementById('transcript-window');
         if (!transcriptWindow) return null;
@@ -12638,6 +12796,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (window._medicalRollingRestart && !window._medicalSubmitOnStop) {
                 try {
+                    stopMedicalSilenceMuteMonitor();
                     stopMedicalWaveform(true);
                     (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
                     if (window._medicalRecorder === rec) window._medicalRecorder = null;
@@ -12647,6 +12806,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             // Finish live transcribe before stopping mic tracks so AWS receives end-of-stream cleanly.
+            stopMedicalSilenceMuteMonitor();
             stopMedicalWaveform(false);
             let shouldSubmit = false;
             let streamResult = null;
@@ -12761,6 +12921,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 try { rec.start(); } catch (_) { throw startErr; }
             }
             window._medicalRecorder = rec;
+            startMedicalSilenceMuteMonitor(stream);
             if (!qsMedicalStreamOnlyMode()) {
                 startMedicalWaveform(stream, { preserveExistingWave: resumeFromInterruption });
             }
@@ -12775,6 +12936,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (!preserveChunks) window._medicalRecordingAccumMs = 0;
         window._medicalRecorderPaused = false;
+        window._medicalUserPaused = false;
+        window._medicalSilenceMutePaused = false;
+        window._medicalSilenceZeroAccumMs = 0;
         window._medicalSubmitOnStop = false;
         window._medicalSystemRecordingInterrupted = false;
         window._medicalRecordingStartedAt = Date.now();
@@ -12801,6 +12965,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const rec = window._medicalRecorder;
         if (rec && rec.state === 'recording') {
             window._medicalPauseUserIntent = true;
+            window._medicalUserPaused = true;
+            window._medicalSilenceMutePaused = false;
+            window._medicalSilenceZeroAccumMs = 0;
             window._medicalSystemRecordingInterrupted = false;
             stopMedicalResumeRetryLoop();
             try { rec.pause(); } catch (_) { window._medicalPauseUserIntent = false; return; }
@@ -12813,6 +12980,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         if (rec && rec.state === 'paused') {
+            window._medicalUserPaused = false;
+            window._medicalSilenceMutePaused = false;
+            window._medicalSilenceZeroAccumMs = 0;
             window._medicalSystemRecordingInterrupted = false;
             stopMedicalResumeRetryLoop();
             try { rec.resume(); } catch (_) { return; }
