@@ -12939,6 +12939,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!shouldSubmit) {
                     void clearMedicalRecordingWarmup(true);
                     qsHideMedicalRecordingWarmupProgress();
+                    if (window._medicalDiscardSessionOnStop) {
+                        window._medicalDiscardSessionOnStop = false;
+                        try { clearMedicalDiscardedRecordingSession(); } catch (_) {}
+                    }
                 } else if (
                     isMedicalModeEnabled()
                     && !qsMedicalStreamOnlyMode()
@@ -13102,6 +13106,54 @@ document.addEventListener('DOMContentLoaded', () => {
             await toggleMedicalRecording();
         });
     }
+    function clearMedicalDiscardedRecordingSession() {
+        // Full session wipe after trash (מחק): all transcript boxes + live ASR state.
+        window._medicalLiveStreamText = '';
+        window._medicalLiveLastBoxDirty = false;
+        window._medicalHasResult = false;
+        window._qsMedicalStreamAwaitingSummary = null;
+        window._medicalHardwareMutePaused = false;
+        window._medicalUserPaused = false;
+        window._medicalPauseReason = '';
+        window.currentSegments = [];
+        window.currentWords = null;
+        window.currentCaptions = null;
+        window.currentFormattedDoc = null;
+        window._qsDocPreferSegmentsAfterEdit = false;
+        try { resetTonorMuteState(false); } catch (_) {}
+        try { abortMedicalAwsTranscribeStream(); } catch (_) {}
+        try { void clearMedicalRecordingWarmup(true); } catch (_) {}
+        try { qsHideMedicalRecordingWarmupProgress(); } catch (_) {}
+        stopMedicalWaveform(true);
+        stopMedicalRecordingTimer();
+        setMedicalTimerVisibility(false);
+        detachMedicalRecordingTimerSlot();
+        setMedicalRecordingVisualState('idle');
+        const tw = document.getElementById('transcript-window');
+        if (tw) {
+            try { qsClearTranscriptEditState(tw); } catch (_) {}
+            tw.classList.remove('qs-medical-boxes-editable', 'medical-wave-active');
+            tw.innerHTML = '';
+            tw.contentEditable = 'false';
+        }
+        try {
+            if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues([]);
+        } catch (_) {}
+        if (typeof setTranscriptActionButtonsVisible === 'function') {
+            setTranscriptActionButtonsVisible(false);
+        }
+        try { document.body.classList.remove('qs-transcript-present'); } catch (_) {}
+        try {
+            if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+        } catch (_) {}
+        try {
+            if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+        } catch (_) {}
+        try {
+            if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
+        } catch (_) {}
+    }
+
     if (medicalCancelBtn) {
         medicalCancelBtn.addEventListener('click', async () => {
             const rec = window._medicalRecorder;
@@ -13109,8 +13161,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const ok = await confirmMedicalDeleteRecording();
             if (!ok) return;
             window._medicalSubmitOnStop = false;
+            window._medicalDiscardSessionOnStop = true;
+            try { abortMedicalAwsTranscribeStream(); } catch (_) {}
             stopMedicalWaveform(true);
             try { rec.stop(); } catch (_) {}
+            // Clear all boxes / session immediately (do not leave one leftover box).
+            clearMedicalDiscardedRecordingSession();
+            window._medicalDiscardSessionOnStop = false;
         });
     }
     if (medicalConfirmBtn) {
