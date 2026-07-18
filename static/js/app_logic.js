@@ -11651,6 +11651,12 @@ document.addEventListener('DOMContentLoaded', () => {
     async function qsRestartMedicalRecordingFreshMic(reason) {
         if (window._medicalRestartInProgress) return;
         const rec = window._medicalRecorder;
+        try {
+            if (typeof qsSyncMedicalLiveStreamTextFromDom === 'function') {
+                qsSyncMedicalLiveStreamTextFromDom();
+            }
+        } catch (_) {}
+        const transcriptPrefix = String(window._medicalLiveStreamText || '').trim();
         window._medicalRestartInProgress = true;
         window._medicalRollingRestart = !!rec;
         window._medicalHardwareMutePaused = false;
@@ -11671,7 +11677,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (_) {}
                 await new Promise((resolve) => setTimeout(resolve, 280));
             }
-            await startMedicalRecording({ preserveChunks: true, resumeFromInterruption: true });
+            await startMedicalRecording({
+                preserveChunks: true,
+                resumeFromInterruption: true,
+                transcriptPrefix,
+            });
             console.info('[medical] restarted mic after', reason);
         } catch (e) {
             console.warn('[medical] mic restart failed', reason, e);
@@ -12143,9 +12153,10 @@ document.addEventListener('DOMContentLoaded', () => {
         return isMedicalModeEnabled() && qsMedicalUseAwsTranscribeStream();
     }
 
-    async function startMedicalAwsTranscribeStream(mediaStream) {
+    async function startMedicalAwsTranscribeStream(mediaStream, options = {}) {
         abortMedicalAwsTranscribeStream();
         if (!isMedicalModeEnabled() || !qsMedicalUseAwsTranscribeStream()) return null;
+        const transcriptPrefix = String((options && options.transcriptPrefix) || '').trim();
         let cfg = qsGetMedicalTranscriptionConfigCached();
         if (!cfg) {
             cfg = {
@@ -12163,7 +12174,13 @@ document.addEventListener('DOMContentLoaded', () => {
             languageCode,
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
             transport,
-            onPartial: (t) => renderMedicalLiveStreamTranscript(t),
+            onPartial: (t) => {
+                const next = String(t || '').trim();
+                const combined = transcriptPrefix && next
+                    ? `${transcriptPrefix}\n\n${next}`
+                    : (transcriptPrefix || next);
+                renderMedicalLiveStreamTranscript(combined);
+            },
             onStatus: (s) => renderMedicalLiveStreamStatus(s),
         });
         try {
@@ -12664,6 +12681,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window._medicalStartRecordingInFlight = true;
         const preserveChunks = !!(options && options.preserveChunks);
         const resumeFromInterruption = !!(options && options.resumeFromInterruption);
+        const transcriptPrefix = String((options && options.transcriptPrefix) || '').trim();
         let stream = null;
         try {
             stream = await navigator.mediaDevices.getUserMedia({
@@ -12728,6 +12746,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (typeof showStatus === 'function') {
                         showStatus(`AWS Transcribe stream: ${(streamStartErr && streamStartErr.message) || streamStartErr}`, true);
                     }
+                }
+            });
+        }
+        // Re-acquiring the Tonor mic must also rebuild the AWS audio graph.
+        // The previous implementation only restarted MediaRecorder, so no audio
+        // reached transcription after unmute even though getUserMedia succeeded.
+        if (isMedicalModeEnabled() && preserveChunks && resumeFromInterruption) {
+            void startMedicalAwsTranscribeStream(stream, { transcriptPrefix }).catch((streamStartErr) => {
+                console.error('[medical] AWS Transcribe restart failed after mic resume', streamStartErr);
+                if (typeof showStatus === 'function') {
+                    showStatus(
+                        `AWS Transcribe stream: ${(streamStartErr && streamStartErr.message) || streamStartErr}`,
+                        true
+                    );
                 }
             });
         }
