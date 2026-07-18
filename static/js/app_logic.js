@@ -16,6 +16,7 @@ import {
     onMuteToggle,
     resetTonorMuteState,
     isTonorMuted,
+    isTonorHIDConnected,
 } from './tonor_hid.js'
 
 const supabaseUrl = 'https://vojesnnvehecenjymrko.supabase.co'
@@ -11556,8 +11557,14 @@ document.addEventListener('DOMContentLoaded', () => {
             medicalRecordOuter.classList.toggle('is-recording', isRecording);
             medicalRecordOuter.classList.toggle('is-paused', isPaused);
         }
-        if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = isPaused || !isActive ? '' : 'none';
-        if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = (!isPaused && isActive) ? '' : 'none';
+        if (medicalRecordBtn) {
+            medicalRecordBtn.classList.toggle('is-recording', isRecording);
+            medicalRecordBtn.classList.toggle('is-paused', isPaused);
+            medicalRecordBtn.setAttribute('aria-pressed', isPaused ? 'true' : 'false');
+        }
+        // Recording: show pause bars. Paused/idle: show mic (tap to resume / start).
+        if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = isPaused || isIdle ? '' : 'none';
+        if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = isRecording ? '' : 'none';
         if (medicalCancelStack) medicalCancelStack.style.display = isPaused ? 'flex' : 'none';
         if (medicalConfirmStack) medicalConfirmStack.style.display = isPaused ? 'flex' : 'none';
         if (medicalRecordShape) medicalRecordShape.style.opacity = '1';
@@ -11582,8 +11589,25 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         medicalRecordBtn.classList.remove('is-new-session');
-        if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = '';
         if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = 'none';
+        const isPaused = !!(medicalRecordOuter && medicalRecordOuter.classList.contains('is-paused'));
+        const isRecording = !!(medicalRecordOuter && medicalRecordOuter.classList.contains('is-recording'));
+        if (isRecording) {
+            if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = 'none';
+            if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = '';
+            medicalRecordBtn.setAttribute('aria-label', T('pause') || 'Pause');
+            return;
+        }
+        if (isPaused) {
+            if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = '';
+            if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
+            medicalRecordBtn.setAttribute(
+                'aria-label',
+                T('resume') || (window._medicalHardwareMutePaused ? 'Unmute / Resume' : 'Resume')
+            );
+            return;
+        }
+        if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = '';
         if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
         medicalRecordBtn.setAttribute('aria-label', T('medical_recording') || 'Recording');
     }
@@ -11626,15 +11650,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function pauseMedicalRecordingForHardwareMute() {
         const rec = window._medicalRecorder;
-        if (!rec || rec.state !== 'recording') return;
+        if (!rec || (rec.state !== 'recording' && rec.state !== 'paused')) return;
         if (window._medicalUserPaused) return;
-        if (window._medicalHardwareMutePaused) return;
-        if (window._medicalSystemRecordingInterrupted) return;
+        // HID mute owns pause — do not let track-mute OS-interrupt path take over.
+        window._medicalSystemRecordingInterrupted = false;
+        stopMedicalResumeRetryLoop();
+        if (window._medicalHardwareMutePaused && rec.state === 'paused') {
+            setMedicalRecordingVisualState('paused');
+            return;
+        }
         window._medicalHardwareMutePaused = true;
         window._medicalPauseReason = 'hardware_mute';
-        window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+        if (rec.state === 'recording') {
+            window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
+            try { rec.pause(); } catch (_) {}
+        }
         window._medicalRecorderPaused = true;
-        try { rec.pause(); } catch (_) {}
         setMedicalRecordingVisualState('paused');
         renderMedicalRecordingTimer();
         pauseMedicalWaveform();
@@ -11645,11 +11676,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function resumeMedicalRecordingAfterHardwareMute() {
-        if (!window._medicalHardwareMutePaused) return;
         if (window._medicalUserPaused) return;
-        if (window._medicalSystemRecordingInterrupted) return;
         const rec = window._medicalRecorder;
-        if (!rec || rec.state !== 'paused') {
+        if (!rec) {
+            window._medicalHardwareMutePaused = false;
+            return;
+        }
+        // Clear any track-mute interrupt that raced with HID mute.
+        window._medicalSystemRecordingInterrupted = false;
+        stopMedicalResumeRetryLoop();
+        if (rec.state === 'recording') {
+            window._medicalHardwareMutePaused = false;
+            window._medicalRecorderPaused = false;
+            setMedicalRecordingVisualState('recording');
+            return;
+        }
+        if (rec.state !== 'paused') {
             window._medicalHardwareMutePaused = false;
             return;
         }
@@ -11672,6 +11714,9 @@ document.addEventListener('DOMContentLoaded', () => {
         window._qsTonorHidMuteWired = true;
         onMuteToggle((muted) => {
             if (!isMedicalModeEnabled()) return;
+            const rec = window._medicalRecorder;
+            if (!rec || rec.state === 'inactive') return;
+            console.info('[medical] Tonor HID mute state', { muted, recorder: rec.state });
             if (muted) pauseMedicalRecordingForHardwareMute();
             else resumeMedicalRecordingAfterHardwareMute();
         });
@@ -12691,9 +12736,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 track.addEventListener('mute', () => {
                     // Browsers may briefly mute on tab blur; keep recording unless track is dead.
                     if (document.visibilityState === 'hidden') return;
+                    // Tonor G11 mute is handled via WebHID — track mute would restart the session
+                    // and desync the physical mute LED / app button.
+                    if (isTonorHIDConnected() || window._medicalHardwareMutePaused) return;
                     pauseMedicalRecordingForInterruption('track_mute');
                 });
                 track.addEventListener('unmute', () => {
+                    if (isTonorHIDConnected() || window._medicalHardwareMutePaused) return;
                     setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
                 });
                 track.addEventListener('ended', () => {
@@ -12853,17 +12902,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!preserveChunks) window._medicalRecordingAccumMs = 0;
         window._medicalRecorderPaused = false;
         window._medicalUserPaused = false;
-        window._medicalHardwareMutePaused = false;
         window._medicalSubmitOnStop = false;
         window._medicalSystemRecordingInterrupted = false;
         window._medicalRecordingStartedAt = Date.now();
-        try { resetTonorMuteState(false); } catch (_) {}
+        // Only reset HID mute latch on a brand-new session — not OS/track restarts.
+        if (!preserveChunks && !resumeFromInterruption) {
+            window._medicalHardwareMutePaused = false;
+            try { resetTonorMuteState(false); } catch (_) {}
+        }
         if (isMedicalModeEnabled() && !preserveChunks) {
             void qsConnectTonorHidForMedical();
-        }
-        // If HID already reports muted, apply pause after recorder is live.
-        if (isMedicalModeEnabled() && typeof isTonorMuted === 'function' && isTonorMuted()) {
-            pauseMedicalRecordingForHardwareMute();
         }
         setMedicalTimerVisibility(true);
         renderMedicalRecordingTimer();
@@ -12871,7 +12919,13 @@ document.addEventListener('DOMContentLoaded', () => {
             stopMedicalRecordingTimer();
             window._medicalRecorderTimer = setInterval(renderMedicalRecordingTimer, 500);
         }
-        setMedicalRecordingVisualState('recording');
+        // Honor current physical mute LED / HID state after recorder is live.
+        if (isMedicalModeEnabled() && typeof isTonorMuted === 'function' && isTonorMuted()) {
+            pauseMedicalRecordingForHardwareMute();
+        } else {
+            window._medicalHardwareMutePaused = false;
+            setMedicalRecordingVisualState('recording');
+        }
         if (resumeFromInterruption) stopMedicalResumeRetryLoop();
     }
 

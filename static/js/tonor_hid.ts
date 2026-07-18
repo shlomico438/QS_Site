@@ -8,23 +8,29 @@
 
 export type MuteToggleCallback = (muted: boolean) => void;
 
+/** Tonor USB vendor / G11 product (from WebHID). */
+export const TONOR_VENDOR_ID = 3468;
+export const TONOR_G11_PRODUCT_ID = 308;
+
 /** Known mute-button press report from Tonor G11. */
 export const TONOR_MUTE_PRESS_REPORT = [
   8, 0, 0, 0, 0, 0, 0, 0, 0, 4, 15, 0, 0, 0, 0, 0,
 ] as const;
 
+/** Ignore duplicate press reports within this window (ms). */
+const MUTE_TOGGLE_DEBOUNCE_MS = 350;
+
 type HIDDeviceLike = HIDDevice;
 
 let device: HIDDeviceLike | null = null;
 let muted = false;
-let pressed = false;
+let lastToggleAt = 0;
 const listeners = new Set<MuteToggleCallback>();
 let inputHandler: ((event: HIDInputReportEvent) => void) | null = null;
 
 function reportToBytes(reportId: number, data: DataView): number[] {
   const payload: number[] = [];
   for (let i = 0; i < data.byteLength; i++) payload.push(data.getUint8(i));
-  // Some dumps include report id as byte 0; WebHID usually passes it separately.
   if (reportId && (payload.length === 0 || payload[0] !== reportId)) {
     return [reportId, ...payload];
   }
@@ -43,14 +49,12 @@ function bytesEqual(a: number[], b: readonly number[]): boolean {
 export function isTonorMutePressReport(reportId: number, data: DataView): boolean {
   const bytes = reportToBytes(reportId, data);
   if (bytesEqual(bytes, TONOR_MUTE_PRESS_REPORT)) return true;
-  // reportId stripped: data alone matches the example without leading 8
   if (reportId === 8) {
     const withoutId = TONOR_MUTE_PRESS_REPORT.slice(1);
     if (bytesEqual(Array.from({ length: data.byteLength }, (_, i) => data.getUint8(i)), withoutId)) {
       return true;
     }
   }
-  // Distinctive non-zero pair at example offsets 9/10 (with report id in buffer).
   if (bytes.length >= 11 && bytes[0] === 8 && bytes[9] === 4 && bytes[10] === 15) return true;
   return false;
 }
@@ -66,16 +70,18 @@ function notify(nextMuted: boolean): void {
   });
 }
 
+/**
+ * G11 sends the same press report and may not send a distinct release.
+ * Treat each debounced matching report as one toggle edge.
+ */
 function onInputReport(event: HIDInputReportEvent): void {
-  const isPress = isTonorMutePressReport(event.reportId, event.data);
-  if (isPress) {
-    if (pressed) return; // hold / repeat
-    pressed = true;
-    notify(!muted);
-    return;
-  }
-  // Any other report (typically all-zero release) clears the press latch.
-  pressed = false;
+  if (!isTonorMutePressReport(event.reportId, event.data)) return;
+  const now = Date.now();
+  if (now - lastToggleAt < MUTE_TOGGLE_DEBOUNCE_MS) return;
+  lastToggleAt = now;
+  const next = !muted;
+  console.info('[tonor-hid] mute toggle', { muted: next });
+  notify(next);
 }
 
 function detachDevice(): void {
@@ -91,7 +97,6 @@ function detachDevice(): void {
     } catch (_) {}
   }
   device = null;
-  pressed = false;
 }
 
 async function openDevice(dev: HIDDeviceLike): Promise<HIDDeviceLike> {
@@ -101,6 +106,12 @@ async function openDevice(dev: HIDDeviceLike): Promise<HIDDeviceLike> {
   inputHandler = onInputReport;
   device.addEventListener('inputreport', inputHandler);
   return device;
+}
+
+function isTonorDevice(d: HIDDeviceLike): boolean {
+  if (!d) return false;
+  if (Number(d.vendorId) === TONOR_VENDOR_ID) return true;
+  return /tonor/i.test(String(d.productName || ''));
 }
 
 /**
@@ -117,7 +128,7 @@ export async function connectTonorHID(): Promise<HIDDeviceLike | null> {
 
   const existing = await navigator.hid.getDevices();
   const known =
-    existing.find((d) => /tonor/i.test(String(d.productName || ''))) ||
+    existing.find((d) => isTonorDevice(d)) ||
     (existing.length === 1 ? existing[0] : null);
 
   if (known) {
@@ -129,15 +140,15 @@ export async function connectTonorHID(): Promise<HIDDeviceLike | null> {
   }
 
   const filters: HIDDeviceFilter[] = [
-    // Broad filters — Tonor often exposes vendor-specific + consumer collections.
-    { usagePage: 0x0b }, // Telephony
-    { usagePage: 0x0c }, // Consumer Control
-    { usagePage: 0xff00 }, // Vendor-defined
+    { vendorId: TONOR_VENDOR_ID, productId: TONOR_G11_PRODUCT_ID },
+    { vendorId: TONOR_VENDOR_ID },
+    { usagePage: 0x0b },
+    { usagePage: 0x0c },
+    { usagePage: 0xff00 },
   ];
 
   let picked = await navigator.hid.requestDevice({ filters });
   if (!picked || !picked.length) {
-    // Fallback: show all HID devices if usage filters miss the G11 interface.
     picked = await navigator.hid.requestDevice({ filters: [] });
   }
   const chosen = picked && picked[0];
@@ -157,6 +168,10 @@ export function isTonorMuted(): boolean {
   return muted;
 }
 
+export function isTonorHIDConnected(): boolean {
+  return !!(device && device.opened);
+}
+
 export function getTonorHIDDevice(): HIDDeviceLike | null {
   return device;
 }
@@ -165,8 +180,11 @@ export async function disconnectTonorHID(): Promise<void> {
   detachDevice();
 }
 
-/** Reset internal mute latch without disconnecting (e.g. new recording session). */
+/**
+ * Reset internal mute latch without disconnecting (e.g. brand-new session).
+ * Prefer not calling this on OS/track interrupt restarts — it desyncs from the physical LED.
+ */
 export function resetTonorMuteState(initialMuted = false): void {
   muted = !!initialMuted;
-  pressed = false;
+  lastToggleAt = 0;
 }
