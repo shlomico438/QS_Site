@@ -2895,23 +2895,23 @@ body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
   width: 86px;
   height: 86px;
   border-radius: 50%;
-  background: #0d9488;
+  background: #BE123C;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 .medical-record-outer.is-idle {
-  background: #0d9488;
+  background: #BE123C;
   animation: none;
 }
 
 .medical-record-outer.is-paused {
-  background: #0d9488;
+  background: #BE123C;
   animation: none;
 }
 
-/* Regular mode recorder (mobile shortcut): match primary app purple instead of medical teal. */
+/* Regular mode recorder (mobile shortcut): match primary app purple instead of medical red. */
 .main-app-container:not(.medical-mode) .medical-record-outer,
 .main-app-container:not(.medical-mode) .medical-record-outer.is-idle,
 .main-app-container:not(.medical-mode) .medical-record-outer.is-paused {
@@ -2919,11 +2919,24 @@ body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
 }
 
 .medical-record-outer.is-recording {
-  background: #BE123C;
+  background: #ffffff;
+  border: 2px solid #e2e8f0;
   animation: medical-record-pulse 1.3s ease-in-out infinite;
 }
 
+.main-app-container:not(.medical-mode) .medical-record-outer.is-recording {
+  background: #BE123C;
+  border: none;
+  animation-name: medical-record-pulse-regular;
+}
+
 @keyframes medical-record-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(148, 163, 184, 0.45); }
+  70% { box-shadow: 0 0 0 14px rgba(148, 163, 184, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(148, 163, 184, 0); }
+}
+
+@keyframes medical-record-pulse-regular {
   0% { box-shadow: 0 0 0 0 rgba(190, 18, 60, 0.45); }
   70% { box-shadow: 0 0 0 14px rgba(190, 18, 60, 0); }
   100% { box-shadow: 0 0 0 0 rgba(190, 18, 60, 0); }
@@ -2936,6 +2949,16 @@ body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
   justify-content: center;
   width: 34px;
   height: 34px;
+}
+
+.medical-record-outer.is-recording .medical-record-shape,
+.medical-record-outer.is-recording .medical-record-shape-pause {
+  color: #0f172a;
+}
+
+.main-app-container:not(.medical-mode) .medical-record-outer.is-recording .medical-record-shape,
+.main-app-container:not(.medical-mode) .medical-record-outer.is-recording .medical-record-shape-pause {
+  color: #ffffff;
 }
 
 .medical-record-shape-pause {
@@ -2963,7 +2986,7 @@ body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
   width: 4px;
   height: 24px;
   border-radius: 2px;
-  background: #ffffff;
+  background: currentColor;
 }
 
 #medical-record-pause-symbol::before { left: 3px; }

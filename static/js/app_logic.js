@@ -11,13 +11,6 @@ import {
     qsGetMedicalTranscriptionConfigCached,
     qsMedicalUseAwsTranscribeStream,
 } from './qs_aws_transcribe_stream.js'
-import {
-    connectTonorHID,
-    onMuteToggle,
-    resetTonorMuteState,
-    isTonorMuted,
-    isTonorHIDConnected,
-} from './tonor_hid.js'
 
 const supabaseUrl = 'https://vojesnnvehecenjymrko.supabase.co'
 const supabaseAnonKey = 'sb_publishable_BhoKDe-_iL04tOVYCbbX0w_3TjKWaGG'
@@ -11603,7 +11596,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
             medicalRecordBtn.setAttribute(
                 'aria-label',
-                T('resume') || (window._medicalHardwareMutePaused ? 'Unmute / Resume' : 'Resume')
+                T('resume') || 'Resume'
             );
             return;
         }
@@ -11665,127 +11658,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (_) {}
             }
         });
-    }
-
-    async function qsRestartMedicalRecordingFreshMic(reason) {
-        if (window._medicalRestartInProgress) return;
-        const rec = window._medicalRecorder;
-        try {
-            if (typeof qsSyncMedicalLiveStreamTextFromDom === 'function') {
-                qsSyncMedicalLiveStreamTextFromDom();
-            }
-        } catch (_) {}
-        const transcriptPrefix = String(window._medicalLiveStreamText || '').trim();
-        window._medicalRestartInProgress = true;
-        window._medicalRollingRestart = !!rec;
-        window._medicalHardwareMutePaused = false;
-        window._medicalUserPaused = false;
-        window._medicalSystemRecordingInterrupted = false;
-        window._medicalPauseReason = '';
-        stopMedicalResumeRetryLoop();
-        try {
-            if (rec) {
-                try {
-                    if (typeof rec.requestData === 'function' && rec.state !== 'inactive') rec.requestData();
-                } catch (_) {}
-                // Prevent pause/stop handlers from treating this as an OS interrupt.
-                window._medicalPauseUserIntent = true;
-                window._medicalSubmitOnStop = false;
-                try {
-                    if (rec.state === 'recording' || rec.state === 'paused') rec.stop();
-                } catch (_) {}
-                await new Promise((resolve) => setTimeout(resolve, 280));
-            }
-            await startMedicalRecording({
-                preserveChunks: true,
-                resumeFromInterruption: true,
-                transcriptPrefix,
-            });
-            console.info('[medical] restarted mic after', reason);
-        } catch (e) {
-            console.warn('[medical] mic restart failed', reason, e);
-            window._medicalRollingRestart = false;
-        } finally {
-            window._medicalRestartInProgress = false;
-        }
-    }
-
-    function pauseMedicalRecordingForHardwareMute() {
-        const rec = window._medicalRecorder;
-        if (!rec || (rec.state !== 'recording' && rec.state !== 'paused')) return;
-        if (window._medicalUserPaused) return;
-        // HID mute owns pause — do not let track-mute / pause-event OS-interrupt path take over.
-        window._medicalSystemRecordingInterrupted = false;
-        stopMedicalResumeRetryLoop();
-        if (window._medicalHardwareMutePaused && rec.state === 'paused') {
-            setMedicalRecordingVisualState('paused');
-            return;
-        }
-        window._medicalHardwareMutePaused = true;
-        window._medicalPauseReason = 'hardware_mute';
-        if (rec.state === 'recording') {
-            window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
-            // Mark intentional pause so MediaRecorder 'pause' does not start OS-interrupt restart.
-            window._medicalPauseUserIntent = true;
-            try { rec.pause(); } catch (_) { window._medicalPauseUserIntent = false; }
-        }
-        window._medicalRecorderPaused = true;
-        setMedicalRecordingVisualState('paused');
-        renderMedicalRecordingTimer();
-        pauseMedicalWaveform();
-        try {
-            if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.pause();
-        } catch (_) {}
-        console.info('[medical] paused on Tonor HID mute');
-    }
-
-    function resumeMedicalRecordingAfterHardwareMute() {
-        if (window._medicalUserPaused) return;
-        const rec = window._medicalRecorder;
-        if (!rec || rec.state === 'inactive') {
-            window._medicalHardwareMutePaused = false;
-            return;
-        }
-        window._medicalSystemRecordingInterrupted = false;
-        stopMedicalResumeRetryLoop();
-        // Tonor zeros OS input volume on mute; the old MediaStream often stays silent after unmute.
-        // Re-acquire mic + AWS graph so transcription actually resumes.
-        console.info('[medical] hardware unmute — re-acquiring mic stream');
-        void qsRestartMedicalRecordingFreshMic('hardware_unmute');
-    }
-
-    function qsEnsureTonorHidMuteWired() {
-        if (window._qsTonorHidMuteWired) return;
-        window._qsTonorHidMuteWired = true;
-        onMuteToggle((muted) => {
-            if (!isMedicalModeEnabled()) return;
-            const rec = window._medicalRecorder;
-            if (!rec || rec.state === 'inactive') return;
-            console.info('[medical] Tonor HID mute state', { muted, recorder: rec.state });
-            if (muted) pauseMedicalRecordingForHardwareMute();
-            else resumeMedicalRecordingAfterHardwareMute();
-            // The physical button must not leave the app record button as the
-            // keyboard target. Enter should split the live transcript instead.
-            focusMedicalTranscriptEditorAtEnd();
-        });
-    }
-
-    async function qsConnectTonorHidForMedical() {
-        qsEnsureTonorHidMuteWired();
-        try {
-            const dev = await connectTonorHID();
-            if (dev) {
-                console.info('[medical] Tonor HID connected', {
-                    productName: dev.productName,
-                    vendorId: dev.vendorId,
-                    productId: dev.productId,
-                });
-            }
-            return dev;
-        } catch (err) {
-            console.warn('[medical] Tonor HID connect skipped/failed', err);
-            return null;
-        }
     }
 
     function ensureMedicalWaveformCanvas() {
@@ -12651,12 +12523,22 @@ document.addEventListener('DOMContentLoaded', () => {
         window._medicalRestartInProgress = true;
         window._medicalRollingRestart = !!rec;
         try {
+            try {
+                if (typeof qsSyncMedicalLiveStreamTextFromDom === 'function') {
+                    qsSyncMedicalLiveStreamTextFromDom();
+                }
+            } catch (_) {}
+            const transcriptPrefix = String(window._medicalLiveStreamText || '').trim();
             if (rec) {
                 try { if (typeof rec.requestData === 'function' && rec.state !== 'inactive') rec.requestData(); } catch (_) {}
                 try { if (rec.state !== 'inactive') rec.stop(); } catch (_) {}
                 await new Promise((resolve) => setTimeout(resolve, 250));
             }
-            await startMedicalRecording({ preserveChunks: true, resumeFromInterruption: true });
+            await startMedicalRecording({
+                preserveChunks: true,
+                resumeFromInterruption: true,
+                transcriptPrefix,
+            });
         } catch (e) {
             window._medicalRollingRestart = false;
             window._medicalSystemRecordingInterrupted = true;
@@ -12772,9 +12654,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
-        // Re-acquiring the Tonor mic must also rebuild the AWS audio graph.
-        // The previous implementation only restarted MediaRecorder, so no audio
-        // reached transcription after unmute even though getUserMedia succeeded.
+        // After an OS interrupt (e.g. phone call), re-acquire mic + rebuild AWS graph.
         if (isMedicalModeEnabled() && preserveChunks && resumeFromInterruption) {
             void startMedicalAwsTranscribeStream(stream, { transcriptPrefix }).catch((streamStartErr) => {
                 console.error('[medical] AWS Transcribe restart failed after mic resume', streamStartErr);
@@ -12796,11 +12676,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalPauseUserIntent = false;
                 return;
             }
-            // Tonor HID / intentional hardware mute must not look like an OS interrupt
-            // (that path restarts getUserMedia and leaves ASR on a silent stream).
-            if (window._medicalHardwareMutePaused || window._medicalPauseReason === 'hardware_mute') {
-                return;
-            }
             markMedicalRecorderInterrupted('recorder_pause_event');
         });
         rec.addEventListener('resume', () => {
@@ -12812,13 +12687,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 track.addEventListener('mute', () => {
                     // Browsers may briefly mute on tab blur; keep recording unless track is dead.
                     if (document.visibilityState === 'hidden') return;
-                    // Tonor G11 mute is handled via WebHID — track mute would restart the session
-                    // and desync the physical mute LED / app button.
-                    if (isTonorHIDConnected() || window._medicalHardwareMutePaused) return;
                     pauseMedicalRecordingForInterruption('track_mute');
                 });
                 track.addEventListener('unmute', () => {
-                    if (isTonorHIDConnected() || window._medicalHardwareMutePaused) return;
                     setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
                 });
                 track.addEventListener('ended', () => {
@@ -12985,27 +12856,13 @@ document.addEventListener('DOMContentLoaded', () => {
         window._medicalSubmitOnStop = false;
         window._medicalSystemRecordingInterrupted = false;
         window._medicalRecordingStartedAt = Date.now();
-        // Only reset HID mute latch on a brand-new session — not OS/track restarts.
-        if (!preserveChunks && !resumeFromInterruption) {
-            window._medicalHardwareMutePaused = false;
-            try { resetTonorMuteState(false); } catch (_) {}
-        }
-        if (isMedicalModeEnabled() && !preserveChunks) {
-            void qsConnectTonorHidForMedical();
-        }
         setMedicalTimerVisibility(true);
         renderMedicalRecordingTimer();
         if (!window._medicalRecorderTimer || !preserveChunks) {
             stopMedicalRecordingTimer();
             window._medicalRecorderTimer = setInterval(renderMedicalRecordingTimer, 500);
         }
-        // Honor current physical mute LED / HID state after recorder is live.
-        if (isMedicalModeEnabled() && typeof isTonorMuted === 'function' && isTonorMuted()) {
-            pauseMedicalRecordingForHardwareMute();
-        } else {
-            window._medicalHardwareMutePaused = false;
-            setMedicalRecordingVisualState('recording');
-        }
+        setMedicalRecordingVisualState('recording');
         if (resumeFromInterruption) stopMedicalResumeRetryLoop();
     }
 
@@ -13023,7 +12880,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (rec && rec.state === 'recording') {
             window._medicalPauseUserIntent = true;
             window._medicalUserPaused = true;
-            window._medicalHardwareMutePaused = false;
             window._medicalSystemRecordingInterrupted = false;
             stopMedicalResumeRetryLoop();
             try { rec.pause(); } catch (_) { window._medicalPauseUserIntent = false; return; }
@@ -13036,17 +12892,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         if (rec && rec.state === 'paused') {
-            const pausedForHardwareMute =
-                window._medicalHardwareMutePaused || window._medicalPauseReason === 'hardware_mute';
             window._medicalUserPaused = false;
-            window._medicalHardwareMutePaused = false;
             window._medicalSystemRecordingInterrupted = false;
             stopMedicalResumeRetryLoop();
-            if (pausedForHardwareMute) {
-                // Fresh mic: hardware mute zeros OS input; soft resume keeps silent ASR.
-                void qsRestartMedicalRecordingFreshMic('app_resume_after_hardware_mute');
-                return;
-            }
             try { rec.resume(); } catch (_) { return; }
             window._medicalPauseReason = '';
             window._medicalRecordingStartedAt = Date.now();
@@ -13112,7 +12960,6 @@ document.addEventListener('DOMContentLoaded', () => {
         window._medicalLiveLastBoxDirty = false;
         window._medicalHasResult = false;
         window._qsMedicalStreamAwaitingSummary = null;
-        window._medicalHardwareMutePaused = false;
         window._medicalUserPaused = false;
         window._medicalPauseReason = '';
         window.currentSegments = [];
@@ -13120,7 +12967,6 @@ document.addEventListener('DOMContentLoaded', () => {
         window.currentCaptions = null;
         window.currentFormattedDoc = null;
         window._qsDocPreferSegmentsAfterEdit = false;
-        try { resetTonorMuteState(false); } catch (_) {}
         try { abortMedicalAwsTranscribeStream(); } catch (_) {}
         try { void clearMedicalRecordingWarmup(true); } catch (_) {}
         try { qsHideMedicalRecordingWarmupProgress(); } catch (_) {}
