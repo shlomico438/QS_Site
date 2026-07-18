@@ -11648,6 +11648,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function focusMedicalTranscriptEditorAtEnd() {
+        requestAnimationFrame(() => {
+            const tw = document.getElementById('transcript-window');
+            if (!tw) return;
+            const boxes = tw.querySelectorAll('textarea.qs-medical-edit-box-body');
+            const last = boxes.length ? boxes[boxes.length - 1] : null;
+            if (!last) return;
+            const offset = String(last.value || '').length;
+            if (typeof qsSetCaretInElement === 'function') {
+                qsSetCaretInElement(last, offset);
+            } else {
+                try {
+                    last.focus();
+                    last.setSelectionRange(offset, offset);
+                } catch (_) {}
+            }
+        });
+    }
+
     async function qsRestartMedicalRecordingFreshMic(reason) {
         if (window._medicalRestartInProgress) return;
         const rec = window._medicalRecorder;
@@ -11745,6 +11764,9 @@ document.addEventListener('DOMContentLoaded', () => {
             console.info('[medical] Tonor HID mute state', { muted, recorder: rec.state });
             if (muted) pauseMedicalRecordingForHardwareMute();
             else resumeMedicalRecordingAfterHardwareMute();
+            // The physical button must not leave the app record button as the
+            // keyboard target. Enter should split the live transcript instead.
+            focusMedicalTranscriptEditorAtEnd();
         });
     }
 
@@ -12015,6 +12037,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             window._medicalLiveLastBoxDirty = false;
             try { updateMedicalTabUi(); } catch (_) {}
+            focusMedicalTranscriptEditorAtEnd();
             return;
         }
 
@@ -13048,6 +13071,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (medicalRecordBtn) {
         medicalRecordBtn.addEventListener('click', () => {
             toggleMedicalRecording();
+        });
+        medicalRecordBtn.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' || !isMedicalModeEnabled()) return;
+            const rec = window._medicalRecorder;
+            if (!rec || (rec.state !== 'recording' && rec.state !== 'paused')) return;
+            const tw = document.getElementById('transcript-window');
+            const boxes = tw ? tw.querySelectorAll('textarea.qs-medical-edit-box-body') : [];
+            const last = boxes.length ? boxes[boxes.length - 1] : null;
+            if (!last) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const end = String(last.value || '').length;
+            qsSetCaretInElement(last, end);
+            qsSplitMedicalTranscriptBoxAtCaret(last);
         });
     }
     const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
