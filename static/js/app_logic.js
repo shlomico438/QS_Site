@@ -5364,8 +5364,27 @@ function clearOpenJobStandardSummaryHost() {
     }
 }
 
+/** In-flight de-dupe so DOMContentLoaded + SIGNED_IN don't double-fetch the same job. */
+const _qsOpenInAppLocks = new Map();
+
 /** Load a job in the app when user clicks "Open in app" (/?open=jobId). Loads file URL + transcript JSON. */
 async function initOpenInApp(jobId) {
+    const jobIdStr = String(jobId || '').trim();
+    if (!jobIdStr) return;
+    const existing = _qsOpenInAppLocks.get(jobIdStr);
+    if (existing) return existing;
+    const run = (async () => {
+        try {
+            await initOpenInAppImpl(jobIdStr);
+        } finally {
+            if (_qsOpenInAppLocks.get(jobIdStr) === run) _qsOpenInAppLocks.delete(jobIdStr);
+        }
+    })();
+    _qsOpenInAppLocks.set(jobIdStr, run);
+    return run;
+}
+
+async function initOpenInAppImpl(jobIdStr) {
     setSeoHomeContentVisibility(false);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -5374,22 +5393,22 @@ async function initOpenInApp(jobId) {
     // Accept both jobs.id (UUID) and runpod_job_id values like "job_..." / "job_sim_...".
     // Use maybeSingle() to avoid 406 when no row matches (PostgREST returns 406 for .single() when 0 rows).
     const _looksLikeUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(v || '').trim());
-    const jobIdStr = String(jobId || '').trim();
     const tryByUuidFirst = _looksLikeUuid(jobIdStr);
+    const _jobSelect = 'id, input_s3_key, result_s3_key';
 
     let job = null;
     let error = null;
     if (tryByUuidFirst) {
         ({ data: job, error } = await supabase
             .from('jobs')
-            .select('id, input_s3_key')
+            .select(_jobSelect)
             .eq('id', jobIdStr)
             .eq('user_id', user.id)
             .maybeSingle());
     } else {
         ({ data: job, error } = await supabase
             .from('jobs')
-            .select('id, input_s3_key')
+            .select(_jobSelect)
             .eq('runpod_job_id', jobIdStr)
             .eq('user_id', user.id)
             .maybeSingle());
@@ -5398,15 +5417,15 @@ async function initOpenInApp(jobId) {
         if (!tryByUuidFirst && jobIdStr) {
             ({ data: job, error } = await supabase
                 .from('jobs')
-                .select('id, input_s3_key')
+                .select(_jobSelect)
                 .eq('id', jobIdStr)
                 .eq('user_id', user.id)
                 .maybeSingle());
         }
-        if (!job && !tryByUuidFirst && jobIdStr) {
+        if (!job && tryByUuidFirst && jobIdStr) {
             ({ data: job, error } = await supabase
                 .from('jobs')
-                .select('id, input_s3_key')
+                .select(_jobSelect)
                 .eq('runpod_job_id', jobIdStr)
                 .eq('user_id', user.id)
                 .maybeSingle());
@@ -5429,8 +5448,7 @@ async function initOpenInApp(jobId) {
     // Prefer transcript from S3 (result_s3_key); fallback to jobs.result
     let segments = [];
     let hasTranscriptForOpen = false;
-    const { data: keyRow } = await supabase.from('jobs').select('result_s3_key').eq('id', resolvedJobId).eq('user_id', user.id).maybeSingle();
-    let resultKeyToFetch = (keyRow && keyRow.result_s3_key) ? String(keyRow.result_s3_key).trim() : '';
+    let resultKeyToFetch = job.result_s3_key ? String(job.result_s3_key).trim() : '';
     const derivedResultKey = deriveTranscriptJsonKeyFromInputS3Key(job.input_s3_key);
     if (!resultKeyToFetch && derivedResultKey) {
         resultKeyToFetch = derivedResultKey;
@@ -5443,61 +5461,79 @@ async function initOpenInApp(jobId) {
         });
         resultKeyToFetch = derivedResultKey;
     }
-    if (resultKeyToFetch) {
-        hasTranscriptForOpen = true;
+
+    const isMedical = typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false;
+    const _presignBody = (s3Key) => JSON.stringify({ s3Key, userId: user.id, isMedical });
+
+    // Fetch transcript JSON and media URL in parallel (was sequential ≈ 2× wait).
+    const transcriptPromise = (async () => {
+        if (!resultKeyToFetch) return null;
         try {
             console.log('[word-edit] open-in-app: fetching transcript JSON', { result_s3_key: resultKeyToFetch });
             const urlRes = await fetch('/api/get_presigned_url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    s3Key: resultKeyToFetch,
-                    userId: user.id,
-                    isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
-                })
+                body: _presignBody(resultKeyToFetch),
             });
-            const urlJson = await urlRes.json();
-            if (urlJson.url) {
-                const tr = await fetch(urlJson.url).then(r => r.json());
-                if (tr) {
-                    const trFmt = pickFormattedFromObject(tr);
-                    if (trFmt) {
-                        window.currentFormattedDoc = trFmt;
-                        window._qsDocPreferSegmentsAfterEdit = false;
-                        if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
-                    }
-                    const cleanLen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
-                    console.log('[word-edit] open-in-app: formatted in transcript JSON', {
-                        found: !!trFmt,
-                        clean_transcript_length: cleanLen,
-                        top_level_keys: tr && typeof tr === 'object' ? Object.keys(tr).slice(0, 25) : [],
-                        has_formatted_key: !!(tr && tr.formatted),
-                        note: cleanLen
-                            ? undefined
-                            : 'No `formatted` object in this file — only what you see in keys (e.g. words/captions). Export can run GPT formatting once if needed.',
-                    });
-                    if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
-                        console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length });
-                        window.currentWords = tr.words;
-                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 54);
-                        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                        segments = window.currentSegments;
-                    } else if (Array.isArray(tr.segments)) {
-                        console.log('[word-edit] open-in-app: loaded legacy segments', { segments: tr.segments.length });
-                        segments = tr.segments;
-                        try {
-                            console.log('[word-edit] open-in-app: legacy segment start sample', segments.slice(0, 5).map(s => s && s.start));
-                        } catch (_) {}
-                        // If segments contain real word timestamps, build the word/caption model.
-                        const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
-                        if (model) {
-                            console.log('[word-edit] open-in-app: derived words/captions from segments[*].words or word_segments', { words: model.words.length, captions: model.captions.length });
-                            window.currentWords = model.words;
-                            window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 54);
-                            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                            segments = window.currentSegments;
-                        } // No fallback fetch here: avoids noisy 404s for jobs without an intermediate debug artifact.
-                    }
+            const urlJson = await urlRes.json().catch(() => ({}));
+            if (!urlJson.url) return null;
+            return await fetch(urlJson.url).then((r) => r.json()).catch(() => null);
+        } catch (_) {
+            return null;
+        }
+    })();
+    const mediaPromise = (async () => {
+        try {
+            const res = await fetch('/api/get_presigned_url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: _presignBody(job.input_s3_key),
+            });
+            return { status: res.status, json: await res.json().catch(() => ({})) };
+        } catch (_) {
+            return { status: 0, json: {} };
+        }
+    })();
+
+    const [tr, mediaPack] = await Promise.all([transcriptPromise, mediaPromise]);
+    if (tr) {
+        hasTranscriptForOpen = true;
+        try {
+            const trFmt = pickFormattedFromObject(tr);
+            if (trFmt) {
+                window.currentFormattedDoc = trFmt;
+                window._qsDocPreferSegmentsAfterEdit = false;
+                if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
+            }
+            const cleanLen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
+            console.log('[word-edit] open-in-app: formatted in transcript JSON', {
+                found: !!trFmt,
+                clean_transcript_length: cleanLen,
+                top_level_keys: tr && typeof tr === 'object' ? Object.keys(tr).slice(0, 25) : [],
+                has_formatted_key: !!(tr && tr.formatted),
+                note: cleanLen
+                    ? undefined
+                    : 'No `formatted` object in this file — only what you see in keys (e.g. words/captions). Export can run GPT formatting once if needed.',
+            });
+            if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
+                console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length });
+                window.currentWords = tr.words;
+                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 54);
+                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                segments = window.currentSegments;
+            } else if (Array.isArray(tr.segments)) {
+                console.log('[word-edit] open-in-app: loaded legacy segments', { segments: tr.segments.length });
+                segments = tr.segments;
+                try {
+                    console.log('[word-edit] open-in-app: legacy segment start sample', segments.slice(0, 5).map(s => s && s.start));
+                } catch (_) {}
+                const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
+                if (model) {
+                    console.log('[word-edit] open-in-app: derived words/captions from segments[*].words or word_segments', { words: model.words.length, captions: model.captions.length });
+                    window.currentWords = model.words;
+                    window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 54);
+                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                    segments = window.currentSegments;
                 }
             }
         } catch (_) { /* fallback to result */ }
@@ -5553,19 +5589,10 @@ async function initOpenInApp(jobId) {
         } catch (_) {}
     }
 
-    const res = await fetch('/api/get_presigned_url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            s3Key: job.input_s3_key,
-            userId: user.id,
-            isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
-        })
-    });
-    const json = await res.json().catch(() => ({}));
+    const json = (mediaPack && mediaPack.json) || {};
     const mediaUrl = json.url ? qsNormalizeAbsoluteMediaUrl(json.url) : '';
     if (!mediaUrl) {
-        console.warn('[qs] open-in-app: media presign failed', { status: res.status, error: json.error });
+        console.warn('[qs] open-in-app: media presign failed', { status: mediaPack && mediaPack.status, error: json.error });
         if (typeof showStatus === 'function') {
             showStatus(json.error || 'Failed to get file link', true);
         }
@@ -5736,6 +5763,12 @@ async function runOpenQueryIfPresent() {
         const jobId = decodeURIComponent(m[1]).trim();
         if (!jobId) return;
         if (window.__qsOpenHandledFor === jobId) return;
+        // If open is already in-flight (DOMContentLoaded + SIGNED_IN race), join that promise.
+        if (_qsOpenInAppLocks.has(jobId)) {
+            await _qsOpenInAppLocks.get(jobId);
+            window.__qsOpenHandledFor = jobId;
+            return;
+        }
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
         if (window.__qsOpenHandledFor === jobId) return;
