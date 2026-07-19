@@ -698,10 +698,9 @@ window.setLocale = async function(code) {
             const isHomePath = (path === '/' || path === '/he' || path === '/he/' || path === '/en' || path === '/en/');
             if (isHomePath) {
                 u.pathname = (code === 'en') ? '/en' : '/he';
-                u.searchParams.delete('lang');
-            } else {
-                u.searchParams.set('lang', code);
             }
+            // Never use ?lang= URLs; locale homes use /he and /en.
+            u.searchParams.delete('lang');
             window.history.replaceState({}, document.title, u.pathname + u.search + u.hash);
         }
     } catch (_) {}

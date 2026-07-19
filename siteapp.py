@@ -550,9 +550,26 @@ def _get_static_asset_version():
     return _static_asset_version_cache['value']
 
 
+QS_CANONICAL_ORIGIN = (os.environ.get('QS_CANONICAL_ORIGIN') or 'https://www.getquickscribe.com').rstrip('/')
+
+
+def _seo_canonical_path():
+    path = (request.path or '/').strip() or '/'
+    if path != '/' and path.endswith('/'):
+        path = path.rstrip('/') or '/'
+    return path
+
+
 @app.context_processor
 def _inject_static_asset_version():
-    return {'static_asset_version': _get_static_asset_version()}
+    path = _seo_canonical_path()
+    canonical_url = QS_CANONICAL_ORIGIN + ('/' if path == '/' else path)
+    return {
+        'static_asset_version': _get_static_asset_version(),
+        'qs_canonical_origin': QS_CANONICAL_ORIGIN,
+        'qs_canonical_url': canonical_url,
+        'qs_is_locale_home': path in ('/', '/he', '/en'),
+    }
 
 
 # Configuration for automation
@@ -5554,11 +5571,12 @@ def handle_exception(e):
 # --- WEB ROUTES ---
 @app.route('/')
 def index():
-    # Legacy ?lang= URLs are served in place (no redirect) for GSC/indexing.
-    # Path-based locales: /he and /en remain available as canonical alternates.
+    # Permanent redirects for legacy query-param language URLs.
     q_lang = str(request.args.get('lang') or '').strip().lower()
+    if q_lang == 'he':
+        return redirect('/he', code=301)
     if q_lang == 'en':
-        return redirect(url_for('index_en'), code=301)
+        return redirect('/en', code=301)
     return render_template('index.html', medical_entry=False)
 
 
@@ -5599,6 +5617,35 @@ def favicon_ico():
 @app.route('/robots.txt')
 def robots_txt():
     return send_from_directory(app.static_folder, 'robots.txt', mimetype='text/plain')
+
+
+@app.route('/sitemap.xml')
+def sitemap_xml():
+    """Public sitemap of canonical marketing URLs only."""
+    paths = (
+        '/',
+        '/he',
+        '/en',
+        '/medical',
+        '/about',
+        '/products',
+        '/blog',
+        '/accuracy',
+        '/contact',
+        '/legal',
+    )
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for path in paths:
+        loc = QS_CANONICAL_ORIGIN + ('/' if path == '/' else path)
+        lines.append('  <url>')
+        lines.append(f'    <loc>{loc}</loc>')
+        lines.append('  </url>')
+    lines.append('</urlset>')
+    xml = '\n'.join(lines) + '\n'
+    return Response(xml, mimetype='application/xml; charset=utf-8')
 
 
 @app.route('/about')

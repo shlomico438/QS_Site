@@ -49,19 +49,26 @@
     {% if is_medical_head %}
     <meta name="description" content="הפיכת הקלטות מפגש רפואי לטקסט מדוייק וסיכומי ביקור מותאמים אישית בשניות. חסכו זמן יקר בתיעוד הרפואי.">
     <meta property="og:type" content="website">
-    <meta property="og:url" content="{{ request.url_root.rstrip('/') }}/medical">
+    <meta property="og:url" content="{{ qs_canonical_url }}">
     <meta property="og:title" content="QuickScribe Medical | תיעוד רפואי חכם">
     <meta property="og:description" content="מערכת תמלול וסיכום ביקורים רפואיים המותאמת במיוחד לרופאים. העלו הקלטה וקבלו סיכום מדויק קלינית תוך שניות.">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:url" content="{{ request.url_root.rstrip('/') }}/medical">
+    <meta name="twitter:url" content="{{ qs_canonical_url }}">
     <meta name="twitter:title" content="QuickScribe Medical | תיעוד רפואי חכם">
     <meta name="twitter:description" content="תמלול וסיכום ביקורים רפואיים בשניות. מותאם במיוחד לרופאים וצוותים רפואיים.">
     {% else %}
     <meta name="description" content="{% block page_description %}QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.{% endblock %}">
     {% endif %}
-    <link rel="alternate" hreflang="he" href="https://www.getquickscribe.com/he">
-    <link rel="alternate" hreflang="en" href="https://www.getquickscribe.com/en">
-    <link rel="alternate" hreflang="x-default" href="https://www.getquickscribe.com/he">
+    <link rel="canonical" href="{{ qs_canonical_url }}">
+    {% if qs_is_locale_home %}
+    <link rel="alternate" hreflang="he" href="{{ qs_canonical_origin }}/he">
+    <link rel="alternate" hreflang="en" href="{{ qs_canonical_origin }}/en">
+    <link rel="alternate" hreflang="x-default" href="{{ qs_canonical_origin }}/he">
+    {% else %}
+    <link rel="alternate" hreflang="he" href="{{ qs_canonical_url }}">
+    <link rel="alternate" hreflang="en" href="{{ qs_canonical_url }}">
+    <link rel="alternate" hreflang="x-default" href="{{ qs_canonical_url }}">
+    {% endif %}
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ static_asset_version }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}?v={{ static_asset_version }}">
