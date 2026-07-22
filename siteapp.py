@@ -264,15 +264,18 @@ def _doctor_prompt_training_config():
 # Paragraph breaks in stored text are \\n\\n; single \\n is line wrap within a paragraph (preview splits on any newline).
 TRANSCRIPT_LINE_MAX_CHARS = int(os.environ.get("TRANSCRIPT_LINE_MAX_CHARS", "200"))
 FORMAT_WRAP_SOFT_EXTRA_CHARS = max(0, int(os.environ.get("FORMAT_WRAP_SOFT_EXTRA_CHARS", "120") or 0))
-# Merge short \\n\\n-separated fragments into one paragraph when each fragment is at most this many chars.
-FORMAT_SHORT_PARA_MERGE_CHARS = max(80, int(os.environ.get("FORMAT_SHORT_PARA_MERGE_CHARS", "120") or 120))
+# Merge short \\n\\n-separated fragments into one paragraph when they look like subtitle cues.
+# Keep this near caption width (~54); a high threshold (e.g. 120) collapses real GPT paragraphs into one blob.
+FORMAT_SHORT_PARA_MERGE_CHARS = max(40, int(os.environ.get("FORMAT_SHORT_PARA_MERGE_CHARS", "54") or 54))
 
 _GPT_TASK1_CLEAN_TRANSCRIPT = (
     "Task 1 – Clean transcript (meetings and clinical encounters)\n\n"
     "* Fix grammar, punctuation, and spelling lightly; keep spoken wording as much as possible.\n"
     "* For Hebrew: correct obvious ASR/STT letter confusions when context supports it "
     "(e.g. ט/ת, ש/ס, ע/א, כ/ק, ח/ה) — such as והטענות not והתענות, טעות not תעות.\n"
-    "* Paragraphs: use a blank line (two newlines: \\n\\n) only when the topic or speaker clearly changes.\n"
+    "* Paragraphs: use a blank line (two newlines: \\n\\n) between paragraphs. For longer transcripts, "
+    "prefer a new paragraph about every 2–5 sentences or whenever the topic/speaker clearly changes. "
+    "Do NOT return the entire transcript as one single paragraph.\n"
     "* Within a paragraph write continuous text; do not insert line breaks for width or arbitrary character counts.\n"
     "* Do NOT summarize, omit, or invent content beyond what the transcript supports.\n\n"
 )
@@ -2892,12 +2895,28 @@ def _xml_esc(text):
             .replace('"', '&quot;'))
 
 
+def _looks_like_caption_fragment(text):
+    """True for subtitle-style cue fragments that should be glued, not kept as DOCX paragraphs."""
+    s = str(text or "").strip()
+    if not s:
+        return False
+    # Short blocks that already look like finished sentences are real paragraphs.
+    if re.search(r'[\.\!\?\u05C3…]["\'”’]?\s*$', s):
+        return False
+    if len(s) <= FORMAT_SHORT_PARA_MERGE_CHARS:
+        return True
+    # Slightly longer mid-cue wraps usually lack sentence-ending punctuation.
+    if len(s) <= 80:
+        return True
+    return False
+
+
 def _merge_caption_lines_into_paragraphs(text):
     """Normalize transcript text before wrap: cue-style newlines and GPT 'micro-paragraphs'.
 
     1) Split on blank lines, collapse single newlines inside each block to spaces.
-    2) Merge *runs* of short blocks (typical ~27-char subtitle cues, or GPT using \\n\\n
-       between every cue line) into one paragraph so DOCX does not stay narrow from line 1.
+    2) Merge *runs* of short caption-like blocks (typical ~27–54 char subtitle cues) into one
+       paragraph so DOCX does not stay narrow from line 1. Real GPT paragraphs are preserved.
     """
     text = str(text or "").strip()
     if not text:
@@ -2911,12 +2930,10 @@ def _merge_caption_lines_into_paragraphs(text):
             collapsed.append(line)
     if not collapsed:
         return ""
-    # GPT often uses \n\n between short cue fragments; merge those runs into one paragraph.
-    short_thresh = min(TRANSCRIPT_LINE_MAX_CHARS, FORMAT_SHORT_PARA_MERGE_CHARS)
     merged = []
     buf = []
     for p in collapsed:
-        if len(p) <= short_thresh:
+        if _looks_like_caption_fragment(p):
             buf.append(p)
         else:
             if buf:
@@ -2926,6 +2943,43 @@ def _merge_caption_lines_into_paragraphs(text):
     if buf:
         merged.append(' '.join(buf))
     return '\n\n'.join(merged)
+
+
+def _ensure_paragraph_breaks(text, min_chars=350):
+    """If text is still one wall of words, insert blank-line paragraphs every few sentences."""
+    text = str(text or "").strip()
+    if not text:
+        return text
+    blocks = []
+    for block in re.split(r'(?:\r?\n\s*){2,}', text):
+        line = re.sub(r'\s*\r?\n\s*', ' ', block)
+        line = re.sub(r' {2,}', ' ', line).strip()
+        if line:
+            blocks.append(line)
+    if len(blocks) >= 2:
+        return '\n\n'.join(blocks)
+    full = blocks[0] if blocks else text
+    if len(full) < min_chars:
+        return full
+    parts = re.split(r'(?<=[\.\!\?\u05C3…])\s+', full)
+    parts = [p.strip() for p in parts if str(p or '').strip()]
+    if len(parts) < 2:
+        return full
+    paragraphs = []
+    cur = ''
+    sent_count = 0
+    for s in parts:
+        nxt = (cur + ' ' + s).strip() if cur else s
+        if cur and (len(nxt) > 700 or sent_count >= 5):
+            paragraphs.append(cur)
+            cur = s
+            sent_count = 1
+        else:
+            cur = nxt
+            sent_count += 1
+    if cur:
+        paragraphs.append(cur)
+    return '\n\n'.join(paragraphs) if paragraphs else full
 
 
 def _wrap_line_max_chars(text, max_chars=None):
@@ -2961,7 +3015,7 @@ def _wrap_line_max_chars(text, max_chars=None):
 
 def _normalize_clean_transcript_storage(text):
     """Paragraphs = blank lines (\\n\\n). Collapse stray single newlines; no character-based line re-wrap."""
-    return _merge_caption_lines_into_paragraphs(text)
+    return _ensure_paragraph_breaks(_merge_caption_lines_into_paragraphs(text))
 
 
 def _docx_body_lines_from_clean_transcript(text):

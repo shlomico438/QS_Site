@@ -6291,10 +6291,11 @@ function buildTranscriptTextForGptFormat() {
             .filter(Boolean);
         if (lines.length) return lines.join('\n');
     }
+    // Prefer cue newlines so GPT can form paragraphs (same as server _segments_to_plain_text).
     const fromSegments = segs
         .map((s) => String((s && s.text) || '').trim())
         .filter(Boolean)
-        .join(' ');
+        .join('\n');
     if (fromSegments.trim()) return fromSegments;
     const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
         ? window.currentFormattedDoc
@@ -9922,6 +9923,32 @@ function wrapTextByMaxChars(text, maxChars) {
     return lines.join('<br>');
 }
 
+function qsSoftParagraphizePlainText(text) {
+    const full = String(text || '').replace(/\s*\r?\n\s*/g, ' ').replace(/ {2,}/g, ' ').trim();
+    if (!full || full.length < 350) return full ? [full] : [];
+    const sentenceSplit = full
+        .split(/(?<=[\.\!\?\u05C3…])\s+/)
+        .map((x) => String(x || '').trim())
+        .filter(Boolean);
+    if (sentenceSplit.length < 2) return [full];
+    const paragraphs = [];
+    let cur = '';
+    let sentCount = 0;
+    for (const s of sentenceSplit) {
+        const next = cur ? (cur + ' ' + s) : s;
+        if (cur && (next.length > 700 || sentCount >= 5)) {
+            paragraphs.push(cur.trim());
+            cur = s;
+            sentCount = 1;
+        } else {
+            cur = next;
+            sentCount += 1;
+        }
+    }
+    if (cur.trim()) paragraphs.push(cur.trim());
+    return paragraphs.length ? paragraphs : [full];
+}
+
 function getDocFormatParagraphs() {
     const fromFmt = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
     const fromSeg = String(buildTranscriptPlainBodyForExport() || '').trim();
@@ -9930,10 +9957,15 @@ function getDocFormatParagraphs() {
     // Match backend DOCX paragraph logic:
     // - Paragraphs split only by blank lines (\n\n)
     // - Single \n inside a paragraph are display wraps and collapse to spaces
-    return clean
+    let paras = clean
         .split(/(?:\r?\n\s*){2,}/)
         .map((block) => String(block || '').replace(/\s*\r?\n\s*/g, ' ').replace(/ {2,}/g, ' ').trim())
         .filter(Boolean);
+    // Safety net: one wall of text → soft paragraphize for document view / Word preview parity
+    if (paras.length <= 1 && String(paras[0] || '').length >= 350) {
+        paras = qsSoftParagraphizePlainText(paras[0] || clean);
+    }
+    return paras;
 }
 
 const PROCESSING_PHASES_HE = [
@@ -10055,6 +10087,36 @@ function qsStartUnifiedProgressPhase(phase) {
     } else if (phase === 'summary') {
         window.__QS_UNIFIED_PROGRESS_TIMER = qsAnimateUnifiedProgress(QS_PIPELINE_SUMMARY_MS, 95, 'summary');
     }
+}
+
+/** Keep filling the current phase; only restart when switching phases. */
+function qsEnsureUnifiedProgressPhase(phase) {
+    if (window.__QS_UNIFIED_PROGRESS_PHASE === phase) {
+        qsShowPipelineBarChrome();
+        qsSetUnifiedProgressPhase(phase, null);
+        if (!window.__QS_UNIFIED_PROGRESS_TIMER) {
+            const bar = qsProgressBarElement();
+            let currentPct = 0;
+            try {
+                currentPct = Math.max(0, Math.min(95, parseFloat((bar && bar.style && bar.style.width) || '0') || 0));
+            } catch (_) {}
+            const duration = phase === 'vocal_separation'
+                ? QS_PIPELINE_VOCAL_MS
+                : (phase === 'summary' ? QS_PIPELINE_SUMMARY_MS : QS_PIPELINE_TRANSCRIBE_MS);
+            const remainingFrac = Math.max(0.08, (95 - currentPct) / 95);
+            const ms = Math.max(1000, Math.round(duration * remainingFrac));
+            const start = Date.now();
+            const startPct = currentPct;
+            window.__QS_UNIFIED_PROGRESS_TIMER = setInterval(() => {
+                if (!window.isTriggering && window.__QS_UNIFIED_PROGRESS_PHASE !== 'warmup') return;
+                const elapsed = Date.now() - start;
+                const pct = Math.min(95, Math.round(startPct + ((95 - startPct) * (elapsed / ms))));
+                qsSetProgressBarPct(pct);
+            }, 400);
+        }
+        return;
+    }
+    qsStartUnifiedProgressPhase(phase);
 }
 
 function qsCompleteVocalSeparationPipelineProgress() {
@@ -16545,11 +16607,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const treatAsMusic = !isMedicalUpload && qsUserTreatAsMusicForUpload();
                         if (treatAsMusic) {
                             qsConfigurePipelineForMusicMode(true);
-                            if (window.__QS_UNIFIED_PROGRESS_PHASE !== 'vocal_separation') {
-                                qsStartUnifiedProgressPhase('vocal_separation');
-                            }
+                            qsEnsureUnifiedProgressPhase('vocal_separation');
                         } else {
-                            qsStartUnifiedProgressPhase('transcribe');
+                            qsEnsureUnifiedProgressPhase('transcribe');
                         }
                         if (mainBtn) qsSetMainBtnDynamicLabel(processingLabel.replace(/\.\.\.?$/, ''));
                         if (statusTxt) {
@@ -16587,8 +16647,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             console.log("✅ SageMaker transcription queued.", triggerData.endpoint || '');
                             if (treatAsMusic) {
                                 qsCompleteVocalSeparationPipelineProgress();
+                                qsStartUnifiedProgressPhase('transcribe');
+                            } else {
+                                qsEnsureUnifiedProgressPhase('transcribe');
                             }
-                            qsStartUnifiedProgressPhase('transcribe');
                         } else if (jobAlreadyHandledBySocket()) {
                             console.log('[trigger] socket already handled job before handshake wait; skipping poll loop');
                         } else {
@@ -16621,9 +16683,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                             console.log('[vocals]', vocalPrepLabel, jobId ? { jobId } : '');
                                         }
                                         qsConfigurePipelineForMusicMode(true);
-                                        if (window.__QS_UNIFIED_PROGRESS_PHASE !== 'vocal_separation') {
-                                            qsStartUnifiedProgressPhase('vocal_separation');
-                                        }
+                                        qsEnsureUnifiedProgressPhase('vocal_separation');
                                     } else if (isAudioPreprocessingStatus(ts)) {
                                         if (!audioPrepLogged) {
                                             audioPrepLogged = true;
@@ -16631,15 +16691,16 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                         }
                                         // Loudnorm is not vocal separation — keep the normal transcribe phase.
                                         qsConfigurePipelineForMusicMode(false);
-                                        if (window.__QS_UNIFIED_PROGRESS_PHASE !== 'transcribe') {
-                                            qsStartUnifiedProgressPhase('transcribe');
-                                        }
+                                        qsEnsureUnifiedProgressPhase('transcribe');
                                     }
                                     if (ts.status === 'triggered') {
                                         if (treatAsMusic || vocalSepLogged) {
                                             qsCompleteVocalSeparationPipelineProgress();
+                                            qsStartUnifiedProgressPhase('transcribe');
+                                        } else {
+                                            // Already been in "transcribe" through preprocess/handshake — don't restart the bar.
+                                            qsEnsureUnifiedProgressPhase('transcribe');
                                         }
-                                        qsStartUnifiedProgressPhase('transcribe');
                                     }
                                 } catch (_) {
                                     httpBadStreak++;
