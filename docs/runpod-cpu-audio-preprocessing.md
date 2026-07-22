@@ -31,13 +31,20 @@ post `/api/audio_preprocess_callback`.
 The CPU worker downloads the original through a presigned URL and runs:
 
 ```text
-ffmpeg -y -i INPUT_FILE -ar 16000 -ac 1 -af loudnorm OUTPUT_FILE.wav
+ffmpeg -y -i INPUT_FILE -vn -ar 16000 -ac 1 -af loudnorm OUTPUT_FILE.wav
 ```
+
+(`-vn` skips unused video streams so video uploads preprocess faster; audio-only
+files are unchanged.)
 
 This produces a loudness-normalized, mono, 16 kHz PCM WAV. Arguments are
 passed directly to `subprocess.run` without a shell, so paths containing
 spaces are safe. ffprobe logs input duration when available. ffmpeg start,
 end, elapsed time, and stderr on failure are logged by the CPU worker.
+
+Most of the wall-clock wait for this step is usually **RunPod CPU cold start
++ S3 download/upload**, not the loudnorm filter itself. The Site UI must not
+show vocal-separation ("הפרדת קול") for this path — only for music jobs.
 
 ## Handoff and cleanup
 

@@ -9752,6 +9752,42 @@ function hasStandardFormattedSummary() {
     return false;
 }
 
+/** Merge formatted from a late gpu_callback / persist socket so a racing second update is not dropped. */
+function qsApplyIncomingFormattedFromPayload(rawResult, reason) {
+    const incomingFmt = extractFormattedFromJobPayload(rawResult);
+    if (!incomingFmt || typeof incomingFmt !== 'object') return false;
+    const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : {};
+    window.currentFormattedDoc = normalizeFormattedFields({ ...prev, ...incomingFmt });
+    window._qsDocPreferSegmentsAfterEdit = false;
+    if (String(window.currentFormattedDoc.clean_transcript || '').trim()) {
+        window._qsCleanupDone = true;
+    }
+    try {
+        console.info('[qs] applied formatted from late job payload', {
+            reason: reason || 'duplicate',
+            has_overview: !!String(window.currentFormattedDoc.overview || '').trim(),
+            clean_len: String(window.currentFormattedDoc.clean_transcript || '').trim().length,
+        });
+    } catch (_) {}
+    return hasStandardFormattedSummary() || !!String(window.currentFormattedDoc.clean_transcript || '').trim();
+}
+
+function qsRenderSummaryIfAvailable(reason) {
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+            return;
+        }
+        if (hasStandardFormattedSummary()) {
+            setFormatViewMode('summary');
+            renderStandardSummaryView();
+            qsEnsureTranscriptToolbarVisible(reason || 'formatted_from_late_payload', { force: true });
+        }
+    } catch (_) {}
+}
+
 function syncStandardFormatTabs() {
     const summaryBtn = document.getElementById('format-mode-summary');
     const switchWrap = document.getElementById('format-mode-switch');
@@ -13667,6 +13703,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (jobId && window._lastProcessedJobId === jobId) {
+            // Second socket often carries server-side `formatted` after S3 persist.
+            // Never drop it just because transcript UI already rendered.
+            if (qsApplyIncomingFormattedFromPayload(rawResult, 'duplicate_socket')) {
+                const jid = jobId;
+                if (jid) window._qsSummaryGptDoneJobId = jid;
+                qsRenderSummaryIfAvailable('handleJobUpdate_duplicate_with_formatted');
+            }
             const haveUi = qsHasTranscriptResult();
             const haveSummary = qsJobSummaryAlreadyDone(jobId);
             if (haveUi && haveSummary) {
@@ -13687,7 +13730,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (jobId && window._handleJobUpdateInFlight === jobId) {
             const persisted = !!(rawResult && rawResult.transcript_persisted);
-            if (!persisted && !incomingSegs.length) return;
+            // Stash server formatted while the first handler is still in client GPT.
+            if (qsApplyIncomingFormattedFromPayload(rawResult, 'in_flight_persist')) {
+                window._qsPendingFormattedFromPersist = true;
+                if (jobId) window._qsSummaryGptDoneJobId = jobId;
+            }
+            if (!persisted && !incomingSegs.length && !window._qsPendingFormattedFromPersist) return;
             let spins = 0;
             while (window._handleJobUpdateInFlight === jobId && spins < 120) {
                 await new Promise((r) => setTimeout(r, 500));
@@ -13695,6 +13743,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (window._handleJobUpdateInFlight === jobId) return;
             if (window._lastProcessedJobId === jobId) {
+                if (qsApplyIncomingFormattedFromPayload(rawResult, 'after_in_flight_wait')) {
+                    qsRenderSummaryIfAvailable('handleJobUpdate_after_wait_with_formatted');
+                }
                 qsEnsureTranscriptToolbarVisible('handleJobUpdate_duplicate_after_wait', { force: true });
                 try {
                     if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) && isSummaryViewEnabled()) {
@@ -14014,9 +14065,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Unified GPT after transcription: summary + grammar (doc + subtitles) in one request.
         const runPostTranscriptionFormatting = async () => {
+            // Persist socket may have already delivered server-side formatted while we waited.
+            if (hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) {
+                window._qsPendingFormattedFromPersist = false;
+                if (jobId) {
+                    window._qsSummaryGptDoneJobId = jobId;
+                    window._lastProcessedJobId = jobId;
+                }
+                try {
+                    if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) && hasStandardFormattedSummary()) {
+                        setFormatViewMode('summary');
+                        renderStandardSummaryView();
+                    }
+                } catch (_) {}
+                console.info('[GPT] format_transcript_summary skip (already have formatted from persist)');
+                return true;
+            }
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return false;
-            const jobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || undefined;
+            const gptJobId = localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || jobId || undefined;
             const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
             try {
                 console.info('[GPT] format_transcript_summary start', {
@@ -14025,8 +14092,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     mode: medFmt ? 'unified' : 'unified_with_segments',
                     segment_count: (window.currentSegments || []).length,
                 });
-                const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', jobId);
-                if (!ok || !fmt || typeof fmt !== 'object') return false;
+                const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', gptJobId);
+                if (!ok || !fmt || typeof fmt !== 'object') {
+                    // Client GPT failed/aborted — try S3 JSON written by server-side gpu_callback format.
+                    try {
+                        if (typeof hydrateFormattedFromSavedTranscript === 'function') {
+                            const hydrated = await hydrateFormattedFromSavedTranscript({ forExport: true });
+                            if (hydrated && hasStandardFormattedSummary()) {
+                                console.info('[GPT] recovered formatted from S3 after client format failure');
+                                if (jobId) {
+                                    window._qsSummaryGptDoneJobId = jobId;
+                                    window._lastProcessedJobId = jobId;
+                                }
+                                qsRenderSummaryIfAvailable('gpt_client_fail_hydrate_s3');
+                                return true;
+                            }
+                        }
+                    } catch (_) {}
+                    return false;
+                }
                 let safeFmt = fmt;
                 if (medFmt && _medicalFormatLooksHallucinated(fullText, fmt)) {
                     console.warn('[medical] format guardrail: rejecting hallucinated summary for short transcript');
@@ -14068,12 +14152,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 return true;
             } catch (e) {
                 console.warn('[GPT] format_transcript_summary failed, export will fallback:', e);
+                try {
+                    if (typeof hydrateFormattedFromSavedTranscript === 'function') {
+                        const hydrated = await hydrateFormattedFromSavedTranscript({ forExport: true });
+                        if (hydrated && hasStandardFormattedSummary()) {
+                            console.info('[GPT] recovered formatted from S3 after exception');
+                            qsRenderSummaryIfAvailable('gpt_exception_hydrate_s3');
+                            return true;
+                        }
+                    }
+                } catch (_) {}
                 return false;
             }
         };
 
         if (!summaryAlreadyDone) {
-            await runPostTranscriptionFormatting();
+            const fmtOk = await runPostTranscriptionFormatting();
+            if (!fmtOk && hasStandardFormattedSummary()) {
+                qsRenderSummaryIfAvailable('post_gpt_had_persisted_formatted');
+            }
         } else if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
             setFormatViewMode('summary');
             renderStandardSummaryView();
@@ -16389,7 +16486,25 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         let ts = skipRunpodHandshake ? { status: 'triggered' } : { status: '' };
                         let httpBadStreak = 0;
                         let vocalSepLogged = false;
-                        const prepLabel = isHebrewUi ? 'מפריד קול מהמוזיקה...' : 'Separating vocals from music...';
+                        let audioPrepLogged = false;
+                        const vocalPrepLabel = isHebrewUi ? 'מפריד קול מהמוזיקה...' : 'Separating vocals from music...';
+                        const audioPrepLabel = isHebrewUi ? 'מכין אודיו...' : 'Preparing audio...';
+                        const triggerQueuedAudioPrep = String(triggerData.audio_preprocessing || '') === 'queued';
+                        const isVocalPreprocessingStatus = (s) => {
+                            if (!s || s.status !== 'preprocessing') return false;
+                            const reason = String(s.pending_reason || s.preprocess || '').toLowerCase();
+                            if (reason === 'audio_preprocessing' || reason === 'audio_loudnorm') return false;
+                            if (reason === 'vocal_separation') return true;
+                            // Legacy: only treat as vocals when music mode was requested.
+                            return !!treatAsMusic;
+                        };
+                        const isAudioPreprocessingStatus = (s) => {
+                            if (!s || s.status !== 'preprocessing') return false;
+                            const reason = String(s.pending_reason || s.preprocess || '').toLowerCase();
+                            return reason === 'audio_preprocessing'
+                                || reason === 'audio_loudnorm'
+                                || (!!triggerQueuedAudioPrep && !treatAsMusic);
+                        };
                         // If socket delivers completion before /api/trigger_status shows "triggered", handleJobUpdate
                         // sets _lastProcessedJobId — don't block here or restart fake progress on top of GPT.
                         const jobAlreadyHandledBySocket = () => (jobId && window._lastProcessedJobId === jobId);
@@ -16425,14 +16540,24 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     }
                                     httpBadStreak = 0;
                                     ts = await stRes.json();
-                                    if (ts.status === 'preprocessing') {
+                                    if (isVocalPreprocessingStatus(ts)) {
                                         if (!vocalSepLogged) {
                                             vocalSepLogged = true;
-                                            console.log('[vocals]', prepLabel, jobId ? { jobId } : '');
+                                            console.log('[vocals]', vocalPrepLabel, jobId ? { jobId } : '');
                                         }
                                         qsConfigurePipelineForMusicMode(true);
                                         if (window.__QS_UNIFIED_PROGRESS_PHASE !== 'vocal_separation') {
                                             qsStartUnifiedProgressPhase('vocal_separation');
+                                        }
+                                    } else if (isAudioPreprocessingStatus(ts)) {
+                                        if (!audioPrepLogged) {
+                                            audioPrepLogged = true;
+                                            console.log('[audio-preprocess]', audioPrepLabel, jobId ? { jobId } : '');
+                                        }
+                                        // Loudnorm is not vocal separation — keep the normal transcribe phase.
+                                        qsConfigurePipelineForMusicMode(false);
+                                        if (window.__QS_UNIFIED_PROGRESS_PHASE !== 'transcribe') {
+                                            qsStartUnifiedProgressPhase('transcribe');
                                         }
                                     }
                                     if (ts.status === 'triggered') {

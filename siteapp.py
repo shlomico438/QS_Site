@@ -11064,13 +11064,42 @@ def trigger_status():
             status = "stale_queued"
     elif status == "preprocessing":
         vs = _get_vocal_separation_meta_from_db(job_id)
-        at = vs.get('dispatched_at') or persisted_at or pending_trigger_at.get(job_id, 0)
+        ap = _get_audio_preprocess_meta_from_db(job_id)
+        at = (
+            vs.get('dispatched_at')
+            or ap.get('dispatched_at')
+            or persisted_at
+            or pending_trigger_at.get(job_id, 0)
+        )
         preprocessing_since_sec = int(time.time() - at) if at else 0
     out = {"job_id": job_id, "status": status}
     if status in ("queued", "stale_queued") and queued_since_sec is not None:
         out["queued_since_sec"] = queued_since_sec
     if status == "preprocessing" and preprocessing_since_sec is not None:
         out["preprocessing_since_sec"] = preprocessing_since_sec
+    # Distinguish music vocal-separation from Tier-1 loudnorm so the UI never
+    # shows "הפרדת קול" for speech audio_preprocess jobs.
+    if status == "preprocessing":
+        pinfo = pending_job_info.get(job_id) or {}
+        handoff = _get_worker_handoff(job_id) if job_id else {}
+        reason = (
+            handoff.get("worker_pending_reason")
+            or pinfo.get("preprocess")
+            or ""
+        )
+        reason = str(reason).strip().lower()
+        if reason in ("vocal_separation",):
+            out["pending_reason"] = "vocal_separation"
+            out["preprocess"] = "vocal_separation"
+        elif reason in ("audio_preprocessing", "audio_loudnorm"):
+            out["pending_reason"] = "audio_preprocessing"
+            out["preprocess"] = "audio_loudnorm"
+        elif _get_vocal_separation_meta_from_db(job_id).get("status") == "processing":
+            out["pending_reason"] = "vocal_separation"
+            out["preprocess"] = "vocal_separation"
+        elif _get_audio_preprocess_meta_from_db(job_id).get("status") == "processing":
+            out["pending_reason"] = "audio_preprocessing"
+            out["preprocess"] = "audio_loudnorm"
     return jsonify(out), 200
 
 @app.route('/api/trigger_processing', methods=['POST'])
