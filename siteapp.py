@@ -1939,7 +1939,7 @@ def _worker_upload_status_response(job_id):
         upload_done = True
     pinfo = dict(pending_job_info.get(job_id) or {})
     input_key = str(pinfo.get('input_s3_key') or '')
-    is_medical_job = bool(pinfo.get('is_medical')) or ('/raw-audio/' in input_key)
+    is_medical_job = bool(pinfo.get('is_medical')) or _is_medical_s3_key(input_key)
     handoff = _get_worker_handoff(job_id)
 
     # SageMaker medical: no RunPod handoff — once upload is done, status must be "complete" immediately.
@@ -2808,6 +2808,17 @@ def _kms_key_arn():
     return (os.environ.get('KMS_ARN_ENV') or os.environ.get('MEDICAL_KMS_KEY_ARN') or '').strip()
 
 
+def _is_medical_s3_key(s3_key):
+    """True for HIPAA medical object keys (new top-level prefixes or legacy nested paths)."""
+    k = str(s3_key or '').strip()
+    if not k:
+        return False
+    if k.startswith(('raw-audio/', 'transcripts/', 'summaries/', 'medical/')):
+        return True
+    # Legacy: users/{id}/raw-audio|summaries|transcripts/...
+    return ('/raw-audio/' in k) or ('/summaries/' in k) or ('/transcripts/' in k)
+
+
 def _require_medical_kms_or_raise(is_medical):
     if SIMULATION_MODE:
         return 'simulated-kms-key'
@@ -2820,25 +2831,37 @@ def _require_medical_kms_or_raise(is_medical):
 
 
 def _resolve_storage_profile(user_id, input_s3_key=None, is_medical=None):
-    inferred_medical = False
     key = str(input_s3_key or '').strip()
     if is_medical is None:
-        inferred_medical = ('/raw-audio/' in key) or ('/summaries/' in key) or key.startswith('medical/')
+        inferred_medical = _is_medical_s3_key(key)
     else:
         inferred_medical = bool(is_medical)
     safe_user = str(user_id or 'anonymous').strip() or 'anonymous'
+    if inferred_medical:
+        # HIPAA layout (top-level prefixes for lifecycle rules on raw-audio/ only):
+        #   raw-audio/users/{id}/recording.webm
+        #   transcripts/users/{id}/....json
+        #   summaries/users/{id}/....json
+        return {
+            "is_medical": True,
+            "bucket": MEDICAL_S3_BUCKET,
+            "input_prefix": f"raw-audio/users/{safe_user}",
+            "transcript_prefix": f"transcripts/users/{safe_user}",
+            "output_prefix": f"summaries/users/{safe_user}",
+        }
     return {
-        "is_medical": inferred_medical,
-        "bucket": MEDICAL_S3_BUCKET if inferred_medical else _standard_s3_bucket_name(),
-        "input_prefix": f"users/{safe_user}/raw-audio" if inferred_medical else f"users/{safe_user}/input",
-        "output_prefix": f"users/{safe_user}/summaries" if inferred_medical else f"users/{safe_user}/output",
+        "is_medical": False,
+        "bucket": _standard_s3_bucket_name(),
+        "input_prefix": f"users/{safe_user}/input",
+        "transcript_prefix": f"users/{safe_user}/output",
+        "output_prefix": f"users/{safe_user}/output",
     }
 
 
 def _presign_bucket_for_key(user_id, s3_key, data=None):
-    """S3 bucket for presigned GET/HEAD: HIPAA paths (raw-audio, summaries, medical/) or explicit isMedical."""
+    """S3 bucket for presigned GET/HEAD: HIPAA paths or explicit isMedical."""
     key = str(s3_key or '').strip()
-    path_medical = ('/raw-audio/' in key) or ('/summaries/' in key) or key.startswith('medical/')
+    path_medical = _is_medical_s3_key(key)
     explicit = _request_json_is_medical(data) if isinstance(data, dict) else False
     medical = path_medical or explicit
     prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=medical)
@@ -2847,8 +2870,7 @@ def _presign_bucket_for_key(user_id, s3_key, data=None):
 
 def _s3_key_needs_same_origin_stream(s3_key):
     """HIPAA buckets often omit CORS; <video crossorigin> and fetch() to S3 then fail — stream via the app instead."""
-    k = str(s3_key or '').strip()
-    return ('/raw-audio/' in k) or ('/summaries/' in k) or k.startswith('medical/')
+    return _is_medical_s3_key(s3_key)
 
 
 def _media_stream_token_serializer():
@@ -3555,19 +3577,53 @@ def api_s3_exists():
 
 
 def _derive_output_key_base(user_id, input_s3_key, is_medical=None):
-    """Base path (without suffix) for storing transcript JSON derived from input_s3_key."""
+    """Base path (without .json) for canonical transcript JSON derived from input_s3_key.
+
+    Medical (new): raw-audio/users/{id}/file.webm -> transcripts/users/{id}/file
+    Medical (legacy): users/{id}/raw-audio/file.webm -> users/{id}/summaries/file
+    Standard: users/{id}/input/file -> users/{id}/output/file
+    """
     profile = _resolve_storage_profile(user_id, input_s3_key=input_s3_key, is_medical=is_medical)
-    output_prefix = profile["output_prefix"]
-    if not input_s3_key:
-        base_name = 'output'
-        return f"{output_prefix}/{base_name}"
-    if '/input/' in input_s3_key:
-        return input_s3_key.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
-    if '/raw-audio/' in input_s3_key:
-        return input_s3_key.replace('/raw-audio/', '/summaries/', 1).rsplit('.', 1)[0]
-    # Fallback: derive from filename
-    base_name = input_s3_key.rsplit('/', 1)[-1].rsplit('.', 1)[0] or 'output'
+    output_prefix = profile.get("transcript_prefix") or profile["output_prefix"]
+    key = str(input_s3_key or '').strip()
+    if not key:
+        return f"{output_prefix}/output"
+    if key.startswith('raw-audio/'):
+        return ('transcripts/' + key[len('raw-audio/'):]).rsplit('.', 1)[0]
+    if key.startswith('transcripts/'):
+        return key.rsplit('.', 1)[0]
+    if key.startswith('summaries/'):
+        return ('transcripts/' + key[len('summaries/'):]).rsplit('.', 1)[0]
+    if '/input/' in key:
+        return key.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
+    # Legacy medical: users/{id}/raw-audio/... -> users/{id}/summaries/...
+    if '/raw-audio/' in key and not key.startswith('raw-audio/'):
+        return key.replace('/raw-audio/', '/summaries/', 1).rsplit('.', 1)[0]
+    if '/summaries/' in key and not key.startswith('summaries/'):
+        return key.rsplit('.', 1)[0]
+    base_name = key.rsplit('/', 1)[-1].rsplit('.', 1)[0] or 'output'
     return f"{output_prefix}/{base_name}"
+
+
+def _derive_summary_key_base(user_id, input_s3_key, is_medical=None):
+    """Base path for medical GPT summary JSON (summaries/...). Standard jobs reuse transcript key."""
+    profile = _resolve_storage_profile(user_id, input_s3_key=input_s3_key, is_medical=is_medical)
+    if not profile.get('is_medical'):
+        return _derive_output_key_base(user_id, input_s3_key, is_medical=False)
+    key = str(input_s3_key or '').strip()
+    if key.startswith('raw-audio/'):
+        return ('summaries/' + key[len('raw-audio/'):]).rsplit('.', 1)[0]
+    if key.startswith('transcripts/'):
+        return ('summaries/' + key[len('transcripts/'):]).rsplit('.', 1)[0]
+    if key.startswith('summaries/'):
+        return key.rsplit('.', 1)[0]
+    # Legacy nested medical path
+    if '/raw-audio/' in key:
+        return key.replace('/raw-audio/', '/summaries/', 1).rsplit('.', 1)[0]
+    if '/summaries/' in key:
+        return key.rsplit('.', 1)[0]
+    stem = key.rsplit('/', 1)[-1].rsplit('.', 1)[0] or 'summary'
+    return f"{profile['output_prefix']}/{stem}"
 
 
 def _put_segments_json_to_s3(user_id, input_s3_key, segments, stage='gpt'):
@@ -3697,6 +3753,11 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
       - segments: legacy list[{start,end,text,...}]
       - words: flat list[{id,text,start,end}]
       - captions: list[{id,wordStartIndex,wordEndIndex}]
+      - formatted: GPT summary block
+
+    Medical keys:
+      - canonical result -> transcripts/users/{id}/{stem}.json
+      - GPT summary mirror -> summaries/users/{id}/{stem}.json (when formatted present)
     """
     if transcript is None or not isinstance(transcript, dict):
         raise ValueError("transcript must be an object")
@@ -3719,7 +3780,37 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
         if kms_arn:
             put_kw['ServerSideEncryption'] = 'aws:kms'
             put_kw['SSEKMSKeyId'] = kms_arn
+    else:
+        kms_arn = ''
     s3_client.put_object(**put_kw)
+
+    # Medical: also persist GPT summary under summaries/ for the HIPAA layout.
+    if profile["is_medical"] and isinstance(transcript.get('formatted'), dict):
+        try:
+            summary_base = _derive_summary_key_base(user_id, input_s3_key, is_medical=True)
+            summary_key = summary_base + '.json'
+            if summary_key != result_s3_key:
+                summary_body = json.dumps(
+                    {"formatted": transcript.get('formatted')},
+                    ensure_ascii=False,
+                ).encode('utf-8')
+                summary_kw = {
+                    'Bucket': profile["bucket"],
+                    'Key': summary_key,
+                    'Body': summary_body,
+                    'ContentType': 'application/json',
+                }
+                if kms_arn:
+                    summary_kw['ServerSideEncryption'] = 'aws:kms'
+                    summary_kw['SSEKMSKeyId'] = kms_arn
+                s3_client.put_object(**summary_kw)
+        except Exception as sum_err:
+            logging.warning(
+                "_put_transcript_json_to_s3: summary mirror failed input=%s: %s",
+                str(input_s3_key or '')[-80:],
+                sum_err,
+            )
+
     # Legacy debug cleanup: remove sidecar pre-align artifact if it exists.
     # Canonical transcript storage is a single key: <base>.json.
     legacy_pre_align_key = base + '.pre_align.json'
@@ -3742,24 +3833,39 @@ def _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt', is_medical=
     base = _derive_output_key_base(user_id, input_s3_key, is_medical=profile["is_medical"])
     # Keep a single canonical transcript object key.
     # `stage` is accepted for backward compatibility, but ignored.
-    key = base + '.json'
+    keys_to_try = [base + '.json']
+    # Legacy medical nested path if new transcripts/ key misses.
+    if profile["is_medical"]:
+        legacy = str(input_s3_key or '')
+        if legacy.startswith('raw-audio/'):
+            pass
+        elif '/raw-audio/' in legacy:
+            keys_to_try.append(legacy.replace('/raw-audio/', '/summaries/', 1).rsplit('.', 1)[0] + '.json')
+        summary_base = _derive_summary_key_base(user_id, input_s3_key, is_medical=True)
+        summary_key = summary_base + '.json'
+        if summary_key not in keys_to_try:
+            keys_to_try.append(summary_key)
     try:
         s3_client = _s3_boto_client(bucket=bucket)
-        resp = s3_client.get_object(Bucket=bucket, Key=key)
-        raw = resp['Body'].read().decode('utf-8')
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else None
-    except ClientError as e:
-        code = (e.response or {}).get('Error', {}).get('Code', '')
-        if code in ('NoSuchKey', '404'):
-            return None
-        logging.warning("_get_transcript_json_from_s3 ClientError %s key=%s", code, key)
+        for key in keys_to_try:
+            try:
+                resp = s3_client.get_object(Bucket=bucket, Key=key)
+                raw = resp['Body'].read().decode('utf-8')
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    return data
+            except ClientError as e:
+                code = (e.response or {}).get('Error', {}).get('Code', '')
+                if code in ('NoSuchKey', '404'):
+                    continue
+                logging.warning("_get_transcript_json_from_s3 ClientError %s key=%s", code, key)
+                return None
         return None
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        logging.warning("_get_transcript_json_from_s3 decode error key=%s: %s", key, e)
+        logging.warning("_get_transcript_json_from_s3 decode error: %s", e)
         return None
     except Exception as e:
-        logging.warning("_get_transcript_json_from_s3 failed key=%s: %s", key, e)
+        logging.warning("_get_transcript_json_from_s3 failed: %s", e)
         return None
 
 
@@ -3790,7 +3896,7 @@ def _existing_formatted_norm_for_merge(user_id, input_s3_key):
         return None
     key_s = str(input_s3_key)
     try:
-        is_med = ('/raw-audio/' in key_s) or ('/summaries/' in key_s) or key_s.startswith('medical/')
+        is_med = _is_medical_s3_key(key_s)
         existing = _get_transcript_json_from_s3(user_id, input_s3_key, stage='gpt', is_medical=is_med)
         if not isinstance(existing, dict):
             return None
@@ -3831,7 +3937,7 @@ def save_job_result():
         if stage == 'raw':
             stage = 'gpt'
         key_s = str(input_s3_key or '')
-        is_medical = bool(data.get('isMedical')) or ('/raw-audio/' in key_s) or ('/summaries/' in key_s) or key_s.startswith('medical/')
+        is_medical = bool(data.get('isMedical')) or _is_medical_s3_key(key_s)
         if not user_id or not input_s3_key:
             return jsonify({"error": "userId and input_s3_key (or s3Key) required"}), 400
         _require_medical_kms_or_raise(is_medical)
@@ -4593,7 +4699,7 @@ def _job_is_medical_for_credits(input_s3_key, pending_info=None):
     if isinstance(pending_info, dict) and pending_info.get('is_medical'):
         return True
     sk = str(input_s3_key or '')
-    return '/raw-audio/' in sk or '/summaries/' in sk or sk.startswith('medical/')
+    return _is_medical_s3_key(sk)
 
 
 def _credit_minutes_from_duration(duration_sec):
@@ -8163,7 +8269,7 @@ def api_format_transcript_summary():
     is_medical = _request_json_is_medical(data)
     if not is_medical:
         sk = str(data.get('input_s3_key') or data.get('inputS3Key') or data.get('s3Key') or '').strip()
-        if '/raw-audio/' in sk or '/summaries/' in sk or sk.startswith('medical/'):
+        if _is_medical_s3_key(sk):
             is_medical = True
     req_job_id = (data.get('jobId') or data.get('job_id') or '').strip() or None
     req_user_id = (data.get('userId') or data.get('user_id') or '').strip() or None
@@ -9003,11 +9109,7 @@ def api_export_docx():
 def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base, pending_info=None):
     """S3 persist, DB timings, email — runs after HTTP 200 ack so the worker is not blocked."""
     result_s3_key = None
-    is_medical_job = bool(
-        ('/raw-audio/' in str(input_s3_key or ''))
-        or ('/summaries/' in str(input_s3_key or ''))
-        or str(input_s3_key or '').startswith('medical/')
-    )
+    is_medical_job = _is_medical_s3_key(input_s3_key)
     server_gpt_sec = None
     try:
         if input_s3_key:
@@ -9155,11 +9257,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             notify = _get_job_notification_info(job_id, user_id=user_id)
             to_email = (notify.get("user_email") or "").strip()
             open_job_id = (notify.get("job_id") or job_id)
-            is_medical_job = bool(
-                ('/raw-audio/' in str(input_s3_key or ''))
-                or ('/summaries/' in str(input_s3_key or ''))
-                or str(input_s3_key or '').startswith('medical/')
-            )
+            is_medical_job = _is_medical_s3_key(input_s3_key)
             if to_email and open_job_id:
                 from urllib.parse import quote
                 if is_medical_job:
@@ -9289,12 +9387,7 @@ def gpu_callback():
     _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=pending)
 
     # Tell the browser not to start a second GPT pass — server will format in background.
-    is_medical_job = bool(
-        ('/raw-audio/' in str(input_s3_key or ''))
-        or ('/summaries/' in str(input_s3_key or ''))
-        or str(input_s3_key or '').startswith('medical/')
-        or bool(pending and pending.get('is_medical'))
-    )
+    is_medical_job = _is_medical_s3_key(input_s3_key) or bool(pending and pending.get('is_medical'))
     if (not is_medical_job) and _gpu_callback_server_format_enabled(False):
         data['server_gpt_pending'] = True
         if isinstance(data.get('result'), dict):
@@ -11330,7 +11423,7 @@ def trigger_processing():
             data = {}
         transcription_options = _site_transcription_options_from_payload(data)
         s3_key = data.get('s3Key')
-        is_medical = bool(data.get('isMedical')) or ('/raw-audio/' in str(s3_key or ''))
+        is_medical = bool(data.get('isMedical')) or _is_medical_s3_key(s3_key)
         storage_profile = _resolve_storage_profile((data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key)), input_s3_key=s3_key, is_medical=is_medical)
         target_bucket = str(data.get('bucket') or storage_profile.get('bucket') or '').strip() or None
         _require_medical_kms_or_raise(is_medical)
@@ -12409,12 +12502,15 @@ def _segments_to_srt_text(segments, max_chars_per_line=None):
 
 
 def _extract_user_id_from_s3_key(s3_key: str):
-    """Best-effort user id extraction from S3 key like users/{user_id}/..."""
+    """Best-effort user id from keys like users/{id}/... or raw-audio/users/{id}/..."""
     try:
-        if s3_key and s3_key.startswith('users/'):
-            parts = s3_key.split('/', 2)
-            if len(parts) >= 2 and parts[1]:
-                return parts[1]
+        parts = [p for p in str(s3_key or '').split('/') if p]
+        if 'users' in parts:
+            i = parts.index('users')
+            if i + 1 < len(parts) and parts[i + 1]:
+                return parts[i + 1]
+        if parts and parts[0] == 'users' and len(parts) >= 2 and parts[1]:
+            return parts[1]
     except Exception:
         return None
     return None

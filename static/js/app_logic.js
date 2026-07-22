@@ -1643,9 +1643,19 @@ async function maybeShowIOSOpenInSafariHintAfterSignIn() {
     }
 }
 
-/** Medical / HIPAA pipeline stores recordings under raw-audio (e.g. audio-only WebM from MediaRecorder). */
+/** Medical / HIPAA: recordings under raw-audio/ (new) or .../raw-audio/... (legacy). */
 function isMedicalLayoutRawAudioKey(s3Key) {
-    return String(s3Key || '').includes('/raw-audio/');
+    const s = String(s3Key || '');
+    return s.startsWith('raw-audio/') || s.includes('/raw-audio/');
+}
+
+function isMedicalLayoutS3Key(s3Key) {
+    const s = String(s3Key || '').trim();
+    if (!s) return false;
+    if (s.startsWith('raw-audio/') || s.startsWith('transcripts/') || s.startsWith('summaries/') || s.startsWith('medical/')) {
+        return true;
+    }
+    return s.includes('/raw-audio/') || s.includes('/summaries/') || s.includes('/transcripts/');
 }
 
 const QS_AUDIO_FILE_EXTENSIONS = /\.(m4a|mp3|wav|aac|ogg|flac|weba|caf)$/i;
@@ -1707,10 +1717,20 @@ function qsMimeForAudioElement(fileOrName, mimeOptional) {
 function deriveTranscriptJsonKeyFromInputS3Key(inputKey) {
     const s = String(inputKey || '').trim();
     if (!s) return '';
+    if (s.startsWith('raw-audio/')) {
+        return (`transcripts/${s.slice('raw-audio/'.length)}`).replace(/\.[^/.]+$/i, '.json');
+    }
+    if (s.startsWith('transcripts/')) {
+        return s.replace(/\.[^/.]+$/i, '.json');
+    }
+    if (s.startsWith('summaries/')) {
+        return (`transcripts/${s.slice('summaries/'.length)}`).replace(/\.[^/.]+$/i, '.json');
+    }
     if (s.includes('/input/')) {
         return s.replace('/input/', '/output/', 1).replace(/\.[^/.]+$/i, '.json');
     }
-    if (s.includes('/raw-audio/')) {
+    // Legacy medical: users/{id}/raw-audio/... -> users/{id}/summaries/...
+    if (s.includes('/raw-audio/') && !s.startsWith('raw-audio/')) {
         return s.replace('/raw-audio/', '/summaries/', 1).replace(/\.[^/.]+$/i, '.json');
     }
     return s.replace(/\.[^/.]+$/i, '.json');
@@ -1957,6 +1977,7 @@ function effectiveIsMedicalForFormatting() {
     const k = currentJobInputS3KeyHint();
     if (!k) return false;
     if (typeof isMedicalLayoutRawAudioKey === 'function' && isMedicalLayoutRawAudioKey(k)) return true;
+    if (typeof isMedicalLayoutS3Key === 'function' && isMedicalLayoutS3Key(k)) return true;
     if (k.includes('/summaries/')) return true;
     if (k.startsWith('medical/')) return true;
     return false;
