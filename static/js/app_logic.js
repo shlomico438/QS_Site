@@ -7331,7 +7331,7 @@ async function qsPersistFormattedDocToS3() {
     }
 }
 
-async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId) {
+async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId, options = {}) {
     const userId = await qsCurrentUserId();
     const payload = {
         ...qsCleanupRequestBase(targetLang, jobId),
@@ -7339,8 +7339,11 @@ async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId) {
         mode: 'summary',
         text: fullText,
     };
+    // Default: one OpenAI call (clean + summary). Segment grammar is a second GPT
+    // path — only include when explicitly requested (export / subtitle polish).
+    const includeSegments = !!(options && options.includeSegments);
     const segs = window.currentSegments || [];
-    if (segs.length && !payload.isMedical) payload.segments = segs;
+    if (includeSegments && segs.length && !payload.isMedical) payload.segments = segs;
     const t0 = performance.now();
     const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
@@ -7359,6 +7362,7 @@ async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId) {
         summary_generation_time: Number.isFinite(summarySec) ? summarySec : undefined,
         ok: !!(res.ok && fmt && !fmt.error),
         unified: true,
+        include_segments: includeSegments,
     });
     return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt };
 }
@@ -9786,6 +9790,46 @@ function qsRenderSummaryIfAvailable(reason) {
             qsEnsureTranscriptToolbarVisible(reason || 'formatted_from_late_payload', { force: true });
         }
     } catch (_) {}
+}
+
+/** Wait for server one-pass GPT (gpu_callback) instead of starting a duplicate client call. */
+async function qsWaitForServerGptFormatted(options = {}) {
+    const timeoutMs = Math.max(5000, Number(options.timeoutMs) || 90000);
+    const pollMs = Math.max(250, Number(options.pollMs) || 1200);
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+        if (hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) return true;
+        if (window._qsServerGptGaveUp) return false;
+        try {
+            if (typeof hydrateFormattedFromSavedTranscript === 'function') {
+                await hydrateFormattedFromSavedTranscript({ forExport: true });
+                if (hasStandardFormattedSummary()) return true;
+            }
+        } catch (_) {}
+        await new Promise((r) => setTimeout(r, pollMs));
+    }
+    return !!(hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist);
+}
+
+function qsNoteServerGptOutcomeFromPayload(rawResult) {
+    if (!rawResult || typeof rawResult !== 'object') return;
+    if (rawResult.server_gpt_failed) {
+        window._qsServerGptGaveUp = true;
+        return;
+    }
+    if (rawResult.server_gpt_pending === false || (rawResult.result && rawResult.result.server_gpt_pending === false)) {
+        const incomingFmt = typeof extractFormattedFromJobPayload === 'function'
+            ? extractFormattedFromJobPayload(rawResult)
+            : null;
+        const hasFmt = !!(incomingFmt && (
+            String(incomingFmt.overview || '').trim()
+            || (Array.isArray(incomingFmt.key_points) && incomingFmt.key_points.length)
+            || (Array.isArray(incomingFmt.action_items) && incomingFmt.action_items.length)
+        ));
+        if (!hasFmt && rawResult.transcript_persisted) {
+            window._qsServerGptGaveUp = true;
+        }
+    }
 }
 
 function syncStandardFormatTabs() {
@@ -13705,6 +13749,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (jobId && window._lastProcessedJobId === jobId) {
             // Second socket often carries server-side `formatted` after S3 persist.
             // Never drop it just because transcript UI already rendered.
+            qsNoteServerGptOutcomeFromPayload(rawResult);
             if (qsApplyIncomingFormattedFromPayload(rawResult, 'duplicate_socket')) {
                 const jid = jobId;
                 if (jid) window._qsSummaryGptDoneJobId = jid;
@@ -13730,6 +13775,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (jobId && window._handleJobUpdateInFlight === jobId) {
             const persisted = !!(rawResult && rawResult.transcript_persisted);
+            qsNoteServerGptOutcomeFromPayload(rawResult);
             // Stash server formatted while the first handler is still in client GPT.
             if (qsApplyIncomingFormattedFromPayload(rawResult, 'in_flight_persist')) {
                 window._qsPendingFormattedFromPersist = true;
@@ -14063,10 +14109,9 @@ document.addEventListener('DOMContentLoaded', () => {
             console.info('[qs-processing-ui] summary_gpt_skip (already done for job)', { jobId });
         }
 
-        // Unified GPT after transcription: summary + grammar (doc + subtitles) in one request.
+        // One GPT pass after transcription: prefer server (gpu_callback); client only as fallback.
         const runPostTranscriptionFormatting = async () => {
-            // Persist socket may have already delivered server-side formatted while we waited.
-            if (hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) {
+            const acceptServerFormatted = () => {
                 window._qsPendingFormattedFromPersist = false;
                 if (jobId) {
                     window._qsSummaryGptDoneJobId = jobId;
@@ -14078,8 +14123,29 @@ document.addEventListener('DOMContentLoaded', () => {
                         renderStandardSummaryView();
                     }
                 } catch (_) {}
-                console.info('[GPT] format_transcript_summary skip (already have formatted from persist)');
                 return true;
+            };
+            // Persist socket may have already delivered server-side formatted while we waited.
+            if (hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) {
+                console.info('[GPT] format_transcript_summary skip (already have formatted from persist)');
+                return acceptServerFormatted();
+            }
+            const serverGptPending = !!(
+                rawResult
+                && (
+                    rawResult.server_gpt_pending
+                    || (rawResult.result && rawResult.result.server_gpt_pending)
+                )
+            );
+            if (serverGptPending) {
+                window._qsServerGptGaveUp = false;
+                console.info('[GPT] waiting for server one-pass format (skip client duplicate)');
+                const got = await qsWaitForServerGptFormatted({ timeoutMs: 90000, pollMs: 1200 });
+                if (got || hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) {
+                    console.info('[GPT] using server one-pass formatted');
+                    return acceptServerFormatted();
+                }
+                console.warn('[GPT] server one-pass wait timed out; falling back to client');
             }
             const fullText = buildTranscriptTextForGptFormat();
             if (!fullText) return false;
@@ -14089,8 +14155,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.info('[GPT] format_transcript_summary start', {
                     chars: fullText.length,
                     medical: medFmt,
-                    mode: medFmt ? 'unified' : 'unified_with_segments',
+                    mode: 'unified_one_pass',
                     segment_count: (window.currentSegments || []).length,
+                    server_fallback: serverGptPending,
                 });
                 const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', gptJobId);
                 if (!ok || !fmt || typeof fmt !== 'object') {

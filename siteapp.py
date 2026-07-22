@@ -8894,8 +8894,26 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             )
             result_dict = dict(data.get('result') or result) if isinstance(result, dict) else {}
             result_dict['result_s3_key'] = result_s3_key
+            result_dict.pop('server_gpt_pending', None)
+            fmt_out = transcript_payload.get('formatted')
+            if isinstance(fmt_out, dict):
+                result_dict['formatted'] = fmt_out
+                data['formatted'] = fmt_out
             data['result'] = result_dict
+            data['server_gpt_pending'] = False
+            data['transcript_persisted'] = True
+            if not isinstance(fmt_out, dict):
+                data['server_gpt_failed'] = True
             job_results_cache[job_id] = data
+            # Deliver formatted ASAP so the client can skip a second GPT pass.
+            try:
+                socketio.emit('job_status_update', data, room=job_id)
+            except Exception as early_emit_err:
+                logging.warning(
+                    "gpu_callback: early formatted emit failed job_id=%s: %s",
+                    job_id,
+                    early_emit_err,
+                )
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
             _schedule_runpod_min_workers(0)
     except Exception as e:
@@ -8980,6 +8998,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         refreshed = _completed_job_payload_from_db(job_id)
         if refreshed:
             refreshed['transcript_persisted'] = True
+            refreshed['server_gpt_pending'] = False
             job_results_cache[job_id] = refreshed
             socketio.emit('job_status_update', refreshed, room=job_id)
             seg_n = len(refreshed.get('segments') or [])
@@ -9079,6 +9098,18 @@ def gpu_callback():
     data['status'] = 'completed'
 
     _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=pending)
+
+    # Tell the browser not to start a second GPT pass — server will format in background.
+    is_medical_job = bool(
+        ('/raw-audio/' in str(input_s3_key or ''))
+        or ('/summaries/' in str(input_s3_key or ''))
+        or str(input_s3_key or '').startswith('medical/')
+        or bool(pending and pending.get('is_medical'))
+    )
+    if (not is_medical_job) and _gpu_callback_server_format_enabled(False):
+        data['server_gpt_pending'] = True
+        if isinstance(data.get('result'), dict):
+            data['result']['server_gpt_pending'] = True
 
     job_results_cache[job_id] = data
     socketio.emit('job_status_update', data, room=job_id)
