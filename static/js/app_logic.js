@@ -6213,7 +6213,9 @@ async function hydrateFormattedFromSavedTranscript(opts) {
             .eq('user_id', user.id)
             .maybeSingle();
         if (!row || !row.result_s3_key) {
-            console.warn('[export] hydrate formatted: jobs.result_s3_key missing');
+            if (!(opts && opts.quiet)) {
+                console.warn('[export] hydrate formatted: jobs.result_s3_key missing');
+            }
             return false;
         }
         const urlRes = await fetch('/api/get_presigned_url', {
@@ -9797,15 +9799,21 @@ async function qsWaitForServerGptFormatted(options = {}) {
     const timeoutMs = Math.max(5000, Number(options.timeoutMs) || 90000);
     const pollMs = Math.max(250, Number(options.pollMs) || 1200);
     const t0 = Date.now();
+    let ticks = 0;
     while (Date.now() - t0 < timeoutMs) {
         if (hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) return true;
         if (window._qsServerGptGaveUp) return false;
-        try {
-            if (typeof hydrateFormattedFromSavedTranscript === 'function') {
-                await hydrateFormattedFromSavedTranscript({ forExport: true });
-                if (hasStandardFormattedSummary()) return true;
-            }
-        } catch (_) {}
+        ticks += 1;
+        // DB result_s3_key is written only after server GPT + S3 persist. Early hydrate
+        // only spams "result_s3_key missing" — wait on socket first, then quiet-poll S3.
+        if (ticks >= 3) {
+            try {
+                if (typeof hydrateFormattedFromSavedTranscript === 'function') {
+                    await hydrateFormattedFromSavedTranscript({ forExport: true, quiet: true });
+                    if (hasStandardFormattedSummary()) return true;
+                }
+            } catch (_) {}
+        }
         await new Promise((r) => setTimeout(r, pollMs));
     }
     return !!(hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist);
@@ -12704,9 +12712,9 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
-                    echoCancellation: { ideal: false },
-                    noiseSuppression: { ideal: false },
-                    autoGainControl: { ideal: false },
+                    echoCancellation: { ideal: true },
+                    noiseSuppression: { ideal: true },
+                    autoGainControl: { ideal: true },
                     channelCount: { ideal: 1 },
                     sampleRate: { ideal: 48000 },
                 }
