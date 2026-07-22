@@ -6497,7 +6497,8 @@ function syncTranscriptCopyButtonUi() {
     const medicalCopyBtn = document.getElementById('medical-copy-btn');
     if (!medicalCopyBtn) return;
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
-    medicalCopyBtn.style.removeProperty('display');
+    const show = !!document.body.classList.contains('has-transcript-actions');
+    medicalCopyBtn.style.display = show ? 'inline-flex' : 'none';
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     const label = T('medical_copy') || 'Copy';
     medicalCopyBtn.setAttribute('aria-label', label);
