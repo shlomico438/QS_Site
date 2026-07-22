@@ -6989,6 +6989,32 @@ async function medicalTrainingLearn(payload) {
     throw new Error('האימון לוקח יותר מדי זמן — נסה שוב');
 }
 
+/** Preview also uses gpt-5.5 and often exceeds the reverse-proxy limit (504). */
+async function medicalTrainingPreview(payload) {
+    const start = await medicalTrainingApi('/api/medical_training/preview', { ...(payload || {}), async: true });
+    const previewJobId = start && start.preview_job_id;
+    if (!previewJobId) {
+        return start;
+    }
+    const pollMs = 2500;
+    const maxPolls = 180;
+    for (let i = 0; i < maxPolls; i++) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        const stRes = await fetch(`/api/medical_training/preview_status?preview_job_id=${encodeURIComponent(previewJobId)}`);
+        const st = await stRes.json().catch(() => ({}));
+        if (st.status === 'done' && st.ok !== false) {
+            return st;
+        }
+        if (st.status === 'error') {
+            throw new Error(st.error || 'התצוגה המקדימה נכשלה');
+        }
+        if (!stRes.ok && stRes.status !== 200) {
+            throw new Error(st.error || `HTTP ${stRes.status}`);
+        }
+    }
+    throw new Error('התצוגה המקדימה לוקחת יותר מדי זמן — נסה שוב');
+}
+
 /** Shared by account-menu toggle and summary CTA (e.g. after drag-drop JSON/WAV). */
 async function activateMedicalTrainingFlow() {
     const medicalTrainingStatus = document.getElementById('user-menu-medical-training-status');
@@ -7196,7 +7222,7 @@ function renderMedicalTrainingPanel(container) {
                     });
                 }
                 window._medicalTrainingMessage = learned.rationale || 'נוצר פרומפט מועמד. מריץ תצוגה מקדימה...';
-                const previewRes = await medicalTrainingApi('/api/medical_training/preview', {
+                const previewRes = await medicalTrainingPreview({
                     transcript,
                     candidate_prompt: window._medicalTrainingCandidatePrompt,
                     target_lang: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he'
@@ -9780,6 +9806,60 @@ function qsApplyIncomingFormattedFromPayload(rawResult, reason) {
         });
     } catch (_) {}
     return hasStandardFormattedSummary() || !!String(window.currentFormattedDoc.clean_transcript || '').trim();
+}
+
+/** Apply server subtitle grammar/ASR fixes onto the on-screen cue/word model. */
+function qsApplyIncomingSubtitleCorrectionsFromPayload(rawResult, reason) {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+    if (!rawResult || typeof rawResult !== 'object') return false;
+    const isPersist = !!(
+        rawResult.transcript_persisted
+        || extractFormattedFromJobPayload(rawResult)
+    );
+    if (!isPersist) return false;
+    const segs = typeof extractSegmentsFromJobPayload === 'function'
+        ? extractSegmentsFromJobPayload(rawResult)
+        : [];
+    if (!Array.isArray(segs) || !segs.length) return false;
+
+    const flatWordSegments = (rawResult.result && rawResult.result.word_segments)
+        || rawResult.word_segments
+        || null;
+    let applied = false;
+    try {
+        const model = (typeof _tryBuildWordModelFromSegmentsAndFlat === 'function')
+            ? _tryBuildWordModelFromSegmentsAndFlat(segs, flatWordSegments)
+            : null;
+        if (model && model.words && model.captions) {
+            window.currentWords = model.words;
+            window.currentCaptions = (typeof reflowCaptionsByMaxChars === 'function')
+                ? reflowCaptionsByMaxChars(window.currentWords, model.captions, 54)
+                : model.captions;
+            window.currentSegments = (typeof _captionsToCues === 'function')
+                ? _captionsToCues(window.currentWords, window.currentCaptions)
+                : segs;
+            applied = true;
+        } else if (typeof qsApplyCorrectedSegmentsFromGpt === 'function') {
+            applied = !!qsApplyCorrectedSegmentsFromGpt(segs);
+        }
+    } catch (e) {
+        console.warn('[qs] subtitle correction apply failed', e);
+        return false;
+    }
+    if (!applied) return false;
+    try {
+        console.info('[qs] applied subtitle grammar corrections', {
+            reason: reason || 'persist',
+            segments: (window.currentSegments || []).length,
+            words: (window.currentWords || []).length,
+        });
+    } catch (_) {}
+    try {
+        if (!isSummaryViewEnabled() && typeof window._qsRerenderTranscriptView === 'function') {
+            window._qsRerenderTranscriptView();
+        }
+    } catch (_) {}
+    return true;
 }
 
 function qsRenderSummaryIfAvailable(reason) {
@@ -13826,6 +13906,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (jid) window._qsSummaryGptDoneJobId = jid;
                 qsRenderSummaryIfAvailable('handleJobUpdate_duplicate_with_formatted');
             }
+            qsApplyIncomingSubtitleCorrectionsFromPayload(rawResult, 'duplicate_socket');
             const haveUi = qsHasTranscriptResult();
             const haveSummary = qsJobSummaryAlreadyDone(jobId);
             if (haveUi && haveSummary) {
@@ -13852,6 +13933,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._qsPendingFormattedFromPersist = true;
                 if (jobId) window._qsSummaryGptDoneJobId = jobId;
             }
+            qsApplyIncomingSubtitleCorrectionsFromPayload(rawResult, 'in_flight_persist');
             if (!persisted && !incomingSegs.length && !window._qsPendingFormattedFromPersist) return;
             let spins = 0;
             while (window._handleJobUpdateInFlight === jobId && spins < 120) {
@@ -13863,6 +13945,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (qsApplyIncomingFormattedFromPayload(rawResult, 'after_in_flight_wait')) {
                     qsRenderSummaryIfAvailable('handleJobUpdate_after_wait_with_formatted');
                 }
+                qsApplyIncomingSubtitleCorrectionsFromPayload(rawResult, 'after_in_flight_wait');
                 qsEnsureTranscriptToolbarVisible('handleJobUpdate_duplicate_after_wait', { force: true });
                 try {
                     if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) && isSummaryViewEnabled()) {
@@ -14230,7 +14313,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     segment_count: (window.currentSegments || []).length,
                     server_fallback: serverGptPending,
                 });
-                const { ok, fmt } = await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', gptJobId);
+                const { ok, fmt } = medFmt
+                    ? await runFormatTranscriptSummaryRequests(fullText, userLang || 'he', gptJobId)
+                    : await runFormatSummaryOnlyRequest(fullText, userLang || 'he', gptJobId, {
+                        // Client fallback: also correct subtitle cues (server path does this in parallel).
+                        includeSegments: true,
+                    });
                 if (!ok || !fmt || typeof fmt !== 'object') {
                     // Client GPT failed/aborted — try S3 JSON written by server-side gpu_callback format.
                     try {

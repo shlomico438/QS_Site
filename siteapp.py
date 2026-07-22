@@ -3596,6 +3596,47 @@ def _segments_to_plain_text(segments):
     return '\n'.join(parts)
 
 
+def _merge_segment_grammar_corrections(original_segments, corrected_segments):
+    """Apply GPT grammar/ASR fixes onto Whisper segments while keeping timing/words structure."""
+    if not isinstance(original_segments, list) or not original_segments:
+        return original_segments
+    if not isinstance(corrected_segments, list) or not corrected_segments:
+        return original_segments
+    out = []
+    for i, seg in enumerate(original_segments):
+        if not isinstance(seg, dict):
+            continue
+        copy = dict(seg)
+        corr = corrected_segments[i] if i < len(corrected_segments) and isinstance(corrected_segments[i], dict) else None
+        new_text = ''
+        if corr is not None:
+            new_text = str(corr.get('translated_text') or corr.get('text') or '').strip()
+        if new_text:
+            copy['text'] = new_text
+            words = copy.get('words')
+            if isinstance(words, list) and words:
+                parts = [p for p in new_text.split() if p]
+                new_words = []
+                for j, w in enumerate(words):
+                    if not isinstance(w, dict):
+                        new_words.append(w)
+                        continue
+                    wcopy = dict(w)
+                    if parts:
+                        if j < len(words) - 1:
+                            token = parts[j] if j < len(parts) else ''
+                        else:
+                            token = ' '.join(parts[j:]) if j < len(parts) else ''
+                        if token:
+                            if 'word' in wcopy:
+                                wcopy['word'] = token
+                            wcopy['text'] = token
+                    new_words.append(wcopy)
+                copy['words'] = new_words
+        out.append(copy)
+    return out or original_segments
+
+
 def _gpu_callback_server_format_enabled(is_medical_job):
     """Run GPT summary on the server so output JSON + email links include formatted."""
     if is_medical_job:
@@ -8453,10 +8494,65 @@ def _medical_training_learn_worker(learn_job_id, data):
             }
 
 
+def _execute_medical_training_preview(data):
+    user_id = str(data.get('userId') or data.get('user_id') or '').strip()
+    transcript = str(data.get('transcript') or '').strip()
+    candidate_prompt = str(data.get('candidate_prompt') or data.get('candidatePrompt') or '').strip()
+    target_lang = data.get('target_lang') or data.get('targetLang') or 'he'
+    if not user_id:
+        raise ValueError("userId required")
+    if not transcript:
+        raise ValueError("transcript required")
+    if not candidate_prompt:
+        candidate_prompt = _doctor_prompt_current_base(user_id)
+    preview_model = _doctor_prompt_preview_model()
+    logging.info(
+        "medical_training preview user_id=%s preview_model=%s transcript_chars=%s chunked=%s",
+        user_id[:12],
+        preview_model,
+        len(transcript),
+        len(transcript) > int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000') or 18000),
+    )
+    out = _format_transcript_and_summary_via_openai(
+        transcript,
+        target_lang=target_lang,
+        is_medical=True,
+        user_id=user_id,
+        medical_task2_prompt_override=candidate_prompt,
+        gpt_model=preview_model,
+    )
+    return {"ok": True, "formatted": out, "preview_model": preview_model}
+
+
+def _medical_training_preview_worker(preview_job_id, data):
+    try:
+        result = _execute_medical_training_preview(data)
+        with _medical_learn_async_lock:
+            _medical_learn_async_jobs[preview_job_id] = {
+                "status": "done",
+                "result": result,
+                "finished_at": time.time(),
+            }
+    except Exception as e:
+        logging.exception("medical_training preview async failed preview_job_id=%s", preview_job_id)
+        with _medical_learn_async_lock:
+            _medical_learn_async_jobs[preview_job_id] = {
+                "status": "error",
+                "error": str(e),
+                "finished_at": time.time(),
+            }
+
+
 def _medical_learn_async_enabled(data):
     if data and 'async' in data:
         return str(data.get('async')).strip().lower() in ('1', 'true', 'yes', 'on')
     return str(os.environ.get('MEDICAL_TRAINING_LEARN_ASYNC', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _medical_preview_async_enabled(data):
+    if data and 'async' in data:
+        return str(data.get('async')).strip().lower() in ('1', 'true', 'yes', 'on')
+    return str(os.environ.get('MEDICAL_TRAINING_PREVIEW_ASYNC', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 @app.route('/api/medical_training/learn', methods=['POST'])
@@ -8508,36 +8604,45 @@ def api_medical_training_learn_status():
 def api_medical_training_preview():
     try:
         data = request.json or {}
-        user_id = str(data.get('userId') or data.get('user_id') or '').strip()
-        transcript = str(data.get('transcript') or '').strip()
-        candidate_prompt = str(data.get('candidate_prompt') or data.get('candidatePrompt') or '').strip()
-        target_lang = data.get('target_lang') or data.get('targetLang') or 'he'
-        if not user_id:
-            return jsonify({"error": "userId required"}), 400
-        if not transcript:
-            return jsonify({"error": "transcript required"}), 400
-        if not candidate_prompt:
-            candidate_prompt = _doctor_prompt_current_base(user_id)
-        preview_model = _doctor_prompt_preview_model()
-        logging.info(
-            "medical_training preview user_id=%s preview_model=%s transcript_chars=%s chunked=%s",
-            user_id[:12],
-            preview_model,
-            len(transcript),
-            len(transcript) > int(os.environ.get('FORMAT_SUMMARY_MAX_INPUT_CHARS', '18000') or 18000),
-        )
-        out = _format_transcript_and_summary_via_openai(
-            transcript,
-            target_lang=target_lang,
-            is_medical=True,
-            user_id=user_id,
-            medical_task2_prompt_override=candidate_prompt,
-            gpt_model=preview_model,
-        )
-        return jsonify({"ok": True, "formatted": out, "preview_model": preview_model}), 200
+        if _medical_preview_async_enabled(data):
+            preview_job_id = f"mp_{uuid.uuid4().hex[:16]}"
+            with _medical_learn_async_lock:
+                _medical_learn_async_jobs[preview_job_id] = {
+                    "status": "running",
+                    "started_at": time.time(),
+                }
+            t = threading.Thread(
+                target=_medical_training_preview_worker,
+                args=(preview_job_id, dict(data)),
+                daemon=True,
+            )
+            t.start()
+            return jsonify({"ok": True, "async": True, "preview_job_id": preview_job_id}), 202
+        result = _execute_medical_training_preview(data)
+        return jsonify(result), 200
     except Exception as e:
         logging.exception("medical_training_preview failed")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/medical_training/preview_status', methods=['GET'])
+def api_medical_training_preview_status():
+    preview_job_id = str(request.args.get('preview_job_id') or '').strip()
+    if not preview_job_id:
+        return jsonify({"error": "preview_job_id required"}), 400
+    with _medical_learn_async_lock:
+        entry = dict(_medical_learn_async_jobs.get(preview_job_id) or {})
+    if not entry:
+        return jsonify({"error": "unknown preview_job_id"}), 404
+    started = float(entry.get('started_at') or 0)
+    if started and (time.time() - started) > MEDICAL_LEARN_ASYNC_TTL_SEC:
+        return jsonify({"error": "preview_job expired"}), 410
+    status = entry.get('status') or 'running'
+    if status == 'done':
+        return jsonify({"ok": True, "status": "done", **(entry.get('result') or {})}), 200
+    if status == 'error':
+        return jsonify({"ok": False, "status": "error", "error": entry.get('error') or 'preview failed'}), 200
+    return jsonify({"ok": True, "status": "running"}), 200
 
 
 @app.route('/api/medical_training/approve', methods=['POST'])
@@ -8923,12 +9028,27 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                 if plain.strip():
                     try:
                         t_fmt = time.time()
-                        fmt = _format_transcript_and_summary_via_openai(
+                        pending_opts = {}
+                        if isinstance(pending_info, dict):
+                            pending_opts = pending_info.get('transcription_options') or {}
+                        is_music_job = (
+                            isinstance(pending_opts, dict)
+                            and str(pending_opts.get('audio_profile') or pending_opts.get('profile') or '')
+                            .strip()
+                            .lower()
+                            == 'music'
+                        ) or _format_request_is_music_context({}, job_id)
+                        fmt = _run_standard_unified_format_with_segments(
                             plain,
+                            segments,
                             target_lang='he',
-                            is_medical=False,
+                            is_music=bool(is_music_job),
                             user_id=user_id,
                         )
+                        corrected_segs = None
+                        if isinstance(fmt, dict):
+                            corrected_segs = fmt.pop('segments', None)
+                            fmt.pop('segment_correction_meta', None)
                         norm = _normalize_formatted_dict_for_storage(fmt)
                         if norm:
                             transcript_payload["formatted"] = norm
@@ -8936,6 +9056,17 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                                 "gpu_callback: server-side formatted saved (overview_len=%s, input_s3_key suffix=%s)",
                                 len(str(norm.get('overview') or '')),
                                 input_s3_key.rsplit('/', 1)[-1][:80],
+                            )
+                        if isinstance(corrected_segs, list) and corrected_segs:
+                            segments = _merge_segment_grammar_corrections(segments, corrected_segs)
+                            transcript_payload["segments"] = segments
+                            w2, c2 = _flatten_words_from_segments(segments)
+                            if w2 is not None and c2 is not None:
+                                transcript_payload["words"] = w2
+                                transcript_payload["captions"] = c2
+                            logging.info(
+                                "gpu_callback: subtitle grammar corrections merged segments=%s",
+                                len(segments),
                             )
                         server_gpt_sec = round(time.time() - t_fmt, 3)
                     except Exception as fmt_err:
@@ -8953,6 +9084,10 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             if isinstance(fmt_out, dict):
                 result_dict['formatted'] = fmt_out
                 data['formatted'] = fmt_out
+            # Keep corrected subtitle text on the socket payload (not only in S3).
+            if isinstance(segments, list) and segments:
+                data['segments'] = segments
+                result_dict['segments'] = segments
             data['result'] = result_dict
             data['server_gpt_pending'] = False
             data['transcript_persisted'] = True
