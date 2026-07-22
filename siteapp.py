@@ -610,6 +610,14 @@ def _env_flag_true(name):
     return v in ('1', 'true', 'yes', 'on')
 
 
+def _audio_preprocessing_enabled():
+    """Tier-1 RunPod CPU preprocessing; enabled unless explicitly disabled."""
+    raw = os.environ.get('ENABLE_AUDIO_PREPROCESSING')
+    if raw is None or str(raw).strip() == '':
+        return True
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def _runpod_skip_warmup():
     """If true, skip all RunPod /run at sign-s3/multipart-init (first /run happens in trigger_processing)."""
     return _env_flag_true('RUNPOD_SKIP_WARMUP')
@@ -1866,8 +1874,9 @@ def _set_worker_handoff(job_id, **fields):
             except Exception as e:
                 logging.warning("_set_worker_handoff persist failed job_id=%s: %s", job_id, e)
 
-        # Worker handoff must be visible across Koyeb instances before GPU poll returns.
-        if fields.get("worker_ready") is True:
+        # Both ready and not-ready gates must be visible across Koyeb instances
+        # before a warm GPU worker polls, otherwise it can skip CPU preprocessing.
+        if "worker_ready" in fields:
             _run()
         else:
             threading.Thread(target=_run, daemon=True).start()
@@ -2360,6 +2369,226 @@ def _watch_runpod_vocal_separation(job_id):
         logging.exception("_watch_runpod_vocal_separation failed job_id=%s", job_id)
 
 
+_audio_preprocess_finish_lock = threading.Lock()
+
+
+def _get_audio_preprocess_meta_from_db(job_id):
+    try:
+        row = _get_job_row_by_runpod_job_id(job_id, select="metadata")
+        if not row:
+            return {}
+        md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+        ap = qt.get("audio_preprocessing") if isinstance(qt.get("audio_preprocessing"), dict) else {}
+        return dict(ap)
+    except Exception:
+        return {}
+
+
+def _persist_audio_preprocess_handoff(job_id, handoff, trigger_status=None):
+    _merge_job_qs_trigger(
+        job_id,
+        {"audio_preprocessing": dict(handoff or {})},
+        update_job_status=trigger_status,
+    )
+
+
+def _load_audio_preprocess_handoff(job_id):
+    mem = dict(audio_preprocess_jobs.get(job_id) or {})
+    db_ap = _get_audio_preprocess_meta_from_db(job_id)
+    merged = {**db_ap, **{k: v for k, v in mem.items() if v is not None}}
+    trigger_payload = merged.get('trigger_payload') or {}
+    if not trigger_payload and merged.get('trigger_input'):
+        trigger_payload = {'input': dict(merged.get('trigger_input') or {})}
+    merged['trigger_payload'] = trigger_payload
+    merged['gpu_endpoint_id'] = merged.get('gpu_endpoint_id') or RUNPOD_ENDPOINT_ID
+    merged['gpu_api_key'] = merged.get('gpu_api_key') or RUNPOD_API_KEY
+    merged['cpu_endpoint_id'] = merged.get('cpu_endpoint_id') or RUNPOD_CPU_ENDPOINT_ID
+    return merged
+
+
+def _mark_audio_preprocess_finished(job_id, status):
+    with _audio_preprocess_finish_lock:
+        handoff = _load_audio_preprocess_handoff(job_id)
+        if handoff.get('finished'):
+            return False
+        finished = {**handoff, 'finished': True, 'status': status, 'finished_at': time.time()}
+        audio_preprocess_jobs[job_id] = finished
+        _persist_audio_preprocess_handoff(job_id, finished)
+        return True
+
+
+def _apply_audio_preprocess_result(trigger_payload, job_id, source_s3_key, output_s3_key, *, timing=None, error=None):
+    input_payload = trigger_payload.get('input') if isinstance(trigger_payload, dict) else {}
+    if not isinstance(input_payload, dict):
+        input_payload = {}
+        trigger_payload['input'] = input_payload
+    options = dict(input_payload.get('transcription_options') or {})
+    succeeded = not error
+    options.update({
+        'preprocessed_audio': succeeded,
+        'preprocess': 'audio_loudnorm',
+        'preprocess_engine': 'runpod_cpu',
+        'preprocess_failed': not succeeded,
+        'preprocess_error': str(error or '')[:300] or None,
+        'preprocess_timing': dict(timing or {}),
+        'source_s3_key': source_s3_key,
+        'audio_preprocessed_s3_key': output_s3_key if succeeded else None,
+    })
+    transcription_key = output_s3_key if succeeded else source_s3_key
+    input_payload['s3Key'] = transcription_key
+    input_payload['transcription_options'] = options
+    pinfo = dict(pending_job_info.get(job_id) or {})
+    pinfo.update({
+        'input_s3_key': source_s3_key,
+        'transcription_s3_key': transcription_key,
+        'audio_preprocessed_s3_key': output_s3_key if succeeded else None,
+        'transcription_options': options,
+    })
+    pending_job_info[job_id] = pinfo
+    return trigger_payload
+
+
+def _complete_audio_preprocess_job(job_id, handoff, result=None, reason=''):
+    output_key = handoff.get('output_s3_key')
+    bucket = handoff.get('bucket')
+    if not bucket or not output_key or not _s3_object_exists(bucket, output_key):
+        _fail_audio_preprocess_job(
+            job_id,
+            handoff,
+            "RunPod CPU reported success but preprocessed WAV is missing from S3",
+            reason=f"{reason or 'callback'}+missing_s3",
+        )
+        return
+    if not _mark_audio_preprocess_finished(job_id, 'completed'):
+        logging.info("Audio preprocessing duplicate completion ignored job_id=%s", job_id)
+        return
+    trigger_payload = _apply_audio_preprocess_result(
+        handoff.get('trigger_payload') or {},
+        job_id,
+        handoff.get('source_s3_key'),
+        output_key,
+        timing=(result or {}).get('timing') or {},
+    )
+    trigger_input = (trigger_payload.get('input') or {}) if isinstance(trigger_payload, dict) else {}
+    completed = {
+        **dict(handoff or {}),
+        'finished': True,
+        'status': 'completed',
+        'finished_at': time.time(),
+        'timing': dict((result or {}).get('timing') or {}),
+        'trigger_payload': json.loads(json.dumps(trigger_payload or {})),
+        'trigger_input': json.loads(json.dumps(trigger_input or {})),
+    }
+    audio_preprocess_jobs[job_id] = completed
+    _persist_audio_preprocess_handoff(job_id, completed)
+    logging.info("Audio preprocessing complete job_id=%s via %s", job_id, reason or 'callback')
+    _finish_audio_preprocess_and_trigger_gpu(
+        job_id,
+        trigger_payload,
+        handoff.get('gpu_endpoint_id') or RUNPOD_ENDPOINT_ID,
+        handoff.get('gpu_api_key') or RUNPOD_API_KEY,
+    )
+
+
+def _fail_audio_preprocess_job(job_id, handoff, error_text, reason=''):
+    if not _mark_audio_preprocess_finished(job_id, 'failed_open'):
+        logging.info("Audio preprocessing duplicate failure ignored job_id=%s", job_id)
+        return
+    logging.error(
+        "Audio preprocessing failed open job_id=%s via %s error=%s",
+        job_id,
+        reason or 'callback',
+        str(error_text)[:1000],
+    )
+    trigger_payload = _apply_audio_preprocess_result(
+        handoff.get('trigger_payload') or {},
+        job_id,
+        handoff.get('source_s3_key'),
+        handoff.get('output_s3_key'),
+        error=error_text,
+    )
+    _finish_audio_preprocess_and_trigger_gpu(
+        job_id,
+        trigger_payload,
+        handoff.get('gpu_endpoint_id') or RUNPOD_ENDPOINT_ID,
+        handoff.get('gpu_api_key') or RUNPOD_API_KEY,
+    )
+
+
+def _watch_runpod_audio_preprocess(job_id):
+    """Poll RunPod and S3 so a missed CPU callback cannot leave the GPU gated."""
+    try:
+        timeout_sec = max(120, int(os.environ.get('AUDIO_PREPROCESSING_RUNPOD_TIMEOUT_SEC', '900') or 900))
+        poll_sec = max(5, int(os.environ.get('AUDIO_PREPROCESSING_RUNPOD_POLL_SEC', '15') or 15))
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            handoff = _load_audio_preprocess_handoff(job_id)
+            if handoff.get('finished'):
+                return
+            bucket = handoff.get('bucket')
+            output_key = handoff.get('output_s3_key')
+            if bucket and output_key and _s3_object_exists(bucket, output_key):
+                _complete_audio_preprocess_job(job_id, handoff, {}, reason='poll+s3')
+                return
+            status, output, err = _fetch_runpod_job_status(
+                handoff.get('cpu_endpoint_id'),
+                handoff.get('runpod_run_id'),
+            )
+            status_u = str(status or '').upper()
+            if status_u in ('FAILED', 'ERROR', 'CANCELLED', 'TIMED_OUT'):
+                _fail_audio_preprocess_job(job_id, handoff, err or f'RunPod CPU job {status_u}', reason='poll+runpod')
+                return
+            if status_u in ('COMPLETED', 'DONE', 'SUCCESS'):
+                out = output if isinstance(output, dict) else {}
+                if bucket and output_key and _s3_object_exists(bucket, output_key):
+                    _complete_audio_preprocess_job(job_id, handoff, out, reason='poll+runpod')
+                else:
+                    _fail_audio_preprocess_job(
+                        job_id,
+                        handoff,
+                        out.get('error') or err or 'RunPod completed but preprocessed WAV is missing from S3',
+                        reason='poll+runpod',
+                    )
+                return
+            time.sleep(poll_sec)
+        _fail_audio_preprocess_job(
+            job_id,
+            _load_audio_preprocess_handoff(job_id),
+            f'RunPod audio preprocessing timed out after {timeout_sec}s',
+            reason='timeout',
+        )
+    except Exception:
+        logging.exception("_watch_runpod_audio_preprocess failed job_id=%s", job_id)
+        _fail_audio_preprocess_job(
+            job_id,
+            _load_audio_preprocess_handoff(job_id),
+            "Audio preprocessing watcher failed",
+            reason='watcher_exception',
+        )
+
+
+def _cleanup_audio_preprocess_intermediate(job_id, pending_info=None):
+    """Delete only the generated WAV after GPU completion/failure; preserve source."""
+    info = dict(pending_info or {})
+    if not info.get('audio_preprocessed_s3_key'):
+        info = {**_load_audio_preprocess_handoff(job_id), **info}
+    output_key = str(
+        info.get('audio_preprocessed_s3_key')
+        or info.get('output_s3_key')
+        or ''
+    ).strip()
+    source_key = str(info.get('input_s3_key') or info.get('source_s3_key') or '').strip()
+    bucket = str(info.get('bucket') or '').strip()
+    if not output_key or output_key == source_key or not output_key.endswith('.preprocessed.wav'):
+        return
+    try:
+        _s3_boto_client(bucket=bucket).delete_object(Bucket=bucket, Key=output_key)
+        logging.info("Deleted audio preprocessing intermediate job_id=%s key_suffix=%s", job_id, output_key[-100:])
+    except Exception:
+        logging.exception("Failed deleting audio preprocessing intermediate job_id=%s", job_id)
+
+
 def _music_vocals_s3_key(source_s3_key, job_id):
     src = pathlib.PurePosixPath(str(source_s3_key or ''))
     parent = str(src.parent).strip('.')
@@ -2368,11 +2597,27 @@ def _music_vocals_s3_key(source_s3_key, job_id):
     return f"{parent}/{name}" if parent else name
 
 
+def _audio_preprocessed_s3_key(source_s3_key, job_id):
+    src = pathlib.PurePosixPath(str(source_s3_key or ''))
+    parent = str(src.parent).strip('.')
+    stem = src.stem or str(job_id or uuid.uuid4())
+    name = f"{stem}.preprocessed.wav"
+    return f"{parent}/{name}" if parent else name
+
+
 def _should_preprocess_music_vocals(is_medical, audio_profile_info):
     if is_medical or not _music_vocal_separation_enabled():
         return False
     profile = str((audio_profile_info or {}).get('profile') or '').strip().lower()
     return profile == 'music'
+
+
+def _should_preprocess_audio(is_medical, audio_profile_info):
+    """Run loudnorm only for standard speech jobs; vocal-separation is exclusive."""
+    if is_medical or not _audio_preprocessing_enabled():
+        return False
+    profile = str((audio_profile_info or {}).get('profile') or 'speech').strip().lower()
+    return profile != 'music'
 
 
 def _defer_gpu_warmup_for_music_upload(data, is_medical):
@@ -5708,6 +5953,7 @@ pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, 
 # Billing context kept until client finishes GPT + summary (see /api/charge_job_credits).
 pending_credit_charge_context = {}  # job_id -> { user_id, input_s3_key, bucket, credit_file_duration_sec, ... }
 vocal_separation_jobs = {}  # job_id -> pending RunPod CPU vocal separation + trigger handoff
+audio_preprocess_jobs = {}  # job_id -> pending RunPod CPU loudnorm preprocessing + GPU handoff
 _medical_learn_async_jobs = {}  # learn_job_id -> {status, result|error, started_at}
 _medical_learn_async_lock = threading.Lock()
 MEDICAL_LEARN_ASYNC_TTL_SEC = 3600
@@ -8661,6 +8907,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         }
         job_results_cache[job_id] = fail_payload
         socketio.emit('job_status_update', fail_payload, room=job_id)
+        _cleanup_audio_preprocess_intermediate(job_id, pending_info)
         return
 
     now = time.time()
@@ -8743,6 +8990,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             )
     except Exception as emit_err:
         logging.warning("gpu_callback: post-persist socket emit failed job_id=%s: %s", job_id, emit_err)
+    _cleanup_audio_preprocess_intermediate(job_id, pending_info)
 
 
 @app.route('/api/gpu_callback', methods=['POST'])
@@ -8764,6 +9012,7 @@ def gpu_callback():
         return jsonify({"ok": False, "error": "segments must be an array"}), 400
 
     if callback_status == 'failed' or callback_error:
+        failed_pending = pending_job_info.pop(job_id, None)
         pending_trigger[job_id] = "failed"
         _set_trigger_state(job_id, "failed")
         fail_payload = {
@@ -8774,6 +9023,11 @@ def gpu_callback():
         job_results_cache[job_id] = fail_payload
         socketio.emit('job_status_update', fail_payload, room=job_id)
         logging.error("gpu_callback failure job_id=%s error=%s", job_id, fail_payload.get("error"))
+        threading.Thread(
+            target=_cleanup_audio_preprocess_intermediate,
+            args=(job_id, failed_pending),
+            daemon=True,
+        ).start()
         return jsonify({"ok": True}), 200
 
     pending = pending_job_info.pop(job_id, None)
@@ -8787,6 +9041,24 @@ def gpu_callback():
         input_s3_key = input_info.get('s3Key') or data.get('s3Key') or ''
         user_id = _extract_user_id_from_s3_key(input_s3_key)
         transcription_options = (input_info.get('transcription_options') if isinstance(input_info, dict) else None) or {}
+        if (
+            isinstance(transcription_options, dict)
+            and transcription_options.get('preprocess') == 'audio_loudnorm'
+        ):
+            source_key = str(transcription_options.get('source_s3_key') or '').strip()
+            processed_key = str(
+                transcription_options.get('audio_preprocessed_s3_key')
+                or input_s3_key
+                or ''
+            ).strip()
+            input_s3_key = source_key or input_s3_key
+            user_id = _extract_user_id_from_s3_key(input_s3_key)
+            pending = {
+                'input_s3_key': input_s3_key,
+                'audio_preprocessed_s3_key': processed_key,
+                'bucket': input_info.get('bucket'),
+                'transcription_options': transcription_options,
+            }
         if not transcription_options or (
             isinstance(transcription_options, dict)
             and transcription_options.get('preprocess') != 'vocal_separation'
@@ -10161,6 +10433,10 @@ def _maybe_start_runpod_at_upload_sign(
         defer_final = False
     else:
         defer_final = bool(defer_final_options)
+    # Keep the early GPU warmup, but hold transcription until trigger_processing
+    # dispatches CPU ffmpeg and publishes the processed S3 key.
+    if _audio_preprocessing_enabled() and not is_medical:
+        defer_final = True
     if early_opts is None:
         if defer_final and not is_medical:
             early_opts = _provisional_transcription_options_for_early_trigger()
@@ -10286,6 +10562,179 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         pending_trigger[job_id] = "failed"
         _set_trigger_state(job_id, "failed")
         logging.exception("trigger_gpu failed for %s", job_id)
+
+
+def _queue_audio_preprocess_on_runpod(
+    job_id,
+    bucket,
+    source_s3_key,
+    output_s3_key,
+    trigger_payload,
+    endpoint_id,
+    api_key,
+):
+    """Dispatch mono/16 kHz/loudnorm conversion to the existing RunPod CPU endpoint."""
+    cpu_endpoint_id = (RUNPOD_CPU_ENDPOINT_ID or '').strip()
+    runpod_api_key = (RUNPOD_API_KEY or '').strip()
+    if not cpu_endpoint_id or not runpod_api_key:
+        raise RuntimeError("RunPod CPU endpoint is not configured")
+    public_base = _public_base_url_from_env()
+    if not public_base:
+        raise RuntimeError("PUBLIC_BASE_URL is required for audio preprocessing callbacks")
+    if not bucket:
+        raise RuntimeError("S3 bucket missing")
+
+    s3_client = _s3_boto_client(bucket=bucket)
+    input_audio_url = s3_client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': bucket, 'Key': source_s3_key},
+        ExpiresIn=10800,
+    )
+    output_upload_url = s3_client.generate_presigned_url(
+        'put_object',
+        Params={'Bucket': bucket, 'Key': output_s3_key, 'ContentType': 'audio/wav'},
+        ExpiresIn=21600,
+    )
+    cpu_payload = {
+        "input": {
+            "task": "audio_preprocess",
+            "job_id": job_id,
+            "input_audio_url": input_audio_url,
+            "output_upload_url": output_upload_url,
+            "output_s3_key": output_s3_key,
+            "source_s3_key": source_s3_key,
+            "callback_url": f"{public_base}/api/audio_preprocess_callback",
+        }
+    }
+    endpoint_url = f"https://api.runpod.ai/v2/{cpu_endpoint_id}/run"
+    headers = {"Authorization": f"Bearer {runpod_api_key}", "Content-Type": "application/json"}
+    dispatch_timeout = int((os.environ.get('RUNPOD_CPU_DISPATCH_TIMEOUT_SEC') or '35').strip() or 35)
+    max_attempts = int((os.environ.get('RUNPOD_CPU_DISPATCH_RETRIES') or '4').strip() or 4)
+    backoff_sec = float((os.environ.get('RUNPOD_CPU_DISPATCH_BACKOFF_SEC') or '1.5').strip() or 1.5)
+    response = None
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.post(
+                endpoint_url,
+                json=cpu_payload,
+                headers=headers,
+                timeout=dispatch_timeout,
+            )
+            if response.status_code in (200, 201, 202):
+                break
+            if response.status_code in (408, 409, 425, 429, 500, 502, 503, 504) and attempt < max_attempts:
+                time.sleep(backoff_sec * attempt)
+                continue
+            raise RuntimeError(f"RunPod CPU dispatch failed ({response.status_code}): {str(response.text)[:300]}")
+        except Exception as error:
+            last_error = error
+            if attempt >= max_attempts:
+                break
+            time.sleep(backoff_sec * attempt)
+    if not response or response.status_code not in (200, 201, 202):
+        raise RuntimeError(f"RunPod CPU audio preprocessing dispatch failed: {last_error or 'unknown error'}")
+
+    runpod_run_id = (response.json() or {}).get('id') if response.content else None
+    trigger_input = (trigger_payload or {}).get('input') if isinstance(trigger_payload, dict) else {}
+    handoff = {
+        'status': 'processing',
+        'trigger_payload': json.loads(json.dumps(trigger_payload or {})),
+        'trigger_input': json.loads(json.dumps(trigger_input or {})),
+        'gpu_endpoint_id': endpoint_id,
+        'bucket': bucket,
+        'source_s3_key': source_s3_key,
+        'output_s3_key': output_s3_key,
+        'dispatched_at': time.time(),
+        'runpod_run_id': runpod_run_id,
+        'cpu_endpoint_id': cpu_endpoint_id,
+    }
+    audio_preprocess_jobs[job_id] = handoff
+    _persist_audio_preprocess_handoff(job_id, handoff, trigger_status='preprocessing')
+    logging.info(
+        "Audio preprocessing dispatched job_id=%s cpu_endpoint=%s runpod_run_id=%s",
+        job_id,
+        cpu_endpoint_id,
+        runpod_run_id,
+    )
+    threading.Thread(
+        target=_watch_runpod_audio_preprocess,
+        args=(job_id,),
+        daemon=True,
+    ).start()
+
+
+def _publish_audio_preprocess_worker_handoff(job_id, trigger_payload):
+    trigger_input = (trigger_payload.get('input') or {}) if isinstance(trigger_payload, dict) else {}
+    pinfo = dict(pending_job_info.get(job_id) or {})
+    tx_opts = trigger_input.get('transcription_options') or pinfo.get('transcription_options') or {}
+    transcription_key = (
+        trigger_input.get('s3Key')
+        or pinfo.get('transcription_s3_key')
+        or pinfo.get('input_s3_key')
+    )
+    pinfo.update({
+        'transcription_s3_key': transcription_key,
+        'transcription_options': tx_opts,
+        'options_finalized': True,
+        'worker_ready': True,
+    })
+    pending_job_info[job_id] = pinfo
+    _set_worker_handoff(
+        job_id,
+        options_finalized=True,
+        worker_ready=True,
+        worker_pending_reason=None,
+        transcription_options=tx_opts,
+        transcription_s3_key=transcription_key,
+    )
+
+
+def _finish_audio_preprocess_and_trigger_gpu(job_id, trigger_payload, endpoint_id, api_key):
+    """Release an early GPU worker, or dispatch one when no warmup was started."""
+    global pending_trigger, pending_trigger_at
+    state = str(pending_trigger.get(job_id) or '').strip().lower()
+    early_gpu_dispatched = bool((pending_job_info.get(job_id) or {}).get('early_gpu_dispatched'))
+    _publish_audio_preprocess_worker_handoff(job_id, trigger_payload)
+    if early_gpu_dispatched and state in ('queued', 'run_accepted', 'triggered', 'preprocessing'):
+        logging.info("Audio preprocessing handoff released early GPU job_id=%s", job_id)
+        return
+    pending_trigger[job_id] = 'queued'
+    pending_trigger_at[job_id] = time.time()
+    _set_trigger_state(job_id, 'queued', queued_at=pending_trigger_at[job_id])
+    logging.info("Audio preprocessing finished; dispatching GPU job_id=%s", job_id)
+    _trigger_gpu(job_id, trigger_payload, endpoint_id, api_key)
+
+
+def _preprocess_audio_then_trigger(job_id, payload, endpoint_id, api_key, bucket, source_s3_key, output_s3_key):
+    """CPU ffmpeg stage. Fail-open to the original upload on any dispatch/worker error."""
+    pending_trigger[job_id] = 'preprocessing'
+    _set_trigger_state(job_id, 'preprocessing')
+    try:
+        _queue_audio_preprocess_on_runpod(
+            job_id,
+            bucket,
+            source_s3_key,
+            output_s3_key,
+            payload,
+            endpoint_id,
+            api_key,
+        )
+    except Exception as error:
+        logging.exception("Audio preprocessing dispatch failed open job_id=%s", job_id)
+        trigger_payload = _apply_audio_preprocess_result(
+            payload,
+            job_id,
+            source_s3_key,
+            output_s3_key,
+            error=str(error),
+        )
+        _finish_audio_preprocess_and_trigger_gpu(
+            job_id,
+            trigger_payload,
+            endpoint_id,
+            api_key,
+        )
 
 
 def _queue_vocal_separation_on_runpod(job_id, bucket, source_s3_key, vocals_s3_key, trigger_payload, endpoint_id, api_key):
@@ -10851,9 +11300,19 @@ def trigger_processing():
         language = data.get('language', 'he')
         diarization = data.get('diarization', False)
         use_music_vocal_preprocess = _should_preprocess_music_vocals(is_medical, audio_profile_info)
+        use_audio_preprocess = (
+            not use_music_vocal_preprocess
+            and _should_preprocess_audio(is_medical, audio_profile_info)
+        )
         vocals_s3_key = _music_vocals_s3_key(s3_key, job_id) if use_music_vocal_preprocess else None
+        audio_preprocessed_s3_key = (
+            _audio_preprocessed_s3_key(s3_key, job_id) if use_audio_preprocess else None
+        )
+        transcription_s3_key = vocals_s3_key or audio_preprocessed_s3_key or s3_key
         if use_music_vocal_preprocess:
             _audio_profile_api_fields["music_vocal_separation"] = "queued"
+        if use_audio_preprocess:
+            _audio_profile_api_fields["audio_preprocessing"] = "queued"
 
         early_run = (
             job_id in pending_trigger
@@ -10863,14 +11322,18 @@ def trigger_processing():
             pinfo = dict(pending_job_info.get(job_id) or {})
             pinfo.update({
                 "input_s3_key": s3_key,
-                "transcription_s3_key": vocals_s3_key or s3_key,
+                "transcription_s3_key": transcription_s3_key,
                 "bucket": target_bucket,
                 "is_medical": bool(is_medical),
                 "user_id": user_id_credits or _extract_user_id_from_s3_key(s3_key),
                 "task": task,
                 "language": language,
                 "transcription_options": transcription_options or {},
-                "preprocess": "vocal_separation" if use_music_vocal_preprocess else None,
+                "preprocess": (
+                    "vocal_separation" if use_music_vocal_preprocess
+                    else ("audio_loudnorm" if use_audio_preprocess else None)
+                ),
+                "audio_preprocessed_s3_key": audio_preprocessed_s3_key,
             })
             if credit_reserve.get('required_minutes'):
                 pinfo['credit_required_minutes'] = float(credit_reserve['required_minutes'])
@@ -10881,9 +11344,10 @@ def trigger_processing():
             callback_url = f"{public_base}/api/gpu_callback"
             start_callback_url = f"{public_base}/api/gpu_started"
             upload_status_url = f"{public_base}/api/upload_status?job_id={job_id}"
+            job_options_url = f"{public_base}/api/job_transcription_options?job_id={job_id}"
             payload = {
                 "input": {
-                    "s3Key": vocals_s3_key or s3_key,
+                    "s3Key": transcription_s3_key,
                     "bucket": target_bucket,
                     "isMedical": bool(is_medical),
                     "jobId": job_id,
@@ -10893,6 +11357,7 @@ def trigger_processing():
                     "callback_url": callback_url,
                     "start_callback_url": start_callback_url,
                     "upload_status_url": upload_status_url,
+                    "job_options_url": job_options_url,
                 }
             }
             endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
@@ -10914,6 +11379,31 @@ def trigger_processing():
                     daemon=True,
                 )
                 t.start()
+            elif use_audio_preprocess:
+                _set_worker_handoff(
+                    job_id,
+                    options_finalized=True,
+                    worker_ready=False,
+                    worker_pending_reason="audio_preprocessing",
+                    transcription_options=transcription_options or {},
+                    transcription_s3_key=audio_preprocessed_s3_key,
+                )
+                pending_trigger[job_id] = "preprocessing"
+                _set_trigger_state(job_id, "preprocessing")
+                t = threading.Thread(
+                    target=_preprocess_audio_then_trigger,
+                    args=(
+                        job_id,
+                        payload,
+                        endpoint_id,
+                        api_key,
+                        target_bucket,
+                        s3_key,
+                        audio_preprocessed_s3_key,
+                    ),
+                    daemon=True,
+                )
+                t.start()
             else:
                 _set_worker_handoff(
                     job_id,
@@ -10925,10 +11415,11 @@ def trigger_processing():
                 )
             engine = str(pinfo.get('engine') or 'runpod')
             logging.info(
-                "trigger_processing: job_id=%s early RunPod handoff engine=%s music_preprocess=%s",
+                "trigger_processing: job_id=%s early RunPod handoff engine=%s music_preprocess=%s audio_preprocess=%s",
                 job_id,
                 engine,
                 use_music_vocal_preprocess,
+                use_audio_preprocess,
             )
             return jsonify({
                 "status": "started",
@@ -10975,7 +11466,7 @@ def trigger_processing():
 
         payload = {
             "input": {
-                "s3Key": vocals_s3_key or s3_key,
+                "s3Key": transcription_s3_key,
                 "bucket": target_bucket,
                 "isMedical": bool(is_medical),
                 "jobId": job_id,
@@ -10992,14 +11483,18 @@ def trigger_processing():
         # So gpu_callback can save raw JSON even when RunPod does not echo input; store task/language for retry
         pending_job_info[job_id] = {
             "input_s3_key": s3_key,
-            "transcription_s3_key": vocals_s3_key or s3_key,
+            "transcription_s3_key": transcription_s3_key,
             "bucket": target_bucket,
             "is_medical": bool(is_medical),
             "user_id": user_id_credits or _extract_user_id_from_s3_key(s3_key),
             "task": task,
             "language": language,
             "transcription_options": transcription_options or {},
-            "preprocess": "vocal_separation" if use_music_vocal_preprocess else None,
+            "preprocess": (
+                "vocal_separation" if use_music_vocal_preprocess
+                else ("audio_loudnorm" if use_audio_preprocess else None)
+            ),
+            "audio_preprocessed_s3_key": audio_preprocessed_s3_key,
         }
         if credit_reserve.get('required_minutes'):
             pending_job_info[job_id]['credit_required_minutes'] = float(credit_reserve['required_minutes'])
@@ -11008,10 +11503,13 @@ def trigger_processing():
         _set_worker_handoff(
             job_id,
             options_finalized=True,
-            worker_ready=not use_music_vocal_preprocess,
-            worker_pending_reason="vocal_separation" if use_music_vocal_preprocess else None,
+            worker_ready=not (use_music_vocal_preprocess or use_audio_preprocess),
+            worker_pending_reason=(
+                "vocal_separation" if use_music_vocal_preprocess
+                else ("audio_preprocessing" if use_audio_preprocess else None)
+            ),
             transcription_options=transcription_options or {},
-            transcription_s3_key=vocals_s3_key or s3_key,
+            transcription_s3_key=transcription_s3_key,
         )
         t_queued = time.time()
         pending_trigger[job_id] = "queued"  # thread will update to "triggered" or "failed"
@@ -11021,6 +11519,19 @@ def trigger_processing():
             t = threading.Thread(
                 target=_preprocess_music_vocals_then_trigger,
                 args=(job_id, payload, endpoint_id, api_key, target_bucket, s3_key, vocals_s3_key)
+            )
+        elif use_audio_preprocess:
+            t = threading.Thread(
+                target=_preprocess_audio_then_trigger,
+                args=(
+                    job_id,
+                    payload,
+                    endpoint_id,
+                    api_key,
+                    target_bucket,
+                    s3_key,
+                    audio_preprocessed_s3_key,
+                ),
             )
         else:
             t = threading.Thread(
@@ -12005,6 +12516,43 @@ def burn_subtitles_callback():
     except Exception as e:
         logging.exception("burn_subtitles_callback")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/audio_preprocess_callback', methods=['POST'])
+def audio_preprocess_callback():
+    """RunPod CPU callback for mono/16 kHz/loudnorm preprocessing."""
+    try:
+        data = request.get_json(silent=True) or {}
+        job_id = str(data.get('job_id') or data.get('jobId') or '').strip()
+        if not job_id:
+            return jsonify({"error": "job_id required"}), 400
+        status = str(data.get('status') or '').strip().lower()
+        handoff = _load_audio_preprocess_handoff(job_id)
+        if not handoff.get('source_s3_key') and data.get('source_s3_key'):
+            handoff['source_s3_key'] = data.get('source_s3_key')
+        if not handoff.get('output_s3_key') and data.get('output_s3_key'):
+            handoff['output_s3_key'] = data.get('output_s3_key')
+        logging.info(
+            "audio_preprocess_callback job_id=%s status=%s timing=%s",
+            job_id,
+            status,
+            data.get('timing'),
+        )
+        if status in ('completed', 'done', 'success', 'succeeded'):
+            _complete_audio_preprocess_job(job_id, handoff, data, reason='callback')
+            return jsonify({"ok": True, "job_id": job_id, "status": "completed"}), 200
+        if status in ('failed', 'error') or data.get('error'):
+            _fail_audio_preprocess_job(
+                job_id,
+                handoff,
+                data.get('error') or 'RunPod audio preprocessing failed',
+                reason='callback',
+            )
+            return jsonify({"ok": True, "job_id": job_id, "status": "failed_open"}), 200
+        return jsonify({"ok": True, "job_id": job_id, "status": "processing"}), 200
+    except Exception as error:
+        logging.exception("audio_preprocess_callback failed")
+        return jsonify({"error": str(error)}), 500
 
 
 @app.route('/api/vocal_separation_callback', methods=['POST'])
