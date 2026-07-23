@@ -9106,11 +9106,75 @@ def api_export_docx():
 
 
 # --- GPU Callback: ack fast to worker; persist in background (see docs/GPU_CALLBACK_API.md) ---
+def _schedule_subtitle_grammar_after_summary(
+    job_id,
+    user_id,
+    input_s3_key,
+    segments,
+    is_medical_job,
+    pending_info=None,
+):
+    """Polish subtitle cue text after summary is already delivered (non-blocking for UI)."""
+    if is_medical_job or not job_id or not input_s3_key:
+        return
+    if not isinstance(segments, list) or not segments:
+        return
+
+    def _worker():
+        try:
+            t0 = time.time()
+            corrected, meta = translate_segments(segments, target_lang='he')
+            if not isinstance(corrected, list) or not corrected:
+                return
+            merged = _merge_segment_grammar_corrections(segments, corrected)
+            existing = _get_transcript_json_from_s3(
+                user_id or 'anonymous', input_s3_key, stage='gpt', is_medical=False
+            )
+            payload = dict(existing) if isinstance(existing, dict) else {"segments": merged}
+            payload["segments"] = merged
+            w2, c2 = _flatten_words_from_segments(merged)
+            if w2 is not None and c2 is not None:
+                payload["words"] = w2
+                payload["captions"] = c2
+            result_s3_key = _put_transcript_json_to_s3(
+                user_id or 'anonymous', input_s3_key, payload, stage='gpt', is_medical=False
+            )
+            cached = dict(job_results_cache.get(job_id) or {})
+            cached['jobId'] = job_id
+            cached['status'] = cached.get('status') or 'completed'
+            cached['segments'] = merged
+            cached['transcript_persisted'] = True
+            cached['subtitle_grammar_done'] = True
+            result_dict = dict(cached.get('result') or {})
+            result_dict['segments'] = merged
+            result_dict['result_s3_key'] = result_s3_key
+            cached['result'] = result_dict
+            cached['result_s3_key'] = result_s3_key
+            job_results_cache[job_id] = cached
+            socketio.emit('job_status_update', cached, room=job_id)
+            logging.info(
+                "gpu_callback: subtitle grammar done job_id=%s segments=%s changed=%s sec=%.2f",
+                job_id,
+                len(merged),
+                (meta or {}).get('changed_count'),
+                time.time() - t0,
+            )
+        except Exception as err:
+            logging.warning(
+                "gpu_callback: subtitle grammar background failed job_id=%s: %s",
+                job_id,
+                err,
+            )
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base, pending_info=None):
     """S3 persist, DB timings, email — runs after HTTP 200 ack so the worker is not blocked."""
     result_s3_key = None
     is_medical_job = _is_medical_s3_key(input_s3_key)
     server_gpt_sec = None
+    schedule_subtitle_grammar = False
     try:
         if input_s3_key:
             transcript_payload = {"segments": segments}
@@ -9140,17 +9204,14 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                             .lower()
                             == 'music'
                         ) or _format_request_is_music_context({}, job_id)
-                        fmt = _run_standard_unified_format_with_segments(
+                        # Summary first (unblocks UI). Subtitle grammar runs afterward in background.
+                        fmt = _format_transcript_and_summary_via_openai(
                             plain,
-                            segments,
                             target_lang='he',
+                            is_medical=False,
                             is_music=bool(is_music_job),
                             user_id=user_id,
                         )
-                        corrected_segs = None
-                        if isinstance(fmt, dict):
-                            corrected_segs = fmt.pop('segments', None)
-                            fmt.pop('segment_correction_meta', None)
                         norm = _normalize_formatted_dict_for_storage(fmt)
                         if norm:
                             transcript_payload["formatted"] = norm
@@ -9159,18 +9220,8 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                                 len(str(norm.get('overview') or '')),
                                 input_s3_key.rsplit('/', 1)[-1][:80],
                             )
-                        if isinstance(corrected_segs, list) and corrected_segs:
-                            segments = _merge_segment_grammar_corrections(segments, corrected_segs)
-                            transcript_payload["segments"] = segments
-                            w2, c2 = _flatten_words_from_segments(segments)
-                            if w2 is not None and c2 is not None:
-                                transcript_payload["words"] = w2
-                                transcript_payload["captions"] = c2
-                            logging.info(
-                                "gpu_callback: subtitle grammar corrections merged segments=%s",
-                                len(segments),
-                            )
                         server_gpt_sec = round(time.time() - t_fmt, 3)
+                        schedule_subtitle_grammar = True
                     except Exception as fmt_err:
                         logging.warning(
                             "gpu_callback: server-side GPT format failed (segments still saved): %s",
@@ -9186,7 +9237,6 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             if isinstance(fmt_out, dict):
                 result_dict['formatted'] = fmt_out
                 data['formatted'] = fmt_out
-            # Keep corrected subtitle text on the socket payload (not only in S3).
             if isinstance(segments, list) and segments:
                 data['segments'] = segments
                 result_dict['segments'] = segments
@@ -9207,6 +9257,15 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                 )
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
             _schedule_runpod_min_workers(0)
+            if schedule_subtitle_grammar:
+                _schedule_subtitle_grammar_after_summary(
+                    job_id=job_id,
+                    user_id=user_id,
+                    input_s3_key=input_s3_key,
+                    segments=segments,
+                    is_medical_job=is_medical_job,
+                    pending_info=pending_info,
+                )
     except Exception as e:
         logging.exception("gpu_callback background save failed for %s", job_id)
         fail_payload = {
