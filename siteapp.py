@@ -9106,15 +9106,17 @@ def api_export_docx():
 
 
 # --- GPU Callback: ack fast to worker; persist in background (see docs/GPU_CALLBACK_API.md) ---
-def _schedule_subtitle_grammar_after_summary(
+def _schedule_post_summary_formatting(
     job_id,
     user_id,
     input_s3_key,
     segments,
     is_medical_job,
+    plain_text,
+    is_music_job=False,
     pending_info=None,
 ):
-    """Polish subtitle cue text after summary is already delivered (non-blocking for UI)."""
+    """Clean transcript + polish subtitle cues after summary is delivered."""
     if is_medical_job or not job_id or not input_s3_key:
         return
     if not isinstance(segments, list) or not segments:
@@ -9123,14 +9125,59 @@ def _schedule_subtitle_grammar_after_summary(
     def _worker():
         try:
             t0 = time.time()
-            corrected, meta = translate_segments(segments, target_lang='he')
-            if not isinstance(corrected, list) or not corrected:
-                return
-            merged = _merge_segment_grammar_corrections(segments, corrected)
+            clean_result = None
+            corrected = None
+            meta = {}
+            # These are independent and intentionally run after the fast summary socket.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                fut_clean = executor.submit(
+                    _format_transcript_cleanup_openai,
+                    plain_text,
+                    target_lang='he',
+                    gpt_model=(
+                        os.environ.get('GPT_CLEANUP_MODEL')
+                        or os.environ.get('GPT_MODEL')
+                        or 'gpt-4.1-mini'
+                    ),
+                    is_music=bool(is_music_job),
+                )
+                fut_segments = executor.submit(
+                    translate_segments,
+                    segments,
+                    target_lang='he',
+                )
+                try:
+                    clean_result = fut_clean.result()
+                except Exception as clean_err:
+                    logging.warning(
+                        "gpu_callback: transcript cleanup background failed job_id=%s: %s",
+                        job_id,
+                        clean_err,
+                    )
+                corrected, meta = fut_segments.result()
+
+            merged = (
+                _merge_segment_grammar_corrections(segments, corrected)
+                if isinstance(corrected, list) and corrected
+                else segments
+            )
             existing = _get_transcript_json_from_s3(
                 user_id or 'anonymous', input_s3_key, stage='gpt', is_medical=False
             )
             payload = dict(existing) if isinstance(existing, dict) else {"segments": merged}
+            existing_fmt = (
+                dict(payload.get("formatted"))
+                if isinstance(payload.get("formatted"), dict)
+                else {}
+            )
+            clean_text = str(
+                (clean_result or {}).get("clean_transcript")
+                if isinstance(clean_result, dict)
+                else ""
+            ).strip()
+            if clean_text:
+                existing_fmt["clean_transcript"] = clean_text
+                payload["formatted"] = existing_fmt
             payload["segments"] = merged
             w2, c2 = _flatten_words_from_segments(merged)
             if w2 is not None and c2 is not None:
@@ -9145,23 +9192,31 @@ def _schedule_subtitle_grammar_after_summary(
             cached['segments'] = merged
             cached['transcript_persisted'] = True
             cached['subtitle_grammar_done'] = True
+            cached['transcript_cleanup_done'] = bool(clean_text)
+            cached['post_summary_formatting_done'] = True
+            if existing_fmt:
+                cached['formatted'] = existing_fmt
             result_dict = dict(cached.get('result') or {})
             result_dict['segments'] = merged
             result_dict['result_s3_key'] = result_s3_key
+            if existing_fmt:
+                result_dict['formatted'] = existing_fmt
             cached['result'] = result_dict
             cached['result_s3_key'] = result_s3_key
             job_results_cache[job_id] = cached
             socketio.emit('job_status_update', cached, room=job_id)
             logging.info(
-                "gpu_callback: subtitle grammar done job_id=%s segments=%s changed=%s sec=%.2f",
+                "gpu_callback: post-summary formatting done job_id=%s clean_chars=%s "
+                "segments=%s changed=%s sec=%.2f",
                 job_id,
+                len(clean_text),
                 len(merged),
                 (meta or {}).get('changed_count'),
                 time.time() - t0,
             )
         except Exception as err:
             logging.warning(
-                "gpu_callback: subtitle grammar background failed job_id=%s: %s",
+                "gpu_callback: post-summary formatting background failed job_id=%s: %s",
                 job_id,
                 err,
             )
@@ -9174,7 +9229,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
     result_s3_key = None
     is_medical_job = _is_medical_s3_key(input_s3_key)
     server_gpt_sec = None
-    schedule_subtitle_grammar = False
+    schedule_post_summary_formatting = False
     try:
         if input_s3_key:
             transcript_payload = {"segments": segments}
@@ -9204,24 +9259,32 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                             .lower()
                             == 'music'
                         ) or _format_request_is_music_context({}, job_id)
-                        # Summary first (unblocks UI). Subtitle grammar runs afterward in background.
-                        fmt = _format_transcript_and_summary_via_openai(
+                        # Return only the concise summary first. Generating the full cleaned
+                        # transcript is output-token heavy and continues after the UI unblocks.
+                        summary_model = (
+                            os.environ.get('GPT_SUMMARY_MODEL')
+                            or os.environ.get('GPT_MODEL')
+                            or 'gpt-4.1-mini'
+                        )
+                        fmt = _format_summary_focused_openai(
                             plain,
                             target_lang='he',
-                            is_medical=False,
-                            is_music=bool(is_music_job),
-                            user_id=user_id,
+                            gpt_model=summary_model,
                         )
+                        fmt["clean_transcript"] = ""
                         norm = _normalize_formatted_dict_for_storage(fmt)
                         if norm:
                             transcript_payload["formatted"] = norm
                             logging.info(
-                                "gpu_callback: server-side formatted saved (overview_len=%s, input_s3_key suffix=%s)",
+                                "gpu_callback: fast summary saved model=%s overview_len=%s "
+                                "summary_sec=%.2f input_s3_key suffix=%s",
+                                summary_model,
                                 len(str(norm.get('overview') or '')),
+                                time.time() - t_fmt,
                                 input_s3_key.rsplit('/', 1)[-1][:80],
                             )
                         server_gpt_sec = round(time.time() - t_fmt, 3)
-                        schedule_subtitle_grammar = True
+                        schedule_post_summary_formatting = True
                     except Exception as fmt_err:
                         logging.warning(
                             "gpu_callback: server-side GPT format failed (segments still saved): %s",
@@ -9257,13 +9320,15 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                 )
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
             _schedule_runpod_min_workers(0)
-            if schedule_subtitle_grammar:
-                _schedule_subtitle_grammar_after_summary(
+            if schedule_post_summary_formatting:
+                _schedule_post_summary_formatting(
                     job_id=job_id,
                     user_id=user_id,
                     input_s3_key=input_s3_key,
                     segments=segments,
                     is_medical_job=is_medical_job,
+                    plain_text=plain,
+                    is_music_job=bool(is_music_job),
                     pending_info=pending_info,
                 )
     except Exception as e:

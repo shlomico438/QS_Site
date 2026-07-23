@@ -9833,11 +9833,13 @@ function qsApplyIncomingFormattedFromPayload(rawResult, reason) {
 function qsApplyIncomingSubtitleCorrectionsFromPayload(rawResult, reason) {
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
     if (!rawResult || typeof rawResult !== 'object') return false;
-    const isPersist = !!(
-        rawResult.transcript_persisted
-        || extractFormattedFromJobPayload(rawResult)
+    const grammarDone = !!(
+        rawResult.subtitle_grammar_done
+        || (rawResult.result && rawResult.result.subtitle_grammar_done)
     );
-    if (!isPersist) return false;
+    // The fast-summary socket intentionally carries raw Whisper segments.
+    // Apply segment text only after the background grammar pass marks it done.
+    if (!grammarDone) return false;
     const segs = typeof extractSegmentsFromJobPayload === 'function'
         ? extractSegmentsFromJobPayload(rawResult)
         : [];
