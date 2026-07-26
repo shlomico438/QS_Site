@@ -2519,6 +2519,8 @@ function ensureGlobalConfirmDialog() {
 }
 function showGlobalConfirm(message, options = {}) {
     const overlay = ensureGlobalConfirmDialog();
+    // Keep above later-opened overlays (e.g. export panel at z-index 10050).
+    try { document.body.appendChild(overlay); } catch (_) {}
     const msgEl = overlay.querySelector('.personal-dialog-message');
     const cancelBtn = overlay.querySelector('.personal-dialog-btn.cancel');
     const okBtn = overlay.querySelector('.personal-dialog-btn.primary');
@@ -3878,7 +3880,13 @@ window.toggleModal = function(show) {
         } catch (_) {}
     }
     const modal = document.getElementById('auth-modal');
-    if (modal) modal.style.display = show ? 'flex' : 'none';
+    if (modal) {
+        if (show) {
+            try { document.body.appendChild(modal); } catch (_) {}
+            modal.style.zIndex = '14000';
+        }
+        modal.style.display = show ? 'flex' : 'none';
+    }
 };
 
 function applyAuthModalMode() {

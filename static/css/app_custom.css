@@ -1507,7 +1507,8 @@ html[dir="rtl"] .seo-credit-bundle-item {
     direction: rtl;
 }
 
-/* Global confirm dialog: always a fixed centered popup (e.g. erase account) on any page */
+/* Global confirm dialog: always a fixed centered popup (e.g. erase account) on any page.
+   Must sit above the export panel (desktop sets #download-menu to 10050). */
 #global-confirm-overlay {
     position: fixed !important;
     inset: 0 !important;
@@ -1516,7 +1517,7 @@ html[dir="rtl"] .seo-credit-bundle-item {
     justify-content: center;
     background: rgba(15, 23, 42, 0.5);
     backdrop-filter: blur(6px);
-    z-index: 10000 !important;
+    z-index: 13000 !important;
 }
 #global-confirm-overlay.is-open {
     display: flex !important;
