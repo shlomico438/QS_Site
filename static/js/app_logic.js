@@ -2916,6 +2916,8 @@ async function qsAttachS3MediaPreview(s3Key, userId, opts) {
 function qsClientMediaDurationSecForCredits() {
     const stored = Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC);
     if (Number.isFinite(stored) && stored > 0) return stored;
+    const recalled = typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec() : 0;
+    if (Number.isFinite(recalled) && recalled > 0) return recalled;
     const pick = (el) => {
         if (!el) return 0;
         const d = Number(el.duration);
@@ -2929,6 +2931,33 @@ function qsClientMediaDurationSecForCredits() {
     const audio = document.getElementById('main-audio');
     return pick(audio);
 }
+
+/** Persist billable duration across OAuth/signup reloads (anonymous → registered claim). */
+function qsRememberMediaDurationSec(sec, jobId) {
+    const d = Number(sec);
+    if (!Number.isFinite(d) || d <= 0 || d > 86400) return;
+    try { window.__QS_UPLOAD_MEDIA_DURATION_SEC = d; } catch (_) {}
+    try {
+        localStorage.setItem('lastMediaDurationSec', String(d));
+        const jid = String(jobId || localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+        if (jid) localStorage.setItem(`mediaDurationSec:${jid}`, String(d));
+    } catch (_) {}
+}
+window.qsRememberMediaDurationSec = qsRememberMediaDurationSec;
+
+function qsRecallMediaDurationSec(jobId) {
+    try {
+        const jid = String(jobId || localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+        if (jid) {
+            const byJob = Number(localStorage.getItem(`mediaDurationSec:${jid}`));
+            if (Number.isFinite(byJob) && byJob > 0) return byJob;
+        }
+        const last = Number(localStorage.getItem('lastMediaDurationSec'));
+        if (Number.isFinite(last) && last > 0) return last;
+    } catch (_) {}
+    return 0;
+}
+window.qsRecallMediaDurationSec = qsRecallMediaDurationSec;
 
 /** User-facing message for /api/trigger_processing credit errors. */
 function qsCreditsTriggerErrorMessage(triggerData) {
@@ -3067,7 +3096,7 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
             typeof qsUploadMediaDurationForApi === 'function'
                 ? qsUploadMediaDurationForApi()
                 : (Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC) || 0)
-        );
+        ) || (typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec(jobId) : 0);
         const promise = (async () => {
             const res = await fetch('/api/claim_anonymous_job', {
                 method: 'POST',
@@ -3103,7 +3132,13 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                 if (typeof qsSyncUserCreditsUi === 'function') qsSyncUserCreditsUi();
             }
             window._qsAnonymousClaimDoneResults[jobId] = data;
-            if (data.moved_count || data.credit_minutes_used || data.already_claimed) {
+            if (data.charge_skipped) {
+                console.warn('[qs-claim] claim ok but credits not charged', {
+                    jobId,
+                    reason: data.charge_skip_reason,
+                    credit_minutes: data.credit_minutes,
+                });
+            } else if (data.moved_count || data.credit_minutes_used || data.already_claimed) {
                 console.info('[qs-claim] anonymous job claimed', {
                     jobId,
                     moved_count: data.moved_count,
@@ -3207,14 +3242,22 @@ function qsStartUploadDurationProbeInBackground(file) {
                 ? qsClientMediaDurationSecForCredits()
                 : 0;
             if (Number.isFinite(fromPlayer) && fromPlayer > 0) {
-                window.__QS_UPLOAD_MEDIA_DURATION_SEC = fromPlayer;
+                if (typeof qsRememberMediaDurationSec === 'function') {
+                    qsRememberMediaDurationSec(fromPlayer);
+                } else {
+                    window.__QS_UPLOAD_MEDIA_DURATION_SEC = fromPlayer;
+                }
                 return;
             }
             await new Promise((r) => setTimeout(r, 250));
         }
         const probed = await qsProbeFileMediaDurationSec(file, 15000);
         if (Number.isFinite(probed) && probed > 0) {
-            window.__QS_UPLOAD_MEDIA_DURATION_SEC = probed;
+            if (typeof qsRememberMediaDurationSec === 'function') {
+                qsRememberMediaDurationSec(probed);
+            } else {
+                window.__QS_UPLOAD_MEDIA_DURATION_SEC = probed;
+            }
         }
     })();
 }
@@ -3371,6 +3414,8 @@ async function qsEnsureCreditsForUpload(durationSec, opts) {
 function qsUploadMediaDurationForApi() {
     const stored = Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC);
     if (Number.isFinite(stored) && stored > 0) return stored;
+    const recalled = typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec() : 0;
+    if (Number.isFinite(recalled) && recalled > 0) return recalled;
     return qsClientMediaDurationSecForCredits();
 }
 
@@ -16786,6 +16831,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 localStorage.setItem('lastS3Key', s3Key);
                 localStorage.setItem('pendingS3Key', s3Key);
                 localStorage.setItem('lastJobId', jobId);
+                if (typeof qsRememberMediaDurationSec === 'function') {
+                    const dur = typeof qsUploadMediaDurationForApi === 'function'
+                        ? qsUploadMediaDurationForApi()
+                        : Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC);
+                    if (Number.isFinite(dur) && dur > 0) qsRememberMediaDurationSec(dur, jobId);
+                }
                 if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(jobId);
                 else localStorage.setItem('activeJobId', jobId);
                 window._lastProcessedJobId = null;

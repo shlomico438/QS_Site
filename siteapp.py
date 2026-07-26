@@ -2626,6 +2626,19 @@ def _complete_audio_preprocess_job(job_id, handoff, result=None, reason=''):
     }
     audio_preprocess_jobs[job_id] = completed
     _persist_audio_preprocess_handoff(job_id, completed)
+    try:
+        timing = (result or {}).get('timing') if isinstance(result, dict) else {}
+        input_dur = float((timing or {}).get('input_duration_sec') or 0)
+        if input_dur > 0:
+            pinfo = dict(pending_job_info.get(job_id) or {})
+            pinfo['credit_file_duration_sec'] = input_dur
+            pending_job_info[job_id] = pinfo
+            uid = str(pinfo.get('user_id') or 'anonymous').strip() or 'anonymous'
+            src = str(handoff.get('source_s3_key') or pinfo.get('input_s3_key') or '').strip()
+            if src:
+                _stash_deferred_credit_context(job_id, uid, src, pending_info=pinfo)
+    except Exception:
+        logging.warning("audio preprocess: could not stash credit duration job_id=%s", job_id)
     logging.info("Audio preprocessing complete job_id=%s via %s", job_id, reason or 'callback')
     _finish_audio_preprocess_and_trigger_gpu(
         job_id,
@@ -4858,6 +4871,142 @@ def _credit_minutes_from_duration(duration_sec):
     return max(1, int(math.ceil(duration / 60.0)))
 
 
+def _segments_duration_seconds_for_credits(segments):
+    """Best-effort length from transcript segment end times (under-bills vs full file, but better than 0)."""
+    best = 0.0
+    if not isinstance(segments, list):
+        return 0.0
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        for key in ('end', 'end_time', 'endSec'):
+            try:
+                val = float(seg.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if val > best:
+                best = val
+    return best if best > 0 else 0.0
+
+
+def _duration_from_pending_credit_context(job_id):
+    ctx = pending_credit_charge_context.get(str(job_id or '').strip()) or {}
+    if not isinstance(ctx, dict):
+        return 0.0
+    try:
+        val = float(ctx.get('credit_file_duration_sec') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return val if val > 0 else 0.0
+
+
+def _duration_from_job_metadata_dict(md):
+    """Pull file length hints persisted on jobs.metadata / qs_trigger / preprocess timing."""
+    if not isinstance(md, dict):
+        return 0.0
+    candidates = []
+    for key in ('credit_file_duration_sec', 'file_duration_sec', 'input_duration_sec', 'media_duration_sec'):
+        try:
+            val = float(md.get(key) or 0)
+            if val > 0:
+                candidates.append(val)
+        except (TypeError, ValueError):
+            pass
+    qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+    if isinstance(qt, dict):
+        for nest_key in ('audio_preprocessing', 'vocal_separation'):
+            nest = qt.get(nest_key) if isinstance(qt.get(nest_key), dict) else {}
+            timing = nest.get('timing') if isinstance(nest.get('timing'), dict) else {}
+            for key in ('input_duration_sec', 'source_duration_sec', 'total_sec'):
+                try:
+                    val = float(timing.get(key) or nest.get(key) or 0)
+                    # total_sec for preprocess is wall time, not media length — skip it here.
+                    if key == 'total_sec':
+                        continue
+                    if val > 0:
+                        candidates.append(val)
+                except (TypeError, ValueError):
+                    pass
+        topts = qt.get('transcription_options') if isinstance(qt.get('transcription_options'), dict) else {}
+        pt = topts.get('preprocess_timing') if isinstance(topts.get('preprocess_timing'), dict) else {}
+        try:
+            val = float(pt.get('input_duration_sec') or 0)
+            if val > 0:
+                candidates.append(val)
+        except (TypeError, ValueError):
+            pass
+    return max(candidates) if candidates else 0.0
+
+
+def _resolve_claim_credit_duration_sec(
+    *,
+    job_id,
+    bucket,
+    input_s3_key,
+    client_duration=0.0,
+    segments=None,
+    pending_info=None,
+    job_metadata=None,
+    result_s3_key=None,
+):
+    """Resolve billable seconds for anonymous→user claim (OAuth often wipes in-memory client duration)."""
+    best = 0.0
+    try:
+        client_val = float(client_duration or 0)
+        if client_val > 0:
+            best = max(best, client_val)
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(pending_info, dict):
+        try:
+            stored = float(pending_info.get('credit_file_duration_sec') or 0)
+            if stored > 0:
+                best = max(best, stored)
+        except (TypeError, ValueError):
+            pass
+
+    best = max(best, _duration_from_pending_credit_context(job_id))
+    best = max(best, _duration_from_job_metadata_dict(job_metadata))
+    best = max(best, _segments_duration_seconds_for_credits(segments))
+
+    if best <= 0 and result_s3_key:
+        try:
+            payload = _get_json_object_from_s3_key(result_s3_key)
+            if isinstance(payload, dict):
+                segs = payload.get('segments') or (payload.get('result') or {}).get('segments')
+                best = max(best, _segments_duration_seconds_for_credits(segs))
+                for key in ('file_duration_sec', 'credit_file_duration_sec', 'media_duration_sec', 'duration'):
+                    try:
+                        val = float(payload.get(key) or 0)
+                        if val > 0:
+                            best = max(best, val)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            logging.warning(
+                "claim duration: could not read result json job=%s key=%s",
+                job_id,
+                str(result_s3_key)[-80:],
+            )
+
+    if best <= 0 and bucket and input_s3_key:
+        best = max(
+            best,
+            float(
+                _file_duration_seconds_for_credits(
+                    bucket,
+                    input_s3_key,
+                    pending_info=pending_info,
+                    client_duration_sec=client_duration,
+                )
+                or 0
+            ),
+        )
+
+    return best if best > 0 else 0.0
+
+
 def _file_duration_seconds_for_credits(bucket, s3_key, pending_info=None, client_duration_sec=0.0):
     """Billable media length from uploaded file metadata (not transcribed segment spans)."""
     stored_sec = 0.0
@@ -5338,7 +5487,7 @@ def _user_credits_deduct_minutes(user_id, minutes):
     return rows[0] if rows else payload
 
 
-def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=None, pending_info=None):
+def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=None, pending_info=None, file_duration_sec=None):
     """Deduct minutes after successful transcription (uploaded file length, not segment speech spans)."""
     if not _credits_billing_enabled():
         return None
@@ -5349,11 +5498,19 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
     if _job_is_medical_for_credits(input_s3_key, pending_info):
         return None
 
-    row = _get_job_row_by_runpod_job_id(
+    rows = _get_job_rows_by_runpod_job_id(
         runpod_job_id,
-        select="id,credit_minutes_used,input_s3_key",
+        select="id,user_id,credit_minutes_used,input_s3_key",
+        limit=20,
     )
-    if isinstance(row, dict) and row.get('credit_minutes_used') is not None:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        owner = str(row.get('user_id') or '').strip()
+        if owner and owner != user_id:
+            continue
+        if row.get('credit_minutes_used') is None:
+            continue
         try:
             charged = float(row.get('credit_minutes_used') or 0)
             if charged > 0:
@@ -5369,7 +5526,17 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
     bucket = None
     if isinstance(pending_info, dict):
         bucket = pending_info.get('bucket')
-    duration_sec = _file_duration_seconds_for_credits(bucket, input_s3_key, pending_info=pending_info)
+    duration_sec = 0.0
+    try:
+        override = float(file_duration_sec) if file_duration_sec is not None else 0.0
+        if override > 0:
+            duration_sec = override
+    except (TypeError, ValueError):
+        duration_sec = 0.0
+    if duration_sec <= 0:
+        duration_sec = _file_duration_seconds_for_credits(bucket, input_s3_key, pending_info=pending_info)
+    if duration_sec <= 0:
+        duration_sec = _segments_duration_seconds_for_credits(segments)
     minutes = _credit_minutes_from_duration(duration_sec)
     if minutes <= 0:
         logging.info(
@@ -5377,7 +5544,13 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
             runpod_job_id,
             duration_sec,
         )
-        return None
+        return {
+            "ok": False,
+            "error": "duration_unknown",
+            "credit_minutes_used": 0,
+            "credit_minutes": int((_user_credits_get(user_id) or {}).get('credit_minutes') or 0),
+            "file_duration_seconds": duration_sec,
+        }
 
     wallet = _user_credits_get(user_id)
     balance = int((wallet or {}).get('credit_minutes') or 0)
@@ -5828,15 +6001,29 @@ def _finalize_claimed_anonymous_job(
     })
     pending_job_info[job_id] = pinfo
 
+    job_md = existing.get('metadata') if isinstance(existing, dict) else None
+    duration_sec = _resolve_claim_credit_duration_sec(
+        job_id=job_id,
+        bucket=bucket,
+        input_s3_key=new_input,
+        client_duration=client_duration,
+        segments=segments,
+        pending_info=pinfo,
+        job_metadata=job_md if isinstance(job_md, dict) else None,
+        result_s3_key=new_result,
+    )
+    if duration_sec > 0:
+        pinfo['credit_file_duration_sec'] = float(duration_sec)
+        pending_job_info[job_id] = pinfo
+        _stash_deferred_credit_context(job_id, user_id, new_input, pending_info=pinfo)
+
     credit_info = _charge_job_credits(
         user_id,
         job_id,
         segments,
         new_input,
-        pending_info={
-            "bucket": bucket,
-            "credit_file_duration_sec": client_duration if client_duration > 0 else None,
-        },
+        pending_info=pinfo,
+        file_duration_sec=duration_sec if duration_sec > 0 else None,
     )
     if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
         return jsonify({
@@ -5852,13 +6039,27 @@ def _finalize_claimed_anonymous_job(
         }), 402
 
     wallet = _user_credits_get(user_id) or wallet
+    used = 0
+    try:
+        used = float((credit_info or {}).get('credit_minutes_used') or 0)
+    except (TypeError, ValueError):
+        used = 0
+    if used <= 0 and not (isinstance(credit_info, dict) and credit_info.get('already_charged')):
+        logging.warning(
+            "claim_anonymous_job charged 0 minutes job_id=%s user=%s duration_sec=%s credit_info=%s",
+            job_id,
+            user_id[:8],
+            duration_sec,
+            {k: (credit_info or {}).get(k) for k in ('error', 'credit_minutes_used', 'file_duration_seconds')},
+        )
     logging.info(
-        "claim_anonymous_job ok job_id=%s user=%s moved=%s charged=%s already=%s",
+        "claim_anonymous_job ok job_id=%s user=%s moved=%s charged=%s already=%s duration_sec=%s",
         job_id,
         user_id[:8],
         len(moved or []),
         (credit_info or {}).get('credit_minutes_used'),
         already_claimed,
+        duration_sec,
     )
     out = {
         "ok": True,
@@ -5873,6 +6074,9 @@ def _finalize_claimed_anonymous_job(
     }
     if isinstance(credit_info, dict) and credit_info.get('already_charged'):
         out['already_charged'] = True
+    if isinstance(credit_info, dict) and credit_info.get('error') == 'duration_unknown':
+        out['charge_skipped'] = True
+        out['charge_skip_reason'] = 'duration_unknown'
     return jsonify(out)
 
 
