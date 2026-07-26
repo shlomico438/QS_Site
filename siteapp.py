@@ -5947,6 +5947,80 @@ def _claim_anonymous_job_lock(job_id):
         return lock
 
 
+def _clear_stale_anonymous_job_keys(user_id, job_id, old_input_key, new_input_key):
+    """Rewrite owned jobs still pointing at a missing anonymous key so claim scans stop looping."""
+    uid = str(user_id or '').strip()
+    jid = str(job_id or '').strip()
+    old_key = str(old_input_key or '').strip()
+    new_key = str(new_input_key or '').strip()
+    if not uid or not new_key:
+        return 0
+    rows = []
+    if jid:
+        rows.extend(_get_job_rows_by_runpod_job_id(
+            jid,
+            select="id,user_id,input_s3_key,metadata",
+            limit=20,
+        ))
+    # Also catch rows that share the stale anonymous key but a different/missing runpod id.
+    if old_key:
+        try:
+            from urllib.parse import quote
+            supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+            service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            if supabase_url and service_key:
+                headers = _supabase_service_headers(service_key)
+                ik = quote(old_key, safe='')
+                url = (
+                    f"{supabase_url}/rest/v1/jobs?user_id=eq.{quote(uid, safe='')}"
+                    f"&input_s3_key=eq.{ik}&select=id,user_id,input_s3_key,metadata&limit=20"
+                )
+                r = _supabase_http_request('GET', url, headers=headers, timeout=12)
+                if r.status_code == 200:
+                    extra = r.json() if r.content else []
+                    if isinstance(extra, list):
+                        rows.extend([row for row in extra if isinstance(row, dict)])
+        except Exception:
+            logging.warning("clear stale anonymous keys: lookup by input key failed")
+
+    seen = set()
+    cleared = 0
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key:
+        return 0
+    headers = {**_supabase_service_headers(service_key), "Prefer": "return=representation"}
+    for row in rows:
+        rid = str(row.get('id') or '').strip()
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        owner = str(row.get('user_id') or '').strip()
+        if owner and owner != uid:
+            continue
+        cur = str(row.get('input_s3_key') or '').strip()
+        if cur and not _is_anonymous_standard_s3_key(cur):
+            continue
+        md = dict(row.get('metadata') or {}) if isinstance(row.get('metadata'), dict) else {}
+        md['anonymous_claim_skipped'] = 'input_missing'
+        md['anonymous_input_s3_key'] = old_key or cur
+        md['anonymous_claim_skipped_at'] = datetime.utcnow().isoformat() + 'Z'
+        payload = {
+            "user_id": uid,
+            "input_s3_key": new_key,
+            "metadata": md,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        try:
+            patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{rid}"
+            r = _supabase_http_request('PATCH', patch_url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 204):
+                cleared += 1
+        except Exception:
+            logging.warning("clear stale anonymous keys: patch failed id=%s", rid)
+    return cleared
+
+
 def _finalize_claimed_anonymous_job(
     *,
     user_id,
@@ -6175,12 +6249,31 @@ def api_claim_anonymous_job():
                     already_claimed=True,
                 )
             if not src_exists and not dst_exists:
+                # Stale DB row (old guest upload already deleted from R2). Soft-skip and
+                # rewrite owned job keys off users/anonymous/ so sign-in scans stop retrying.
+                cleared = _clear_stale_anonymous_job_keys(
+                    user_id=user_id,
+                    job_id=job_id,
+                    old_input_key=input_s3_key,
+                    new_input_key=new_input,
+                )
+                logging.info(
+                    "claim_anonymous_job skip missing storage job_id=%s user=%s cleared=%s key=%s",
+                    job_id,
+                    user_id[:8],
+                    cleared,
+                    input_s3_key[-120:],
+                )
+                wallet = _user_credits_get(user_id) or wallet
                 return jsonify({
-                    "ok": False,
-                    "error": "anonymous_input_missing",
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "anonymous_input_missing",
                     "message": "Guest upload object was not found in storage (expired or already removed).",
-                    "input_s3_key": input_s3_key,
-                }), 404
+                    "input_s3_key": new_input,
+                    "cleared_stale_rows": cleared,
+                    "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+                })
 
             related = _collect_anonymous_job_s3_keys(bucket, input_s3_key)
             moved = []

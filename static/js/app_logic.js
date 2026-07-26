@@ -3118,6 +3118,18 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                 console.warn('[qs-claim] anonymous job claim failed', res.status, data);
                 return data;
             }
+            if (data.skipped) {
+                // Stale guest rows / already non-anonymous — not a real failure.
+                if (data.reason && data.reason !== 'not_anonymous') {
+                    console.info('[qs-claim] anonymous job claim skipped', {
+                        jobId,
+                        reason: data.reason,
+                        input_s3_key: data.input_s3_key || s3Key,
+                    });
+                }
+                window._qsAnonymousClaimDoneResults[jobId] = data;
+                return data;
+            }
             const newKey = String(data.input_s3_key || '').trim();
             if (newKey) {
                 try {
