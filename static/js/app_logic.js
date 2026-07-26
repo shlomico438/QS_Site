@@ -2295,17 +2295,20 @@ async function qsPollCheckStatusOnce(jobId) {
 window.startJobStatusPolling = function(jobId) {
     if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
     window._pollingJobId = jobId;
-    // Slower cadence + server-side row cache keeps Supabase load and CPU down (was ~4s + frequent trigger_status).
-    const pollMs = 9000;
-    const triggerStatusEveryNPolls = 3;
+    // Multi-instance: completion often arrives via R2 on another worker — poll faster than 9s.
+    const pollMs = 3000;
+    const triggerStatusEveryNPolls = 4;
     let polls = 0;
     let consecutiveSeverePollFailures = 0;
     // Only check_status (and network errors) count — trigger_status can 503 during proxy blips while check_status still works.
     const maxSevereBeforeStop = 24;
 
     void qsPollCheckStatusOnce(jobId);
-    setTimeout(() => { void qsPollCheckStatusOnce(jobId); }, 2500);
-    setTimeout(() => { void qsPollCheckStatusOnce(jobId); }, 6000);
+    [800, 1600, 2800, 4500, 7000].forEach((ms) => {
+        setTimeout(() => {
+            if (window._pollingJobId === jobId) void qsPollCheckStatusOnce(jobId);
+        }, ms);
+    });
 
     const stopPollingServerDown = (isHe) => {
         if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
@@ -6500,14 +6503,23 @@ async function syncJobResultS3KeyFromSaveResponse(saveRes, dbIdOverride) {
     }
 }
 
-/** On export: update existing job to exported/completed, or create one if no row or wrong user (e.g. signed in as different user). */
-async function ensureJobRecordOnExport() {
+/** On export: update existing job to exported/completed, or create one if no row or wrong user (e.g. signed in as different user).
+ *  opts.awaitClaim — when false (DOCX/TXT/SRT), start/reuse claim in background so Generate is not blocked on S3 move.
+ *  Movie burn must keep awaitClaim true (needs users/{id}/ keys).
+ */
+async function ensureJobRecordOnExport(opts) {
+    const awaitClaim = !(opts && opts.awaitClaim === false);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    // Guest → signed-in: move R2 objects under the user and charge minutes before export bookkeeping.
+    // Guest → signed-in: move R2 objects under the user and charge minutes.
+    // Reuse in-flight / done claim — never force a second parallel move.
     if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
-        try { await qsClaimAnonymousJobIfNeeded({ force: true }); } catch (_) {}
+        try {
+            const claimP = qsClaimAnonymousJobIfNeeded({ force: false });
+            if (awaitClaim) await claimP;
+            else Promise.resolve(claimP).catch(() => {});
+        } catch (_) {}
     }
 
     const dbId = localStorage.getItem('lastJobDbId');
@@ -8318,7 +8330,23 @@ async function ensureFormattedViaApiForExport() {
     const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
     const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
     const needSummary = !hasStandardFormattedSummary();
-    const needClean = !hasCleanTranscript();
+    let needClean = !hasCleanTranscript();
+    // Prefer segments over a long GPT cleanup pass when exporting transcript text.
+    if (needClean && !medFmt) {
+        const segBody = String(
+            (typeof buildTranscriptPlainBodyForExport === 'function' ? buildTranscriptPlainBodyForExport() : '') || ''
+        ).trim();
+        if (segBody) {
+            try {
+                if (!window.currentFormattedDoc || typeof window.currentFormattedDoc !== 'object') {
+                    window.currentFormattedDoc = {};
+                }
+                window.currentFormattedDoc.clean_transcript = segBody;
+                needClean = false;
+                console.info('[export] using segments as clean_transcript (skip GPT cleanup)');
+            } catch (_) {}
+        }
+    }
     if (!needSummary && !needClean) return true;
     if (typeof showStatus === 'function') {
         const msg = medFmt
@@ -9265,10 +9293,11 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const showTime = isTimeToggleVisible();
     const showSpeaker = document.getElementById('toggle-speaker')?.checked;
 
-    // Update job to exported, or create job if user signed in after upload
+    // Update job to exported, or create job if user signed in after upload.
+    // Do not block DOCX/TXT/captions on anonymous→user S3 claim (can take tens of seconds).
     try {
         if (typeof ensureJobRecordOnExport === 'function') {
-            await ensureJobRecordOnExport();
+            await ensureJobRecordOnExport({ awaitClaim: false });
         }
     } catch (err) {
         console.error("Failed to update job status:", err);
@@ -9280,7 +9309,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
     }
 
     if (type === 'docx' || type === 'txt') {
-        await hydrateFormattedFromSavedTranscript({ forExport: true });
+        await hydrateFormattedFromSavedTranscript({ forExport: true, quiet: true });
         const docBase = (String(baseName || '').trim() || 'transcript').replace(/[\\/:*?"<>|]+/g, '_');
         const requestedKinds = Array.isArray(options && options.docxKinds)
             ? options.docxKinds.map((k) => String(k || '').toLowerCase()).filter((k) => k === 'transcript' || k === 'summary')
@@ -9300,14 +9329,29 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 String(fmtDoc.medical_examination_transcript || '').trim() ||
                 String(fmtDoc.medical_patient_recommendations || '').trim())
         );
-        if ((wantTranscript && !hasClean) || (wantSummary && !hasSummaryBits)) {
-            await ensureFormattedViaApiForExport();
-        }
         // Caption cues are reflowed (~54 chars per line); do not use newline-joined segments as export body.
         const segmentFlowFallback = (window.currentSegments || [])
             .map(s => String((s && s.text) || '').trim())
             .filter(Boolean)
             .join(' ');
+        const fromSegmentsEarly = String(
+            (typeof buildTranscriptPlainBodyForExport === 'function' ? buildTranscriptPlainBodyForExport() : '') || ''
+        ).trim();
+        const hasSegmentBody = !!(fromSegmentsEarly || segmentFlowFallback);
+        // Guests often have summary but empty clean_transcript (server ships summary first).
+        // Transcript DOCX/TXT already falls back to segments — do not wait ~60s on GPT cleanup.
+        if (wantSummary && !hasSummaryBits) {
+            await ensureFormattedViaApiForExport();
+        } else if (wantTranscript && !hasClean && !hasSegmentBody) {
+            await ensureFormattedViaApiForExport();
+        } else if (wantTranscript && !hasClean && hasSegmentBody) {
+            try {
+                if (!window.currentFormattedDoc || typeof window.currentFormattedDoc !== 'object') {
+                    window.currentFormattedDoc = {};
+                }
+                window.currentFormattedDoc.clean_transcript = fromSegmentsEarly || segmentFlowFallback;
+            } catch (_) {}
+        }
 
         const _buildExportPayload = () => {
             const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')

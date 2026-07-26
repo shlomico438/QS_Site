@@ -7797,7 +7797,7 @@ def _completed_job_payload_from_s3_convention(runpod_job_id):
         return payload
 
     _job_result_s3_missing_until[jid] = time.monotonic() + max(
-        2.0, float(os.environ.get("JOB_RESULT_S3_MISSING_CACHE_SEC", "6") or 6)
+        1.5, float(os.environ.get("JOB_RESULT_S3_MISSING_CACHE_SEC", "2.5") or 2.5)
     )
     return None
 
@@ -7812,8 +7812,19 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         logging.debug("_update_job_timings: no values to update for %s", runpod_job_id)
         return
     rid = str(runpod_job_id or "").strip()
+    uid = str(user_id or "").strip().lower()
+    # Guest uploads have no jobs row until claim — do not warn on every callback.
+    if (not uid or uid == "anonymous") and rid:
+        miss_until = _job_row_missing_until.get(rid)
+        if miss_until and time.monotonic() < miss_until:
+            logging.debug("_update_job_timings: skip (no jobs row yet) %s", rid)
+            return
     if _jobs_patch_by_runpod_job_id(runpod_job_id, user_id, payload):
         logging.info("_update_job_timings: updated job %s with %s", rid, list(payload.keys()))
+        return
+    if not uid or uid == "anonymous":
+        _job_row_missing_until[rid] = time.monotonic() + _job_row_missing_cache_ttl_sec()
+        logging.info("_update_job_timings: no jobs row yet (guest) %s", rid)
         return
     logging.warning("_update_job_timings: all attempts failed for %s", rid)
 
@@ -7910,24 +7921,22 @@ def check_job_status(job_id):
     if job_id in job_results_cache:
         return jsonify(job_results_cache[job_id])
 
-    completed_payload = _completed_job_payload_from_db(job_id)
-    if completed_payload:
-        logging.info("check_status recovered completed job from DB/S3 job_id=%s", job_id)
-        return jsonify(completed_payload), 200
+    # Skip Supabase when we already know this guest/pre-claim job has no row.
+    jid = str(job_id or "").strip()
+    miss_until = _job_row_missing_until.get(jid)
+    known_missing_row = bool(miss_until and time.monotonic() < miss_until)
 
-    # Guest jobs have no jobs row until claim. After GPU start, recover from R2 so
-    # multi-instance polls do not stay on 202 while another worker holds the memory cache.
-    mem_trigger = pending_trigger.get(job_id)
-    gpu_at = gpu_started_at.get(job_id)
-    if not gpu_at:
-        try:
-            gpu_at = (_get_trigger_timings(job_id) or {}).get("gpu_started_at")
-        except Exception:
-            gpu_at = None
-    if gpu_at or mem_trigger in ("triggered", "run_accepted", "preprocessing"):
-        s3_payload = _completed_job_payload_from_s3_convention(job_id)
-        if s3_payload:
-            return jsonify(s3_payload), 200
+    if not known_missing_row:
+        completed_payload = _completed_job_payload_from_db(job_id)
+        if completed_payload:
+            logging.info("check_status recovered completed job from DB/S3 job_id=%s", job_id)
+            return jsonify(completed_payload), 200
+
+    # Always probe R2 by convention. Completion may live only in another worker's
+    # memory cache; guest jobs have no DB row until claim.
+    s3_payload = _completed_job_payload_from_s3_convention(job_id)
+    if s3_payload:
+        return jsonify(s3_payload), 200
 
     # If trigger failed, surface it (merge DB + memory so stale warmup "failed" does not win over retry).
     status, _ = _resolve_trigger_status_for_poll(job_id)
@@ -10319,6 +10328,8 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
     is_medical_job = _is_medical_s3_key(input_s3_key)
     server_gpt_sec = None
     schedule_post_summary_formatting = False
+    plain = ""
+    is_music_job = False
     try:
         if input_s3_key:
             transcript_payload = {"segments": segments}
@@ -10333,7 +10344,40 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                     "gpu_callback: merged existing formatted onto new segments (input_s3_key suffix=%s)",
                     input_s3_key.rsplit('/', 1)[-1][:80],
                 )
-            elif _gpu_callback_server_format_enabled(is_medical_job):
+
+            # Put segments to R2 immediately so other instances can complete check_status
+            # via S3 convention before GPT summary finishes (often several seconds).
+            try:
+                result_s3_key = _put_transcript_json_to_s3(
+                    user_id or 'anonymous',
+                    input_s3_key,
+                    transcript_payload,
+                    stage='gpt',
+                    is_medical=is_medical_job,
+                )
+                _job_result_s3_missing_until.pop(str(job_id), None)
+                early_result = dict(data.get('result') or result) if isinstance(result, dict) else {}
+                early_result['result_s3_key'] = result_s3_key
+                if isinstance(segments, list) and segments:
+                    early_result['segments'] = segments
+                    data['segments'] = segments
+                data['result'] = early_result
+                data['result_s3_key'] = result_s3_key
+                data['transcript_persisted'] = True
+                job_results_cache[job_id] = data
+                logging.info(
+                    "gpu_callback: early S3 persist job_id=%s key=%s",
+                    job_id,
+                    (result_s3_key or '')[-100:],
+                )
+            except Exception as early_put_err:
+                logging.warning(
+                    "gpu_callback: early S3 persist failed job_id=%s: %s",
+                    job_id,
+                    early_put_err,
+                )
+
+            if (not preserved_fmt) and _gpu_callback_server_format_enabled(is_medical_job):
                 plain = _segments_to_plain_text(segments)
                 if plain.strip():
                     try:
@@ -10382,6 +10426,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             result_s3_key = _put_transcript_json_to_s3(
                 user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt', is_medical=is_medical_job
             )
+            _job_result_s3_missing_until.pop(str(job_id), None)
             result_dict = dict(data.get('result') or result) if isinstance(result, dict) else {}
             result_dict['result_s3_key'] = result_s3_key
             result_dict.pop('server_gpt_pending', None)
@@ -10649,9 +10694,18 @@ def on_join(data):
 
         # CHECK MAILBOX: Is the result already waiting?
         if room in job_results_cache:
-            print(f"馃摝 Found cached result for {room}, sending now!")
+            print(f"Found cached result for {room}, sending now!")
             # Send it to this specific user who just reconnected
             socketio.emit('job_status_update', job_results_cache[room], room=request.sid)
+            return
+        # Cross-worker guest jobs: completion may only exist in R2 on this instance.
+        try:
+            s3_payload = _completed_job_payload_from_s3_convention(room)
+            if s3_payload:
+                print(f"Found S3 result for {room}, sending now!")
+                socketio.emit('job_status_update', s3_payload, room=request.sid)
+        except Exception as join_s3_err:
+            logging.debug("join S3 recovery failed room=%s: %s", room, join_s3_err)
 
 # --- SIMULATION BACKGROUND TASK ---
 # This simulates the GPU finishing and sending data back after 4 seconds
