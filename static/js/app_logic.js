@@ -3299,15 +3299,23 @@ function qsClearGuestAuthSnapshot() {
 async function qsPresignMediaOrTranscript(s3Key, userId) {
     const key = String(s3Key || '').trim();
     if (!key) return null;
+    // Anonymous keys must be requested as userId=anonymous (or any auth id after server allow-list).
+    // Prefer real user id when present so stream tokens match the signed-in session.
+    const uid = String(userId || '').trim()
+        || (qsIsAnonymousStandardS3Key(key) ? 'anonymous' : '');
     const res = await fetch('/api/get_presigned_url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             s3Key: key,
-            userId: userId || undefined,
+            userId: uid || undefined,
             isMedical: false,
         }),
     });
+    if (!res.ok) {
+        console.warn('[qs-auth] presign failed', res.status, key.slice(-80));
+        return null;
+    }
     const json = await res.json().catch(() => ({}));
     if (!json || !json.url) return null;
     return qsNormalizeAbsoluteMediaUrl(json.url);
@@ -3410,11 +3418,23 @@ async function qsRestorePendingGuestSessionAfterAuth(options = {}) {
             window.uploadWasVideo = isVideo;
 
             let mediaUrl = s3Key ? await qsPresignMediaOrTranscript(s3Key, user.id) : null;
-            // If claim already moved the object, retry with rewritten key.
+            // If claim already moved the object (or anonymous presign failed), wait for claim then retry.
             if (!mediaUrl && s3Key && qsIsAnonymousStandardS3Key(s3Key)) {
                 try { await claimPromise; } catch (_) {}
                 const claimedKey = String(localStorage.getItem('lastS3Key') || '').trim();
                 if (claimedKey && claimedKey !== s3Key) {
+                    s3Key = claimedKey;
+                    mediaUrl = await qsPresignMediaOrTranscript(s3Key, user.id);
+                } else {
+                    // Claim may have rewritten under users/{id}/ even if localStorage lag — try rewrite locally.
+                    const guessed = `users/${user.id}/` + s3Key.slice('users/anonymous/'.length);
+                    mediaUrl = await qsPresignMediaOrTranscript(guessed, user.id);
+                    if (mediaUrl) s3Key = guessed;
+                }
+            } else if (!mediaUrl) {
+                try { await claimPromise; } catch (_) {}
+                const claimedKey = String(localStorage.getItem('lastS3Key') || '').trim();
+                if (claimedKey) {
                     s3Key = claimedKey;
                     mediaUrl = await qsPresignMediaOrTranscript(s3Key, user.id);
                 }

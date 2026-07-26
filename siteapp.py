@@ -3560,10 +3560,16 @@ def get_presigned_url():
             return jsonify({"error": "No s3Key provided"}), 400
 
         # Per-user keys: only allow access to users/{user_id}/...
+        # Exception: users/anonymous/... is readable after guest→sign-in (claim/restore)
+        # when a userId is provided (signed-in user or still "anonymous").
         if s3_key.startswith("users/"):
             if not user_id:
                 return jsonify({"error": "userId required for user-scoped keys"}), 400
-            if not s3_key.startswith(f"users/{user_id}/"):
+            uid = str(user_id).strip()
+            if s3_key.startswith("users/anonymous/"):
+                if not uid:
+                    return jsonify({"error": "Access denied: key does not belong to user"}), 403
+            elif not s3_key.startswith(f"users/{uid}/"):
                 return jsonify({"error": "Access denied: key does not belong to user"}), 403
 
         bucket = _presign_bucket_for_key(user_id, s3_key, data)
@@ -3623,7 +3629,11 @@ def stream_s3_media(token):
     if not s3_key:
         return jsonify({"error": "Invalid payload"}), 400
     if s3_key.startswith('users/'):
-        if not user_id or not s3_key.startswith(f'users/{user_id}/'):
+        # Mirror get_presigned_url: allow users/anonymous/... for any authenticated token user.
+        if s3_key.startswith('users/anonymous/'):
+            if not user_id:
+                return jsonify({"error": "Access denied"}), 403
+        elif not user_id or not s3_key.startswith(f'users/{user_id}/'):
             return jsonify({"error": "Access denied"}), 403
 
     bucket = _presign_bucket_for_key(user_id, s3_key, None)
@@ -3706,10 +3716,15 @@ def api_s3_exists():
             return jsonify({"error": "No s3Key provided"}), 400
 
         # Per-user keys: only allow access to users/{user_id}/...
+        # Same anonymous exception as get_presigned_url (guest claim/restore).
         if s3_key.startswith("users/"):
             if not user_id:
                 return jsonify({"error": "userId required for user-scoped keys"}), 400
-            if not s3_key.startswith(f"users/{user_id}/"):
+            uid = str(user_id).strip()
+            if s3_key.startswith("users/anonymous/"):
+                if not uid:
+                    return jsonify({"error": "Access denied: key does not belong to user"}), 403
+            elif not s3_key.startswith(f"users/{uid}/"):
                 return jsonify({"error": "Access denied: key does not belong to user"}), 403
 
         bucket = _presign_bucket_for_key(user_id, s3_key, data)
