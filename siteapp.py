@@ -7188,15 +7188,26 @@ _QS_TRIGGER_META_KEY = "qs_trigger"
 
 # Avoid a Supabase round-trip on every poll (trigger_status + check_status each hit DB). TTL seconds; set 0 to disable.
 _job_poll_row_cache = {}  # runpod_job_id -> (time.time(), row dict)
+# Anonymous / pre-claim jobs have no jobs row — remember misses so polls stay fast.
+_job_row_missing_until = {}  # runpod_job_id -> monotonic deadline
+_job_result_s3_missing_until = {}  # runpod_job_id -> monotonic deadline
+_MERGE_QS_TRIGGER_NO_ROW_LOGGED = set()
 
 
 def _job_poll_row_cache_ttl_sec():
     return max(0.0, float(os.environ.get("JOB_POLL_ROW_CACHE_SEC", "8")))
 
 
+def _job_row_missing_cache_ttl_sec():
+    return max(1.0, float(os.environ.get("JOB_ROW_MISSING_CACHE_SEC", "20")))
+
+
 def _invalidate_job_poll_row_cache(runpod_job_id):
     if runpod_job_id is not None:
-        _job_poll_row_cache.pop(str(runpod_job_id), None)
+        jid = str(runpod_job_id)
+        _job_poll_row_cache.pop(jid, None)
+        _job_row_missing_until.pop(jid, None)
+        _job_result_s3_missing_until.pop(jid, None)
 
 
 def _get_job_poll_row(runpod_job_id, db_timeout=None):
@@ -7230,9 +7241,13 @@ def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata", ti
     service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not service_key or not runpod_job_id:
         return None
+    jid = str(runpod_job_id)
+    miss_until = _job_row_missing_until.get(jid)
+    if miss_until and time.monotonic() < miss_until:
+        return None
     req_timeout = timeout if timeout is not None else 6
-    rj = quote(str(runpod_job_id), safe="")
-    rj_quoted = quote(f'"{runpod_job_id}"', safe="")
+    rj = quote(jid, safe="")
+    rj_quoted = quote(f'"{jid}"', safe="")
     headers = {
         "apikey": service_key,
         "Authorization": f"Bearer {service_key}",
@@ -7245,9 +7260,12 @@ def _get_job_row_by_runpod_job_id(runpod_job_id, select="id,status,metadata", ti
             if r.status_code == 200 and r.text:
                 rows = r.json()
                 if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                    _job_row_missing_until.pop(jid, None)
                     return rows[0]
         except Exception as e:
             logging.warning("_get_job_row_by_runpod_job_id: GET failed for %s: %s", runpod_job_id, e)
+    # Guest uploads (and any job before createJobOnUpload) have no row — cache the miss.
+    _job_row_missing_until[jid] = time.monotonic() + _job_row_missing_cache_ttl_sec()
     return None
 
 
@@ -7260,7 +7278,14 @@ def _merge_job_qs_trigger(runpod_job_id, merge_qs_trigger, update_job_status=Non
     try:
         row = _get_job_row_by_runpod_job_id(runpod_job_id, select="id,metadata,status")
         if not row or not row.get("id"):
-            logging.warning("_merge_job_qs_trigger: no job row for runpod_job_id=%s", runpod_job_id)
+            # Expected for anonymous / pre-claim jobs — do not warn on every preprocess tick.
+            jid = str(runpod_job_id or "")
+            if jid and jid not in _MERGE_QS_TRIGGER_NO_ROW_LOGGED:
+                _MERGE_QS_TRIGGER_NO_ROW_LOGGED.add(jid)
+                logging.info(
+                    "_merge_job_qs_trigger: no job row for runpod_job_id=%s (ok for guest until claim)",
+                    runpod_job_id,
+                )
             return
         md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         md = dict(md)
@@ -7699,6 +7724,69 @@ def _completed_job_payload_from_db(runpod_job_id):
     return payload
 
 
+def _completed_job_payload_from_s3_convention(runpod_job_id):
+    """Cross-worker recovery for guest jobs (no DB row): look for the transcript JSON in R2."""
+    jid = str(runpod_job_id or "").strip()
+    if not jid:
+        return None
+    miss_until = _job_result_s3_missing_until.get(jid)
+    if miss_until and time.monotonic() < miss_until:
+        return None
+
+    candidates = []
+    pinfo = pending_job_info.get(jid) or {}
+    for k in ("result_s3_key", "input_s3_key", "transcription_s3_key"):
+        val = str(pinfo.get(k) or "").strip()
+        if not val:
+            continue
+        if k == "result_s3_key":
+            candidates.append(val)
+        elif "/input/" in val:
+            candidates.append(val.replace("/input/", "/output/", 1).rsplit(".", 1)[0] + ".json")
+    candidates.append(f"users/anonymous/output/{jid}.json")
+
+    seen = set()
+    for key in candidates:
+        key = str(key or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        transcript = _get_json_object_from_s3_key(key)
+        if not isinstance(transcript, dict):
+            continue
+        segments = transcript.get("segments") if isinstance(transcript.get("segments"), list) else []
+        if not segments and not transcript.get("words") and not transcript.get("formatted"):
+            continue
+        payload = {
+            "jobId": jid,
+            "status": "completed",
+            "result_s3_key": key,
+            "result": {
+                "segments": segments,
+                "result_s3_key": key,
+            },
+            "segments": segments,
+        }
+        if isinstance(transcript.get("formatted"), dict):
+            payload["formatted"] = transcript["formatted"]
+            payload["result"]["formatted"] = transcript["formatted"]
+        if isinstance(transcript.get("words"), list):
+            payload["words"] = transcript["words"]
+            payload["result"]["words"] = transcript["words"]
+        if isinstance(transcript.get("captions"), list):
+            payload["captions"] = transcript["captions"]
+            payload["result"]["captions"] = transcript["captions"]
+        job_results_cache[jid] = payload
+        _job_result_s3_missing_until.pop(jid, None)
+        logging.info("check_status recovered completed job from S3 job_id=%s key=%s", jid, key[-100:])
+        return payload
+
+    _job_result_s3_missing_until[jid] = time.monotonic() + max(
+        2.0, float(os.environ.get("JOB_RESULT_S3_MISSING_CACHE_SEC", "6") or 6)
+    )
+    return None
+
+
 def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> None:
     """Update jobs table with PROCESS TIMING data. Matches by runpod_job_id column or metadata.job_id."""
     if not (os.environ.get('SUPABASE_URL') or '').strip() or not (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip():
@@ -7804,15 +7892,27 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
 def check_job_status(job_id):
     # Never return a hard-coded fake transcript here.
     # check_status should only return actual cached result if available.
-    # Check the global cache we created earlier
     if job_id in job_results_cache:
-        print(f"馃攷 Client checked status for {job_id} -> Found completed result!")
         return jsonify(job_results_cache[job_id])
 
     completed_payload = _completed_job_payload_from_db(job_id)
     if completed_payload:
         logging.info("check_status recovered completed job from DB/S3 job_id=%s", job_id)
         return jsonify(completed_payload), 200
+
+    # Guest jobs have no jobs row until claim. After GPU start, recover from R2 so
+    # multi-instance polls do not stay on 202 while another worker holds the memory cache.
+    mem_trigger = pending_trigger.get(job_id)
+    gpu_at = gpu_started_at.get(job_id)
+    if not gpu_at:
+        try:
+            gpu_at = (_get_trigger_timings(job_id) or {}).get("gpu_started_at")
+        except Exception:
+            gpu_at = None
+    if gpu_at or mem_trigger in ("triggered", "run_accepted", "preprocessing"):
+        s3_payload = _completed_job_payload_from_s3_convention(job_id)
+        if s3_payload:
+            return jsonify(s3_payload), 200
 
     # If trigger failed, surface it (merge DB + memory so stale warmup "failed" does not win over retry).
     status, _ = _resolve_trigger_status_for_poll(job_id)
