@@ -5566,7 +5566,13 @@ def _collect_anonymous_job_s3_keys(bucket, input_s3_key):
 
 
 def _s3_copy_then_delete(bucket, src_key, dst_key):
-    """Copy object to destination; delete source only after a successful copy."""
+    """Copy object to destination; delete source only after a successful copy.
+
+    Idempotent for claim races: missing source is OK when destination already exists,
+    or when both are gone (stale list / already claimed by a concurrent request).
+    Returns True if the destination is present after the call (moved or already there).
+    Returns False if there is nothing to claim for this pair (skip).
+    """
     src = str(src_key or '').strip()
     dst = str(dst_key or '').strip()
     bucket = str(bucket or '').strip()
@@ -5575,16 +5581,38 @@ def _s3_copy_then_delete(bucket, src_key, dst_key):
     s3_client = _s3_boto_client(bucket=bucket)
     if _s3_object_exists(bucket, dst):
         try:
-            s3_client.delete_object(Bucket=bucket, Key=src)
+            if _s3_object_exists(bucket, src):
+                s3_client.delete_object(Bucket=bucket, Key=src)
         except Exception:
             logging.warning("claim: could not delete already-copied source %s", src[-80:])
         return True
-    s3_client.copy_object(
-        Bucket=bucket,
-        CopySource={'Bucket': bucket, 'Key': src},
-        Key=dst,
-        MetadataDirective='COPY',
-    )
+    if not _s3_object_exists(bucket, src):
+        logging.info(
+            "claim: skip missing source (already moved or never uploaded) src=%s dst=%s",
+            src[-100:],
+            dst[-100:],
+        )
+        return False
+    try:
+        s3_client.copy_object(
+            Bucket=bucket,
+            CopySource={'Bucket': bucket, 'Key': src},
+            Key=dst,
+            MetadataDirective='COPY',
+        )
+    except ClientError as ce:
+        code = str((ce.response or {}).get('Error', {}).get('Code') or '')
+        if code in ('NoSuchKey', '404', 'NotFound', 'NoSuchBucket'):
+            # Concurrent claim deleted source mid-flight.
+            if _s3_object_exists(bucket, dst):
+                return True
+            logging.warning(
+                "claim: source vanished during copy src=%s code=%s",
+                src[-100:],
+                code,
+            )
+            return False
+        raise
     try:
         s3_client.delete_object(Bucket=bucket, Key=src)
     except Exception:
@@ -5592,19 +5620,60 @@ def _s3_copy_then_delete(bucket, src_key, dst_key):
     return True
 
 
+def _get_job_rows_by_runpod_job_id(runpod_job_id, select="id,user_id,input_s3_key,result_s3_key,status,metadata,credit_minutes_used", limit=20):
+    """Fetch jobs rows for a runpod_job_id (may be >1 if duplicates were inserted)."""
+    from urllib.parse import quote
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key or not runpod_job_id:
+        return []
+    headers = _supabase_service_headers(service_key)
+    rj = quote(str(runpod_job_id), safe="")
+    lim = max(1, min(int(limit or 20), 50))
+    try:
+        url = (
+            f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
+            f"&select={select}&order=created_at.asc&limit={lim}"
+        )
+        r = _supabase_http_request('GET', url, headers=headers, timeout=12)
+        if r.status_code != 200:
+            return []
+        rows = r.json() if r.content else []
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    except Exception as e:
+        logging.warning("_get_job_rows_by_runpod_job_id failed for %s: %s", runpod_job_id, e)
+        return []
+
+
 def _jobs_upsert_claimed_anonymous(user_id, runpod_job_id, old_input_key, new_input_key, new_result_key=None, user_name=None, user_email=None):
-    """Attach or update the jobs row for a claimed anonymous upload."""
+    """Attach or update the jobs row for a claimed anonymous upload.
+
+    Prefer patching an existing row (including duplicate runpod_job_id rows for this user)
+    so concurrent claims / export inserts do not keep creating extras.
+    """
     uid = str(user_id or '').strip()
     jid = str(runpod_job_id or '').strip()
     if not uid or not jid:
         return None
-    row = _get_job_row_by_runpod_job_id(
+    rows = _get_job_rows_by_runpod_job_id(
         jid,
         select="id,user_id,input_s3_key,result_s3_key,status,metadata,credit_minutes_used",
     )
+    # Prefer: owned by this user, then unowned, never another user's row.
+    target = None
+    extras_same_user = []
+    for row in rows:
+        owner = str(row.get('user_id') or '').strip()
+        if owner and owner != uid:
+            continue
+        if target is None:
+            target = row
+        elif owner == uid:
+            extras_same_user.append(row)
+
     md = {}
-    if isinstance(row, dict) and isinstance(row.get('metadata'), dict):
-        md = dict(row.get('metadata') or {})
+    if isinstance(target, dict) and isinstance(target.get('metadata'), dict):
+        md = dict(target.get('metadata') or {})
     md['job_id'] = jid
     md['claimed_from_anonymous'] = True
     md['claimed_from_anonymous_at'] = datetime.utcnow().isoformat() + 'Z'
@@ -5631,15 +5700,46 @@ def _jobs_upsert_claimed_anonymous(user_id, runpod_job_id, old_input_key, new_in
     if user_email:
         payload["user_email"] = user_email
 
-    if isinstance(row, dict) and row.get('id'):
+    def _patch_row(row_id, patch_payload):
+        patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{row_id}"
+        r = _supabase_http_request('PATCH', patch_url, json=patch_payload, headers=headers, timeout=15)
+        if r.status_code not in (200, 204):
+            raise RuntimeError(r.text or f"jobs claim patch HTTP {r.status_code}")
+
+    if isinstance(target, dict) and target.get('id'):
+        _patch_row(target['id'], payload)
+        # Align duplicate same-user rows to the claimed key so UI/history aren't split.
+        for extra in extras_same_user:
+            eid = extra.get('id')
+            if not eid or str(eid) == str(target.get('id')):
+                continue
+            try:
+                _patch_row(eid, {
+                    "input_s3_key": new_input_key,
+                    "user_id": uid,
+                    "updated_at": payload["updated_at"],
+                    **({"result_s3_key": new_result_key} if new_result_key else {}),
+                })
+            except Exception:
+                logging.warning(
+                    "claim: could not align duplicate jobs row id=%s runpod=%s",
+                    eid,
+                    jid,
+                )
+        return str(target.get('id'))
+
+    # Re-check once more before insert to reduce duplicate races.
+    rows_again = _get_job_rows_by_runpod_job_id(
+        jid,
+        select="id,user_id,input_s3_key,result_s3_key,status,metadata,credit_minutes_used",
+    )
+    for row in rows_again:
         owner = str(row.get('user_id') or '').strip()
         if owner and owner != uid:
             raise PermissionError("Job already belongs to another user")
-        patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{row['id']}"
-        r = _supabase_http_request('PATCH', patch_url, json=payload, headers=headers, timeout=15)
-        if r.status_code not in (200, 204):
-            raise RuntimeError(r.text or f"jobs claim patch HTTP {r.status_code}")
-        return str(row.get('id'))
+        if row.get('id'):
+            _patch_row(row['id'], payload)
+            return str(row.get('id'))
 
     payload.update({
         "type": "transcription",
@@ -5654,10 +5754,126 @@ def _jobs_upsert_claimed_anonymous(user_id, runpod_job_id, old_input_key, new_in
     )
     if r.status_code not in (200, 201):
         raise RuntimeError(r.text or f"jobs claim insert HTTP {r.status_code}")
-    rows = r.json() if r.content else []
-    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-        return str(rows[0].get('id') or '') or None
+    inserted = r.json() if r.content else []
+    if isinstance(inserted, list) and inserted and isinstance(inserted[0], dict):
+        return str(inserted[0].get('id') or '') or None
     return None
+
+
+_CLAIM_ANON_LOCKS = {}
+_CLAIM_ANON_LOCKS_GUARD = threading.Lock()
+
+
+def _claim_anonymous_job_lock(job_id):
+    jid = str(job_id or '').strip()
+    with _CLAIM_ANON_LOCKS_GUARD:
+        lock = _CLAIM_ANON_LOCKS.get(jid)
+        if lock is None:
+            lock = threading.Lock()
+            _CLAIM_ANON_LOCKS[jid] = lock
+        return lock
+
+
+def _finalize_claimed_anonymous_job(
+    *,
+    user_id,
+    job_id,
+    old_input_key,
+    new_input,
+    bucket,
+    segments,
+    client_duration,
+    user_name,
+    user_email,
+    wallet,
+    moved=None,
+    already_claimed=False,
+):
+    """Shared success path after objects are under users/{id}/ (or already were)."""
+    new_result = None
+    out_base = new_input.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
+    for candidate in (f"{out_base}.json", f"{out_base}.gpt.json"):
+        if _s3_object_exists(bucket, candidate):
+            new_result = candidate
+            break
+    existing = _get_job_row_by_runpod_job_id(
+        job_id,
+        select="id,user_id,input_s3_key,result_s3_key,credit_minutes_used,metadata",
+    )
+    if not new_result and isinstance(existing, dict):
+        old_result = str(existing.get('result_s3_key') or '').strip()
+        if old_result:
+            rewritten = _rewrite_anonymous_standard_s3_key(old_result, user_id)
+            if rewritten and _s3_object_exists(bucket, rewritten):
+                new_result = rewritten
+            elif old_result.startswith(f'users/{user_id}/') and _s3_object_exists(bucket, old_result):
+                new_result = old_result
+
+    job_db_id = _jobs_upsert_claimed_anonymous(
+        user_id,
+        job_id,
+        old_input_key,
+        new_input,
+        new_result_key=new_result,
+        user_name=user_name,
+        user_email=user_email,
+    )
+
+    pinfo = dict(pending_job_info.get(job_id) or {})
+    pinfo.update({
+        "input_s3_key": new_input,
+        "transcription_s3_key": new_input,
+        "user_id": user_id,
+        "bucket": bucket,
+    })
+    pending_job_info[job_id] = pinfo
+
+    credit_info = _charge_job_credits(
+        user_id,
+        job_id,
+        segments,
+        new_input,
+        pending_info={
+            "bucket": bucket,
+            "credit_file_duration_sec": client_duration if client_duration > 0 else None,
+        },
+    )
+    if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
+        return jsonify({
+            "ok": False,
+            "error": "insufficient_credits",
+            "message": credit_info.get('message'),
+            "input_s3_key": new_input,
+            "result_s3_key": new_result,
+            "job_db_id": job_db_id,
+            "moved_count": len(moved or []),
+            "already_claimed": already_claimed,
+            **_credit_fields_for_api(credit_info),
+        }), 402
+
+    wallet = _user_credits_get(user_id) or wallet
+    logging.info(
+        "claim_anonymous_job ok job_id=%s user=%s moved=%s charged=%s already=%s",
+        job_id,
+        user_id[:8],
+        len(moved or []),
+        (credit_info or {}).get('credit_minutes_used'),
+        already_claimed,
+    )
+    out = {
+        "ok": True,
+        "input_s3_key": new_input,
+        "result_s3_key": new_result,
+        "job_db_id": job_db_id,
+        "moved_count": len(moved or []),
+        "moved": (moved or [])[:40],
+        "already_claimed": already_claimed,
+        "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+        **_credit_fields_for_api(credit_info or {}),
+    }
+    if isinstance(credit_info, dict) and credit_info.get('already_charged'):
+        out['already_charged'] = True
+    return jsonify(out)
 
 
 @app.route('/api/claim_anonymous_job', methods=['POST'])
@@ -5710,137 +5926,106 @@ def api_claim_anonymous_job():
         if not bucket:
             return jsonify({"error": "S3 bucket not configured"}), 503
 
-        existing = _get_job_row_by_runpod_job_id(
-            job_id,
-            select="id,user_id,input_s3_key,result_s3_key,credit_minutes_used,metadata",
-        )
-        if isinstance(existing, dict):
-            owner = str(existing.get('user_id') or '').strip()
-            if owner and owner != user_id:
-                return jsonify({"error": "Job already belongs to another user"}), 403
-            cur_key = str(existing.get('input_s3_key') or '').strip()
-            if cur_key.startswith(f'users/{user_id}/') and not _is_anonymous_standard_s3_key(cur_key):
-                # Already claimed; still attempt charge if minutes were never deducted.
-                credit_info = _charge_job_credits(
-                    user_id,
-                    job_id,
-                    segments,
-                    cur_key,
-                    pending_info={
-                        "bucket": bucket,
-                        "credit_file_duration_sec": client_duration if client_duration > 0 else None,
-                    },
-                )
-                out = {
-                    "ok": True,
-                    "already_claimed": True,
-                    "input_s3_key": cur_key,
-                    "result_s3_key": existing.get('result_s3_key'),
-                    "job_db_id": existing.get('id'),
-                    "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
-                    **_credit_fields_for_api(credit_info or {}),
-                }
-                if isinstance(credit_info, dict) and credit_info.get('already_charged'):
-                    out['already_charged'] = True
-                if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
-                    return jsonify({**out, "ok": False}), 402
-                return jsonify(out)
+        with _claim_anonymous_job_lock(job_id):
+            existing = _get_job_row_by_runpod_job_id(
+                job_id,
+                select="id,user_id,input_s3_key,result_s3_key,credit_minutes_used,metadata",
+            )
+            if isinstance(existing, dict):
+                owner = str(existing.get('user_id') or '').strip()
+                if owner and owner != user_id:
+                    return jsonify({"error": "Job already belongs to another user"}), 403
+                cur_key = str(existing.get('input_s3_key') or '').strip()
+                if cur_key.startswith(f'users/{user_id}/') and not _is_anonymous_standard_s3_key(cur_key):
+                    return _finalize_claimed_anonymous_job(
+                        user_id=user_id,
+                        job_id=job_id,
+                        old_input_key=input_s3_key,
+                        new_input=cur_key,
+                        bucket=bucket,
+                        segments=segments,
+                        client_duration=client_duration,
+                        user_name=user_name,
+                        user_email=user_email,
+                        wallet=wallet,
+                        moved=[],
+                        already_claimed=True,
+                    )
 
-        related = _collect_anonymous_job_s3_keys(bucket, input_s3_key)
-        moved = []
-        for src in related:
-            dst = _rewrite_anonymous_standard_s3_key(src, user_id)
-            if not dst:
-                continue
-            try:
-                if _s3_copy_then_delete(bucket, src, dst):
-                    moved.append({"from": src, "to": dst})
-            except Exception as copy_err:
-                logging.exception(
-                    "claim_anonymous_job copy failed job_id=%s src=%s: %s",
-                    job_id,
-                    src[-100:],
-                    copy_err,
+            src_exists = _s3_object_exists(bucket, input_s3_key)
+            dst_exists = _s3_object_exists(bucket, new_input)
+            # Concurrent claim already moved primary object — finish DB/credits without 500.
+            if not src_exists and dst_exists:
+                return _finalize_claimed_anonymous_job(
+                    user_id=user_id,
+                    job_id=job_id,
+                    old_input_key=input_s3_key,
+                    new_input=new_input,
+                    bucket=bucket,
+                    segments=segments,
+                    client_duration=client_duration,
+                    user_name=user_name,
+                    user_email=user_email,
+                    wallet=wallet,
+                    moved=[],
+                    already_claimed=True,
                 )
+            if not src_exists and not dst_exists:
                 return jsonify({
-                    "error": f"Failed to move storage object: {copy_err}",
+                    "ok": False,
+                    "error": "anonymous_input_missing",
+                    "message": "Guest upload object was not found in storage (expired or already removed).",
+                    "input_s3_key": input_s3_key,
+                }), 404
+
+            related = _collect_anonymous_job_s3_keys(bucket, input_s3_key)
+            moved = []
+            for src in related:
+                dst = _rewrite_anonymous_standard_s3_key(src, user_id)
+                if not dst:
+                    continue
+                try:
+                    if _s3_copy_then_delete(bucket, src, dst):
+                        moved.append({"from": src, "to": dst})
+                except Exception as copy_err:
+                    logging.exception(
+                        "claim_anonymous_job copy failed job_id=%s src=%s: %s",
+                        job_id,
+                        src[-100:],
+                        copy_err,
+                    )
+                    # Primary input must land; sibling artifacts can be skipped.
+                    if src == input_s3_key and not _s3_object_exists(bucket, new_input):
+                        return jsonify({
+                            "error": f"Failed to move storage object: {copy_err}",
+                            "partial_moved": moved,
+                        }), 500
+                    logging.warning(
+                        "claim_anonymous_job skipping sibling after error job_id=%s src=%s",
+                        job_id,
+                        src[-100:],
+                    )
+
+            if not _s3_object_exists(bucket, new_input):
+                return jsonify({
+                    "error": "Claimed input object missing after move",
                     "partial_moved": moved,
                 }), 500
 
-        new_result = None
-        out_base = new_input.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
-        for candidate in (f"{out_base}.json", f"{out_base}.gpt.json"):
-            if _s3_object_exists(bucket, candidate):
-                new_result = candidate
-                break
-        if not new_result and isinstance(existing, dict):
-            old_result = str(existing.get('result_s3_key') or '').strip()
-            if old_result:
-                new_result = _rewrite_anonymous_standard_s3_key(old_result, user_id) or old_result
-
-        job_db_id = _jobs_upsert_claimed_anonymous(
-            user_id,
-            job_id,
-            input_s3_key,
-            new_input,
-            new_result_key=new_result,
-            user_name=user_name,
-            user_email=user_email,
-        )
-
-        # Keep in-memory pending info consistent for any still-running workers on this instance.
-        pinfo = dict(pending_job_info.get(job_id) or {})
-        pinfo.update({
-            "input_s3_key": new_input,
-            "transcription_s3_key": new_input,
-            "user_id": user_id,
-            "bucket": bucket,
-        })
-        pending_job_info[job_id] = pinfo
-
-        credit_info = _charge_job_credits(
-            user_id,
-            job_id,
-            segments,
-            new_input,
-            pending_info={
-                "bucket": bucket,
-                "credit_file_duration_sec": client_duration if client_duration > 0 else None,
-            },
-        )
-        if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
-            return jsonify({
-                "ok": False,
-                "error": "insufficient_credits",
-                "message": credit_info.get('message'),
-                "input_s3_key": new_input,
-                "result_s3_key": new_result,
-                "job_db_id": job_db_id,
-                "moved_count": len(moved),
-                **_credit_fields_for_api(credit_info),
-            }), 402
-
-        wallet = _user_credits_get(user_id)
-        logging.info(
-            "claim_anonymous_job ok job_id=%s user=%s moved=%s charged=%s",
-            job_id,
-            user_id[:8],
-            len(moved),
-            (credit_info or {}).get('credit_minutes_used'),
-        )
-        out = {
-            "ok": True,
-            "input_s3_key": new_input,
-            "result_s3_key": new_result,
-            "job_db_id": job_db_id,
-            "moved_count": len(moved),
-            "moved": moved[:40],
-            "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
-            **_credit_fields_for_api(credit_info or {}),
-        }
-        if isinstance(credit_info, dict) and credit_info.get('already_charged'):
-            out['already_charged'] = True
-        return jsonify(out)
+            return _finalize_claimed_anonymous_job(
+                user_id=user_id,
+                job_id=job_id,
+                old_input_key=input_s3_key,
+                new_input=new_input,
+                bucket=bucket,
+                segments=segments,
+                client_duration=client_duration,
+                user_name=user_name,
+                user_email=user_email,
+                wallet=wallet,
+                moved=moved,
+                already_claimed=False,
+            )
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
     except Exception as e:

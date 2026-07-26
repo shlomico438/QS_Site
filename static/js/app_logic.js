@@ -2465,15 +2465,18 @@ supabase.auth.onAuthStateChange((event, session) => {
         } catch (_) {}
         try {
             void (async () => {
-                // Grant welcome minutes first, then claim any guest upload under users/anonymous/.
-                if (typeof qsRefreshUserCredits === 'function') {
-                    await qsRefreshUserCredits({ ensureWelcome: true });
-                }
-                if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
-                    await qsClaimAnonymousJobIfNeeded({ force: true });
-                }
-                if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
-                    await qsClaimAnonymousJobsOwnedByUser();
+                if (typeof qsRunPostSignInAnonymousClaims === 'function') {
+                    await qsRunPostSignInAnonymousClaims();
+                } else {
+                    if (typeof qsRefreshUserCredits === 'function') {
+                        await qsRefreshUserCredits({ ensureWelcome: true });
+                    }
+                    if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
+                        await qsClaimAnonymousJobIfNeeded({ force: true });
+                    }
+                    if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
+                        await qsClaimAnonymousJobsOwnedByUser();
+                    }
                 }
             })();
         } catch (_) {}
@@ -3024,6 +3027,7 @@ function qsIsAnonymousStandardS3Key(s3Key) {
 /**
  * After signup: move users/anonymous/... objects under the user and deduct welcome minutes.
  * Idempotent; safe to call from SIGNED_IN and export.
+ * Concurrent callers for the same job always share one in-flight request (force cannot bypass).
  */
 async function qsClaimAnonymousJobIfNeeded(options = {}) {
     const opts = options || {};
@@ -3043,23 +3047,28 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
             || ''
         ).trim();
         if (!jobId) return null;
-        if (!opts.force && window._qsAnonymousClaimInFlight === jobId) {
-            return window._qsAnonymousClaimPromise || null;
+
+        window._qsAnonymousClaimPromises = window._qsAnonymousClaimPromises || {};
+        window._qsAnonymousClaimDoneResults = window._qsAnonymousClaimDoneResults || {};
+        // Always coalesce — force must not start a parallel move (causes NoSuchKey 500s).
+        if (window._qsAnonymousClaimPromises[jobId]) {
+            return window._qsAnonymousClaimPromises[jobId];
         }
-        if (!opts.force && window._qsAnonymousClaimDoneJobId === jobId) return null;
+        if (!opts.force && window._qsAnonymousClaimDoneResults[jobId]) {
+            return window._qsAnonymousClaimDoneResults[jobId];
+        }
 
         const token = typeof qsSupabaseAccessToken === 'function'
             ? await qsSupabaseAccessToken()
             : '';
         if (!token) return null;
 
-        window._qsAnonymousClaimInFlight = jobId;
         const mediaDurationSec = (
             typeof qsUploadMediaDurationForApi === 'function'
                 ? qsUploadMediaDurationForApi()
                 : (Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC) || 0)
         );
-        window._qsAnonymousClaimPromise = (async () => {
+        const promise = (async () => {
             const res = await fetch('/api/claim_anonymous_job', {
                 method: 'POST',
                 headers: {
@@ -3093,25 +3102,26 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                 try { window.__QS_USER_CREDIT_MINUTES = Number(data.credit_minutes); } catch (_) {}
                 if (typeof qsSyncUserCreditsUi === 'function') qsSyncUserCreditsUi();
             }
-            window._qsAnonymousClaimDoneJobId = jobId;
-            if (data.moved_count || data.credit_minutes_used) {
+            window._qsAnonymousClaimDoneResults[jobId] = data;
+            if (data.moved_count || data.credit_minutes_used || data.already_claimed) {
                 console.info('[qs-claim] anonymous job claimed', {
                     jobId,
                     moved_count: data.moved_count,
                     credit_minutes_used: data.credit_minutes_used,
                     credit_minutes: data.credit_minutes,
+                    already_claimed: !!data.already_claimed,
                     input_s3_key: newKey || s3Key,
                 });
             }
             return data;
         })();
+        window._qsAnonymousClaimPromises[jobId] = promise;
         try {
-            return await window._qsAnonymousClaimPromise;
+            return await promise;
         } finally {
-            if (window._qsAnonymousClaimInFlight === jobId) {
-                window._qsAnonymousClaimInFlight = null;
+            if (window._qsAnonymousClaimPromises[jobId] === promise) {
+                delete window._qsAnonymousClaimPromises[jobId];
             }
-            window._qsAnonymousClaimPromise = null;
         }
     } catch (e) {
         console.warn('[qs-claim] anonymous job claim error', e);
@@ -3119,6 +3129,39 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
     }
 }
 window.qsClaimAnonymousJobIfNeeded = qsClaimAnonymousJobIfNeeded;
+
+/** Single post-sign-in claim wave so SIGNED_IN + navbar auth do not stampede the API. */
+async function qsRunPostSignInAnonymousClaims() {
+    if (window._qsPostSignInClaimWave) {
+        return window._qsPostSignInClaimWave;
+    }
+    window._qsPostSignInClaimWave = (async () => {
+        try {
+            if (typeof qsRefreshUserCredits === 'function') {
+                await qsRefreshUserCredits({ ensureWelcome: true });
+            }
+            if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
+                await qsClaimAnonymousJobIfNeeded({ force: true });
+            }
+            if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
+                await qsClaimAnonymousJobsOwnedByUser();
+            }
+        } catch (e) {
+            console.warn('[qs-claim] post-sign-in claim wave failed', e);
+        }
+    })();
+    try {
+        return await window._qsPostSignInClaimWave;
+    } finally {
+        // Hold the wave briefly so late navbar/setupNavbarAuth callers join it.
+        setTimeout(() => {
+            if (window._qsPostSignInClaimWave) {
+                window._qsPostSignInClaimWave = null;
+            }
+        }, 8000);
+    }
+}
+window.qsRunPostSignInAnonymousClaims = qsRunPostSignInAnonymousClaims;
 
 /** Claim any jobs already attached to this user that still point at users/anonymous/ keys. */
 async function qsClaimAnonymousJobsOwnedByUser() {
@@ -4494,14 +4537,18 @@ async function setupNavbarAuth(userOverride) {
     if (user) {
         try {
             void (async () => {
-                if (typeof qsRefreshUserCredits === 'function') {
-                    await qsRefreshUserCredits({ ensureWelcome: true });
-                }
-                if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
-                    await qsClaimAnonymousJobIfNeeded();
-                }
-                if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
-                    await qsClaimAnonymousJobsOwnedByUser();
+                if (typeof qsRunPostSignInAnonymousClaims === 'function') {
+                    await qsRunPostSignInAnonymousClaims();
+                } else {
+                    if (typeof qsRefreshUserCredits === 'function') {
+                        await qsRefreshUserCredits({ ensureWelcome: true });
+                    }
+                    if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
+                        await qsClaimAnonymousJobIfNeeded();
+                    }
+                    if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
+                        await qsClaimAnonymousJobsOwnedByUser();
+                    }
                 }
             })();
         } catch (_) {}
@@ -6066,6 +6113,38 @@ async function ensureJobRecordOnExport() {
     const s3Key = localStorage.getItem('lastS3Key');
     const jobId = localStorage.getItem('lastJobId');
     if (!s3Key) return;
+
+    // Prefer updating an existing row for this runpod job (claim / upload may have created it).
+    if (jobId) {
+        try {
+            const { data: existing } = await supabase
+                .from('jobs')
+                .select('id')
+                .eq('user_id', user.id)
+                .eq('runpod_job_id', jobId)
+                .order('created_at', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+            if (existing && existing.id) {
+                localStorage.setItem('lastJobDbId', existing.id);
+                const { data: updated } = await supabase
+                    .from('jobs')
+                    .update({
+                        status: 'exported',
+                        input_s3_key: s3Key,
+                        updated_at: new Date().toISOString(),
+                    })
+                    .eq('id', existing.id)
+                    .select('id');
+                if (updated && updated.length) {
+                    console.log('Job status -> exported (by runpod_job_id)');
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('ensureJobRecordOnExport lookup by runpod_job_id failed', e);
+        }
+    }
 
     const info = getAuthUserDisplayInfo(user);
     const user_name = info.displayName === 'Account' ? null : info.displayName;
