@@ -2465,7 +2465,11 @@ supabase.auth.onAuthStateChange((event, session) => {
         } catch (_) {}
         try {
             void (async () => {
-                if (typeof qsRunPostSignInAnonymousClaims === 'function') {
+                // Restore guest export UI first (instant), then claim in background inside restore.
+                if (typeof qsRestorePendingGuestSessionAfterAuth === 'function'
+                    && localStorage.getItem('pendingOpenGenerateMenu') === '1') {
+                    await qsRestorePendingGuestSessionAfterAuth();
+                } else if (typeof qsRunPostSignInAnonymousClaims === 'function') {
                     await qsRunPostSignInAnonymousClaims();
                 } else {
                     if (typeof qsRefreshUserCredits === 'function') {
@@ -3249,6 +3253,327 @@ async function qsClaimAnonymousJobsOwnedByUser() {
     }
 }
 window.qsClaimAnonymousJobsOwnedByUser = qsClaimAnonymousJobsOwnedByUser;
+
+const QS_GUEST_AUTH_SNAPSHOT_KEY = 'qs_guest_auth_session_v1';
+
+/** Snapshot the guest transcript UI before OAuth so post-login restore is instant. */
+function qsSnapshotGuestSessionForAuth() {
+    try {
+        const jobId = String(localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+        const s3Key = String(localStorage.getItem('lastS3Key') || localStorage.getItem('pendingS3Key') || '').trim();
+        const snap = {
+            at: Date.now(),
+            jobId,
+            s3Key,
+            uploadWasVideo: !!window.uploadWasVideo,
+            originalFileName: String(window.originalFileName || '').trim(),
+            segments: Array.isArray(window.currentSegments) ? window.currentSegments : [],
+            words: Array.isArray(window.currentWords) ? window.currentWords : null,
+            captions: Array.isArray(window.currentCaptions) ? window.currentCaptions : null,
+            formatted: (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : null,
+        };
+        sessionStorage.setItem(QS_GUEST_AUTH_SNAPSHOT_KEY, JSON.stringify(snap));
+    } catch (e) {
+        console.warn('[qs-auth] guest snapshot failed', e);
+    }
+}
+window.qsSnapshotGuestSessionForAuth = qsSnapshotGuestSessionForAuth;
+
+function qsReadGuestAuthSnapshot() {
+    try {
+        const raw = sessionStorage.getItem(QS_GUEST_AUTH_SNAPSHOT_KEY);
+        if (!raw) return null;
+        const snap = JSON.parse(raw);
+        return (snap && typeof snap === 'object') ? snap : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function qsClearGuestAuthSnapshot() {
+    try { sessionStorage.removeItem(QS_GUEST_AUTH_SNAPSHOT_KEY); } catch (_) {}
+}
+
+async function qsPresignMediaOrTranscript(s3Key, userId) {
+    const key = String(s3Key || '').trim();
+    if (!key) return null;
+    const res = await fetch('/api/get_presigned_url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            s3Key: key,
+            userId: userId || undefined,
+            isMedical: false,
+        }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!json || !json.url) return null;
+    return qsNormalizeAbsoluteMediaUrl(json.url);
+}
+
+/**
+ * After guest → register: restore transcript/export UI quickly without waiting on claim + jobs row.
+ * Claim runs in parallel; media uses the parked S3 key (anonymous until claim rewrites it).
+ */
+async function qsRestorePendingGuestSessionAfterAuth(options = {}) {
+    const opts = options || {};
+    if (window._qsGuestAuthRestoreInFlight) {
+        return window._qsGuestAuthRestoreInFlight;
+    }
+    const pendingFlag = String(localStorage.getItem('pendingOpenGenerateMenu') || '').trim() === '1';
+    if (!pendingFlag && !opts.force) return false;
+
+    window._qsGuestAuthRestoreInFlight = (async () => {
+        try {
+            try { setSeoHomeContentVisibility(false); } catch (_) {}
+            const placeholderEl = document.getElementById('placeholder');
+            if (placeholderEl) placeholderEl.style.display = 'none';
+
+            let user = null;
+            for (let i = 0; i < 20; i++) {
+                try {
+                    const { data: { user: u } } = await supabase.auth.getUser();
+                    user = u;
+                } catch (_) {}
+                if (user) break;
+                await new Promise((r) => setTimeout(r, 150));
+            }
+            if (!user) {
+                // Keep the flag so a later SIGNED_IN retry can finish (common on mobile OAuth).
+                console.warn('[qs-auth] guest restore waiting for session');
+                return false;
+            }
+
+            const snap = qsReadGuestAuthSnapshot();
+            const jobId = String(
+                (snap && snap.jobId)
+                || localStorage.getItem('pendingJobId')
+                || localStorage.getItem('lastJobId')
+                || ''
+            ).trim();
+            let s3Key = String(
+                (snap && snap.s3Key)
+                || localStorage.getItem('pendingS3Key')
+                || localStorage.getItem('lastS3Key')
+                || ''
+            ).trim();
+
+            // Start claim in background — do not block UI restore.
+            const claimPromise = (typeof qsRunPostSignInAnonymousClaims === 'function')
+                ? qsRunPostSignInAnonymousClaims().catch((e) => {
+                    console.warn('[qs-auth] claim during restore failed', e);
+                    return null;
+                })
+                : Promise.resolve(null);
+
+            // 1) Instant transcript from snapshot when available.
+            let hasTranscript = false;
+            if (snap) {
+                if (Array.isArray(snap.words) && Array.isArray(snap.captions) && snap.words.length && snap.captions.length) {
+                    window.currentWords = snap.words;
+                    window.currentCaptions = snap.captions;
+                    window.currentSegments = (typeof _captionsToCues === 'function')
+                        ? _captionsToCues(snap.words, snap.captions)
+                        : (Array.isArray(snap.segments) ? snap.segments : []);
+                    hasTranscript = true;
+                } else if (Array.isArray(snap.segments) && snap.segments.length) {
+                    window.currentSegments = snap.segments;
+                    window.currentWords = null;
+                    window.currentCaptions = null;
+                    hasTranscript = true;
+                }
+                if (snap.formatted && typeof snap.formatted === 'object') {
+                    window.currentFormattedDoc = snap.formatted;
+                    window._qsDocPreferSegmentsAfterEdit = false;
+                    if (String(snap.formatted.clean_transcript || '').trim()) window._qsCleanupDone = true;
+                }
+                if (snap.originalFileName) window.originalFileName = snap.originalFileName;
+                if (typeof snap.uploadWasVideo === 'boolean') {
+                    window.uploadWasVideo = snap.uploadWasVideo;
+                    if (typeof qsPersistUploadWasVideoFlag === 'function') qsPersistUploadWasVideoFlag(!!snap.uploadWasVideo);
+                }
+            }
+
+            // 2) Load media ASAP from parked key (still anonymous until claim finishes).
+            const filename = decodeURIComponent((s3Key || '').split('/').pop() || (window.originalFileName || 'file'));
+            if (!window.originalFileName) {
+                window.originalFileName = filename.replace(/\.[^.]+$/, '') || 'file';
+            }
+            let isAudio = qsIsAudioMediaFile(filename);
+            let isVideo = !isAudio && qsIsVideoMediaFile(filename);
+            if (typeof snap?.uploadWasVideo === 'boolean') {
+                isVideo = !!snap.uploadWasVideo;
+                isAudio = !isVideo;
+            }
+            window.uploadWasVideo = isVideo;
+
+            let mediaUrl = s3Key ? await qsPresignMediaOrTranscript(s3Key, user.id) : null;
+            // If claim already moved the object, retry with rewritten key.
+            if (!mediaUrl && s3Key && qsIsAnonymousStandardS3Key(s3Key)) {
+                try { await claimPromise; } catch (_) {}
+                const claimedKey = String(localStorage.getItem('lastS3Key') || '').trim();
+                if (claimedKey && claimedKey !== s3Key) {
+                    s3Key = claimedKey;
+                    mediaUrl = await qsPresignMediaOrTranscript(s3Key, user.id);
+                }
+            }
+
+            if (mediaUrl) {
+                if (isVideo) {
+                    const videoWrapper = document.getElementById('video-wrapper');
+                    const videoPlayer = document.getElementById('video-player-container');
+                    const audioContainer = document.getElementById('audio-player-container');
+                    const src = document.getElementById('video-source');
+                    const video = document.getElementById('main-video');
+                    if (audioContainer && videoWrapper && audioContainer.parentNode === videoPlayer) {
+                        videoWrapper.parentNode.insertBefore(audioContainer, videoWrapper);
+                    }
+                    if (audioContainer) audioContainer.style.display = 'none';
+                    if (videoWrapper) {
+                        videoWrapper.classList.add('visible');
+                        videoWrapper.style.display = '';
+                    }
+                    if (videoPlayer) videoPlayer.style.display = 'block';
+                    if (src && video) {
+                        src.src = mediaUrl;
+                        const lower = String(filename || '').toLowerCase();
+                        src.type = lower.endsWith('.webm')
+                            ? 'video/webm'
+                            : (lower.endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
+                        video.load();
+                    }
+                } else {
+                    const videoWrapper = document.getElementById('video-wrapper');
+                    const videoPlayer = document.getElementById('video-player-container');
+                    const audioContainer = document.getElementById('audio-player-container');
+                    const audioSource = document.getElementById('audio-source');
+                    const mainAudio = document.getElementById('main-audio');
+                    if (videoWrapper) {
+                        videoWrapper.classList.remove('visible');
+                        videoWrapper.style.display = 'none';
+                    }
+                    if (videoPlayer) videoPlayer.style.display = 'none';
+                    if (audioContainer) audioContainer.style.display = 'block';
+                    if (audioSource && mainAudio) {
+                        audioSource.src = mediaUrl;
+                        audioSource.type = qsMimeForAudioElement(filename);
+                        mainAudio.load();
+                    }
+                }
+            }
+
+            // 3) If snapshot lacked transcript, fetch JSON from output key (works for anonymous too).
+            if (!hasTranscript && s3Key) {
+                const resultKey = deriveTranscriptJsonKeyFromInputS3Key(s3Key);
+                const jsonUrl = resultKey ? await qsPresignMediaOrTranscript(resultKey, user.id) : null;
+                if (jsonUrl) {
+                    const tr = await fetch(jsonUrl).then((r) => r.json()).catch(() => null);
+                    if (tr && typeof tr === 'object') {
+                        const trFmt = typeof pickFormattedFromObject === 'function' ? pickFormattedFromObject(tr) : null;
+                        if (trFmt) {
+                            window.currentFormattedDoc = trFmt;
+                            window._qsDocPreferSegmentsAfterEdit = false;
+                            if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
+                        }
+                        if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length && tr.captions.length) {
+                            window.currentWords = tr.words;
+                            window.currentCaptions = typeof reflowCaptionsByMaxChars === 'function'
+                                ? reflowCaptionsByMaxChars(tr.words, tr.captions, 54)
+                                : tr.captions;
+                            window.currentSegments = typeof _captionsToCues === 'function'
+                                ? _captionsToCues(window.currentWords, window.currentCaptions)
+                                : [];
+                            hasTranscript = true;
+                        } else if (Array.isArray(tr.segments) && tr.segments.length) {
+                            window.currentSegments = tr.segments;
+                            hasTranscript = true;
+                        }
+                    }
+                }
+            }
+
+            document.querySelectorAll('.controls-bar').forEach((bar) => { if (bar) bar.style.display = ''; });
+            if (typeof setTranscriptActionButtonsVisible === 'function') {
+                setTranscriptActionButtonsVisible(!!hasTranscript);
+            }
+            const mainBtn = document.getElementById('main-btn');
+            if (mainBtn) {
+                mainBtn.disabled = false;
+                if (typeof setMainButtonAction === 'function') {
+                    setMainButtonAction(hasTranscript ? 'new_session' : 'transcribe_loaded_file');
+                }
+            }
+
+            if (hasTranscript) {
+                try {
+                    const hasWordModel =
+                        Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions)
+                        && window.currentWords.length > 0 && window.currentCaptions.length > 0;
+                    if (hasWordModel && typeof renderWordCaptionEditor === 'function') {
+                        renderWordCaptionEditor();
+                    } else if (typeof window.render === 'function') {
+                        window.render();
+                    }
+                    if (typeof hasStandardFormattedSummary === 'function' && hasStandardFormattedSummary()) {
+                        if (typeof setFormatViewMode === 'function') setFormatViewMode('summary');
+                        if (typeof renderStandardSummaryView === 'function') renderStandardSummaryView();
+                    } else if (typeof setFormatViewMode === 'function') {
+                        setFormatViewMode('doc');
+                    }
+                } catch (_) {}
+            }
+
+            if (jobId) {
+                try { localStorage.setItem('lastJobId', jobId); } catch (_) {}
+                if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(jobId);
+            }
+            if (s3Key) {
+                try {
+                    localStorage.setItem('lastS3Key', s3Key);
+                    localStorage.setItem('pendingS3Key', s3Key);
+                } catch (_) {}
+            }
+
+            // Open export panel once UI is ready.
+            try {
+                const dBtn = document.getElementById('btn-download');
+                const dMenu = document.getElementById('download-menu');
+                if (dBtn && dMenu) {
+                    const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
+                    if (isHidden) dBtn.click();
+                }
+            } catch (_) {}
+
+            // Finish claim in background; refresh pointer if rewritten.
+            void claimPromise.then(() => {
+                const claimed = String(localStorage.getItem('lastS3Key') || '').trim();
+                if (claimed && qsIsAnonymousStandardS3Key(s3Key) && !qsIsAnonymousStandardS3Key(claimed)) {
+                    // Media already loaded from anonymous URL; pointer update is enough for export/charge.
+                    console.info('[qs-auth] guest restore claim finished', { claimed });
+                }
+            });
+
+            localStorage.removeItem('pendingOpenGenerateMenu');
+            qsClearGuestAuthSnapshot();
+            console.info('[qs-auth] guest session restored', {
+                jobId,
+                hasTranscript,
+                hasMedia: !!mediaUrl,
+                s3Key: (s3Key || '').slice(-80),
+            });
+            return true;
+        } catch (e) {
+            console.warn('[qs-auth] guest restore failed', e);
+            return false;
+        } finally {
+            window._qsGuestAuthRestoreInFlight = null;
+        }
+    })();
+    return window._qsGuestAuthRestoreInFlight;
+}
+window.qsRestorePendingGuestSessionAfterAuth = qsRestorePendingGuestSessionAfterAuth;
 
 async function qsSupabaseAccessToken() {
     try {
@@ -4614,7 +4939,10 @@ async function setupNavbarAuth(userOverride) {
     if (user) {
         try {
             void (async () => {
-                if (typeof qsRunPostSignInAnonymousClaims === 'function') {
+                if (typeof qsRestorePendingGuestSessionAfterAuth === 'function'
+                    && localStorage.getItem('pendingOpenGenerateMenu') === '1') {
+                    await qsRestorePendingGuestSessionAfterAuth();
+                } else if (typeof qsRunPostSignInAnonymousClaims === 'function') {
                     await qsRunPostSignInAnonymousClaims();
                 } else {
                     if (typeof qsRefreshUserCredits === 'function') {
@@ -8885,6 +9213,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         localStorage.setItem('pendingExportType', type);
         localStorage.setItem('pendingS3Key', localStorage.getItem('lastS3Key') || '');
         localStorage.setItem('pendingJobId', localStorage.getItem('lastJobId') || '');
+        try {
+            if (typeof qsSnapshotGuestSessionForAuth === 'function') qsSnapshotGuestSessionForAuth();
+            localStorage.setItem('pendingOpenGenerateMenu', '1');
+        } catch (_) {}
 
         window.toggleModal(true); // Open the sign-in modal
         return; // <--- CRITICAL: This stops the function here so the file doesn't download
@@ -9314,6 +9646,14 @@ if (toggleAuthBtn) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     window.__qsSimulationMode = false;
+    // Guest→register return: leave init/SEO immediately so restore feels instant.
+    try {
+        if (localStorage.getItem('pendingOpenGenerateMenu') === '1') {
+            if (typeof setSeoHomeContentVisibility === 'function') setSeoHomeContentVisibility(false);
+            const placeholderEl = document.getElementById('placeholder');
+            if (placeholderEl) placeholderEl.style.display = 'none';
+        }
+    } catch (_) {}
     try {
         fetch('/api/simulation_mode', { cache: 'no-store' })
             .then((r) => (r.ok ? r.json() : {}))
@@ -9760,6 +10100,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (curJob) localStorage.setItem('pendingJobId', curJob);
                     // Stale UUID from a prior signed-in job must not win over the guest runpod id.
                     if (curJob) localStorage.removeItem('lastJobDbId');
+                    if (typeof qsSnapshotGuestSessionForAuth === 'function') {
+                        qsSnapshotGuestSessionForAuth();
+                    }
                 } catch (_) {}
                 localStorage.setItem('pendingOpenGenerateMenu', '1');
 
@@ -9984,38 +10327,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // Re-open Generate menu after auth (without auto-export), when requested by flow.
+        // Fast path: restore guest transcript/media without waiting on claim + jobs DB row.
         const shouldReopenGenerateMenu = localStorage.getItem('pendingOpenGenerateMenu') === '1';
         if (shouldReopenGenerateMenu) {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (user && dBtn && dMenu) {
-                try {
-                    // Prefer the guest/session runpod job id over a stale jobs UUID from an older upload.
-                    const lastJobIdForReopen = (
-                        localStorage.getItem('pendingJobId')
-                        || localStorage.getItem('lastJobId')
-                        || localStorage.getItem('lastJobDbId')
-                        || ''
-                    ).trim();
-                    const hasTranscriptInMemory = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
-                    if (!hasTranscriptInMemory && lastJobIdForReopen && typeof initOpenInApp === 'function') {
-                        // Claim may still be moving users/anonymous → users/{id}; wait briefly.
-                        if (typeof qsRunPostSignInAnonymousClaims === 'function') {
-                            try { await qsRunPostSignInAnonymousClaims(); } catch (_) {}
-                        }
-                        await initOpenInApp(lastJobIdForReopen);
+            try {
+                if (typeof qsRestorePendingGuestSessionAfterAuth === 'function') {
+                    const ok = await qsRestorePendingGuestSessionAfterAuth();
+                    if (!ok && localStorage.getItem('pendingOpenGenerateMenu') === '1') {
+                        // Session not ready yet (mobile OAuth) — SIGNED_IN will retry.
+                        console.info('[qs-auth] deferring guest restore until SIGNED_IN');
                     }
-                    const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
-                    if (isHidden) dBtn.click();
-                } catch (_) {}
+                }
+            } catch (e) {
+                console.warn('[qs-auth] guest restore on DOMContentLoaded failed', e);
             }
-            localStorage.removeItem('pendingOpenGenerateMenu');
         }
 
 
         // Clean up LocalStorage so it doesn't run again on next refresh
-        localStorage.removeItem('pendingTranscript');
-        localStorage.removeItem('pendingS3Key');
-        localStorage.removeItem('pendingJobId');
+        // (pendingOpenGenerateMenu is cleared by successful restore; keep pending keys until then)
+        if (localStorage.getItem('pendingOpenGenerateMenu') !== '1') {
+            localStorage.removeItem('pendingTranscript');
+            localStorage.removeItem('pendingS3Key');
+            localStorage.removeItem('pendingJobId');
+        }
     }
 );
 
