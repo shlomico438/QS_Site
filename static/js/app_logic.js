@@ -3131,14 +3131,25 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                 return data;
             }
             const newKey = String(data.input_s3_key || '').trim();
-            if (newKey) {
+            // Only rewrite the active session pointers for the job this browser is working on.
+            // Owned-scan claims of older anonymous rows must not clobber the current upload.
+            const sessionJobId = String(
+                localStorage.getItem('pendingJobId')
+                || localStorage.getItem('lastJobId')
+                || ''
+            ).trim();
+            const updateActivePointers = !opts.inputS3Key || !sessionJobId || sessionJobId === jobId;
+            if (newKey && updateActivePointers) {
                 try {
                     localStorage.setItem('lastS3Key', newKey);
                     localStorage.setItem('pendingS3Key', newKey);
                 } catch (_) {}
             }
-            if (data.job_db_id) {
+            if (data.job_db_id && updateActivePointers) {
                 try { localStorage.setItem('lastJobDbId', String(data.job_db_id)); } catch (_) {}
+            }
+            if (updateActivePointers) {
+                try { localStorage.setItem('lastJobId', jobId); } catch (_) {}
             }
             qsApplyTriggerCreditFields(data);
             if (Number.isFinite(Number(data.credit_minutes))) {
@@ -3160,6 +3171,7 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                     credit_minutes: data.credit_minutes,
                     already_claimed: !!data.already_claimed,
                     input_s3_key: newKey || s3Key,
+                    updated_active_pointers: updateActivePointers,
                 });
             }
             return data;
@@ -9737,8 +9749,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // User should explicitly press "Generate" again.
                 window.pendingExportType = null;
                 localStorage.removeItem('pendingExportType');
-                localStorage.removeItem('pendingS3Key');
-                localStorage.removeItem('pendingJobId');
+                // Keep current guest session pointers so reopen does not fall back to an
+                // older registered lastJobDbId (previous movie) after OAuth reload.
+                try {
+                    const curKey = String(localStorage.getItem('lastS3Key') || '').trim();
+                    const curJob = String(localStorage.getItem('lastJobId') || '').trim();
+                    if (curKey) localStorage.setItem('pendingS3Key', curKey);
+                    if (curJob) localStorage.setItem('pendingJobId', curJob);
+                    // Stale UUID from a prior signed-in job must not win over the guest runpod id.
+                    if (curJob) localStorage.removeItem('lastJobDbId');
+                } catch (_) {}
                 localStorage.setItem('pendingOpenGenerateMenu', '1');
 
                 isSignUpMode = true;
@@ -9967,9 +9987,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             const { data: { user } } = await supabase.auth.getUser();
             if (user && dBtn && dMenu) {
                 try {
-                    const lastJobIdForReopen = localStorage.getItem('lastJobDbId') || localStorage.getItem('lastJobId');
+                    // Prefer the guest/session runpod job id over a stale jobs UUID from an older upload.
+                    const lastJobIdForReopen = (
+                        localStorage.getItem('pendingJobId')
+                        || localStorage.getItem('lastJobId')
+                        || localStorage.getItem('lastJobDbId')
+                        || ''
+                    ).trim();
                     const hasTranscriptInMemory = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
                     if (!hasTranscriptInMemory && lastJobIdForReopen && typeof initOpenInApp === 'function') {
+                        // Claim may still be moving users/anonymous → users/{id}; wait briefly.
+                        if (typeof qsRunPostSignInAnonymousClaims === 'function') {
+                            try { await qsRunPostSignInAnonymousClaims(); } catch (_) {}
+                        }
                         await initOpenInApp(lastJobIdForReopen);
                     }
                     const isHidden = dMenu.style.display === 'none' || window.getComputedStyle(dMenu).display === 'none';
@@ -16851,6 +16881,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 localStorage.setItem('lastS3Key', s3Key);
                 localStorage.setItem('pendingS3Key', s3Key);
                 localStorage.setItem('lastJobId', jobId);
+                // New upload invalidates any prior jobs UUID (important for guest→re-login reopen).
+                try { localStorage.removeItem('lastJobDbId'); } catch (_) {}
                 if (typeof qsRememberMediaDurationSec === 'function') {
                     const dur = typeof qsUploadMediaDurationForApi === 'function'
                         ? qsUploadMediaDurationForApi()
