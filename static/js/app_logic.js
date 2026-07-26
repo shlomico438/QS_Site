@@ -6541,12 +6541,14 @@ async function hydrateFormattedFromSavedTranscript(opts) {
     try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) {
-            console.warn('[export] hydrate formatted: not signed in');
+            // Guest sessions have no jobs row to hydrate from — expected, not an error.
             return false;
         }
         const dbId = localStorage.getItem('lastJobDbId');
         if (!dbId) {
-            console.warn('[export] hydrate formatted: no lastJobDbId (open a job from history or finish upload in this tab)');
+            if (!(opts && opts.quiet)) {
+                console.warn('[export] hydrate formatted: no lastJobDbId (open a job from history or finish upload in this tab)');
+            }
             return false;
         }
         const { data: row } = await supabase
@@ -10245,15 +10247,21 @@ async function qsWaitForServerGptFormatted(options = {}) {
     const pollMs = Math.max(250, Number(options.pollMs) || 1200);
     const t0 = Date.now();
     let ticks = 0;
+    let canHydrateFromJobs = null;
     while (Date.now() - t0 < timeoutMs) {
         if (hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) return true;
         if (window._qsServerGptGaveUp) return false;
         ticks += 1;
         // DB result_s3_key is written only after server GPT + S3 persist. Early hydrate
         // only spams "result_s3_key missing" — wait on socket first, then quiet-poll S3.
+        // Guests have no jobs row — skip hydrate entirely (avoids not-signed-in spam).
         if (ticks >= 3) {
             try {
-                if (typeof hydrateFormattedFromSavedTranscript === 'function') {
+                if (canHydrateFromJobs === null) {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    canHydrateFromJobs = !!(user && localStorage.getItem('lastJobDbId'));
+                }
+                if (canHydrateFromJobs && typeof hydrateFormattedFromSavedTranscript === 'function') {
                     await hydrateFormattedFromSavedTranscript({ forExport: true, quiet: true });
                     if (hasStandardFormattedSummary()) return true;
                 }
