@@ -2463,7 +2463,20 @@ supabase.auth.onAuthStateChange((event, session) => {
                 qsTrackGoogleAdsRegistrationConversion(signedUser.id);
             }
         } catch (_) {}
-        try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
+        try {
+            void (async () => {
+                // Grant welcome minutes first, then claim any guest upload under users/anonymous/.
+                if (typeof qsRefreshUserCredits === 'function') {
+                    await qsRefreshUserCredits({ ensureWelcome: true });
+                }
+                if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
+                    await qsClaimAnonymousJobIfNeeded({ force: true });
+                }
+                if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
+                    await qsClaimAnonymousJobsOwnedByUser();
+                }
+            })();
+        } catch (_) {}
         // Warmup is started from setupNavbarAuth / setMedicalMode (avoid duplicate POST on delayed SIGNED_IN).
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
         try { qsCleanOAuthUrlFromHistory(); } catch (_) {}
@@ -2960,6 +2973,13 @@ function qsDeferJobCreditsAfterDelivery(jobId, inputS3Key) {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user || !jid) return;
             const s3Key = String(inputS3Key || localStorage.getItem('lastS3Key') || '').trim();
+            // Guest uploads under users/anonymous/ are billed when the user signs up (claim).
+            if (s3Key.startsWith('users/anonymous/')) {
+                if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
+                    await qsClaimAnonymousJobIfNeeded({ force: true });
+                }
+                return;
+            }
             const res = await fetch('/api/charge_job_credits', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2996,6 +3016,135 @@ function qsDeferJobCreditsAfterDelivery(jobId, inputS3Key) {
     }
 }
 window.qsDeferJobCreditsAfterDelivery = qsDeferJobCreditsAfterDelivery;
+
+function qsIsAnonymousStandardS3Key(s3Key) {
+    return String(s3Key || '').trim().startsWith('users/anonymous/');
+}
+
+/**
+ * After signup: move users/anonymous/... objects under the user and deduct welcome minutes.
+ * Idempotent; safe to call from SIGNED_IN and export.
+ */
+async function qsClaimAnonymousJobIfNeeded(options = {}) {
+    const opts = options || {};
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return null;
+        const s3Key = String(
+            opts.inputS3Key
+            || localStorage.getItem('lastS3Key')
+            || localStorage.getItem('pendingS3Key')
+            || ''
+        ).trim();
+        if (!qsIsAnonymousStandardS3Key(s3Key)) return null;
+        const jobId = String(
+            opts.jobId
+            || localStorage.getItem('lastJobId')
+            || localStorage.getItem('pendingJobId')
+            || ''
+        ).trim();
+        if (!jobId) return null;
+        if (!opts.force && window._qsAnonymousClaimInFlight === jobId) {
+            return window._qsAnonymousClaimPromise || null;
+        }
+        if (!opts.force && window._qsAnonymousClaimDoneJobId === jobId) return null;
+
+        const token = typeof qsSupabaseAccessToken === 'function'
+            ? await qsSupabaseAccessToken()
+            : '';
+        if (!token) return null;
+
+        window._qsAnonymousClaimInFlight = jobId;
+        const mediaDurationSec = (
+            typeof qsUploadMediaDurationForApi === 'function'
+                ? qsUploadMediaDurationForApi()
+                : (Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC) || 0)
+        );
+        window._qsAnonymousClaimPromise = (async () => {
+            const res = await fetch('/api/claim_anonymous_job', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    jobId,
+                    input_s3_key: s3Key,
+                    segments: window.currentSegments || [],
+                    ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                console.warn('[qs-claim] anonymous job claim failed', res.status, data);
+                return data;
+            }
+            const newKey = String(data.input_s3_key || '').trim();
+            if (newKey) {
+                try {
+                    localStorage.setItem('lastS3Key', newKey);
+                    localStorage.setItem('pendingS3Key', newKey);
+                } catch (_) {}
+            }
+            if (data.job_db_id) {
+                try { localStorage.setItem('lastJobDbId', String(data.job_db_id)); } catch (_) {}
+            }
+            qsApplyTriggerCreditFields(data);
+            if (Number.isFinite(Number(data.credit_minutes))) {
+                try { window.__QS_USER_CREDIT_MINUTES = Number(data.credit_minutes); } catch (_) {}
+                if (typeof qsSyncUserCreditsUi === 'function') qsSyncUserCreditsUi();
+            }
+            window._qsAnonymousClaimDoneJobId = jobId;
+            if (data.moved_count || data.credit_minutes_used) {
+                console.info('[qs-claim] anonymous job claimed', {
+                    jobId,
+                    moved_count: data.moved_count,
+                    credit_minutes_used: data.credit_minutes_used,
+                    credit_minutes: data.credit_minutes,
+                    input_s3_key: newKey || s3Key,
+                });
+            }
+            return data;
+        })();
+        try {
+            return await window._qsAnonymousClaimPromise;
+        } finally {
+            if (window._qsAnonymousClaimInFlight === jobId) {
+                window._qsAnonymousClaimInFlight = null;
+            }
+            window._qsAnonymousClaimPromise = null;
+        }
+    } catch (e) {
+        console.warn('[qs-claim] anonymous job claim error', e);
+        return null;
+    }
+}
+window.qsClaimAnonymousJobIfNeeded = qsClaimAnonymousJobIfNeeded;
+
+/** Claim any jobs already attached to this user that still point at users/anonymous/ keys. */
+async function qsClaimAnonymousJobsOwnedByUser() {
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: rows, error } = await supabase
+            .from('jobs')
+            .select('id,runpod_job_id,input_s3_key')
+            .eq('user_id', user.id)
+            .like('input_s3_key', 'users/anonymous/%')
+            .order('created_at', { ascending: false })
+            .limit(8);
+        if (error || !Array.isArray(rows) || !rows.length) return;
+        for (const row of rows) {
+            const jobId = String((row && row.runpod_job_id) || '').trim();
+            const s3Key = String((row && row.input_s3_key) || '').trim();
+            if (!jobId || !qsIsAnonymousStandardS3Key(s3Key)) continue;
+            await qsClaimAnonymousJobIfNeeded({ force: true, jobId, inputS3Key: s3Key });
+        }
+    } catch (e) {
+        console.warn('[qs-claim] owned anonymous jobs scan failed', e);
+    }
+}
+window.qsClaimAnonymousJobsOwnedByUser = qsClaimAnonymousJobsOwnedByUser;
 
 async function qsSupabaseAccessToken() {
     try {
@@ -4343,7 +4492,19 @@ async function setupNavbarAuth(userOverride) {
     try { document.body.classList.toggle('qs-user-signed-in', !!user); } catch (_) {}
     try { syncTranscriptCopyButtonUi(); } catch (_) {}
     if (user) {
-        try { void qsRefreshUserCredits({ ensureWelcome: true }); } catch (_) {}
+        try {
+            void (async () => {
+                if (typeof qsRefreshUserCredits === 'function') {
+                    await qsRefreshUserCredits({ ensureWelcome: true });
+                }
+                if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
+                    await qsClaimAnonymousJobIfNeeded();
+                }
+                if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
+                    await qsClaimAnonymousJobsOwnedByUser();
+                }
+            })();
+        } catch (_) {}
     } else {
         try { window.__QS_USER_CREDIT_MINUTES = null; } catch (_) {}
         qsSyncUserCreditsUi();
@@ -5871,6 +6032,11 @@ async function syncJobResultS3KeyFromSaveResponse(saveRes, dbIdOverride) {
 async function ensureJobRecordOnExport() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+
+    // Guest → signed-in: move R2 objects under the user and charge minutes before export bookkeeping.
+    if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
+        try { await qsClaimAnonymousJobIfNeeded({ force: true }); } catch (_) {}
+    }
 
     const dbId = localStorage.getItem('lastJobDbId');
     if (dbId) {
@@ -10140,10 +10306,15 @@ function qsShowPipelineBarChrome() {
 function qsHidePipelineBarChrome() {
     const wrap = document.getElementById('qs-pipeline-phase-wrap');
     const overlayUnified = document.getElementById('processing-unified-progress');
+    const labelEl = document.getElementById('qs-pipeline-phase-label');
     if (wrap) wrap.style.display = 'none';
     if (overlayUnified) overlayUnified.style.display = 'none';
     qsClearUnifiedProgressTimer();
     window.__QS_UNIFIED_PROGRESS_PHASE = null;
+    if (labelEl) {
+        labelEl.setAttribute('data-i18n', 'pipeline_upload');
+        if (typeof window.t === 'function') labelEl.textContent = window.t('pipeline_upload') || labelEl.textContent;
+    }
     qsSetProgressBarPct(0);
 }
 
@@ -10161,7 +10332,20 @@ function qsSetUnifiedProgressPhase(phase, pct) {
     const label = qsUnifiedPhaseLabel(phase);
     const labelEl = document.getElementById('qs-pipeline-phase-label');
     const legacyUnifiedLabel = document.getElementById('qs-unified-phase-label');
-    if (labelEl) labelEl.textContent = label;
+    const i18nByPhase = {
+        upload: 'pipeline_upload',
+        transcribe: 'pipeline_transcribe',
+        vocal_separation: 'pipeline_vocal_separation',
+        summary: 'pipeline_summary',
+    };
+    const i18nKey = i18nByPhase[phase] || null;
+    if (labelEl) {
+        labelEl.textContent = label;
+        // Keep data-i18n in sync so applyTranslations() cannot snap the label
+        // back to "upload" while the job is already in transcribe/summary.
+        if (i18nKey) labelEl.setAttribute('data-i18n', i18nKey);
+        else labelEl.removeAttribute('data-i18n');
+    }
     if (legacyUnifiedLabel) legacyUnifiedLabel.textContent = label;
     if (pct != null) qsSetProgressBarPct(pct);
 }

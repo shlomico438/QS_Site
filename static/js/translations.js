@@ -756,6 +756,22 @@ window.applyTranslations = function() {
         if (el.id === 'main-btn' && (window.isTriggering || el.getAttribute('data-qs-dynamic-label') === '1')) {
             return;
         }
+        // Pipeline phase label is owned by qsSetUnifiedProgressPhase; stale data-i18n
+        // (defaults to pipeline_upload in HTML) must not overwrite "תמלול" mid-job.
+        if (el.id === 'qs-pipeline-phase-label' && window.__QS_UNIFIED_PROGRESS_PHASE) {
+            const phaseKeys = {
+                upload: 'pipeline_upload',
+                transcribe: 'pipeline_transcribe',
+                vocal_separation: 'pipeline_vocal_separation',
+                summary: 'pipeline_summary',
+            };
+            const phaseKey = phaseKeys[window.__QS_UNIFIED_PROGRESS_PHASE];
+            if (phaseKey) {
+                el.setAttribute('data-i18n', phaseKey);
+                el.textContent = window.t(phaseKey);
+            }
+            return;
+        }
         const key = el.getAttribute('data-i18n');
         if (key) el.textContent = window.t(key);
     });

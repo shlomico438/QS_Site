@@ -1842,6 +1842,7 @@ def _get_worker_handoff(job_id):
     return {
         "options_finalized": opts_finalized,
         "worker_ready": worker_ready,
+        "early_gpu_dispatched": _pick_bool("early_gpu_dispatched"),
         "worker_pending_reason": pending_reason,
         "transcription_options": tx_opts,
         "transcription_s3_key": (
@@ -1857,18 +1858,20 @@ def _get_worker_handoff(job_id):
 def _set_worker_handoff(job_id, **fields):
     pinfo = dict(pending_job_info.get(job_id) or {})
     for key, val in fields.items():
-        if val is not None:
+        if val is not None or key == "worker_pending_reason":
             pinfo[key] = val
     pending_job_info[job_id] = pinfo
     persist = {}
     for key in (
         "options_finalized",
         "worker_ready",
+        "early_gpu_dispatched",
         "worker_pending_reason",
         "transcription_options",
         "transcription_s3_key",
+        "input_s3_key",
     ):
-        if key in fields and fields[key] is not None:
+        if key in fields and (fields[key] is not None or key == "worker_pending_reason"):
             persist[key] = fields[key]
     if persist:
         def _run():
@@ -1928,6 +1931,135 @@ def _job_upload_complete_from_db(job_id_value: str) -> bool:
         return False
 
 
+def _audio_preprocess_dispatch_stale_sec():
+    try:
+        return max(
+            30.0,
+            float(os.environ.get('AUDIO_PREPROCESSING_DISPATCH_STALE_SEC', '60') or 60),
+        )
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _audio_preprocess_max_handoff_wait_sec():
+    try:
+        return max(
+            _audio_preprocess_dispatch_stale_sec(),
+            float(os.environ.get('AUDIO_PREPROCESSING_HANDOFF_MAX_WAIT_SEC', '240') or 240),
+        )
+    except (TypeError, ValueError):
+        return 240.0
+
+
+def _job_input_s3_key_from_db(job_id):
+    try:
+        row = _get_job_row_by_runpod_job_id(
+            job_id,
+            select="input_s3_key",
+            timeout=_worker_handoff_db_timeout_sec(),
+        )
+        return str((row or {}).get("input_s3_key") or "").strip() or None
+    except Exception:
+        return None
+
+
+def _recover_stale_audio_preprocess_gate(job_id, handoff):
+    """Fail open a lost/stuck CPU stage before the warm GPU reaches its 300s timeout."""
+    if handoff.get("worker_ready"):
+        return False
+    if str(handoff.get("worker_pending_reason") or "").strip().lower() != "audio_preprocessing":
+        return False
+
+    preprocess = _load_audio_preprocess_handoff(job_id)
+    if preprocess.get("finished"):
+        return False
+    qs_trigger = _read_qs_trigger_meta(job_id, db_timeout=_worker_handoff_db_timeout_sec())
+    started_at = (
+        preprocess.get("dispatch_started_at")
+        or preprocess.get("dispatched_at")
+        or qs_trigger.get("audio_preprocess_started_at")
+        or qs_trigger.get("at")
+    )
+    try:
+        age_sec = max(0.0, time.time() - float(started_at))
+    except (TypeError, ValueError):
+        return False
+
+    has_run_id = bool(preprocess.get("runpod_run_id"))
+    stale_after = (
+        _audio_preprocess_max_handoff_wait_sec()
+        if has_run_id
+        else _audio_preprocess_dispatch_stale_sec()
+    )
+    if age_sec < stale_after:
+        return False
+
+    source_key = str(
+        preprocess.get("source_s3_key")
+        or handoff.get("input_s3_key")
+        or _job_input_s3_key_from_db(job_id)
+        or ""
+    ).strip()
+    if not source_key:
+        logging.error(
+            "Cannot fail open stale audio preprocessing: source key missing job_id=%s age_sec=%.1f",
+            job_id,
+            age_sec,
+        )
+        return False
+
+    with _audio_preprocess_finish_lock:
+        latest = _load_audio_preprocess_handoff(job_id)
+        if latest.get("finished"):
+            return False
+        recovered = {
+            **latest,
+            "status": "failed_open",
+            "finished": True,
+            "finished_at": time.time(),
+            "source_s3_key": source_key,
+            "error": f"stale audio preprocessing gate recovered after {age_sec:.1f}s",
+            "recovery_reason": "worker_handoff_poll",
+        }
+        audio_preprocess_jobs[job_id] = recovered
+        _persist_audio_preprocess_handoff(job_id, recovered)
+
+    options = dict(handoff.get("transcription_options") or {})
+    options.update({
+        "preprocessed_audio": False,
+        "preprocess": "audio_loudnorm",
+        "preprocess_failed": True,
+        "preprocess_error": recovered["error"],
+        "source_s3_key": source_key,
+        "audio_preprocessed_s3_key": None,
+    })
+    _set_worker_handoff(
+        job_id,
+        options_finalized=True,
+        worker_ready=True,
+        worker_pending_reason=None,
+        transcription_options=options,
+        transcription_s3_key=source_key,
+        input_s3_key=source_key,
+    )
+    pending_trigger[job_id] = "triggered"
+    _set_trigger_state(
+        job_id,
+        "triggered",
+        async_persist=False,
+        audio_preprocess_failed_open=True,
+        audio_preprocess_failed_open_at=time.time(),
+    )
+    logging.error(
+        "Released stale audio preprocessing gate job_id=%s age_sec=%.1f had_run_id=%s; "
+        "GPU will transcribe original upload",
+        job_id,
+        age_sec,
+        has_run_id,
+    )
+    return True
+
+
 def _worker_upload_status_response(job_id):
     """Payload for RunPod worker upload_status polling (upload done + final options + optional vocal prep)."""
     upload_done = bool(upload_complete.get(job_id))
@@ -1941,6 +2073,8 @@ def _worker_upload_status_response(job_id):
     input_key = str(pinfo.get('input_s3_key') or '')
     is_medical_job = bool(pinfo.get('is_medical')) or _is_medical_s3_key(input_key)
     handoff = _get_worker_handoff(job_id)
+    if upload_done and not is_medical_job and _recover_stale_audio_preprocess_gate(job_id, handoff):
+        handoff = _get_worker_handoff(job_id)
 
     # SageMaker medical: no RunPod handoff — once upload is done, status must be "complete" immediately.
     if is_medical_job and upload_done:
@@ -5355,6 +5489,347 @@ def api_charge_job_credits():
         return jsonify(out)
     except Exception as e:
         logging.exception("charge_job_credits failed")
+        return jsonify({"error": str(e)}), 500
+
+
+def _is_anonymous_standard_s3_key(s3_key):
+    """True for guest uploads under users/anonymous/... (standard R2 layout only)."""
+    k = str(s3_key or '').strip()
+    return k.startswith('users/anonymous/')
+
+
+def _rewrite_anonymous_standard_s3_key(s3_key, user_id):
+    k = str(s3_key or '').strip()
+    uid = str(user_id or '').strip()
+    if not _is_anonymous_standard_s3_key(k) or not uid or uid.lower() == 'anonymous':
+        return None
+    return 'users/' + uid + '/' + k[len('users/anonymous/'):]
+
+
+def _list_s3_keys_with_prefix(bucket, prefix, max_keys=500):
+    bucket = str(bucket or '').strip()
+    prefix = str(prefix or '').strip()
+    if not bucket or not prefix:
+        return []
+    out = []
+    try:
+        s3_client = _s3_boto_client(bucket=bucket)
+        token = None
+        while len(out) < max_keys:
+            kwargs = {'Bucket': bucket, 'Prefix': prefix, 'MaxKeys': min(200, max_keys - len(out))}
+            if token:
+                kwargs['ContinuationToken'] = token
+            res = s3_client.list_objects_v2(**kwargs)
+            for obj in (res.get('Contents') or []):
+                kk = str((obj or {}).get('Key') or '').strip()
+                if kk:
+                    out.append(kk)
+            if not res.get('IsTruncated'):
+                break
+            token = res.get('NextContinuationToken')
+    except Exception:
+        logging.exception("_list_s3_keys_with_prefix failed prefix=%s", prefix[:120])
+    return out
+
+
+def _collect_anonymous_job_s3_keys(bucket, input_s3_key):
+    """Input media + sibling preprocess artifacts + derived transcript/output objects."""
+    key = str(input_s3_key or '').strip()
+    keys = set()
+    if not key:
+        return []
+    keys.add(key)
+    parent = key.rsplit('/', 1)[0] if '/' in key else ''
+    stem = pathlib.PurePosixPath(key).stem
+    if parent and stem:
+        for kk in _list_s3_keys_with_prefix(bucket, f"{parent}/{stem}"):
+            if _is_anonymous_standard_s3_key(kk):
+                keys.add(kk)
+    out_base = key.replace('/input/', '/output/', 1).rsplit('.', 1)[0] if '/input/' in key else ''
+    if out_base:
+        for kk in _list_s3_keys_with_prefix(bucket, out_base):
+            if _is_anonymous_standard_s3_key(kk):
+                keys.add(kk)
+    return sorted(keys)
+
+
+def _s3_copy_then_delete(bucket, src_key, dst_key):
+    """Copy object to destination; delete source only after a successful copy."""
+    src = str(src_key or '').strip()
+    dst = str(dst_key or '').strip()
+    bucket = str(bucket or '').strip()
+    if not bucket or not src or not dst or src == dst:
+        return False
+    s3_client = _s3_boto_client(bucket=bucket)
+    if _s3_object_exists(bucket, dst):
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=src)
+        except Exception:
+            logging.warning("claim: could not delete already-copied source %s", src[-80:])
+        return True
+    s3_client.copy_object(
+        Bucket=bucket,
+        CopySource={'Bucket': bucket, 'Key': src},
+        Key=dst,
+        MetadataDirective='COPY',
+    )
+    try:
+        s3_client.delete_object(Bucket=bucket, Key=src)
+    except Exception:
+        logging.warning("claim: copied %s -> %s but source delete failed", src[-80:], dst[-80:])
+    return True
+
+
+def _jobs_upsert_claimed_anonymous(user_id, runpod_job_id, old_input_key, new_input_key, new_result_key=None, user_name=None, user_email=None):
+    """Attach or update the jobs row for a claimed anonymous upload."""
+    uid = str(user_id or '').strip()
+    jid = str(runpod_job_id or '').strip()
+    if not uid or not jid:
+        return None
+    row = _get_job_row_by_runpod_job_id(
+        jid,
+        select="id,user_id,input_s3_key,result_s3_key,status,metadata,credit_minutes_used",
+    )
+    md = {}
+    if isinstance(row, dict) and isinstance(row.get('metadata'), dict):
+        md = dict(row.get('metadata') or {})
+    md['job_id'] = jid
+    md['claimed_from_anonymous'] = True
+    md['claimed_from_anonymous_at'] = datetime.utcnow().isoformat() + 'Z'
+    md['anonymous_input_s3_key'] = old_input_key
+    if new_result_key:
+        md['result_s3_key'] = new_result_key
+
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key:
+        return None
+    headers = {**_supabase_service_headers(service_key), "Prefer": "return=representation"}
+    payload = {
+        "user_id": uid,
+        "input_s3_key": new_input_key,
+        "runpod_job_id": jid,
+        "metadata": md,
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    if new_result_key:
+        payload["result_s3_key"] = new_result_key
+    if user_name:
+        payload["user_name"] = user_name
+    if user_email:
+        payload["user_email"] = user_email
+
+    if isinstance(row, dict) and row.get('id'):
+        owner = str(row.get('user_id') or '').strip()
+        if owner and owner != uid:
+            raise PermissionError("Job already belongs to another user")
+        patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{row['id']}"
+        r = _supabase_http_request('PATCH', patch_url, json=payload, headers=headers, timeout=15)
+        if r.status_code not in (200, 204):
+            raise RuntimeError(r.text or f"jobs claim patch HTTP {r.status_code}")
+        return str(row.get('id'))
+
+    payload.update({
+        "type": "transcription",
+        "status": "processed",
+    })
+    r = _supabase_http_request(
+        'POST',
+        f"{supabase_url}/rest/v1/jobs",
+        json=payload,
+        headers=headers,
+        timeout=15,
+    )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"jobs claim insert HTTP {r.status_code}")
+    rows = r.json() if r.content else []
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        return str(rows[0].get('id') or '') or None
+    return None
+
+
+@app.route('/api/claim_anonymous_job', methods=['POST'])
+def api_claim_anonymous_job():
+    """After signup: move users/anonymous/... objects under the user and charge minutes."""
+    try:
+        auth_user = _supabase_auth_user_from_request()
+        if not auth_user:
+            return jsonify({"error": "Authorization required"}), 401
+        user_id = str(auth_user.get('id') or auth_user.get('user', {}).get('id') or '').strip()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+
+        data = request.get_json(silent=True) or {}
+        job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
+        input_s3_key = str(data.get('input_s3_key') or data.get('s3Key') or '').strip()
+        segments = data.get('segments') if isinstance(data.get('segments'), list) else []
+        try:
+            client_duration = float(data.get('mediaDurationSec') or data.get('media_duration_sec') or 0)
+        except (TypeError, ValueError):
+            client_duration = 0.0
+
+        if not job_id or not input_s3_key:
+            return jsonify({"error": "jobId and input_s3_key required"}), 400
+        if not _is_anonymous_standard_s3_key(input_s3_key):
+            wallet = _user_credits_get(user_id)
+            return jsonify({
+                "ok": True,
+                "skipped": True,
+                "reason": "not_anonymous",
+                "input_s3_key": input_s3_key,
+                "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+            })
+        if _is_medical_s3_key(input_s3_key):
+            return jsonify({"error": "Medical/HIPAA keys cannot be claimed via this endpoint"}), 400
+
+        # Welcome pack first so post-signup charge has a balance to deduct from.
+        user_name = _user_display_name_from_auth_payload(auth_user)
+        user_email = str(auth_user.get('email') or '').strip() or None
+        wallet = _user_credits_ensure_welcome(user_id, user_name=user_name)
+
+        new_input = _rewrite_anonymous_standard_s3_key(input_s3_key, user_id)
+        if not new_input:
+            return jsonify({"error": "Could not rewrite anonymous key"}), 400
+
+        bucket = _standard_s3_bucket_name()
+        if not bucket:
+            return jsonify({"error": "S3 bucket not configured"}), 503
+
+        existing = _get_job_row_by_runpod_job_id(
+            job_id,
+            select="id,user_id,input_s3_key,result_s3_key,credit_minutes_used,metadata",
+        )
+        if isinstance(existing, dict):
+            owner = str(existing.get('user_id') or '').strip()
+            if owner and owner != user_id:
+                return jsonify({"error": "Job already belongs to another user"}), 403
+            cur_key = str(existing.get('input_s3_key') or '').strip()
+            if cur_key.startswith(f'users/{user_id}/') and not _is_anonymous_standard_s3_key(cur_key):
+                # Already claimed; still attempt charge if minutes were never deducted.
+                credit_info = _charge_job_credits(
+                    user_id,
+                    job_id,
+                    segments,
+                    cur_key,
+                    pending_info={
+                        "bucket": bucket,
+                        "credit_file_duration_sec": client_duration if client_duration > 0 else None,
+                    },
+                )
+                out = {
+                    "ok": True,
+                    "already_claimed": True,
+                    "input_s3_key": cur_key,
+                    "result_s3_key": existing.get('result_s3_key'),
+                    "job_db_id": existing.get('id'),
+                    "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+                    **_credit_fields_for_api(credit_info or {}),
+                }
+                if isinstance(credit_info, dict) and credit_info.get('already_charged'):
+                    out['already_charged'] = True
+                if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
+                    return jsonify({**out, "ok": False}), 402
+                return jsonify(out)
+
+        related = _collect_anonymous_job_s3_keys(bucket, input_s3_key)
+        moved = []
+        for src in related:
+            dst = _rewrite_anonymous_standard_s3_key(src, user_id)
+            if not dst:
+                continue
+            try:
+                if _s3_copy_then_delete(bucket, src, dst):
+                    moved.append({"from": src, "to": dst})
+            except Exception as copy_err:
+                logging.exception(
+                    "claim_anonymous_job copy failed job_id=%s src=%s: %s",
+                    job_id,
+                    src[-100:],
+                    copy_err,
+                )
+                return jsonify({
+                    "error": f"Failed to move storage object: {copy_err}",
+                    "partial_moved": moved,
+                }), 500
+
+        new_result = None
+        out_base = new_input.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
+        for candidate in (f"{out_base}.json", f"{out_base}.gpt.json"):
+            if _s3_object_exists(bucket, candidate):
+                new_result = candidate
+                break
+        if not new_result and isinstance(existing, dict):
+            old_result = str(existing.get('result_s3_key') or '').strip()
+            if old_result:
+                new_result = _rewrite_anonymous_standard_s3_key(old_result, user_id) or old_result
+
+        job_db_id = _jobs_upsert_claimed_anonymous(
+            user_id,
+            job_id,
+            input_s3_key,
+            new_input,
+            new_result_key=new_result,
+            user_name=user_name,
+            user_email=user_email,
+        )
+
+        # Keep in-memory pending info consistent for any still-running workers on this instance.
+        pinfo = dict(pending_job_info.get(job_id) or {})
+        pinfo.update({
+            "input_s3_key": new_input,
+            "transcription_s3_key": new_input,
+            "user_id": user_id,
+            "bucket": bucket,
+        })
+        pending_job_info[job_id] = pinfo
+
+        credit_info = _charge_job_credits(
+            user_id,
+            job_id,
+            segments,
+            new_input,
+            pending_info={
+                "bucket": bucket,
+                "credit_file_duration_sec": client_duration if client_duration > 0 else None,
+            },
+        )
+        if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
+            return jsonify({
+                "ok": False,
+                "error": "insufficient_credits",
+                "message": credit_info.get('message'),
+                "input_s3_key": new_input,
+                "result_s3_key": new_result,
+                "job_db_id": job_db_id,
+                "moved_count": len(moved),
+                **_credit_fields_for_api(credit_info),
+            }), 402
+
+        wallet = _user_credits_get(user_id)
+        logging.info(
+            "claim_anonymous_job ok job_id=%s user=%s moved=%s charged=%s",
+            job_id,
+            user_id[:8],
+            len(moved),
+            (credit_info or {}).get('credit_minutes_used'),
+        )
+        out = {
+            "ok": True,
+            "input_s3_key": new_input,
+            "result_s3_key": new_result,
+            "job_db_id": job_db_id,
+            "moved_count": len(moved),
+            "moved": moved[:40],
+            "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+            **_credit_fields_for_api(credit_info or {}),
+        }
+        if isinstance(credit_info, dict) and credit_info.get('already_charged'):
+            out['already_charged'] = True
+        return jsonify(out)
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+    except Exception as e:
+        logging.exception("claim_anonymous_job failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -10955,9 +11430,11 @@ def _start_trigger_if_configured(
             job_id,
             options_finalized=False,
             worker_ready=False,
+            early_gpu_dispatched=True,
             worker_pending_reason="awaiting_trigger_processing",
             transcription_options=transcription_options or {},
             transcription_s3_key=s3_key,
+            input_s3_key=s3_key,
         )
     pending_trigger[job_id] = "queued"
     t_queued = time.time()
@@ -11045,6 +11522,23 @@ def _queue_audio_preprocess_on_runpod(
     }
     endpoint_url = f"https://api.runpod.ai/v2/{cpu_endpoint_id}/run"
     headers = {"Authorization": f"Bearer {runpod_api_key}", "Content-Type": "application/json"}
+    trigger_input = (trigger_payload or {}).get('input') if isinstance(trigger_payload, dict) else {}
+    handoff = {
+        'status': 'dispatching',
+        'trigger_payload': json.loads(json.dumps(trigger_payload or {})),
+        'trigger_input': json.loads(json.dumps(trigger_input or {})),
+        'gpu_endpoint_id': endpoint_id,
+        'bucket': bucket,
+        'source_s3_key': source_s3_key,
+        'output_s3_key': output_s3_key,
+        'dispatch_started_at': time.time(),
+        'runpod_run_id': None,
+        'cpu_endpoint_id': cpu_endpoint_id,
+    }
+    # Persist before making the network request. If this web process exits while
+    # RunPod is accepting the job, another instance can release the warm GPU.
+    audio_preprocess_jobs[job_id] = handoff
+    _persist_audio_preprocess_handoff(job_id, handoff, trigger_status='preprocessing')
     dispatch_timeout = int((os.environ.get('RUNPOD_CPU_DISPATCH_TIMEOUT_SEC') or '35').strip() or 35)
     max_attempts = int((os.environ.get('RUNPOD_CPU_DISPATCH_RETRIES') or '4').strip() or 4)
     backoff_sec = float((os.environ.get('RUNPOD_CPU_DISPATCH_BACKOFF_SEC') or '1.5').strip() or 1.5)
@@ -11073,18 +11567,18 @@ def _queue_audio_preprocess_on_runpod(
         raise RuntimeError(f"RunPod CPU audio preprocessing dispatch failed: {last_error or 'unknown error'}")
 
     runpod_run_id = (response.json() or {}).get('id') if response.content else None
-    trigger_input = (trigger_payload or {}).get('input') if isinstance(trigger_payload, dict) else {}
+    if _load_audio_preprocess_handoff(job_id).get('finished'):
+        logging.warning(
+            "Audio preprocessing dispatch accepted after fail-open job_id=%s runpod_run_id=%s",
+            job_id,
+            runpod_run_id,
+        )
+        return
     handoff = {
+        **handoff,
         'status': 'processing',
-        'trigger_payload': json.loads(json.dumps(trigger_payload or {})),
-        'trigger_input': json.loads(json.dumps(trigger_input or {})),
-        'gpu_endpoint_id': endpoint_id,
-        'bucket': bucket,
-        'source_s3_key': source_s3_key,
-        'output_s3_key': output_s3_key,
         'dispatched_at': time.time(),
         'runpod_run_id': runpod_run_id,
-        'cpu_endpoint_id': cpu_endpoint_id,
     }
     audio_preprocess_jobs[job_id] = handoff
     _persist_audio_preprocess_handoff(job_id, handoff, trigger_status='preprocessing')
@@ -11131,7 +11625,13 @@ def _finish_audio_preprocess_and_trigger_gpu(job_id, trigger_payload, endpoint_i
     """Release an early GPU worker, or dispatch one when no warmup was started."""
     global pending_trigger, pending_trigger_at
     state = str(pending_trigger.get(job_id) or '').strip().lower()
-    early_gpu_dispatched = bool((pending_job_info.get(job_id) or {}).get('early_gpu_dispatched'))
+    if not state:
+        persisted_state, _ = _get_trigger_state(job_id)
+        state = str(persisted_state or '').strip().lower()
+    early_gpu_dispatched = bool(
+        (pending_job_info.get(job_id) or {}).get('early_gpu_dispatched')
+        or _get_worker_handoff(job_id).get('early_gpu_dispatched')
+    )
     _publish_audio_preprocess_worker_handoff(job_id, trigger_payload)
     if early_gpu_dispatched and state in ('queued', 'run_accepted', 'triggered', 'preprocessing'):
         logging.info("Audio preprocessing handoff released early GPU job_id=%s", job_id)
@@ -11780,9 +12280,19 @@ def trigger_processing():
         if use_audio_preprocess:
             _audio_profile_api_fields["audio_preprocessing"] = "queued"
 
+        persisted_trigger_row = _get_job_row_by_runpod_job_id(
+            job_id,
+            select="status,metadata",
+            timeout=_worker_handoff_db_timeout_sec(),
+        )
+        persisted_trigger_status, _ = _get_trigger_state(job_id, row=persisted_trigger_row)
         early_run = (
             job_id in pending_trigger
             and pending_trigger.get(job_id) not in ("failed", None)
+        ) or str(persisted_trigger_status or "").strip().lower() in (
+            "queued",
+            "run_accepted",
+            "triggered",
         )
         if early_run:
             pinfo = dict(pending_job_info.get(job_id) or {})
@@ -11800,6 +12310,7 @@ def trigger_processing():
                     else ("audio_loudnorm" if use_audio_preprocess else None)
                 ),
                 "audio_preprocessed_s3_key": audio_preprocessed_s3_key,
+                "early_gpu_dispatched": True,
             })
             if credit_reserve.get('required_minutes'):
                 pinfo['credit_required_minutes'] = float(credit_reserve['required_minutes'])
@@ -11833,6 +12344,7 @@ def trigger_processing():
                     job_id,
                     options_finalized=True,
                     worker_ready=False,
+                    early_gpu_dispatched=True,
                     worker_pending_reason="vocal_separation",
                     transcription_options=transcription_options or {},
                     transcription_s3_key=vocals_s3_key or s3_key,
@@ -11850,6 +12362,7 @@ def trigger_processing():
                     job_id,
                     options_finalized=True,
                     worker_ready=False,
+                    early_gpu_dispatched=True,
                     worker_pending_reason="audio_preprocessing",
                     transcription_options=transcription_options or {},
                     transcription_s3_key=audio_preprocessed_s3_key,
@@ -11875,6 +12388,7 @@ def trigger_processing():
                     job_id,
                     options_finalized=True,
                     worker_ready=True,
+                    early_gpu_dispatched=True,
                     worker_pending_reason=None,
                     transcription_options=transcription_options or {},
                     transcription_s3_key=s3_key,
