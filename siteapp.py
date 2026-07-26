@@ -2253,8 +2253,15 @@ def _get_vocal_separation_meta_from_db(job_id):
         return {}
 
 
+def _handoff_for_persist(handoff):
+    """Drop secrets before writing qs_trigger handoff blobs to jobs.metadata."""
+    data = dict(handoff or {})
+    data.pop('gpu_api_key', None)
+    return data
+
+
 def _persist_vocal_separation_handoff(job_id, handoff, trigger_status=None):
-    payload = {"vocal_separation": dict(handoff or {})}
+    payload = {"vocal_separation": _handoff_for_persist(handoff)}
     _merge_job_qs_trigger(job_id, payload, update_job_status=trigger_status)
 
 
@@ -2525,7 +2532,7 @@ def _get_audio_preprocess_meta_from_db(job_id):
 def _persist_audio_preprocess_handoff(job_id, handoff, trigger_status=None):
     _merge_job_qs_trigger(
         job_id,
-        {"audio_preprocessing": dict(handoff or {})},
+        {"audio_preprocessing": _handoff_for_persist(handoff)},
         update_job_status=trigger_status,
     )
 
@@ -4756,6 +4763,11 @@ def _user_invoice_billing_save(user_id, tax_id, city):
     if not city:
         raise ValueError('ישוב (עיר) נדרש')
     _user_credits_ensure_welcome(user_id)
+    # Registration email is independent of welcome_granted (DB trigger often
+    # grants welcome before any app path runs). Idempotent via qs_admin_reg_notified.
+    auth_user = _supabase_auth_user_from_request()
+    if auth_user:
+        _schedule_admin_new_user_registration_notify(auth_user)
     from urllib.parse import quote
     supabase_url, _service_key, headers = _supabase_rest_config()
     uid = quote(user_id, safe='')
@@ -5683,9 +5695,12 @@ def api_claim_anonymous_job():
             return jsonify({"error": "Medical/HIPAA keys cannot be claimed via this endpoint"}), 400
 
         # Welcome pack first so post-signup charge has a balance to deduct from.
+        # Registration email is independent of welcome_granted (DB trigger often
+        # grants welcome before claim/ensure-welcome). Idempotent via qs_admin_reg_notified.
         user_name = _user_display_name_from_auth_payload(auth_user)
         user_email = str(auth_user.get('email') or '').strip() or None
         wallet = _user_credits_ensure_welcome(user_id, user_name=user_name)
+        _schedule_admin_new_user_registration_notify(auth_user)
 
         new_input = _rewrite_anonymous_standard_s3_key(input_s3_key, user_id)
         if not new_input:
@@ -6245,9 +6260,11 @@ def api_user_credits_ensure_welcome():
         existing = _user_credits_get(user_id)
         already_welcomed = bool(existing and existing.get('welcome_granted'))
         row = _user_credits_ensure_welcome(user_id, user_name=user_name)
-        # Notify only on first welcome grant — not on every subsequent ensure-welcome call.
-        if not already_welcomed:
-            _schedule_admin_new_user_registration_notify(auth_user)
+        # Always attempt ops registration email for recent signups.
+        # Welcome minutes are often already granted by the auth.users DB trigger
+        # (on_auth_user_created_welcome_credits) before this endpoint runs — so we
+        # must NOT gate notify on welcome_granted. Idempotency is via qs_admin_reg_notified.
+        _schedule_admin_new_user_registration_notify(auth_user)
         return jsonify({
             "credit_minutes": int((row or {}).get('credit_minutes') or 0),
             "welcome_granted": bool((row or {}).get('welcome_granted')),
