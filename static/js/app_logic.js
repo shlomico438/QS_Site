@@ -10454,6 +10454,31 @@ if (authSubmitBtn) {
                 authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('send_magic_link') : 'Send me a link';
                 return;
             }
+            try {
+                const riskRes = await fetch('/api/auth/check_email_risk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email }),
+                });
+                const risk = await riskRes.json().catch(() => ({}));
+                if (!riskRes.ok || risk.allowed === false) {
+                    const blockMsg = risk.error
+                        || (typeof window.t === 'function'
+                            ? window.t('email_signup_blocked')
+                            : 'This email address cannot be used. Please use a permanent email address.');
+                    if (typeof showStatus === 'function') showStatus(blockMsg, true);
+                    return;
+                }
+                if (risk.action === 'verify' || risk.action === 'allow_suspicious') {
+                    console.warn('[auth] email risk check', {
+                        action: risk.action,
+                        score: risk.score,
+                        reasons: risk.reasons,
+                    });
+                }
+            } catch (riskErr) {
+                console.warn('[auth] email risk check failed; continuing signup', riskErr);
+            }
             const { data, error } = await supabase.auth.signInWithOtp({
                 email,
                 options: {

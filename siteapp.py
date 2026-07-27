@@ -41,6 +41,8 @@ import html as html_module
 from email.message import EmailMessage
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
+from email_risk_check import assess_email_risk, log_email_risk_event
+
 
 # --- CONFIGURATION ---
 # Read simulation flag from environment. Default True for local dev (F5); set SIMULATION_MODE=0 or false in production (e.g. Koyeb).
@@ -6691,6 +6693,74 @@ def api_user_credits_check_upload():
     except Exception as e:
         logging.exception("api_user_credits_check_upload failed")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/auth/check_email_risk', methods=['POST'])
+def api_auth_check_email_risk():
+    """Pre-signup email risk scoring (disposable domains + RDAP domain age)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        email = str(data.get('email') or '').strip()
+        if not email or '@' not in email:
+            return jsonify({"error": "Valid email required", "allowed": False}), 400
+
+        result = assess_email_risk(email)
+        score = int(result.get('score') or 0)
+        reasons = list(result.get('reasons') or [])
+        domain = str(result.get('domain') or '').strip()
+        action = str(result.get('action') or 'allow')
+        domain_age_days = result.get('domainAgeDays')
+
+        try:
+            log_email_risk_event(
+                email_domain=domain,
+                risk_score=score,
+                reasons=reasons,
+                domain_age_days=domain_age_days if isinstance(domain_age_days, int) else None,
+            )
+        except Exception as log_err:
+            logging.warning("api_auth_check_email_risk log failed domain=%s: %s", domain, log_err)
+
+        if action == 'allow_suspicious':
+            logging.warning(
+                "email_risk_check suspicious signup domain=%s score=%s reasons=%s",
+                domain,
+                score,
+                reasons,
+            )
+        elif action == 'verify':
+            logging.warning(
+                "email_risk_check verification recommended domain=%s score=%s reasons=%s",
+                domain,
+                score,
+                reasons,
+            )
+        elif action == 'block':
+            logging.warning(
+                "email_risk_check blocked signup domain=%s score=%s reasons=%s",
+                domain,
+                score,
+                reasons,
+            )
+
+        payload = {
+            "allowed": bool(result.get('allowed')),
+            "score": score,
+            "reasons": reasons,
+            "disposable": bool(result.get('disposable')),
+            "domainAgeDays": domain_age_days,
+            "action": action,
+        }
+        if not payload["allowed"]:
+            payload["error"] = (
+                "This email address cannot be used. Please use a permanent email address."
+            )
+            return jsonify(payload), 400
+        return jsonify(payload), 200
+    except Exception as e:
+        logging.exception("api_auth_check_email_risk failed")
+        # Fail open so SMTP/Auth outages do not lock out legitimate users.
+        return jsonify({"allowed": True, "score": 0, "reasons": [], "action": "allow", "degraded": True}), 200
 
 
 @app.route('/api/analytics/event', methods=['POST'])
