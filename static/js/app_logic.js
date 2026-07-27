@@ -4256,10 +4256,48 @@ window.toggleModal = function(show) {
         if (show) {
             try { document.body.appendChild(modal); } catch (_) {}
             modal.style.zIndex = '14000';
+            qsClearAuthError();
         }
         modal.style.display = show ? 'flex' : 'none';
     }
 };
+
+function qsShowAuthError(message) {
+    const el = document.getElementById('auth-error');
+    if (!el) {
+        if (typeof showStatus === 'function') showStatus(message, true);
+        return;
+    }
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const msg = String(message || '').trim()
+        || T('email_signup_blocked')
+        || 'This email address cannot be used. Please use a permanent email address.';
+    el.textContent = msg;
+    el.style.display = 'block';
+    try {
+        const emailInput = document.getElementById('auth-email');
+        if (emailInput) emailInput.style.borderColor = '#ef4444';
+    } catch (_) {}
+}
+
+function qsClearAuthError() {
+    const el = document.getElementById('auth-error');
+    if (el) {
+        el.textContent = '';
+        el.style.display = 'none';
+    }
+    try {
+        const emailInput = document.getElementById('auth-email');
+        if (emailInput) emailInput.style.borderColor = '#d1d5db';
+    } catch (_) {}
+}
+
+function qsResetAuthSubmitButtonLabel() {
+    const authSubmitBtnEl = document.getElementById('auth-submit-btn');
+    if (!authSubmitBtnEl) return;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    authSubmitBtnEl.innerText = T('send_magic_link') || 'Send me a link';
+}
 
 function applyAuthModalMode() {
     const T = typeof window.t === 'function' ? window.t : (k) => k;
@@ -4606,6 +4644,9 @@ function showStatus(message, isError = false, options = {}) {
             return 'לא זוהו מקטעי כתוביות בקובץ. יש להשתמש בפורמט תקני ‎.srt/.vtt‎.';
         }
         if (raw === 'Unknown error') return unknownErr;
+        if (raw === 'This email address cannot be used. Please use a permanent email address.') {
+            return 'לא ניתן להשתמש בכתובת אימייל זו. אנא השתמש בכתובת אימייל קבועה.';
+        }
         return raw;
     };
     const str = _translateStatusMessage(String(message));
@@ -10446,12 +10487,13 @@ if (authSubmitBtn) {
 
         authSubmitBtn.disabled = true;
         authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('sending_link') : "Sending link...";
+        qsClearAuthError();
 
         try {
             const fullName = document.getElementById('auth-name')?.value?.trim();
             if (!(await qsMaybeWarnIOSPrivateBeforeOAuth())) {
                 authSubmitBtn.disabled = false;
-                authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('send_magic_link') : 'Send me a link';
+                qsResetAuthSubmitButtonLabel();
                 return;
             }
             try {
@@ -10466,7 +10508,7 @@ if (authSubmitBtn) {
                         || (typeof window.t === 'function'
                             ? window.t('email_signup_blocked')
                             : 'This email address cannot be used. Please use a permanent email address.');
-                    if (typeof showStatus === 'function') showStatus(blockMsg, true);
+                    qsShowAuthError(blockMsg);
                     return;
                 }
                 if (risk.action === 'verify' || risk.action === 'allow_suspicious') {
@@ -10504,11 +10546,20 @@ if (authSubmitBtn) {
                     name: err.name
                 });
             }
-            showStatus(err.message || (err.error_description || err.msg || "Login failed"), true);
+            const errMsg = err.message || (err.error_description || err.msg || "Login failed");
+            qsShowAuthError(errMsg);
         } finally {
             authSubmitBtn.disabled = false;
+            if (authSubmitBtn.innerText === (typeof window.t === 'function' ? window.t('sending_link') : 'Sending link...')) {
+                qsResetAuthSubmitButtonLabel();
+            }
         }
     });
+}
+
+const authEmailInput = document.getElementById('auth-email');
+if (authEmailInput) {
+    authEmailInput.addEventListener('input', () => qsClearAuthError());
 }
 
 function qsSetMainBtnDynamicLabel(text) {
