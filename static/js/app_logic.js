@@ -4194,60 +4194,8 @@ function qsUploadMediaDurationForApi() {
     return qsClientMediaDurationSecForCredits();
 }
 
-/** Server sends audio_profile + transcription_options on /api/trigger_processing — log clearly (browser has no server logging). */
-function qsLogAudioProfileFromTrigger(jobId, triggerData) {
-    try {
-        const td = triggerData || {};
-        if (td.audio_profile_skipped_reason === 'medical_mode') return;
-        const ap = td.audio_profile;
-        const profileSource = td.audio_profile_source || null;
-        const reason = td.audio_profile_reason;
-        const varEv = td.audio_profile_energy_variance;
-        const postIntroVar = td.audio_profile_post_intro_energy_variance;
-        const tailVar = td.audio_profile_tail_energy_variance;
-        const threshold = td.audio_profile_threshold;
-        const basis = td.audio_profile_classification_basis;
-        const topts = td.transcription_options && typeof td.transcription_options === 'object' ? td.transcription_options : {};
-        const ffStderr = td.audio_profile_ffmpeg_stderr_tail || null;
-        let headline = '[audio-profile] ';
-        if (ap === 'music') headline += 'Music detected';
-        else if (ap === 'speech') headline += 'Speech detected';
-        else headline += `Classification: ${ap != null ? String(ap) : 'missing'}`;
-        if (reason) headline += ` (${reason})`;
-        // console.log is silenced on non-localhost (__QS_CONSOLE_ENABLED gate); console.error is not patched — stays visible.
-        const payload = {
-            jobId,
-            audio_profile_source: profileSource,
-            transcription_options: topts,
-            use_vad: topts.use_vad,
-            vad_options_source: topts.vad_options_source || null,
-            vad_force_enable_env_active: topts.vad_force_enable_env_active === true,
-            audio_profile_reason: reason || null,
-            energy_variance: varEv != null ? varEv : null,
-            post_intro_energy_variance: postIntroVar != null ? postIntroVar : null,
-            tail_energy_variance: tailVar != null ? tailVar : null,
-            threshold: threshold != null ? threshold : null,
-            classification_basis: basis || null,
-            ffmpeg_stderr_tail: ffStderr,
-        };
-        if (typeof console !== 'undefined' && typeof console.error === 'function') {
-            console.error(headline, '| job:', jobId, '|', payload);
-        }
-        qsUploadTraceErr('audio_profile', {
-            jobId,
-            audio_profile_source: profileSource,
-            audio_profile: ap != null ? ap : 'missing',
-            audio_profile_reason: reason || null,
-            audio_profile_energy_variance: varEv != null ? varEv : null,
-            audio_profile_post_intro_energy_variance: postIntroVar != null ? postIntroVar : null,
-            audio_profile_tail_energy_variance: tailVar != null ? tailVar : null,
-            audio_profile_threshold: threshold != null ? threshold : null,
-            audio_profile_classification_basis: basis || null,
-            audio_profile_ffmpeg_stderr_tail: ffStderr,
-            transcription_options: topts,
-        });
-    } catch (_) {}
-}
+/** Legacy audio-profile browser logging removed (routing is GPU tiny-probe now). */
+function qsLogAudioProfileFromTrigger(_jobId, _triggerData) {}
 
 async function qsAcquireUploadWakeLock() {
     try {
@@ -8721,6 +8669,23 @@ function qsApplyCorrectedSegmentsFromGpt(correctedSegments) {
         if (t) copy.text = t;
         return copy;
     });
+    // Prefer rebuilding the word/caption model from corrected segment.words so
+    // subtitle tab shows the same ASR fixes as clean_transcript (one GPT path).
+    try {
+        const model = (typeof _tryBuildWordModelFromSegmentsAndFlat === 'function')
+            ? _tryBuildWordModelFromSegmentsAndFlat(mapped, null)
+            : null;
+        if (model && model.words && model.captions) {
+            window.currentWords = model.words;
+            window.currentCaptions = (typeof reflowCaptionsByMaxChars === 'function')
+                ? reflowCaptionsByMaxChars(window.currentWords, model.captions, 54)
+                : model.captions;
+            window.currentSegments = (typeof _captionsToCues === 'function')
+                ? _captionsToCues(window.currentWords, window.currentCaptions)
+                : mapped;
+            return true;
+        }
+    } catch (_) {}
     const hasWordModel =
         Array.isArray(window.currentWords) &&
         Array.isArray(window.currentCaptions) &&

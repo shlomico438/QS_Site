@@ -10,6 +10,7 @@ except ImportError:
 
 from flask import Flask, render_template, request, jsonify, redirect, send_from_directory, Response, stream_with_context, url_for
 from flask_socketio import SocketIO, join_room
+import difflib
 import hashlib
 import json
 import math
@@ -32,7 +33,6 @@ import pathlib
 import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 from io import BytesIO
 import smtplib
@@ -3843,6 +3843,200 @@ def _segments_to_plain_text(segments):
         if t:
             parts.append(t)
     return '\n'.join(parts)
+
+
+_TOKEN_RE = re.compile(r'\S+')
+_MUSIC_TS_LINE_RE = re.compile(r'^\s*\[[^\]]+\]\s*')
+
+
+def _tokenize_transcript_words(text):
+    return _TOKEN_RE.findall(str(text or ''))
+
+
+def _clean_transcript_tokens_for_alignment(clean_text, is_music=False):
+    """Tokenize cleanup GPT output for cue alignment (strip music [timestamp] prefixes)."""
+    text = str(clean_text or '')
+    if is_music:
+        lines = []
+        for line in text.splitlines():
+            lines.append(_MUSIC_TS_LINE_RE.sub('', line))
+        text = '\n'.join(lines)
+    return _tokenize_transcript_words(text)
+
+
+def _word_token_from_dict(w):
+    if not isinstance(w, dict):
+        return ''
+    return str(w.get('word') if w.get('word') is not None else w.get('text') or '').strip()
+
+
+def _set_word_token(w, token):
+    if 'word' in w:
+        w['word'] = token
+    w['text'] = token
+
+
+def _align_orig_tokens_to_clean(orig_tokens, clean_tokens):
+    """Map each original token index -> replacement string ('' means delete)."""
+    replacements = {}
+    if not orig_tokens:
+        return replacements
+    if not clean_tokens:
+        for i in range(len(orig_tokens)):
+            replacements[i] = ''
+        return replacements
+
+    sm = difflib.SequenceMatcher(a=orig_tokens, b=clean_tokens, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == 'equal':
+            for k in range(i2 - i1):
+                replacements[i1 + k] = clean_tokens[j1 + k]
+        elif tag == 'replace':
+            n_old = i2 - i1
+            n_new = j2 - j1
+            for k in range(n_old):
+                if k < n_new:
+                    replacements[i1 + k] = clean_tokens[j1 + k]
+                else:
+                    replacements[i1 + k] = ''
+            if n_new > n_old and n_old > 0:
+                extras = clean_tokens[j1 + n_old : j2]
+                last = i1 + n_old - 1
+                base = replacements.get(last) or ''
+                replacements[last] = (base + ' ' + ' '.join(extras)).strip()
+            elif n_new > 0 and n_old == 0 and i1 > 0:
+                extras = ' '.join(clean_tokens[j1:j2])
+                prev = i1 - 1
+                replacements[prev] = ((replacements.get(prev) or orig_tokens[prev]) + ' ' + extras).strip()
+        elif tag == 'delete':
+            for k in range(i1, i2):
+                replacements[k] = ''
+        elif tag == 'insert':
+            extras = ' '.join(clean_tokens[j1:j2])
+            if not extras:
+                continue
+            if i1 > 0:
+                prev = i1 - 1
+                base = replacements.get(prev)
+                if base is None:
+                    base = orig_tokens[prev]
+                replacements[prev] = (base + ' ' + extras).strip()
+            else:
+                # Prepend to first original token when available.
+                base = replacements.get(0)
+                if base is None:
+                    base = orig_tokens[0]
+                replacements[0] = (extras + ' ' + base).strip()
+    return replacements
+
+
+def _apply_clean_transcript_to_segments(segments, clean_text, is_music=False):
+    """Project one cleanup GPT transcript onto timed cues (no second GPT call).
+
+    Prefers word-level timestamps when present; otherwise redistributes aligned tokens
+    back into each segment by original token count. Returns (segments, meta).
+    """
+    if not isinstance(segments, list) or not segments:
+        return segments, {"source": "clean_transcript_projection", "changed_count": 0, "mode": "empty"}
+    clean_tokens = _clean_transcript_tokens_for_alignment(clean_text, is_music=is_music)
+    if not clean_tokens:
+        return segments, {"source": "clean_transcript_projection", "changed_count": 0, "mode": "no_clean"}
+
+    # Deep-ish copy so we never mutate the caller's segment list in place.
+    out = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            out.append(seg)
+            continue
+        copy = dict(seg)
+        words = copy.get('words')
+        if isinstance(words, list):
+            copy['words'] = [dict(w) if isinstance(w, dict) else w for w in words]
+        out.append(copy)
+
+    word_refs = []  # (seg_idx, word_idx, orig_token)
+    for si, seg in enumerate(out):
+        if not isinstance(seg, dict):
+            continue
+        words = seg.get('words')
+        if not isinstance(words, list) or not words:
+            continue
+        for wi, w in enumerate(words):
+            tok = _word_token_from_dict(w)
+            if tok:
+                word_refs.append((si, wi, tok))
+
+    changed_count = 0
+    if word_refs:
+        orig_tokens = [t for _si, _wi, t in word_refs]
+        replacements = _align_orig_tokens_to_clean(orig_tokens, clean_tokens)
+        for oi, (si, wi, old_tok) in enumerate(word_refs):
+            new_tok = replacements.get(oi)
+            if new_tok is None:
+                continue
+            w = out[si]['words'][wi]
+            if new_tok != old_tok:
+                changed_count += 1
+            _set_word_token(w, new_tok)
+        for si, seg in enumerate(out):
+            if not isinstance(seg, dict):
+                continue
+            words = seg.get('words')
+            if not isinstance(words, list):
+                continue
+            kept = []
+            for w in words:
+                if not isinstance(w, dict):
+                    kept.append(w)
+                    continue
+                tok = _word_token_from_dict(w)
+                if tok:
+                    kept.append(w)
+            seg['words'] = kept
+            seg['text'] = ' '.join(_word_token_from_dict(w) for w in kept if isinstance(w, dict)).strip()
+        return out, {
+            "source": "clean_transcript_projection",
+            "changed_count": changed_count,
+            "mode": "words",
+            "orig_tokens": len(orig_tokens),
+            "clean_tokens": len(clean_tokens),
+        }
+
+    # No word timings: align flat segment tokens, then rebuild each segment text.
+    spans = []  # (seg_idx, start, end)
+    flat_orig = []
+    for si, seg in enumerate(out):
+        if not isinstance(seg, dict):
+            continue
+        toks = _tokenize_transcript_words(seg.get('text'))
+        start = len(flat_orig)
+        flat_orig.extend(toks)
+        spans.append((si, start, len(flat_orig)))
+    if not flat_orig:
+        return out, {"source": "clean_transcript_projection", "changed_count": 0, "mode": "no_tokens"}
+
+    replacements = _align_orig_tokens_to_clean(flat_orig, clean_tokens)
+    for si, start, end in spans:
+        new_parts = []
+        for oi in range(start, end):
+            new_tok = replacements.get(oi)
+            if new_tok is None:
+                new_tok = flat_orig[oi]
+            if new_tok:
+                # replacement may contain multiple tokens after insert merge
+                new_parts.extend(_tokenize_transcript_words(new_tok) or [new_tok])
+            if new_tok != flat_orig[oi]:
+                changed_count += 1
+        new_text = ' '.join(new_parts).strip()
+        if new_text:
+            out[si]['text'] = new_text
+    return out, {
+        "source": "clean_transcript_projection",
+        "changed_count": changed_count,
+        "mode": "segments",
+        "orig_tokens": len(flat_orig),
+        "clean_tokens": len(clean_tokens),
+    }
 
 
 def _merge_segment_grammar_corrections(original_segments, corrected_segments):
@@ -8903,34 +9097,38 @@ def _run_standard_unified_format_with_segments(
     is_music=False,
     user_id=None,
 ):
-    """Standard jobs: unified clean+summary GPT plus per-segment grammar (subtitles) in one workflow."""
+    """Standard jobs: one GPT clean+summary call; project clean_transcript onto subtitle cues."""
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
         raise RuntimeError("empty transcript")
-    seg_list = [s for s in (segments or []) if isinstance(s, dict)]
-    if seg_list:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            fut_unified = executor.submit(
-                _format_transcript_and_summary_via_openai,
-                transcript_text,
-                target_lang=target_lang,
-                is_medical=False,
-                is_music=is_music,
-                user_id=user_id,
-            )
-            fut_segments = executor.submit(translate_segments, seg_list, target_lang=target_lang)
-            out = dict(fut_unified.result() or {})
-            corrected, seg_meta = fut_segments.result()
-            out['segments'] = corrected
-            out['segment_correction_meta'] = seg_meta
-        return out
-    return _format_transcript_and_summary_via_openai(
-        transcript_text,
-        target_lang=target_lang,
-        is_medical=False,
-        is_music=is_music,
-        user_id=user_id,
+    out = dict(
+        _format_transcript_and_summary_via_openai(
+            transcript_text,
+            target_lang=target_lang,
+            is_medical=False,
+            is_music=is_music,
+            user_id=user_id,
+        )
+        or {}
     )
+    seg_list = [s for s in (segments or []) if isinstance(s, dict)]
+    if not seg_list:
+        return out
+    clean = str(out.get("clean_transcript") or "").strip()
+    if clean:
+        projected, seg_meta = _apply_clean_transcript_to_segments(
+            seg_list, clean, is_music=bool(is_music)
+        )
+        out["segments"] = projected
+        out["segment_correction_meta"] = seg_meta
+    else:
+        out["segments"] = seg_list
+        out["segment_correction_meta"] = {
+            "source": "clean_transcript_projection",
+            "changed_count": 0,
+            "mode": "no_clean",
+        }
+    return out
 
 
 # --- TRANSLATE SEGMENTS (GPT via Node script from package.json) ---
@@ -10343,7 +10541,7 @@ def _schedule_post_summary_formatting(
     is_music_job=False,
     pending_info=None,
 ):
-    """Clean transcript + polish subtitle cues after summary is delivered."""
+    """One cleanup GPT pass after summary; project the same text onto subtitle cues."""
     if is_medical_job or not job_id or not input_s3_key:
         return
     if not isinstance(segments, list) or not segments:
@@ -10359,12 +10557,9 @@ def _schedule_post_summary_formatting(
                 return
             t0 = time.time()
             clean_result = None
-            corrected = None
             meta = {}
-            # These are independent and intentionally run after the fast summary socket.
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                fut_clean = executor.submit(
-                    _format_transcript_cleanup_openai,
+            try:
+                clean_result = _format_transcript_cleanup_openai(
                     plain_text,
                     target_lang='he',
                     gpt_model=(
@@ -10374,26 +10569,30 @@ def _schedule_post_summary_formatting(
                     ),
                     is_music=bool(is_music_job),
                 )
-                fut_segments = executor.submit(
-                    translate_segments,
-                    segments,
-                    target_lang='he',
+            except Exception as clean_err:
+                logging.warning(
+                    "gpu_callback: transcript cleanup background failed job_id=%s: %s",
+                    job_id,
+                    clean_err,
                 )
-                try:
-                    clean_result = fut_clean.result()
-                except Exception as clean_err:
-                    logging.warning(
-                        "gpu_callback: transcript cleanup background failed job_id=%s: %s",
-                        job_id,
-                        clean_err,
-                    )
-                corrected, meta = fut_segments.result()
 
-            merged = (
-                _merge_segment_grammar_corrections(segments, corrected)
-                if isinstance(corrected, list) and corrected
-                else segments
-            )
+            clean_text = str(
+                (clean_result or {}).get("clean_transcript")
+                if isinstance(clean_result, dict)
+                else ""
+            ).strip()
+            if clean_text:
+                merged, meta = _apply_clean_transcript_to_segments(
+                    segments, clean_text, is_music=bool(is_music_job)
+                )
+            else:
+                merged = segments
+                meta = {
+                    "source": "clean_transcript_projection",
+                    "changed_count": 0,
+                    "mode": "no_clean",
+                }
+
             existing = _get_transcript_json_from_s3(
                 user_id or 'anonymous', input_s3_key, stage='gpt', is_medical=False
             )
@@ -10403,11 +10602,6 @@ def _schedule_post_summary_formatting(
                 if isinstance(payload.get("formatted"), dict)
                 else {}
             )
-            clean_text = str(
-                (clean_result or {}).get("clean_transcript")
-                if isinstance(clean_result, dict)
-                else ""
-            ).strip()
             if clean_text:
                 existing_fmt["clean_transcript"] = clean_text
                 payload["formatted"] = existing_fmt
@@ -10427,6 +10621,7 @@ def _schedule_post_summary_formatting(
             cached['subtitle_grammar_done'] = True
             cached['transcript_cleanup_done'] = bool(clean_text)
             cached['post_summary_formatting_done'] = True
+            cached['segment_correction_meta'] = meta
             if existing_fmt:
                 cached['formatted'] = existing_fmt
             result_dict = dict(cached.get('result') or {})
@@ -10440,11 +10635,12 @@ def _schedule_post_summary_formatting(
             socketio.emit('job_status_update', cached, room=job_id)
             logging.info(
                 "gpu_callback: post-summary formatting done job_id=%s clean_chars=%s "
-                "segments=%s changed=%s sec=%.2f",
+                "segments=%s changed=%s mode=%s sec=%.2f",
                 job_id,
                 len(clean_text),
-                len(merged),
+                len(merged) if isinstance(merged, list) else 0,
                 (meta or {}).get('changed_count'),
+                (meta or {}).get('mode'),
                 time.time() - t0,
             )
         except Exception as err:
