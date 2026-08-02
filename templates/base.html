@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 
-<html lang="he" dir="rtl"{% if medical_entry | default(false) %} class="qs-medical-entry"{% endif %}>
+<html lang="{{ qs_locale }}" dir="{{ 'ltr' if qs_is_en else 'rtl' }}"{% if medical_entry | default(false) %} class="qs-medical-entry"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -61,9 +61,9 @@
     {% endif %}
     <link rel="canonical" href="{{ qs_canonical_url }}">
     {% if qs_is_locale_home %}
-    <link rel="alternate" hreflang="he" href="{{ qs_canonical_origin }}/he">
+    <link rel="alternate" hreflang="he" href="{{ qs_canonical_origin }}/">
     <link rel="alternate" hreflang="en" href="{{ qs_canonical_origin }}/en">
-    <link rel="alternate" hreflang="x-default" href="{{ qs_canonical_origin }}/he">
+    <link rel="alternate" hreflang="x-default" href="{{ qs_canonical_origin }}/">
     {% else %}
     <link rel="alternate" hreflang="he" href="{{ qs_canonical_url }}">
     <link rel="alternate" hreflang="en" href="{{ qs_canonical_url }}">
@@ -184,6 +184,9 @@
                     <input type="checkbox" id="user-menu-medical-mode">
                     <span>מצב רפואי (HIPAA)</span>
                 </label>
+                <button type="button" id="user-menu-medical-billing" class="user-menu-medical-billing-btn" hidden>
+                    מסלול וחיוב
+                </button>
             </div>
             <div class="user-menu-profile-medical-training" style="margin-bottom:12px; padding:10px; border:1px solid #d1fae5; border-radius:10px; background:#f0fdfa;">
                 <label for="user-menu-medical-training-mode" style="display:flex; align-items:center; gap:8px; font-weight:600; color:#0f766e;">

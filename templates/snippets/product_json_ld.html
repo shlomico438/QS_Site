@@ -5,8 +5,9 @@
   "name": "QuickScribe",
   "operatingSystem": "Web",
   "applicationCategory": "BusinessApplication",
-  "description": "Hebrew-specialized transcription with 94.36% accuracy using Dual-Stage Routing and DSP audio enhancement",
-  "url": "{{ (request.url_root or '').rstrip('/') }}/",
+  "description": {% if qs_is_en %}"Hebrew-specialized transcription with 94.36% accuracy using Dual-Stage Routing and DSP audio enhancement"{% else %}"תמלול מתמחה בעברית בדיוק של 94.36% באמצעות ניתוב דו-שלבי ושיפור אודיו DSP"{% endif %},
+  "url": "{{ qs_canonical_url }}",
+  "inLanguage": "{{ qs_locale }}",
   "aggregateRating": {
     "@type": "AggregateRating",
     "ratingValue": "4.8",
@@ -15,7 +16,7 @@
   "offers": {
     "@type": "Offer",
     "price": "0",
-    "priceCurrency": "USD",
+    "priceCurrency": {% if qs_is_en %}"USD"{% else %}"ILS"{% endif %},
     "availability": "https://schema.org/InStock"
   }
 }

@@ -590,7 +590,7 @@ def _cardcom_create_low_profile(
     amount_ils = float(bundle['amount_ils'])
     base = _public_base(req)
     is_he = not str(locale or '').lower().startswith('en')
-    success_path = '/he' if is_he else '/en'
+    success_path = '/' if is_he else '/en'
     sim_token = uuid.uuid4().hex if _simulation_mode() else None
     row = {
         'order_id': order_id,
@@ -898,6 +898,10 @@ def register_cardcom_routes(app: Flask) -> None:
                 data = request.form.to_dict()
             low_profile_id = _cardcom_low_profile_from_mapping(data)
             order_id = str(data.get('ReturnValue') or data.get('return_value') or '').strip()
+            if order_id.startswith('qs_med_'):
+                from medical_saas import handle_medical_cardcom_webhook
+                handle_medical_cardcom_webhook(data)
+                return jsonify({'ok': True, 'medical_subscription': True}), 200
             if not order_id and low_profile_id:
                 purchase = _cardcom_purchase_get_by_low_profile(low_profile_id)
                 if purchase:

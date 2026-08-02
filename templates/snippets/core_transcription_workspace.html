@@ -1,0 +1,384 @@
+<div id="auth-modal" style="display:none; position:fixed; z-index:14000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center; backdrop-filter: blur(4px);">
+            <div class="auth-modal-card" style="position:relative; background: white; padding: 28px; border-radius: 16px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
+                <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
+                <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
+
+                <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
+                    <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;">
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="14" height="14" alt="Google">
+                    </span>
+                    <span data-i18n="continue_google">Continue with Google</span>
+                </button>
+
+                <div id="auth-provider-divider" style="display: flex; align-items: center; margin: 28px 0;">
+                    <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
+                    <span style="margin: 0 12px; color: #9ca3af; font-size: 0.75rem; font-weight: 600;" data-i18n="or_email">OR EMAIL</span>
+                    <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
+                </div>
+
+                <div id="signup-fields">
+                    <input type="text" id="auth-name" data-i18n-placeholder="full_name" placeholder="Full Name (optional)" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+                    <div id="auth-medical-specialty-wrap" style="display:none;">
+                        <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
+                            <option value="">בחרו תחום מקצועי</option>
+                            <option value="physician">רפואה</option>
+                            <option value="psychologist">פסיכולוגיה</option>
+                            <option value="occupational_therapist">ריפוי בעיסוק</option>
+                            <option value="physiotherapist">פיזיותרפיה</option>
+                            <option value="speech_therapist">קלינאות תקשורת</option>
+                            <option value="nurse">סיעוד</option>
+                            <option value="social_worker">עבודה סוציאלית רפואית</option>
+                            <option value="other">מקצוע בריאות אחר</option>
+                        </select>
+                    </div>
+                </div>
+                <input type="email" id="auth-email" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:6px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+                <p id="auth-error" role="alert" aria-live="polite" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:8px; background:#fef2f2; color:#b91c1c; font-size:0.875rem; line-height:1.45; text-align:start;"></p>
+
+                <button type="button" id="auth-submit-btn" style="width:100%; padding:14px; background:#ffffff; color:#1a2b4b; border:1px solid #1a2b4b; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1rem; transition: background 0.2s, color 0.2s;" data-i18n="send_magic_link">Send me a link</button>
+                <button type="button" id="auth-skip-for-now" data-i18n="auth_skip_later" style="width:100%; margin-top:12px; padding:10px; background:transparent; color:#6b7280; border:none; cursor:pointer; font-size:0.9rem; text-decoration:underline;">Skip for now</button>
+
+                <p id="auth-mode-switch-row" style="margin-top:20px; font-size: 0.875rem; color: #4b5563;">
+                    <span id="auth-switch-text" data-i18n="already_have">Already have an account?</span>
+                    <a href="#" id="toggle-auth-mode" style="color:#1e3a8a; font-weight:600; text-decoration: none; margin-left: 4px;" data-i18n="log_in">Log In</a>
+                </p>
+            </div>
+        </div>
+
+        <div id="post-export-feedback-modal" style="display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.55); align-items:center; justify-content: center; backdrop-filter: blur(3px);" aria-hidden="true">
+            <div class="post-export-feedback-card" style="position:relative; background: white; padding: 24px; border-radius: 16px; width: 100%; max-width: 400px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.12);">
+                <h3 style="margin: 0 0 6px; font-size: 1.2rem; color: #111827;" data-i18n="post_export_feedback_title">רגע משוב?</h3>
+                <p style="font-size: 0.85rem; color: #6b7280; margin: 0 0 16px;" data-i18n="post_export_feedback_sub">באופן אופציונלי — נשמח לשמוע מה אפשר לשפר</p>
+                <div class="registration-feedback-block post-export-feedback-inner">
+                    <label for="post-exp-fb-like" class="reg-feedback-label" data-i18n="reg_feedback_like">What did you like?</label>
+                    <textarea id="post-exp-fb-like" dir="auto" rows="2" class="reg-feedback-textarea" style="width:100%; padding:10px; margin-bottom:10px; border:1px solid #d1d5db; border-radius:8px; font-size: 13px; resize: vertical; box-sizing: border-box;"></textarea>
+                    <label for="post-exp-fb-improve" class="reg-feedback-label" data-i18n="reg_feedback_improve">What to improve?</label>
+                    <textarea id="post-exp-fb-improve" dir="auto" rows="2" class="reg-feedback-textarea" style="width:100%; padding:10px; margin-bottom:8px; border:1px solid #d1d5db; border-radius:8px; font-size: 13px; resize: vertical; box-sizing: border-box;"></textarea>
+                    <p class="reg-feedback-stars-title" style="text-align: center; font-size: 0.8rem; color: #4b5563; margin: 0 0 4px; width: 100%;" data-i18n="post_export_feedback_stars">דירוג (אופציונלי)</p>
+                    <div id="post-exp-fb-stars" style="display:flex; justify-content:center; gap:6px; margin-bottom:14px; width:100%;" role="group">
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="1" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="2" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="3" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="4" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="5" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
+                    </div>
+                </div>
+                <input type="text" name="website" id="post-exp-fb-website" autocomplete="off" tabindex="-1" style="position:absolute; left:-9999px; width:1px; height:1px; opacity:0;" aria-hidden="true">
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <button type="button" id="post-exp-fb-submit" style="width:100%; padding:12px; background:#1e3a8a; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size: 0.95rem;" data-i18n="post_export_feedback_send">שלח משוב</button>
+                    <button type="button" id="post-exp-fb-close" style="width:100%; padding:10px; background:transparent; color:#6b7280; border:none; cursor:pointer; font-size:0.9rem; text-decoration:underline;" data-i18n="post_export_feedback_later">סגור</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="medical-delete-confirm-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-delete-confirm-title">
+                <h3 id="medical-delete-confirm-title" data-i18n="medical_delete_recording_title">מחיקת הקלטה</h3>
+                <p id="medical-delete-confirm-message" data-i18n="medical_delete_recording_message">האם אתה בטוח שברצונך למחוק הקלטה זו?</p>
+                <div class="medical-confirm-modal-actions">
+                    <button type="button" id="medical-delete-confirm-no" class="medical-confirm-btn secondary" data-i18n="cancel">ביטול</button>
+                    <button type="button" id="medical-delete-confirm-yes" class="medical-confirm-btn danger" data-i18n="medical_delete">מחק</button>
+                </div>
+            </div>
+        </div>
+        <div id="medical-wake-choice-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-wake-choice-title">
+                <h3 id="medical-wake-choice-title" data-i18n="medical_wake_choice_title">העירת מערכת התמלול</h3>
+                <p id="medical-wake-choice-message" data-i18n="medical_wake_choice_message">המערכת במצב שינה. איך תרצה להמשיך?</p>
+                <div class="medical-confirm-modal-actions medical-wake-choice-actions">
+                    <button type="button" id="medical-wake-choice-wait" class="medical-confirm-btn primary" data-i18n="medical_wake_choice_wait">המתן להתכוננות</button>
+                    <button type="button" id="medical-wake-choice-record" class="medical-confirm-btn primary" data-i18n="medical_wake_choice_record">הקלט בזמן ההתכוננות</button>
+                </div>
+                <button type="button" id="medical-wake-choice-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
+            </div>
+        </div>
+        <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
+                <h3 id="translation-modal-title">Translate transcript</h3>
+                <p class="translation-modal-subtitle">Choose a language or type to filter.</p>
+                <input type="text" id="translation-language-input" class="translation-language-input" placeholder="Search language..." autocomplete="off">
+                <div id="translation-language-list" class="translation-language-list" role="listbox"></div>
+                <div class="translation-modal-actions">
+                    <button type="button" id="translation-language-cancel" class="translation-modal-btn secondary">Cancel</button>
+                    <button type="button" id="translation-language-confirm" class="translation-modal-btn primary">Translate</button>
+                </div>
+            </div>
+        </div>
+        <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
+            <audio id="main-audio" controls style="width: 100%; max-width: 100%;">
+                <source id="audio-source" src="" type="audio/mpeg">
+                Your browser does not support the audio tag.
+            </audio>
+        </div>
+        <div id="video-wrapper" style="display: none; margin-bottom: 12px; align-items: stretch;">
+            <div id="video-player-container" style="flex: 1;">
+                <video id="main-video" controls crossorigin="anonymous" playsinline webkit-playsinline controlslist="nodownload noplaybackrate noremoteplayback" disablepictureinpicture disableremoteplayback oncontextmenu="return false;">
+                    <source id="video-source" src="" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+                <p id="video-mov-hint" class="video-mov-hint" style="display: none; margin: 6px 0 0; font-size: 0.8rem; color: #6b7280;" data-i18n="mov_hint">If the video doesn't play, try Safari or export as MP4 (H.264).</p>
+            </div>
+        </div>
+
+        <div class="transcription-wrapper">
+            <div class="switches-top-bar">
+                <div class="toggles-group">
+                    <div class="format-ab-switch" id="format-mode-switch" role="group" data-i18n-aria-label="format_view_aria" aria-label="פורמט תצוגה">
+        <button type="button" class="format-ab-option is-active" id="format-mode-summary" data-i18n="tab_summary">סיכום</button>
+                        <button type="button" class="format-ab-option" id="format-mode-doc" data-i18n="tab_doc">מסמך</button>
+                        <button type="button" class="format-ab-option" id="format-mode-subtitle" data-i18n="tab_subtitle">כתוביות</button>
+                    </div>
+                    <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
+                </div>
+            </div>
+            <div class="transcript-area-wrap">
+            <div id="translation-progress-bar" class="translation-progress-bar" style="display:none;" aria-live="polite" role="status">
+                <span class="translation-progress-spinner" aria-hidden="true"></span>
+                <span id="translation-progress-text" class="translation-progress-text"></span>
+            </div>
+            <div id="medical-result-tabs" style="display:none; margin-bottom:8px; gap:8px;">
+                <button type="button" id="medical-tab-transcript" class="format-ab-option is-active" data-i18n="medical_tab_transcript">תמלול מלא</button>
+                <button type="button" id="medical-tab-summary" class="format-ab-option" data-i18n="medical_tab_summary">סיכום רפואי</button>
+            </div>
+            <div class="medical-transcript-shell">
+                <div class="medical-transcript-top-actions">
+                    <button type="button" id="medical-copy-btn" class="medical-copy-btn" aria-label="Copy current tab">
+                        <span class="medical-copy-icon" aria-hidden="true"></span>
+                    </button>
+                </div>
+                <div id="transcript-window" contenteditable="false"></div>
+                <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
+            </div>
+            <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
+                <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}">
+                    <div class="qs-feature-showcase-header">
+                        <p class="qs-feature-showcase-kicker" data-i18n="showcase_kicker">בינתיים, הנה מה שמחכה לכם</p>
+                        <h2 class="qs-feature-showcase-title" data-i18n="showcase_title">כלים חזקים — מוכנים ברגע שהתמלול יסתיים</h2>
+                        <p class="qs-feature-showcase-subtitle" data-i18n="showcase_subtitle">ערכו, עצבו, תרגמו וייצאו — הכל במקום אחד.</p>
+                    </div>
+                    <div class="qs-feature-showcase-carousel">
+                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-prev" aria-label="Previous slide">‹</button>
+                        <div class="qs-feature-showcase-card">
+                            <div class="qs-feature-showcase-media">
+                                <span class="qs-feature-showcase-slide-badge">Aa</span>
+                                <img class="qs-feature-showcase-image" src="{{ url_for('static', filename='images/showcase/subtitle-styling.png') }}" alt="" loading="lazy" decoding="async">
+                            </div>
+                            <div class="qs-feature-showcase-copy">
+                                <h3 class="qs-feature-showcase-slide-title"></h3>
+                                <p class="qs-feature-showcase-slide-body"></p>
+                            </div>
+                        </div>
+                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-next" aria-label="Next slide">›</button>
+                    </div>
+                    <div class="qs-feature-showcase-dots" role="tablist" aria-label="Feature slides"></div>
+                </div>
+                <p id="processing-state-intro" class="processing-state-primary"></p>
+                <div id="processing-unified-progress" class="processing-unified-progress" style="display:none;" aria-hidden="true">
+                    <div id="qs-unified-phase-label" class="processing-unified-label">העלאה</div>
+                    <div class="progress-container processing-unified-track">
+                        <div id="progress-bar" class="processing-unified-fill"></div>
+                    </div>
+                </div>
+                <div class="processing-state-spinner-wrap" id="processing-state-spinner-wrap" style="display:none;" aria-hidden="true">
+                    <div class="processing-state-spinner" id="processing-state-spinner"></div>
+                </div>
+                <p id="processing-state-phase" class="processing-state-phase" style="display:none;">מפעיל שרתים מרוחקים...</p>
+            </div>
+            </div>
+            <div class="controls-bar">
+                <div class="toolbar-group">
+                    <div class="generate-btn-wrap" style="position: relative;">
+                        <button class="generate-select-btn" id="btn-download" type="button">
+                            <svg class="btn-download-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                            </svg>
+                            <span class="btn-download-label" data-i18n="export_and_download">Export and download</span>
+                        </button>
+                        <div class="dropdown-menu" id="download-menu">
+                            <div class="export-panel-card" id="docx-submenu">
+                                <button class="export-panel-close-icon" type="button" data-type="close-export-panel" aria-label="Close">✕</button>
+                                <div class="export-panel-intro">
+                                    <div class="export-panel-intro-title" data-i18n="export_and_download">Export and download</div>
+                                    <div class="export-panel-intro-subtitle">ניתן לבחור כמה תוצאות</div>
+                                </div>
+
+                                <div class="export-panel-section option-card" data-card-kind="transcript">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">📝 תמלול מלא</div>
+                                    </div>
+                                    <input class="export-doc-choice" type="checkbox" data-docx-kind="transcript" hidden>
+                                    <div class="export-panel-desc">קובץ טקסט של כל הדיבור</div>
+                                    <div class="option-format-row">
+                                        <div class="export-panel-label">פורמט:</div>
+                                        <div class="export-format-group" role="group" aria-label="Transcript format">
+                                            <button class="export-format-choice is-selected" type="button" data-docx-kind="transcript" data-format="docx">DOCX</button>
+                                            <button class="export-format-choice" type="button" data-docx-kind="transcript" data-format="txt">TXT</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="export-panel-section option-card" data-card-kind="summary">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">📄 סיכום</div>
+                                    </div>
+                                    <input class="export-doc-choice" type="checkbox" data-docx-kind="summary" hidden>
+                                    <div class="export-panel-desc">סיכום ישיבה: החלטות ושורות תחתונות</div>
+                                    <div class="option-format-row">
+                                        <div class="export-panel-label">פורמט:</div>
+                                        <div class="export-format-group" role="group" aria-label="Summary format">
+                                            <button class="export-format-choice is-selected" type="button" data-docx-kind="summary" data-format="docx">DOCX</button>
+                                            <button class="export-format-choice" type="button" data-docx-kind="summary" data-format="txt">TXT</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="export-panel-section option-card" data-card-kind="movie">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">🎬 סרטון עם כתוביות</div>
+                                    </div>
+                                    <input class="export-extra-choice" type="checkbox" data-export-kind="movie" hidden>
+                                    <div class="export-panel-desc">קובץ וידאו עם התמלול חרוט על הווידאו (זמין רק כשהועלה קובץ וידאו)</div>
+                                </div>
+
+                                <div class="export-panel-section option-card" data-card-kind="subtitles">
+                                    <div class="option-card-header">
+                                        <div class="option-card-title">🎞️ כתוביות</div>
+                                    </div>
+                                    <input class="export-subtitles-enable" type="checkbox" hidden>
+                                    <div class="export-panel-desc">קבצי כתוביות לעריכה חיצונית (SRT / VTT)</div>
+                                    <div class="option-format-row">
+                                        <div class="export-panel-label">פורמט:</div>
+                                        <div class="export-format-group export-format-group--subtitle" role="group" aria-label="Subtitle format">
+                                            <button class="export-format-choice is-selected" type="button" data-extra-kind="srt">SRT</button>
+                                            <button class="export-format-choice" type="button" data-extra-kind="vtt">VTT</button>
+                                        </div>
+                                    </div>
+                                    <input class="export-extra-choice" type="checkbox" data-export-kind="srt" hidden>
+                                    <input class="export-extra-choice" type="checkbox" data-export-kind="vtt" hidden>
+                                </div>
+
+                                <div class="export-panel-actions">
+                                    <button class="export-docx-btn" type="button" data-type="generate-export">צור קבצים</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="medical-toolbar-new-session-btn" id="medical-toolbar-new-session-btn" type="button" style="display:none;" data-i18n="new_session">סשן חדש</button>
+                    <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><img src="{{ url_for('static', filename='images/edit.png') }}" alt="Edit" style="width:20px; height:20px; object-fit:contain;"></button>
+                    <button class="btn-icon" id="btn-translate" type="button" title="Translate" aria-label="Translate">🌐</button>
+                    <div id="subtitle-style-selector" class="subtitle-style-drawer-host" style="display: none;">
+                        <button id="subtitle-style-toggle" class="subtitle-style-toggle-btn" type="button" aria-label="Subtitle styles" title="Subtitle styles">Aa</button>
+                        <div id="subtitle-style-drawer" class="subtitle-style-drawer-panel">
+                            <div class="subtitle-drawer-section-title">מיקום כתוביות</div>
+                            <div class="subtitle-global-pos-wrap" role="group" aria-label="Global subtitle position">
+                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="top" title="Top">
+                                    <span class="subtitle-frame-icon subtitle-frame-icon--top" aria-hidden="true"></span>
+                                </button>
+                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="middle" title="Middle">
+                                    <span class="subtitle-frame-icon subtitle-frame-icon--middle" aria-hidden="true"></span>
+                                </button>
+                                <button class="subtitle-global-pos-btn" type="button" data-global-pos="bottom" title="Bottom">
+                                    <span class="subtitle-frame-icon subtitle-frame-icon--bottom" aria-hidden="true"></span>
+                                </button>
+                            </div>
+                            <div class="subtitle-drawer-section-title">צבע כתוביות</div>
+                            <div class="subtitle-color-wrap" role="group" aria-label="Subtitle color">
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="black" title="Black"></button>
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="red" title="Red"></button>
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="yellow" title="Yellow"></button>
+                                <button class="subtitle-color-btn" type="button" data-subtitle-color="white" title="White"></button>
+                            </div>
+                            <div id="subtitle-style-list" class="subtitle-style-drawer-list">
+                                <button class="subtitle-style-card" data-style="tiktok" type="button">
+                                    <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;" data-i18n="tiktok_bold">TikTok Bold</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="tiktok_desc">Big • Bold</div>
+                                </button>
+                                <button class="subtitle-style-card" data-style="clean" type="button">
+                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="clean_pro">Clean Pro</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="clean_desc">Minimal • Soft</div>
+                                </button>
+                                <button class="subtitle-style-card" data-style="cinematic" type="button">
+                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="cinematic">Cinematic</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="cinematic_desc">Serif • Caps</div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="action-buttons" id="edit-actions" style="display:none; gap: 10px;">
+                        <button class="btn-icon" onclick="window.saveEdits()" style="color:green;" data-i18n-title="save" title="Save">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                        </button>
+                        <button class="btn-icon" onclick="window.cancelEdits()" style="color:red;" data-i18n-title="cancel" title="Cancel">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="upload-zone">
+            <div class="upload-controls-row">
+                <input type="file" id="fileInput" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" hidden>
+                <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
+                <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
+            </div>
+            <div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
+                <div class="medical-record-controls">
+                    <div id="medical-cancel-stack" class="medical-side-action-stack" style="display:none;">
+                        <button id="medical-cancel-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_delete_recording" aria-label="מחק הקלטה">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                        </button>
+                        <span class="medical-side-action-label" data-i18n="medical_delete">מחק</span>
+                    </div>
+                    <button id="medical-record-btn" type="button" class="medical-circle-btn medical-circle-btn-record" aria-label="Record">
+                        <span class="medical-record-outer">
+                            <span id="medical-record-shape" class="medical-record-shape">
+                                <svg id="medical-record-mic-svg" viewBox="0 0 24 24" aria-hidden="true">
+                                    <rect x="8" y="3" width="8" height="12" rx="4" ry="4" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                                    <path d="M6 11.5c0 3.3 2.7 6 6 6s6-2.7 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                                    <line x1="12" y1="17.5" x2="12" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></line>
+                                    <line x1="9" y1="21" x2="15" y2="21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></line>
+                                </svg>
+                                <span id="medical-record-new-session-label" class="medical-record-new-session-label" style="display:none;" aria-hidden="true" data-i18n="new_session">סשן<br>חדש</span>
+                                <span id="medical-record-pause-symbol" style="display:none;" aria-hidden="true"></span>
+                            </span>
+                        </span>
+                    </button>
+                    <div id="medical-confirm-stack" class="medical-side-action-stack" style="display:none;">
+                        <button id="medical-confirm-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_save_recording" aria-label="שמור הקלטה">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                                <line x1="9" y1="15" x2="15" y2="15"></line>
+                            </svg>
+                        </button>
+                        <span class="medical-side-action-label" data-i18n="medical_save">שמור</span>
+                    </div>
+                </div>
+                <div id="medical-record-timer" class="medical-record-timer" style="visibility:hidden;"></div>
+            </div>
+            <button id="medical-upload-new-session-btn" class="btn btn-primary medical-upload-new-session-btn" type="button" style="display:none;" data-i18n="new_session">סשן חדש</button>
+            <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
+            <div id="qs-pipeline-phase-wrap" class="qs-pipeline-phase-wrap" style="display:none;" aria-live="polite">
+                <div id="qs-pipeline-phase-label" class="qs-pipeline-phase-label" data-i18n="pipeline_upload">העלאה</div>
+                <div class="progress-container" id="p-container">
+                    <div id="progress-bar-legacy"></div>
+                </div>
+            </div>
+            <!-- diarization toggle removed on mobile upload UI -->
+            <div class="upload-zone-app-footer" dir="ltr">
+                <span class="site-footer-copy" data-i18n="footer_copyright">© 2026 QuickScribe. All rights reserved.</span>
+            </div>
+        </div>

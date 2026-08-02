@@ -182,6 +182,7 @@ let isSignUpMode = true;
 const QS_MEDICAL_MODE_KEY = 'qs_medical_mode';
 /** Set when user has opened /medical (so OAuth can land on /#$ and we still restore HIPAA UI after sign-out). */
 const QS_MEDICAL_LANDING_KEY = 'qs_medical_landing';
+const QS_MEDICAL_PENDING_ONBOARDING_KEY = 'qs_medical_pending_onboarding';
 const QS_IOS_SAFARI_HINT_TS_KEY = 'qs_ios_safari_hint_ts';
 
 function _qsReadMedicalLanding() {
@@ -268,6 +269,7 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     if (k === 'supabase.auth.token') return true;
     // One-shot in-memory → survive sign-in round-trip; feedback session flags (Storage patch applies to sessionStorage too).
     if (k === 'qs_medical_auth_snapshot') return true;
+    if (k === QS_MEDICAL_PENDING_ONBOARDING_KEY) return true;
     if (k === 'qs_medical_sign_in_for_copy' || k === 'qs_medical_show_feedback_on_next_copy') return true;
     if (k === 'qs_pefb_copy' || k === 'qs_pefb_export' || k.startsWith('qs_pefb_')) return true;
     if (k === 'qs_reg_prompt_dismissed') return true;
@@ -413,6 +415,388 @@ function restoreMedicalAuthSnapshotAfterSignIn() {
 
 function isMedicalModeEnabled() {
     return window.isMedicalMode === true;
+}
+
+function qsMedicalSetOnboardingMessage(message, isError = false) {
+    const el = document.getElementById('medical-onboarding-message');
+    if (!el) return;
+    el.textContent = String(message || '');
+    el.classList.toggle('is-visible', !!message);
+    el.classList.toggle('is-error', !!isError);
+}
+
+function qsMedicalPendingOnboardingRead() {
+    try {
+        const raw = localStorage.getItem(QS_MEDICAL_PENDING_ONBOARDING_KEY)
+            || sessionStorage.getItem(QS_MEDICAL_PENDING_ONBOARDING_KEY)
+            || '';
+        const value = raw ? JSON.parse(raw) : null;
+        return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function qsMedicalPendingOnboardingWrite(value) {
+    try {
+        localStorage.setItem(QS_MEDICAL_PENDING_ONBOARDING_KEY, JSON.stringify(value || {}));
+    } catch (_) {
+        try { sessionStorage.setItem(QS_MEDICAL_PENDING_ONBOARDING_KEY, JSON.stringify(value || {})); } catch (__) {}
+    }
+}
+
+function qsMedicalPendingOnboardingClear() {
+    try { localStorage.removeItem(QS_MEDICAL_PENDING_ONBOARDING_KEY); } catch (_) {}
+    try { sessionStorage.removeItem(QS_MEDICAL_PENDING_ONBOARDING_KEY); } catch (_) {}
+}
+
+function qsMedicalRenderUsage(account) {
+    const el = document.getElementById('medical-usage-status');
+    if (!el || !account) return;
+    const used = Number(account.usageHours || 0);
+    const included = Number(account.includedHours || 0);
+    const remaining = Number(account.remainingHours || 0);
+    const plan = String(account.subscriptionPlan || 'trial');
+    const trialDays = account.trialDaysRemaining;
+    const prefix = plan === 'trial'
+        ? `ניסיון: ${Math.max(0, Number(trialDays || 0))} ימים נותרו`
+        : `${plan}`;
+    const overage = Number(account.overageHours || 0);
+    el.textContent = overage > 0
+        ? `${prefix} · ${used.toFixed(1)} שעות נוצלו · ${overage.toFixed(1)} שעות נוספות`
+        : `${prefix} · ${remaining.toFixed(1)} מתוך ${included.toFixed(0)} שעות נותרו`;
+}
+
+function qsMedicalSetPricingMessage(message, isError = false) {
+    const el = document.getElementById('medical-pricing-modal-message');
+    if (!el) return;
+    el.textContent = String(message || 'בחרו את מכסת שעות התמלול המתאימה לכם.');
+    el.classList.toggle('is-error', !!isError);
+}
+
+function qsMedicalWirePlanButtons(root = document) {
+    const cards = Array.from(root.querySelectorAll('.medical-pricing-card'));
+    const selectCard = (selectedCard) => {
+        cards.forEach((card) => {
+            const selected = card === selectedCard;
+            card.classList.toggle('is-selected', selected);
+            card.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+    };
+    cards.forEach((card) => {
+        if (card._qsMedicalCardWired === true) return;
+        card._qsMedicalCardWired = true;
+        card.setAttribute('role', 'option');
+        card.tabIndex = 0;
+        card.addEventListener('click', () => selectCard(card));
+        card.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            selectCard(card);
+        });
+    });
+    if (cards.length && !cards.some((card) => card.classList.contains('is-selected'))) {
+        selectCard(cards.find((card) => card.classList.contains('is-recommended')) || cards[0]);
+    }
+
+    root.querySelectorAll('[data-medical-plan]').forEach((button) => {
+        if (button._qsMedicalPlanWired === true) return;
+        button._qsMedicalPlanWired = true;
+        button.addEventListener('click', () => {
+            const plan = String(button.getAttribute('data-medical-plan') || '');
+            if (typeof window.qsStartMedicalPlanCheckout === 'function') {
+                void window.qsStartMedicalPlanCheckout(plan);
+                return;
+            }
+            const card = document.getElementById('medical-activation-card');
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+    });
+}
+
+function qsOpenMedicalPricingModal() {
+    const modal = document.getElementById('medical-pricing-modal');
+    const content = document.getElementById('medical-pricing-modal-content');
+    const source = document.getElementById('medical-pricing-section');
+    if (!modal || !content || !source) return;
+    const pricing = source.cloneNode(true);
+    pricing.removeAttribute('id');
+    pricing.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    content.replaceChildren(pricing);
+    qsMedicalWirePlanButtons(content);
+    qsMedicalSetPricingMessage();
+    try { document.body.appendChild(modal); } catch (_) {}
+    modal.hidden = false;
+    modal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('medical-pricing-modal-open');
+    document.getElementById('medical-pricing-modal-close')?.focus();
+}
+window.qsOpenMedicalPricingModal = qsOpenMedicalPricingModal;
+
+function qsCloseMedicalPricingModal() {
+    const modal = document.getElementById('medical-pricing-modal');
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('medical-pricing-modal-open');
+}
+window.qsCloseMedicalPricingModal = qsCloseMedicalPricingModal;
+
+function qsMedicalApplyAccessState(account) {
+    window.__QS_MEDICAL_ACCOUNT = account || null;
+    const onboarding = document.getElementById('medical-onboarding-screen');
+    const pricingButton = document.getElementById('medical-open-pricing-btn');
+    const billingButton = document.getElementById('user-menu-medical-billing');
+    const pending = !account || account.allowed !== true;
+    document.body.classList.toggle('medical-onboarding-pending', pending);
+    if (onboarding) onboarding.hidden = !pending;
+    if (pricingButton) {
+        pricingButton.hidden = pending;
+        pricingButton.textContent = String(account?.subscriptionPlan || 'trial') === 'trial'
+            ? 'בחירת מסלול'
+            : 'מסלול וחיוב';
+    }
+    if (billingButton) billingButton.hidden = !account || account.onboardingRequired === true;
+    if (!pending) {
+        qsMedicalRenderUsage(account);
+        qsMedicalSetOnboardingMessage('');
+        try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
+        return;
+    }
+    if (account && account.onboardingRequired === false) {
+        const reason = String(account.reason || '');
+        const msg = reason === 'trial_usage_exhausted'
+            ? 'מכסת 30 שעות הניסיון נוצלה. בחרו מסלול כדי להמשיך.'
+            : 'תקופת הניסיון הסתיימה. בחרו מסלול כדי להמשיך לתמלל.';
+        qsMedicalSetOnboardingMessage(msg, true);
+        const pricing = document.getElementById('medical-pricing-section');
+        if (pricing) {
+            try { pricing.scrollIntoView({ block: 'start' }); } catch (_) {}
+        }
+    }
+}
+
+async function qsMedicalAccountFetch() {
+    const token = await qsSupabaseAccessToken();
+    if (!token) return null;
+    const res = await fetch('/api/medical/account', {
+        headers: { 'Authorization': `Bearer ${token}` },
+        cache: 'no-store',
+    });
+    if (!res.ok) throw new Error(`medical_account_http_${res.status}`);
+    return await res.json();
+}
+
+async function qsStartMedicalPlanCheckout(plan) {
+    const normalized = String(plan || '').trim().toLowerCase();
+    if (!['starter', 'professional', 'clinic'].includes(normalized)) return;
+    try {
+        qsMedicalSetPricingMessage('בודקים את פרטי המסלול…');
+        const account = await qsMedicalAccountFetch();
+        if (!account || account.onboardingRequired) {
+            qsMedicalSetOnboardingMessage('תחילה יש להפעיל את תקופת הניסיון.', true);
+            document.getElementById('medical-activation-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+        if (String(account.subscriptionPlan || 'trial') === 'trial') {
+            const warning = 'המסלול יופעל והחיוב יתחיל מיד. תקופת הניסיון תסתיים עם השלמת התשלום.';
+            qsCloseMedicalPricingModal();
+            const approved = typeof showGlobalConfirm === 'function'
+                ? await showGlobalConfirm(warning, { confirmText: 'המשך לתשלום', cancelText: 'ביטול' })
+                : window.confirm(warning);
+            if (!approved) {
+                qsOpenMedicalPricingModal();
+                return;
+            }
+        }
+        qsMedicalSetPricingMessage('מעבירים לעמוד התשלום המאובטח של Cardcom…');
+        qsMedicalSetOnboardingMessage('מעבירים לעמוד התשלום המאובטח של Cardcom…');
+        const res = await fetch('/api/medical/cardcom/create-subscription', {
+            method: 'POST',
+            headers: await qsMedicalJsonHeaders(),
+            body: JSON.stringify({ plan: normalized }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.url) throw new Error(data.error || 'לא ניתן לפתוח את עמוד התשלום.');
+        window.location.assign(data.url);
+    } catch (err) {
+        const message = String(err?.message || err || 'התשלום לא זמין כעת.');
+        qsMedicalSetPricingMessage(message, true);
+        qsMedicalSetOnboardingMessage(message, true);
+    }
+}
+window.qsStartMedicalPlanCheckout = qsStartMedicalPlanCheckout;
+
+async function qsConfirmMedicalCardcomReturn() {
+    const params = new URLSearchParams(window.location.search || '');
+    if (params.get('medical_cardcom_cancelled') === '1') {
+        qsMedicalSetOnboardingMessage('התשלום בוטל. לא בוצע חיוב.', true);
+        return false;
+    }
+    if (params.get('medical_cardcom_success') !== '1') return false;
+    const orderId = String(params.get('medical_order_id') || '').trim();
+    if (!orderId) return false;
+    qsMedicalSetOnboardingMessage('מאמתים את התשלום ומפעילים את המסלול…');
+    const res = await fetch('/api/medical/cardcom/confirm-subscription', {
+        method: 'POST',
+        headers: await qsMedicalJsonHeaders(),
+        body: JSON.stringify({ orderId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'אימות התשלום נכשל.');
+    try {
+        const clean = new URL(window.location.href);
+        clean.searchParams.delete('medical_cardcom_success');
+        clean.searchParams.delete('medical_order_id');
+        clean.searchParams.delete('medical_cardcom_cancelled');
+        window.history.replaceState({}, '', clean.pathname + clean.search + clean.hash);
+    } catch (_) {}
+    qsMedicalApplyAccessState(data);
+    return true;
+}
+
+function qsMedicalProfileFromForm() {
+    return {
+        fullName: String(document.getElementById('auth-name')?.value || '').trim(),
+        email: String(document.getElementById('auth-email')?.value || '').trim(),
+        professionalSpecialty: String(document.getElementById('auth-medical-specialty')?.value || '').trim(),
+    };
+}
+
+function qsMedicalValidateProfile(profile, requireEmail) {
+    if (!profile.fullName || profile.fullName.length < 2) return 'יש להזין שם מלא.';
+    if (requireEmail && (!profile.email || !profile.email.includes('@'))) return 'יש להזין כתובת אימייל תקינה.';
+    if (!profile.professionalSpecialty) return 'יש לבחור תחום מקצועי.';
+    return '';
+}
+
+async function qsMedicalActivateTrialForSignedInUser(profile) {
+    const headers = await qsMedicalJsonHeaders();
+    const res = await fetch('/api/medical/activate-trial', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(profile),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'לא ניתן להפעיל את תקופת הניסיון.');
+    qsMedicalPendingOnboardingClear();
+    qsMedicalApplyAccessState(data);
+    return data;
+}
+
+async function qsMedicalCompletePendingOnboardingAfterAuth(user) {
+    if (!isMedicalModeEnabled()) return false;
+    const pending = qsMedicalPendingOnboardingRead();
+    if (!pending || !pending.professionalSpecialty) return false;
+    const meta = (user && user.user_metadata) || {};
+    const profile = {
+        fullName: String(pending.fullName || meta.full_name || meta.name || '').trim(),
+        professionalSpecialty: String(pending.professionalSpecialty || '').trim(),
+    };
+    await qsMedicalActivateTrialForSignedInUser(profile);
+    return true;
+}
+
+async function qsInitializeMedicalSaasFlow() {
+    if (!isMedicalModeEnabled()) return;
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        const nameInput = document.getElementById('auth-name');
+        const emailInput = document.getElementById('auth-email');
+        const specialtyInput = document.getElementById('auth-medical-specialty');
+        const pending = qsMedicalPendingOnboardingRead();
+        if (nameInput && !nameInput.value) {
+            nameInput.value = String(
+                pending?.fullName
+                || user?.user_metadata?.full_name
+                || user?.user_metadata?.name
+                || ''
+            );
+        }
+        if (emailInput) {
+            emailInput.value = String(user?.email || pending?.email || emailInput.value || '');
+            emailInput.readOnly = !!user;
+        }
+        if (specialtyInput && pending?.professionalSpecialty) {
+            specialtyInput.value = String(pending.professionalSpecialty);
+        }
+        if (!user) {
+            window.__QS_MEDICAL_EXISTING_AUTH_USER = false;
+            qsMedicalApplyAccessState(null);
+            return;
+        }
+        window.__QS_MEDICAL_EXISTING_AUTH_USER = true;
+        if (await qsConfirmMedicalCardcomReturn()) return;
+        if (await qsMedicalCompletePendingOnboardingAfterAuth(user)) return;
+        const account = await qsMedicalAccountFetch();
+        qsMedicalApplyAccessState(account);
+    } catch (err) {
+        console.error('[medical-saas] initialize failed', err);
+        qsMedicalApplyAccessState(null);
+        qsMedicalSetOnboardingMessage('לא ניתן לבדוק את החשבון כעת. נסו שוב בעוד רגע.', true);
+    }
+}
+window.qsInitializeMedicalSaasFlow = qsInitializeMedicalSaasFlow;
+
+function qsWireMedicalSaasOnboarding() {
+    const openAuthBtn = document.getElementById('medical-open-auth-btn');
+    if (!openAuthBtn || openAuthBtn.dataset.qsWired === '1') return;
+    openAuthBtn.dataset.qsWired = '1';
+    openAuthBtn.addEventListener('click', () => {
+        isSignUpMode = true;
+        applyAuthModalMode();
+        if (typeof window.toggleModal === 'function') window.toggleModal(true);
+    });
+    let openLoginBtn = document.getElementById('medical-open-login-btn');
+    if (!openLoginBtn) {
+        const activationCard = document.getElementById('medical-activation-card');
+        if (activationCard) {
+            openLoginBtn = document.createElement('button');
+            openLoginBtn.type = 'button';
+            openLoginBtn.id = 'medical-open-login-btn';
+            openLoginBtn.className = 'medical-secondary-cta';
+            openLoginBtn.textContent = 'כבר יש לי חשבון רפואי — התחברות';
+            openAuthBtn.insertAdjacentElement('afterend', openLoginBtn);
+        }
+    }
+    if (openLoginBtn) {
+        openLoginBtn.addEventListener('click', () => {
+            isSignUpMode = false;
+            qsMedicalPendingOnboardingClear();
+            applyAuthModalMode();
+            if (typeof window.toggleModal === 'function') window.toggleModal(true);
+        });
+    }
+
+    qsMedicalWirePlanButtons(document);
+
+    const openPricingButton = document.getElementById('medical-open-pricing-btn');
+    if (openPricingButton) openPricingButton.addEventListener('click', qsOpenMedicalPricingModal);
+    const billingButton = document.getElementById('user-menu-medical-billing');
+    if (billingButton) {
+        billingButton.addEventListener('click', () => {
+            if (typeof closeUserMenu === 'function') closeUserMenu();
+            qsOpenMedicalPricingModal();
+        });
+    }
+    const modal = document.getElementById('medical-pricing-modal');
+    document.getElementById('medical-pricing-modal-close')?.addEventListener('click', qsCloseMedicalPricingModal);
+    modal?.addEventListener('click', (event) => {
+        if (event.target === modal) qsCloseMedicalPricingModal();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && modal && !modal.hidden) qsCloseMedicalPricingModal();
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        qsWireMedicalSaasOnboarding();
+        void qsInitializeMedicalSaasFlow();
+    }, { once: true });
+} else {
+    qsWireMedicalSaasOnboarding();
+    void qsInitializeMedicalSaasFlow();
 }
 
 /** Set after first /api/medical_session_warmup this browser session (global endpoint, not per doctor). */
@@ -875,7 +1259,7 @@ window.qsForceMedicalSessionWarmup = async function qsForceMedicalSessionWarmup(
     try {
         const res = await fetch('/api/medical_session_warmup', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await qsMedicalJsonHeaders(),
             body: JSON.stringify({ userId: uid, force: true }),
         });
         const data = await res.json().catch(() => ({}));
@@ -1208,7 +1592,7 @@ async function qsMaybeMedicalSessionWarmupOnce() {
         );
         const res = await fetch('/api/medical_session_warmup', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await qsMedicalJsonHeaders(),
             body: JSON.stringify({ userId: user.id, force: forceWarmup || undefined }),
         });
         const data = await res.json().catch(() => ({}));
@@ -2154,7 +2538,12 @@ function setMedicalMode(enabled, opts) {
     window.isMedicalMode = on;
     try { localStorage.setItem(QS_MEDICAL_MODE_KEY, on ? '1' : '0'); } catch (_) {}
     try { qsSyncNavLogoHref(); } catch (_) {}
-    if (on) clearSensitiveStorageForMedicalMode();
+    if (on) {
+        clearSensitiveStorageForMedicalMode();
+        try { document.body.classList.add('medical-onboarding-pending'); } catch (_) {}
+    } else {
+        try { document.body.classList.remove('medical-onboarding-pending'); } catch (_) {}
+    }
     try {
         const navToggle = document.getElementById('nav-medical-mode-toggle');
         if (navToggle) navToggle.checked = on;
@@ -2163,6 +2552,7 @@ function setMedicalMode(enabled, opts) {
         if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
     } catch (_) {}
     if (on) {
+        try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
         if (!(typeof qsMedicalUseAwsTranscribeStream === 'function' && qsMedicalUseAwsTranscribeStream())) {
             try { void window.qsRefreshMedicalEndpointStatus(); } catch (_) {}
         } else {
@@ -2187,7 +2577,7 @@ function qsNavLogoTargetPath() {
         (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
         'he'
     ).toLowerCase().split('-')[0];
-    return locale === 'en' ? '/en' : '/he';
+    return locale === 'en' ? '/en' : '/';
 }
 
 function qsSyncNavLogoHref() {
@@ -2455,6 +2845,7 @@ supabase.auth.onAuthStateChange((event, session) => {
         if (typeof window.applyMedicalModeUi === 'function') {
             try { window.applyMedicalModeUi(); } catch (_) {}
         }
+        try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
     }
     if (event === 'SIGNED_IN' && session) {
         try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
@@ -2491,6 +2882,7 @@ supabase.auth.onAuthStateChange((event, session) => {
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
         try { qsCleanOAuthUrlFromHistory(); } catch (_) {}
         try { restoreMedicalAuthSnapshotAfterSignIn(); } catch (_) {}
+        try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
         try {
             const signForCopy = String(sessionStorage.getItem('qs_medical_sign_in_for_copy') || '').trim() === '1';
             if (signForCopy) {
@@ -3607,6 +3999,15 @@ async function qsSupabaseAccessToken() {
     }
 }
 
+async function qsMedicalJsonHeaders() {
+    const token = await qsSupabaseAccessToken();
+    if (!token) throw new Error('medical_auth_required');
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+    };
+}
+
 /** Probe duration in the background (upload-first flow); does not block the UI. */
 function qsStartUploadDurationProbeInBackground(file) {
     window.__QS_UPLOAD_MEDIA_DURATION_SEC = null;
@@ -3876,9 +4277,12 @@ async function qsPostTriggerProcessingWithRetry(body, jobId) {
     for (let attempt = 1; attempt <= max; attempt++) {
         qsUploadTrace('trigger_processing_attempt', { jobId, attempt });
         try {
+            const headers = body && body.isMedical
+                ? await qsMedicalJsonHeaders()
+                : { 'Content-Type': 'application/json' };
             lastRes = await fetch('/api/trigger_processing', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify(body),
             });
             lastData = await lastRes.json().catch(() => ({}));
@@ -3914,9 +4318,12 @@ async function qsPostTriggerProcessingWithRetry(body, jobId) {
 
 async function qsS3MultipartAbortQuiet(payload) {
     try {
+        const headers = payload && payload.isMedical
+            ? await qsMedicalJsonHeaders()
+            : { 'Content-Type': 'application/json' };
         await fetch('/api/sign-s3-multipart-abort', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(payload),
         });
     } catch (_) {}
@@ -3984,9 +4391,12 @@ async function qsS3MultipartUploadFile(opts) {
         const batch = [];
         for (let p = startPn; p < startPn + BATCH && p <= effectivePartCount; p++) batch.push(p);
 
+        const serverHeaders = isMedical
+            ? await qsMedicalJsonHeaders()
+            : { 'Content-Type': 'application/json' };
         const urlRes = await fetch('/api/sign-s3-multipart-part-urls', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: serverHeaders,
             body: JSON.stringify({
                 userId,
                 isMedical,
@@ -4050,7 +4460,9 @@ async function qsS3MultipartUploadFile(opts) {
 
     const completeRes = await fetch('/api/sign-s3-multipart-complete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: isMedical
+            ? await qsMedicalJsonHeaders()
+            : { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             userId,
             isMedical,
@@ -4257,6 +4669,7 @@ window.toggleModal = function(show) {
             try { document.body.appendChild(modal); } catch (_) {}
             modal.style.zIndex = '14000';
             qsClearAuthError();
+            try { applyAuthModalMode(); } catch (_) {}
         }
         modal.style.display = show ? 'flex' : 'none';
     }
@@ -4295,24 +4708,68 @@ function qsClearAuthError() {
 function qsResetAuthSubmitButtonLabel() {
     const authSubmitBtnEl = document.getElementById('auth-submit-btn');
     if (!authSubmitBtnEl) return;
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        applyAuthModalMode();
+        return;
+    }
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     authSubmitBtnEl.innerText = T('send_magic_link') || 'Send me a link';
 }
 
 function applyAuthModalMode() {
     const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const isMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+    const existingMedicalUser = isMedical && window.__QS_MEDICAL_EXISTING_AUTH_USER === true;
+    const isMedicalLogin = isMedical && !isSignUpMode && !existingMedicalUser;
+    const showMedicalProfile = isMedical && !isMedicalLogin;
     const titleEl = document.getElementById('modal-title');
+    const subtitleEl = document.getElementById('auth-modal-subtitle');
     const signupFieldsEl = document.getElementById('signup-fields');
+    const specialtyWrap = document.getElementById('auth-medical-specialty-wrap');
     const authSubmitBtnEl = document.getElementById('auth-submit-btn');
     const authSwitchTextEl = document.getElementById('auth-switch-text');
     const toggleAuthModeEl = document.getElementById('toggle-auth-mode');
+    const switchRow = document.getElementById('auth-mode-switch-row');
     const skipBtn = document.getElementById('auth-skip-for-now');
-    if (titleEl) titleEl.textContent = isSignUpMode ? T('get_started') : T('welcome_back');
-    if (signupFieldsEl) signupFieldsEl.style.display = isSignUpMode ? 'block' : 'none';
-    if (authSubmitBtnEl) authSubmitBtnEl.textContent = T('send_magic_link');
-    if (authSwitchTextEl) authSwitchTextEl.textContent = isSignUpMode ? T('already_have') : T('need_account');
-    if (toggleAuthModeEl) toggleAuthModeEl.textContent = isSignUpMode ? T('log_in') : T('sign_up');
-    if (skipBtn) skipBtn.style.display = '';
+    const googleBtn = document.getElementById('google-login');
+    const providerDivider = document.getElementById('auth-provider-divider');
+    const nameInput = document.getElementById('auth-name');
+    const emailInput = document.getElementById('auth-email');
+    if (titleEl) {
+        if (isMedicalLogin) titleEl.textContent = 'התחברות לחשבון רפואי';
+        else if (isMedical) titleEl.textContent = 'הפעלת תקופת הניסיון הרפואית';
+        else titleEl.textContent = isSignUpMode ? T('get_started') : T('welcome_back');
+    }
+    if (subtitleEl) {
+        if (isMedicalLogin) subtitleEl.textContent = 'התחברו עם Google או קבלו קישור מאובטח לאימייל.';
+        else if (isMedical) subtitleEl.textContent = 'הירשמו עם Google או קבלו קישור מאובטח לאימייל. לא נדרש כרטיס אשראי.';
+        else subtitleEl.textContent = T('sign_in_to_save');
+    }
+    if (signupFieldsEl) signupFieldsEl.style.display = (showMedicalProfile || (!isMedical && isSignUpMode)) ? 'block' : 'none';
+    if (specialtyWrap) specialtyWrap.style.display = showMedicalProfile ? 'block' : 'none';
+    if (authSubmitBtnEl) {
+        authSubmitBtnEl.textContent = isMedicalLogin
+            ? 'שלחו לי קישור להתחברות'
+            : (existingMedicalUser
+            ? 'הפעלת 30 ימי ניסיון'
+            : (isMedical ? 'שלחו לי קישור להפעלת הניסיון' : T('send_magic_link')));
+    }
+    if (authSwitchTextEl) {
+        authSwitchTextEl.textContent = isMedical
+            ? (isSignUpMode ? 'כבר יש לי חשבון רפואי' : 'עדיין אין לי חשבון רפואי')
+            : (isSignUpMode ? T('already_have') : T('need_account'));
+    }
+    if (toggleAuthModeEl) {
+        toggleAuthModeEl.textContent = isMedical
+            ? (isSignUpMode ? 'התחברות' : 'הפעלת תקופת ניסיון')
+            : (isSignUpMode ? T('log_in') : T('sign_up'));
+    }
+    if (switchRow) switchRow.style.display = existingMedicalUser ? 'none' : '';
+    if (skipBtn) skipBtn.style.display = isMedical ? 'none' : '';
+    if (googleBtn) googleBtn.style.display = existingMedicalUser ? 'none' : 'flex';
+    if (providerDivider) providerDivider.style.display = existingMedicalUser ? 'none' : 'flex';
+    if (nameInput) nameInput.placeholder = isMedical ? 'שם מלא' : (T('full_name') || 'Full Name (optional)');
+    if (emailInput) emailInput.readOnly = existingMedicalUser;
 }
 
 async function requireUserForCopyOrDownload() {
@@ -5034,6 +5491,11 @@ async function setupNavbarAuth(userOverride) {
         qsSetNavAuthVisible(btn, !user);
         btn.onclick = (e) => {
             e.preventDefault();
+            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+                isSignUpMode = false;
+                qsMedicalPendingOnboardingClear();
+                applyAuthModalMode();
+            }
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
         };
     };
@@ -6454,7 +6916,7 @@ async function initOpenInAppImpl(jobIdStr) {
 async function runOpenQueryIfPresent() {
     try {
         const p = (window.location && window.location.pathname) ? String(window.location.pathname).replace(/\/+$/, '') || '/' : '/';
-        if (p !== '/' && p !== '/he' && p !== '/en' && p !== '/medical') return;
+        if (p !== '/' && p !== '/he' && p !== '/en' && p !== '/free' && p !== '/medical') return;
         const search = (window.location && window.location.search) || '';
         const m = search.match(/[?&]open=([^&]+)/);
         if (!m || !m[1]) return;
@@ -9613,6 +10075,14 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
 const googleLoginBtn = document.getElementById('google-login');
 if (googleLoginBtn) {
     googleLoginBtn.addEventListener('click', async () => {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled() && isSignUpMode) {
+            const profile = qsMedicalProfileFromForm();
+            if (!profile.professionalSpecialty) {
+                qsShowAuthError('יש לבחור תחום מקצועי לפני ההמשך עם Google.');
+                return;
+            }
+            qsMedicalPendingOnboardingWrite(profile);
+        }
         try {
             if (await qsCompleteAuthIfAlreadySignedIn()) return;
         } catch (_) {}
@@ -9632,12 +10102,16 @@ if (googleLoginBtn) {
             options: { redirectTo: qsOAuthRedirectTo() }
         });
         if (error) {
-            if (typeof showStatus === 'function') showStatus("Google Login Error: " + error.message, true);
+            qsShowAuthError("Google Login Error: " + error.message);
         }
     });
 }
 
 function dismissAuthModalAsGuest() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        if (typeof window.toggleModal === 'function') window.toggleModal(false);
+        return;
+    }
     window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE = true;
     if (typeof window.toggleModal === 'function') window.toggleModal(false);
     const T = typeof window.t === 'function' ? window.t : (k) => k;
@@ -9792,7 +10266,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Home page: "Open in app" — load job by ?open=jobId (retried from SIGNED_IN if session is not ready yet)
     const pathname = typeof window.location !== 'undefined' ? String(window.location.pathname || '').replace(/\/+$/, '') || '/' : '/';
-    const isMainAppHome = pathname === '/' || pathname === '/he' || pathname === '/en';
+    const isMainAppHome = pathname === '/' || pathname === '/he' || pathname === '/en' || pathname === '/free';
     const isMedicalEntry = pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
         const openMatch = (window.location.search || '').match(/[?&]open=([^&]+)/);
@@ -10491,12 +10965,31 @@ if (authSubmitBtn) {
 
         try {
             const fullName = document.getElementById('auth-name')?.value?.trim();
+            const isMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+            const professionalSpecialty = String(
+                document.getElementById('auth-medical-specialty')?.value || ''
+            ).trim();
+            if (isMedical && isSignUpMode) {
+                const profile = { fullName, email, professionalSpecialty };
+                const validationError = qsMedicalValidateProfile(profile, true);
+                if (validationError) {
+                    qsShowAuthError(validationError);
+                    return;
+                }
+                qsMedicalPendingOnboardingWrite(profile);
+                const { data: { user: existingUser } } = await supabase.auth.getUser();
+                if (existingUser) {
+                    await qsMedicalActivateTrialForSignedInUser(profile);
+                    window.toggleModal(false);
+                    return;
+                }
+            }
             if (!(await qsMaybeWarnIOSPrivateBeforeOAuth())) {
                 authSubmitBtn.disabled = false;
                 qsResetAuthSubmitButtonLabel();
                 return;
             }
-            try {
+            if (isSignUpMode) try {
                 const riskRes = await fetch('/api/auth/check_email_risk', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -10525,14 +11018,24 @@ if (authSubmitBtn) {
                 email,
                 options: {
                     emailRedirectTo: qsOAuthRedirectTo(),
-                    data: fullName ? { full_name: fullName } : undefined
+                    data: (isSignUpMode && fullName) ? {
+                        full_name: fullName,
+                        ...(isMedical ? {
+                            professional_specialty: professionalSpecialty,
+                            product: 'medical',
+                        } : {}),
+                    } : undefined
                 }
             });
 
             if (error) throw error;
 
             console.log("✅ Magic link sent to:", email);
-            showStatus(typeof window.t === 'function' ? window.t('check_email_link') : "Check your email for the login link.", false);
+            if (isMedical) {
+                qsClearAuthError();
+            } else {
+                showStatus(typeof window.t === 'function' ? window.t('check_email_link') : "Check your email for the login link.", false);
+            }
             authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('link_sent') : "Link sent! Check your email.";
         } catch (err) {
             console.error("❌ Auth Error:", err);
@@ -12147,7 +12650,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!window.__qsSimulationMode) return false;
         try {
             const p = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
-            return p === '/' || p === '/he' || p === '/en';
+            return p === '/' || p === '/he' || p === '/en' || p === '/free';
         } catch (_) {
             return false;
         }
@@ -12917,7 +13420,7 @@ document.addEventListener('DOMContentLoaded', () => {
         qsUploadTraceErr('medical_upload_session_start', { filename, mime });
         const res = await fetch('/api/sign-s3', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await qsMedicalJsonHeaders(),
             body: JSON.stringify({
                 filename,
                 filetype: mime,
@@ -13197,6 +13700,7 @@ document.addEventListener('DOMContentLoaded', () => {
             languageCode,
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
             transport,
+            accessToken: await qsSupabaseAccessToken(),
             onPartial: (t) => {
                 const next = String(t || '').trim();
                 const combined = transcriptPrefix && next
@@ -13278,7 +13782,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const completeRes = await fetch('/api/medical/complete_stream_transcription', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await qsMedicalJsonHeaders(),
             body: JSON.stringify({
                 jobId: session.jobId,
                 s3Key: session.s3Key,
@@ -13709,6 +14213,28 @@ document.addEventListener('DOMContentLoaded', () => {
     async function startMedicalRecording(options = {}) {
         if (window._medicalStartRecordingInFlight || (window._medicalRecorder && window._medicalRecorder.state !== 'inactive')) {
             return;
+        }
+        if (isMedicalModeEnabled()) {
+            try {
+                let account = window.__QS_MEDICAL_ACCOUNT;
+                if (!account || account.allowed !== true) {
+                    account = await qsMedicalAccountFetch();
+                }
+                if (!account || account.allowed !== true) {
+                    qsMedicalApplyAccessState(account);
+                    qsMedicalSetOnboardingMessage(
+                        account?.onboardingRequired
+                            ? 'יש להפעיל את תקופת הניסיון לפני תחילת הקלטה.'
+                            : 'נדרש מסלול רפואי פעיל כדי להתחיל הקלטה.',
+                        true,
+                    );
+                    return;
+                }
+            } catch (err) {
+                qsMedicalApplyAccessState(null);
+                qsMedicalSetOnboardingMessage('לא ניתן לאמת את החשבון כעת. נסו שוב.', true);
+                return;
+            }
         }
         window._qsMedicalStreamAwaitingSummary = null;
         window._medicalStartRecordingInFlight = true;
@@ -15423,6 +15949,14 @@ document.addEventListener('DOMContentLoaded', () => {
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
             try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
             try { if (typeof window.syncMedicalPrimaryActionBtn === 'function') window.syncMedicalPrimaryActionBtn(); } catch (_) {}
+            setTimeout(() => {
+                void qsMedicalAccountFetch()
+                    .then((account) => {
+                        window.__QS_MEDICAL_ACCOUNT = account || window.__QS_MEDICAL_ACCOUNT;
+                        if (account) qsMedicalRenderUsage(account);
+                    })
+                    .catch(() => {});
+            }, 3500);
         }
         console.info('[qs-processing-ui] handleJobUpdate finished (success path)', { ts: new Date().toISOString() });
         if (deferToolbarUntilGptDone) {
@@ -17331,7 +17865,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 }
                 const signRes = await fetch('/api/sign-s3-multipart-init', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: isMedicalModeEnabled()
+                        ? await qsMedicalJsonHeaders()
+                        : { 'Content-Type': 'application/json' },
                     body: JSON.stringify(multipartInitBody),
                 });
 

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block structured_data %}{% include "snippets/product_json_ld.html" %}{% endblock %}
-{% block page_title %}{% if request.path.startswith('/en') %}Flawless Hebrew AI Transcription & Subtitles | QuickScribe{% else %}תמלול AI בעברית וכתוביות אוטומטיות מדויקות | QuickScribe{% endif %}{% endblock %}
-{% block page_description %}{% if request.path.startswith('/en') %}Turn complex Hebrew audio and video into accurate text and SRT subtitles. Powered by advanced AI vocal isolation to handle heavy background noise.{% else %}הפכו אודיו ווידאו בעברית לטקסט מדויק ולכתוביות SRT. מונע על ידי בידוד קולי מתקדם מבוסס AI להתמודדות עם רעשי רקע כבדים.{% endif %}{% endblock %}
+{% block page_title %}{% if medical_entry %}QuickScribe Medical | AI Documentation for Healthcare Professionals{% elif qs_is_en %}Flawless Hebrew AI Transcription & Subtitles | QuickScribe{% else %}תמלול AI בעברית וכתוביות אוטומטיות מדויקות | QuickScribe{% endif %}{% endblock %}
+{% block page_description %}{% if medical_entry %}תמלול וסיכום קליני מאובטח מבוסס AI לרופאים, פסיכולוגים, מרפאים בעיסוק, פיזיותרפיסטים, קלינאי תקשורת ואנשי מקצוע נוספים בתחום הבריאות.{% elif qs_is_en %}Turn complex Hebrew audio and video into accurate text and SRT subtitles. Powered by advanced AI vocal isolation to handle heavy background noise.{% else %}הפכו אודיו ווידאו בעברית לטקסט מדויק ולכתוביות SRT. מונע על ידי בידוד קולי מתקדם מבוסס AI להתמודדות עם רעשי רקע כבדים.{% endif %}{% endblock %}
 {% block content %}
 {% if medical_entry %}
 <script>
@@ -13,6 +13,7 @@ try { localStorage.setItem('qs_medical_mode', '1'); } catch (e) {}
 try {
   document.documentElement.classList.add('qs-medical-entry');
   document.body.classList.add('medical-mode');
+  document.body.classList.add('medical-onboarding-pending');
 } catch (e) {}
 </script>
 {% endif %}
@@ -25,12 +26,10 @@ try {
                     <div class="seo-hero-grid">
                         <div class="seo-hero-copy">
                             <h1>
-                                <span class="seo-he">הפכו כל פגישה, ראיון או הקלטה לטקסט מדויק — עם סיכום ומשימות אוטומטי בעברית</span>
-                                <span class="seo-en">Turn every meeting, interview, or recording into accurate text —<br class="seo-hero-linebreak">with an automatic summary and action items</span>
+                                {% if qs_is_en %}Turn every meeting, interview, or recording into accurate text —<br class="seo-hero-linebreak">with an automatic summary and action items{% else %}הפכו כל פגישה, ראיון או הקלטה לטקסט מדויק — עם סיכום ומשימות אוטומטי בעברית{% endif %}
                             </h1>
                             <p class="seo-hero-subtitle">
-                                <span class="seo-he">המערכת בנויה להתמודד עם רעשי רקע, ריבוי דוברים והקלטות מהשטח — ומפיקה בסוף סיכום מובנה עם רשימת משימות, מוכן לשיתוף.</span>
-                                <span class="seo-en">Built for background noise, multiple speakers, and field recordings —<br class="seo-hero-linebreak">structured summary with a task list, ready to share.</span>
+                                {% if qs_is_en %}Built for background noise, multiple speakers, and field recordings —<br class="seo-hero-linebreak">structured summary with a task list, ready to share.{% else %}המערכת בנויה להתמודד עם רעשי רקע, ריבוי דוברים והקלטות מהשטח — ומפיקה בסוף סיכום מובנה עם רשימת משימות, מוכן לשיתוף.{% endif %}
                             </p>
                         </div>
                     </div>
@@ -41,32 +40,26 @@ try {
             <section id="features-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="features-section-title">
                 <div class="seo-landing-inner">
                 <h2 id="features-section-title">
-                    <span class="seo-he">מהונדס להפרדת קול באיכות גבוהה</span>
-                    <span class="seo-en">Engineered for High-Fidelity Audio Separation</span>
+                    {% if qs_is_en %}Engineered for High-Fidelity Audio Separation{% else %}מהונדס להפרדת קול באיכות גבוהה{% endif %}
                 </h2>
                 <p>
-                    <span class="seo-he">מודלים רגילים של דיבור לטקסט נכשלים כאשר מוזיקת רקע או רעשי סביבה מפריעים. QuickScribe משתמשת בהפרדת מקורות שמע עצבית מתקדמת (Stem Splitting) כדי לבודד קול אנושי מרעש, מכלים ומקצב מוזיקלי לפני תחילת התמלול.</span>
-                    <span class="seo-en">Standard speech-to-text models fail when background music or environmental noise interferes. QuickScribe utilizes advanced Neural Audio Source Separation (stem splitting) to isolate human vocals from background noise, instruments, and music beats before transcription begins.</span>
+                    {% if qs_is_en %}Standard speech-to-text models fail when background music or environmental noise interferes. QuickScribe utilizes advanced Neural Audio Source Separation (stem splitting) to isolate human vocals from background noise, instruments, and music beats before transcription begins.{% else %}מודלים רגילים של דיבור לטקסט נכשלים כאשר מוזיקת רקע או רעשי סביבה מפריעים. QuickScribe משתמשת בהפרדת מקורות שמע עצבית מתקדמת (Stem Splitting) כדי לבודד קול אנושי מרעש, מכלים ומקצב מוזיקלי לפני תחילת התמלול.{% endif %}
                 </p>
                 <div class="seo-feature-grid">
                     <article class="seo-card">
                         <h3>
-                            <span class="seo-he">דיוק בסיסי של 94%</span>
-                            <span class="seo-en">94% Baseline Accuracy</span>
+                            {% if qs_is_en %}94% Baseline Accuracy{% else %}דיוק בסיסי של 94%{% endif %}
                         </h3>
                         <p>
-                            <span class="seo-he">גם בדיאלקטים מורכבים, מונחים מקצועיים ואודיו משולב שפות.</span>
-                            <span class="seo-en">Even on complex dialects, terminology, and mixed-language audio.</span>
+                            {% if qs_is_en %}Even on complex dialects, terminology, and mixed-language audio.{% else %}גם בדיאלקטים מורכבים, מונחים מקצועיים ואודיו משולב שפות.{% endif %}
                         </p>
                     </article>
                     <article class="seo-card">
                         <h3>
-                            <span class="seo-he">בידוד קולי מתקדם</span>
-                            <span class="seo-en">Advanced Vocal Isolation</span>
+                            {% if qs_is_en %}Advanced Vocal Isolation{% else %}בידוד קולי מתקדם{% endif %}
                         </h3>
                         <p>
-                            <span class="seo-he">עיבוד קול נקי מבטיח חותמות זמן מדויקות וללא טקסט חסר.</span>
-                            <span class="seo-en">Clean audio processing ensures flawless timestamps and zero missing text.</span>
+                            {% if qs_is_en %}Clean audio processing ensures flawless timestamps and zero missing text.{% else %}עיבוד קול נקי מבטיח חותמות זמן מדויקות וללא טקסט חסר.{% endif %}
                         </p>
                     </article>
                 </div>
@@ -76,136 +69,108 @@ try {
             <section id="pricing-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="pricing-section-title">
                 <div class="seo-landing-inner">
                 <h2 id="pricing-section-title">
-                    <span class="seo-he">תמחור פשוט ושקוף</span>
-                    <span class="seo-en">Simple, Transparent Pricing</span>
+                    {% if qs_is_en %}Simple, Transparent Pricing{% else %}תמחור פשוט ושקוף{% endif %}
                 </h2>
                 <div class="seo-pricing-grid">
                     <article class="seo-card seo-pricing-card seo-pricing-card--starter seo-pricing-card--selectable" id="seo-pricing-starter" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-starter-title">
                         <h3 id="seo-pricing-starter-title">
-                            <span class="seo-he">תוכנית Starter</span>
-                            <span class="seo-en">Starter Plan</span>
+                            {% if qs_is_en %}Starter Plan{% else %}תוכנית Starter{% endif %}
                         </h3>
                         <div class="seo-price">
-                            <span class="seo-he">₪0</span>
-                            <span class="seo-en">$0</span>
-                            <small><span class="seo-he">/ חודש ראשון מתנה</span><span class="seo-en">/ first month free</span></small>
+                            {% if qs_is_en %}$0{% else %}₪0{% endif %}
+                            <small>{% if qs_is_en %}/ first month free{% else %}/ חודש ראשון מתנה{% endif %}</small>
                         </div>
                         <ul class="seo-pricing-features">
                             <li>
-                                <span class="seo-he">60 דקות תמלול (שעה שלמה) מתנה לחודש הראשון!</span>
-                                <span class="seo-en">60 minutes of transcription (a full hour) free for your first month!</span>
+                                {% if qs_is_en %}60 minutes of transcription (a full hour) free for your first month!{% else %}60 דקות תמלול (שעה שלמה) מתנה לחודש הראשון!{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he">גישה מלאה לכל הפיצ'רים של ה-AI</span>
-                                <span class="seo-en">Full access to all AI features</span>
+                                {% if qs_is_en %}Full access to all AI features{% else %}גישה מלאה לכל הפיצ'רים של ה-AI{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he">הפרדת קול מתקדמת וסינון רעשים</span>
-                                <span class="seo-en">Advanced vocal separation and noise filtering</span>
+                                {% if qs_is_en %}Advanced vocal separation and noise filtering{% else %}הפרדת קול מתקדמת וסינון רעשים{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he">ייצוא SRT וטקסט סטנדרטי</span>
-                                <span class="seo-en">Standard SRT and text export</span>
+                                {% if qs_is_en %}Standard SRT and text export{% else %}ייצוא SRT וטקסט סטנדרטי{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he">ללא צורך בכרטיס אשראי</span>
-                                <span class="seo-en">No credit card required</span>
+                                {% if qs_is_en %}No credit card required{% else %}ללא צורך בכרטיס אשראי{% endif %}
                             </li>
                         </ul>
                         <div class="seo-plan-auto-badge" aria-label="פעיל אוטומטית ברישום">
-                            <span class="seo-he">פעיל אוטומטית ברישום</span>
-                            <span class="seo-en">Active automatically on signup</span>
+                            {% if qs_is_en %}Active automatically on signup{% else %}פעיל אוטומטית ברישום{% endif %}
                         </div>
                     </article>
                     <article class="seo-card seo-pricing-card seo-pricing-popular seo-pricing-card--selectable seo-pricing-card--credits" id="seo-pricing-pro" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-pro-title">
                         <div class="seo-popular-badge">
-                            <span class="seo-he">תשלום מראש</span>
-                            <span class="seo-en">Prepaid</span>
+                            {% if qs_is_en %}Prepaid{% else %}תשלום מראש{% endif %}
                         </div>
                         <h3 id="seo-pricing-pro-title">
-                            <span class="seo-he">חבילות דקות בתשלום מראש</span>
-                            <span class="seo-en">Prepaid bundles</span>
+                            {% if qs_is_en %}Prepaid bundles{% else %}חבילות דקות בתשלום מראש{% endif %}
                         </h3>
                         <div class="seo-price" id="seo-credit-bundle-price">
-                            <span class="seo-he" data-bundle-price-he="standard">₪39</span>
-                            <span class="seo-en" data-bundle-price-en="standard">$13</span>
-                            <small><span class="seo-he" data-bundle-price-note-he="standard"> / 300 דקות</span><span class="seo-en" data-bundle-price-note-en="standard"> / 300 min</span></small>
+                            {% if qs_is_en %}<span data-bundle-price="standard">$13</span>{% else %}<span data-bundle-price="standard">₪39</span>{% endif %}
+                            <small>{% if qs_is_en %}<span data-bundle-price-note="standard"> / 300 min</span>{% else %}<span data-bundle-price-note="standard"> / 300 דקות</span>{% endif %}</small>
                         </div>
                         <div class="seo-credit-bundle-picker">
                             <div class="seo-credit-bundle-tabs" role="tablist" aria-label="חבילות קרדיט">
                                 <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="light" role="tab" aria-selected="false" id="seo-credit-tab-light">
-                                    <span class="seo-he">Light</span>
-                                    <span class="seo-en">Light</span>
+                                    Light
                                 </button>
                                 <button type="button" class="seo-credit-bundle-item seo-credit-bundle-item--recommended seo-credit-bundle-tab is-selected" data-bundle="standard" role="tab" aria-selected="true" id="seo-credit-tab-standard">
-                                    <span class="seo-he">Standard</span>
-                                    <span class="seo-en">Standard</span>
+                                    Standard
                                 </button>
                                 <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="plus" role="tab" aria-selected="false" id="seo-credit-tab-plus">
-                                    <span class="seo-he">Plus</span>
-                                    <span class="seo-en">Plus</span>
+                                    Plus
                                 </button>
                             </div>
                             <div class="seo-credit-bundle-detail" id="seo-credit-bundle-detail" role="tabpanel" aria-live="polite">
                                 <div class="seo-credit-bundle-pane" data-bundle-pane="light" hidden aria-hidden="true">
-                                    <span class="seo-he">Light · ₪19 · 90 דקות</span>
-                                    <span class="seo-en">Light · $7 · 90 min</span>
+                                    {% if qs_is_en %}Light · $7 · 90 min{% else %}Light · ₪19 · 90 דקות{% endif %}
                                 </div>
                                 <div class="seo-credit-bundle-pane is-active" data-bundle-pane="standard" aria-hidden="true">
-                                    <span class="seo-he">Standard · ₪39 · 300 דקות</span>
-                                    <span class="seo-en">Standard · $13 · 300 min</span>
+                                    {% if qs_is_en %}Standard · $13 · 300 min{% else %}Standard · ₪39 · 300 דקות{% endif %}
                                 </div>
                                 <div class="seo-credit-bundle-pane" data-bundle-pane="plus" hidden aria-hidden="true">
-                                    <span class="seo-he">Plus · ₪79 · 720 דקות</span>
-                                    <span class="seo-en">Plus · $27 · 720 min</span>
+                                    {% if qs_is_en %}Plus · $27 · 720 min{% else %}Plus · ₪79 · 720 דקות{% endif %}
                                 </div>
                             </div>
                         </div>
                         <ul class="seo-pricing-features">
                             <li>
-                                <span class="seo-he">הדקות שלך בארנק ולא פוקעות לעולם</span>
-                                <span class="seo-en">Minutes never expire in your wallet</span>
+                                {% if qs_is_en %}Minutes never expire in your wallet{% else %}הדקות שלך בארנק ולא פוקעות לעולם{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he">תור AI בעדיפות גבוהה</span>
-                                <span class="seo-en">Priority AI queue</span>
+                                {% if qs_is_en %}Priority AI queue{% else %}תור AI בעדיפות גבוהה{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he">הפרדת קול וניקוי רעשי רקע מתקדם</span>
-                                <span class="seo-en">Advanced vocal separation &amp; noise cleanup</span>
+                                {% if qs_is_en %}Advanced vocal separation &amp; noise cleanup{% else %}הפרדת קול וניקוי רעשי רקע מתקדם{% endif %}
                             </li>
                         </ul>
                         <button type="button" class="seo-btn seo-btn-primary seo-bridge-action" id="seo-buy-credits-btn" data-bundle="standard">
-                            <span class="seo-he">רכישת קרדיטים</span>
-                            <span class="seo-en">Buy Credits</span>
+                            {% if qs_is_en %}Buy Credits{% else %}רכישת קרדיטים{% endif %}
                         </button>
                     </article>
                     <article class="seo-card seo-pricing-card seo-pricing-card--selectable" id="seo-pricing-enterprise" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-enterprise-title">
                         <h3 id="seo-pricing-enterprise-title">
-                            <span class="seo-he">ארגוני / רפואי</span>
-                            <span class="seo-en">Enterprise / Medical</span>
+                            {% if qs_is_en %}Enterprise / Medical{% else %}ארגוני / רפואי{% endif %}
                         </h3>
                         <div class="seo-price">
-                            <span class="seo-he">מחיר מותאם אישית</span>
-                            <span class="seo-en">Custom Pricing</span>
+                            {% if qs_is_en %}Custom Pricing{% else %}מחיר מותאם אישית{% endif %}
                         </div>
                         <ul>
                             <li>
-                                <span class="seo-he"><strong>סביבה תואמת HIPAA:</strong> ארכיטקטורת נתונים במרחב מבודד לחלוטין.</span>
-                                <span class="seo-en"><strong>HIPAA-Compliant Environment:</strong> Fully sandboxed data architecture.</span>
+                                {% if qs_is_en %}<strong>HIPAA-Compliant Environment:</strong> Fully sandboxed data architecture.{% else %}<strong>סביבה תואמת HIPAA:</strong> ארכיטקטורת נתונים במרחב מבודד לחלוטין.{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he"><strong>תשתית ייעודית:</strong> מופעי שרת מפולגים ודלי Amazon S3 מבודדים לחלוטין.</span>
-                                <span class="seo-en"><strong>Dedicated Infrastructure:</strong> Segmented server instances and fully isolated Amazon S3 buckets.</span>
+                                {% if qs_is_en %}<strong>Dedicated Infrastructure:</strong> Segmented server instances and fully isolated Amazon S3 buckets.{% else %}<strong>תשתית ייעודית:</strong> מופעי שרת מפולגים ודלי Amazon S3 מבודדים לחלוטין.{% endif %}
                             </li>
                             <li>
-                                <span class="seo-he"><strong>ללא שמירת נתונים:</strong> מדיניות אפס-שמירה לסודיות רפואית ומשפטית מחמירה.</span>
-                                <span class="seo-en"><strong>No Data Logging:</strong> Zero-retention policy for strict medical and legal confidentiality.</span>
+                                {% if qs_is_en %}<strong>No Data Logging:</strong> Zero-retention policy for strict medical and legal confidentiality.{% else %}<strong>ללא שמירת נתונים:</strong> מדיניות אפס-שמירה לסודיות רפואית ומשפטית מחמירה.{% endif %}
                             </li>
                         </ul>
                         <button type="button" id="seo-contact-sales-btn" class="seo-btn seo-btn-medical">
-                            <span class="seo-he">צור קשר למכירות</span>
-                            <span class="seo-en">Contact Sales</span>
+                            {% if qs_is_en %}Contact Sales{% else %}צור קשר למכירות{% endif %}
                         </button>
                     </article>
                 </div>
@@ -215,14 +180,13 @@ try {
             <section id="metrics-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="metrics-section-title">
                 <div class="seo-landing-inner">
                     <h2 id="metrics-section-title" class="seo-metrics-section-title">
-                        <span class="seo-he">במספרים</span>
-                        <span class="seo-en">By the Numbers</span>
+                        {% if qs_is_en %}By the Numbers{% else %}במספרים{% endif %}
                     </h2>
                     <div class="seo-metrics-row">
-                        <div><strong>94%</strong><span><span class="seo-he">דיוק בסיסי</span><span class="seo-en">Accuracy Baseline</span></span></div>
-                        <div><strong>4x</strong><span><span class="seo-he">זרימת עבודה מהירה יותר</span><span class="seo-en">Faster Workflow</span></span></div>
-                        <div><strong>10k+</strong><span><span class="seo-he">דקות שעובדו</span><span class="seo-en">Minutes Processed</span></span></div>
-                        <div><strong>100%</strong><span><span class="seo-he">בידוד קולי</span><span class="seo-en">Vocal Isolation</span></span></div>
+                        <div><strong>94%</strong><span>{% if qs_is_en %}Accuracy Baseline{% else %}דיוק בסיסי{% endif %}</span></div>
+                        <div><strong>4x</strong><span>{% if qs_is_en %}Faster Workflow{% else %}זרימת עבודה מהירה יותר{% endif %}</span></div>
+                        <div><strong>10k+</strong><span>{% if qs_is_en %}Minutes Processed{% else %}דקות שעובדו{% endif %}</span></div>
+                        <div><strong>100%</strong><span>{% if qs_is_en %}Vocal Isolation{% else %}בידוד קולי{% endif %}</span></div>
                     </div>
                 </div>
             </section>
@@ -230,38 +194,31 @@ try {
             <section id="use-cases-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="use-cases-section-title">
                 <div class="seo-landing-inner">
                 <h2 id="use-cases-section-title">
-                    <span class="seo-he">פתרונות מותאמים לכל תהליך עבודה</span>
-                    <span class="seo-en">Tailored Solutions for Every Workflow</span>
+                    {% if qs_is_en %}Tailored Solutions for Every Workflow{% else %}פתרונות מותאמים לכל תהליך עבודה{% endif %}
                 </h2>
                 <div class="seo-use-cases-grid">
                     <article class="seo-card">
                         <h3>
-                            <span class="seo-he">🎓 אקדמיה ותובנות מחקר</span>
-                            <span class="seo-en">🎓 Academic &amp; Research Insights</span>
+                            {% if qs_is_en %}🎓 Academic &amp; Research Insights{% else %}🎓 אקדמיה ותובנות מחקר{% endif %}
                         </h3>
                         <p>
-                            <span class="seo-he">המירו הרצאות ארוכות, שיעורי זום מוקלטים וראיונות מחקר לטקסט מאורגן. האיצו סיכומי לימוד וסקירת חומר מורכב במהירות.</span>
-                            <span class="seo-en">Convert long lectures, recorded Zoom classes, and research interviews into organized text. Speed up study summaries and review complex material instantly.</span>
+                            {% if qs_is_en %}Convert long lectures, recorded Zoom classes, and research interviews into organized text. Speed up study summaries and review complex material instantly.{% else %}המירו הרצאות ארוכות, שיעורי זום מוקלטים וראיונות מחקר לטקסט מאורגן. האיצו סיכומי לימוד וסקירת חומר מורכב במהירות.{% endif %}
                         </p>
                     </article>
                     <article class="seo-card">
                         <h3>
-                            <span class="seo-he">🎬 רשתות חברתיות ויוצרי תוכן</span>
-                            <span class="seo-en">🎬 Social Media &amp; Content Creators</span>
+                            {% if qs_is_en %}🎬 Social Media &amp; Content Creators{% else %}🎬 רשתות חברתיות ויוצרי תוכן{% endif %}
                         </h3>
                         <p>
-                            <span class="seo-he">צרו כתוביות SRT מתוזמנות ליוטיוב, טיקטוק ופודקאסטים. ייצאו כתוביות בקלות וקצרו את זמן העריכה בחצי.</span>
-                            <span class="seo-en">Generate perfectly timed SRT subtitles for YouTube, TikTok, and podcasts. Export subtitles seamlessly to cut editing workflows in half.</span>
+                            {% if qs_is_en %}Generate perfectly timed SRT subtitles for YouTube, TikTok, and podcasts. Export subtitles seamlessly to cut editing workflows in half.{% else %}צרו כתוביות SRT מתוזמנות ליוטיוב, טיקטוק ופודקאסטים. ייצאו כתוביות בקלות וקצרו את זמן העריכה בחצי.{% endif %}
                         </p>
                     </article>
                     <article class="seo-card">
                         <h3>
-                            <span class="seo-he">⚖️ משפטי, תרגום וארגונים</span>
-                            <span class="seo-en">⚖️ Legal, Translation &amp; Enterprise</span>
+                            {% if qs_is_en %}⚖️ Legal, Translation &amp; Enterprise{% else %}⚖️ משפטי, תרגום וארגונים{% endif %}
                         </h3>
                         <p>
-                            <span class="seo-he">נבנה לאנשי מקצוע הזקוקים לתמלול עברי מדויק מילה במילה עבור ראיונות עומק, תיעוד משפטי ותהליכי לוקליזציה ותרגום.</span>
-                            <span class="seo-en">Built for professionals who require precise, verbatim Hebrew transcription for depth interviews, legal documentation, and localized translation workflows.</span>
+                            {% if qs_is_en %}Built for professionals who require precise, verbatim Hebrew transcription for depth interviews, legal documentation, and localized translation workflows.{% else %}נבנה לאנשי מקצוע הזקוקים לתמלול עברי מדויק מילה במילה עבור ראיונות עומק, תיעוד משפטי ותהליכי לוקליזציה ותרגום.{% endif %}
                         </p>
                     </article>
                 </div>
@@ -271,42 +228,34 @@ try {
             <section id="testimonials-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="testimonials-section-title">
                 <div class="seo-landing-inner">
                 <h2 id="testimonials-section-title">
-                    <span class="seo-he">אמון של אנשי מקצוע ויוצרי תוכן</span>
-                    <span class="seo-en">Trusted by Professionals &amp; Creators</span>
+                    {% if qs_is_en %}Trusted by Professionals &amp; Creators{% else %}אמון של אנשי מקצוע ויוצרי תוכן{% endif %}
                 </h2>
                 <article class="seo-card seo-featured-review">
                     <div class="seo-review-badge">
-                        <span class="seo-he">ביקורת נבחרת</span>
-                        <span class="seo-en">Featured Review</span>
+                        {% if qs_is_en %}Featured Review{% else %}ביקורת נבחרת{% endif %}
                     </div>
                     <p>
-                        <span class="seo-he">"השתמשתי ב-QuickScribe כדי לתמלל סדרת ראיונות עומק עבור ספר שאני כותב, והדיוק באמת הרשים אותי - אפילו ניואנסים קטנים בדיבור הופיעו נכון. חלוקת הפרקים האוטומטית הפתיעה אותי לטובה; זה ממש עוזר כשעובדים עם אודיו ארוך. ממליץ מאוד!"</span>
-                        <span class="seo-en">"I used QuickScribe to transcribe a series of in-depth interviews for a book I am writing, and I was truly impressed by the accuracy - even small nuances in speech came out correctly. The automatic chapter splitting surprised me for the better; it really helps when working with long-form audio. Definitely recommend it!"</span>
+                        {% if qs_is_en %}"I used QuickScribe to transcribe a series of in-depth interviews for a book I am writing, and I was truly impressed by the accuracy - even small nuances in speech came out correctly. The automatic chapter splitting surprised me for the better; it really helps when working with long-form audio. Definitely recommend it!"{% else %}"השתמשתי ב-QuickScribe כדי לתמלל סדרת ראיונות עומק עבור ספר שאני כותב, והדיוק באמת הרשים אותי - אפילו ניואנסים קטנים בדיבור הופיעו נכון. חלוקת הפרקים האוטומטית הפתיעה אותי לטובה; זה ממש עוזר כשעובדים עם אודיו ארוך. ממליץ מאוד!"{% endif %}
                     </p>
                     <footer>
-                        <span class="seo-he">- מחבר ויוצר תוכן (ביקורת מאומתת מקהילת פייסבוק)</span>
-                        <span class="seo-en">- Author &amp; Content Creator (Verified Facebook Community Review)</span>
+                        {% if qs_is_en %}- Author &amp; Content Creator (Verified Facebook Community Review){% else %}- מחבר ויוצר תוכן (ביקורת מאומתת מקהילת פייסבוק){% endif %}
                     </footer>
                 </article>
                 <div class="seo-testimonials-grid">
                     <article class="seo-card">
                         <p>
-                            <span class="seo-he">"QuickScribe מטפלת בעקביות בסלנג מקומי ובמונחים עבריים שמנועים גלובליים מפספסים, ומקצרת משמעותית את זמן העריכה הידנית שלי."</span>
-                            <span class="seo-en">"QuickScribe consistently handles localized slang and Hebrew terms that global engines miss, cutting my manual transcription editing time down significantly."</span>
+                            {% if qs_is_en %}"QuickScribe consistently handles localized slang and Hebrew terms that global engines miss, cutting my manual transcription editing time down significantly."{% else %}"QuickScribe מטפלת בעקביות בסלנג מקומי ובמונחים עבריים שמנועים גלובליים מפספסים, ומקצרת משמעותית את זמן העריכה הידנית שלי."{% endif %}
                         </p>
                         <footer>
-                            <span class="seo-he">- מתרגם לשפות נבחרות</span>
-                            <span class="seo-en">- Hebrew-to-English Translator</span>
+                            {% if qs_is_en %}- Hebrew-to-English Translator{% else %}- מתרגם לשפות נבחרות{% endif %}
                         </footer>
                     </article>
                     <article class="seo-card">
                         <p>
-                            <span class="seo-he">"החלוקה האוטומטית של הטקסט והפרדת ריבוי דוברים הופכות עבודה עם הקלטות מחקר אקדמיות ארוכות למהירה ופשוטה במיוחד."</span>
-                            <span class="seo-en">"The automatic division of text and multi-speaker separation makes handling long academic research recordings incredibly fast and painless."</span>
+                            {% if qs_is_en %}"The automatic division of text and multi-speaker separation makes handling long academic research recordings incredibly fast and painless."{% else %}"החלוקה האוטומטית של הטקסט והפרדת ריבוי דוברים הופכות עבודה עם הקלטות מחקר אקדמיות ארוכות למהירה ופשוטה במיוחד."{% endif %}
                         </p>
                         <footer>
-                            <span class="seo-he">- חוקר/ת אקדמי/ת</span>
-                            <span class="seo-en">- Academic Researcher</span>
+                            {% if qs_is_en %}- Academic Researcher{% else %}- חוקר/ת אקדמי/ת{% endif %}
                         </footer>
                     </article>
                 </div>
@@ -316,16 +265,15 @@ try {
             <section id="formats-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="formats-section-title">
                 <div class="seo-landing-inner">
                 <h2 id="formats-section-title">
-                    <span class="seo-he">כל פורמט, בכל מכשיר</span>
-                    <span class="seo-en">Any Format, Any Device</span>
+                    {% if qs_is_en %}Any Format, Any Device{% else %}כל פורמט, בכל מכשיר{% endif %}
                 </h2>
                 <div class="seo-format-grid">
                     <article class="seo-card">
-                        <h3><span class="seo-he">🎥 וידאו</span><span class="seo-en">🎥 Video</span></h3>
+                        <h3>{% if qs_is_en %}🎥 Video{% else %}🎥 וידאו{% endif %}</h3>
                         <p>MP4, MOV, WEBM, M4V, MKV, AVI</p>
                     </article>
                     <article class="seo-card">
-                        <h3><span class="seo-he">🎙️ אודיו</span><span class="seo-en">🎙️ Audio</span></h3>
+                        <h3>{% if qs_is_en %}🎙️ Audio{% else %}🎙️ אודיו{% endif %}</h3>
                         <p>M4A, MP3, WAV, AAC, OGG, FLAC</p>
                     </article>
                 </div>
@@ -335,23 +283,19 @@ try {
             <section id="faq-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="faq-section-title">
                 <div class="seo-landing-inner">
                 <h2 id="faq-section-title">
-                    <span class="seo-he">שאלות נפוצות</span>
-                    <span class="seo-en">Frequently Asked Questions</span>
+                    {% if qs_is_en %}Frequently Asked Questions{% else %}שאלות נפוצות{% endif %}
                 </h2>
                 <details>
-                    <summary><span class="seo-he">איך עובד תמלול אוטומטי?</span><span class="seo-en">How does automatic transcription work?</span></summary>
-                    <p class="seo-he">מעלים קובץ אודיו או וידאו, וארכיטקטורת AI מותאמת מבודדת את הדיבור ומייצרת תמלול וכתוביות לעריכה אוטומטית.</p>
-                    <p class="seo-en">Upload a video or audio file, and our fine-tuned AI architecture isolates the speech and generates editable text and subtitles automatically.</p>
+                    <summary>{% if qs_is_en %}How does automatic transcription work?{% else %}איך עובד תמלול אוטומטי?{% endif %}</summary>
+                    {% if qs_is_en %}<p>Upload a video or audio file, and our fine-tuned AI architecture isolates the speech and generates editable text and subtitles automatically.</p>{% else %}<p>מעלים קובץ אודיו או וידאו, וארכיטקטורת AI מותאמת מבודדת את הדיבור ומייצרת תמלול וכתוביות לעריכה אוטומטית.</p>{% endif %}
                 </details>
                 <details>
-                    <summary><span class="seo-he">אפשר להוריד קובץ SRT?</span><span class="seo-en">Can I download an SRT file?</span></summary>
-                    <p class="seo-he">כן. ניתן לייצא כתוביות SRT בתקן תעשייתי ולהשתמש בהן מיידית ביוטיוב, Premiere Pro וברשתות החברתיות.</p>
-                    <p class="seo-en">Yes. You can export industry-standard SRT subtitles to use immediately on YouTube, Premiere Pro, and social platforms.</p>
+                    <summary>{% if qs_is_en %}Can I download an SRT file?{% else %}אפשר להוריד קובץ SRT?{% endif %}</summary>
+                    {% if qs_is_en %}<p>Yes. You can export industry-standard SRT subtitles to use immediately on YouTube, Premiere Pro, and social platforms.</p>{% else %}<p>כן. ניתן לייצא כתוביות SRT בתקן תעשייתי ולהשתמש בהן מיידית ביוטיוב, Premiere Pro וברשתות החברתיות.</p>{% endif %}
                 </details>
                 <details>
-                    <summary><span class="seo-he">איך אתם מגנים על הנתונים שלי?</span><span class="seo-en">How do you protect my data?</span></summary>
-                    <p class="seo-he">האבטחה מובנית בליבה: כל הקבצים מועלים בפרוטוקולים מוצפנים לדליי אחסון מאובטחים ומעובדים אוטומטית ללא התערבות אנושית. עבור תהליכים רפואיים או רגישים מוצעות סביבות מבודדות התואמות HIPAA.</p>
-                    <p class="seo-en">Security is built into our core. All files are uploaded via encrypted protocols to secure storage buckets and are processed automatically without human intervention. For medical or sensitive workflows, we offer fully isolated, HIPAA-aligned environments.</p>
+                    <summary>{% if qs_is_en %}How do you protect my data?{% else %}איך אתם מגנים על הנתונים שלי?{% endif %}</summary>
+                    {% if qs_is_en %}<p>Security is built into our core. All files are uploaded via encrypted protocols to secure storage buckets and are processed automatically without human intervention. For medical or sensitive workflows, we offer fully isolated, HIPAA-aligned environments.</p>{% else %}<p>האבטחה מובנית בליבה: כל הקבצים מועלים בפרוטוקולים מוצפנים לדליי אחסון מאובטחים ומעובדים אוטומטית ללא התערבות אנושית. עבור תהליכים רפואיים או רגישים מוצעות סביבות מבודדות התואמות HIPAA.</p>{% endif %}
                 </details>
                 </div>
             </section>
@@ -389,9 +333,90 @@ try {
             </div>
         </div>
 
+        <section id="medical-onboarding-screen" class="medical-onboarding-screen" {% if not medical_entry %}hidden{% endif %}>
+            <div class="medical-onboarding-hero">
+                <span class="medical-onboarding-kicker">QuickScribe Medical</span>
+                <h1>AI Documentation for Healthcare Professionals</h1>
+                <p>
+                    תמלול וסיכום קליני מאובטח לרופאים, פסיכולוגים, מרפאים בעיסוק,
+                    פיזיותרפיסטים, קלינאי תקשורת ואנשי מקצוע נוספים בתחום הבריאות.
+                </p>
+                <div class="medical-trust-row" aria-label="Medical product benefits">
+                    <span>30 ימי ניסיון ללא עלות</span>
+                    <span>30 שעות תמלול</span>
+                    <span>ללא כרטיס אשראי</span>
+                </div>
+            </div>
+
+            <div class="medical-onboarding-grid">
+                <div class="medical-activation-card" id="medical-activation-card">
+                    <h2>הפעלת תקופת הניסיון הרפואית</h2>
+                    <p>הרשמה קצרה באמצעות Google או קישור מאובטח לאימייל — ומתחילים לתעד מיד.</p>
+                    <div id="medical-onboarding-message" class="medical-onboarding-message" role="status" aria-live="polite"></div>
+                    <button type="button" id="medical-open-auth-btn" class="medical-primary-cta">
+                        התחילו 30 ימי ניסיון
+                    </button>
+                    <button type="button" id="medical-open-login-btn" class="medical-secondary-cta">
+                        כבר יש לי חשבון רפואי — התחברות
+                    </button>
+                    <small>לא נדרשים פרטי תשלום. תקופת הניסיון כוללת 30 שעות תמלול.</small>
+                </div>
+
+                <div class="medical-security-card">
+                    <h2>נבנה לתיעוד מקצועי רגיש</h2>
+                    <ul>
+                        <li>סביבת עבודה רפואית נפרדת</li>
+                        <li>הצפנה ואחסון ייעודי לתוכן רפואי</li>
+                        <li>תמלול, עריכה וסיכום קליני במקום אחד</li>
+                        <li>מתאים למגוון מקצועות הבריאות — לא רק לרופאים</li>
+                    </ul>
+                </div>
+            </div>
+
+            <section class="medical-pricing-section" id="medical-pricing-section" aria-labelledby="medical-pricing-title">
+                <h2 id="medical-pricing-title">מסלולים פשוטים לפי שעות תמלול</h2>
+                <div class="medical-pricing-grid">
+                    <article class="medical-pricing-card">
+                        <h3>Starter</h3>
+                        <div class="medical-plan-price">₪149 <small>/ חודש</small></div>
+                        <strong>30 שעות תמלול בחודש</strong>
+                        <button type="button" data-medical-plan="starter">בחירת Starter</button>
+                    </article>
+                    <article class="medical-pricing-card is-recommended">
+                        <span class="medical-recommended-badge">מומלץ</span>
+                        <h3>Professional</h3>
+                        <div class="medical-plan-price">₪249 <small>/ חודש</small></div>
+                        <strong>60 שעות תמלול בחודש</strong>
+                        <button type="button" data-medical-plan="professional">בחירת Professional</button>
+                    </article>
+                    <article class="medical-pricing-card">
+                        <h3>Clinic</h3>
+                        <div class="medical-plan-price">₪699 <small>/ חודש</small></div>
+                        <strong>180 שעות תמלול בחודש</strong>
+                        <span>עד 5 אנשי מקצוע</span>
+                        <button type="button" data-medical-plan="clinic">בחירת Clinic</button>
+                    </article>
+                </div>
+                <p class="medical-overage-note">תמלול נוסף מעבר למכסה: ₪6 לשעה.</p>
+            </section>
+        </section>
+
+        <div id="medical-pricing-modal" class="medical-pricing-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="medical-pricing-modal-title">
+            <div class="medical-pricing-modal-card" dir="rtl">
+                <button type="button" id="medical-pricing-modal-close" class="medical-pricing-modal-close" aria-label="סגירה">×</button>
+                <h2 id="medical-pricing-modal-title">בחירת מסלול רפואי</h2>
+                <p id="medical-pricing-modal-message" class="medical-pricing-modal-intro" role="status" aria-live="polite">בחרו את מכסת שעות התמלול המתאימה לכם.</p>
+                <div id="medical-pricing-modal-content"></div>
+            </div>
+        </div>
+
         <section id="medical-session-header" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:14px; text-align:center;">
             <h2 id="medical-session-title" style="margin:0; color:#0f766e;" data-i18n="medical_session_secure_recording">Secure medical recording session</h2>
             <p id="medical-session-subtitle" style="margin:4px 0 0; color:#0f766e;" data-i18n="medical_session_hipaa_active">Clinical transcription with HIPAA mode active</p>
+            <div id="medical-usage-status" class="medical-usage-status" aria-live="polite"></div>
+            <button type="button" id="medical-open-pricing-btn" class="medical-open-pricing-btn" hidden>
+                בחירת מסלול
+            </button>
         </section>
         <div id="medical-warmup-banner" class="medical-warmup-banner" style="display:none;" role="status" aria-live="polite" dir="rtl">
             <span id="medical-warmup-banner-icon" class="medical-warmup-banner-icon" aria-hidden="true">💤</span>
@@ -404,7 +429,7 @@ try {
          <div id="auth-modal" style="display:none; position:fixed; z-index:14000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center; backdrop-filter: blur(4px);">
             <div class="auth-modal-card" style="position:relative; background: white; padding: 28px; border-radius: 16px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
                 <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
-                <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
+                <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
 
                 <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
                     <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;">
@@ -413,7 +438,7 @@ try {
                     <span data-i18n="continue_google">Continue with Google</span>
                 </button>
 
-                <div style="display: flex; align-items: center; margin: 28px 0;">
+                <div id="auth-provider-divider" style="display: flex; align-items: center; margin: 28px 0;">
                     <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
                     <span style="margin: 0 12px; color: #9ca3af; font-size: 0.75rem; font-weight: 600;" data-i18n="or_email">OR EMAIL</span>
                     <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
@@ -421,6 +446,19 @@ try {
 
                 <div id="signup-fields">
                     <input type="text" id="auth-name" data-i18n-placeholder="full_name" placeholder="Full Name (optional)" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+                    <div id="auth-medical-specialty-wrap" style="display:none;">
+                        <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
+                            <option value="">בחרו תחום מקצועי</option>
+                            <option value="physician">רפואה</option>
+                            <option value="psychologist">פסיכולוגיה</option>
+                            <option value="occupational_therapist">ריפוי בעיסוק</option>
+                            <option value="physiotherapist">פיזיותרפיה</option>
+                            <option value="speech_therapist">קלינאות תקשורת</option>
+                            <option value="nurse">סיעוד</option>
+                            <option value="social_worker">עבודה סוציאלית רפואית</option>
+                            <option value="other">מקצוע בריאות אחר</option>
+                        </select>
+                    </div>
                 </div>
                 <input type="email" id="auth-email" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:6px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
                 <p id="auth-error" role="alert" aria-live="polite" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:8px; background:#fef2f2; color:#b91c1c; font-size:0.875rem; line-height:1.45; text-align:start;"></p>
@@ -428,7 +466,7 @@ try {
                 <button type="button" id="auth-submit-btn" style="width:100%; padding:14px; background:#ffffff; color:#1a2b4b; border:1px solid #1a2b4b; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1rem; transition: background 0.2s, color 0.2s;" data-i18n="send_magic_link">Send me a link</button>
                 <button type="button" id="auth-skip-for-now" data-i18n="auth_skip_later" style="width:100%; margin-top:12px; padding:10px; background:transparent; color:#6b7280; border:none; cursor:pointer; font-size:0.9rem; text-decoration:underline;">Skip for now</button>
 
-                <p style="margin-top:20px; font-size: 0.875rem; color: #4b5563;">
+                <p id="auth-mode-switch-row" style="margin-top:20px; font-size: 0.875rem; color: #4b5563;">
                     <span id="auth-switch-text" data-i18n="already_have">Already have an account?</span>
                     <a href="#" id="toggle-auth-mode" style="color:#1e3a8a; font-weight:600; text-decoration: none; margin-left: 4px;" data-i18n="log_in">Log In</a>
                 </p>
@@ -776,19 +814,6 @@ try {
 </div>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const syncSeoLanguage = () => {
-            const isHebrew = (document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-            document.querySelectorAll('.seo-he').forEach(el => { el.style.display = isHebrew ? '' : 'none'; });
-            document.querySelectorAll('.seo-en').forEach(el => { el.style.display = isHebrew ? 'none' : ''; });
-        };
-        syncSeoLanguage();
-        const originalSetLocale = window.setLocale;
-        if (typeof originalSetLocale === 'function') {
-            window.setLocale = async function(code) {
-                await originalSetLocale(code);
-                syncSeoLanguage();
-            };
-        }
         const smoothTo = (id) => {
             const target = document.getElementById(id);
             if (!target) return;
@@ -1094,15 +1119,12 @@ try {
             : [];
         const syncCreditBundleDisplay = (bundleId) => {
             const meta = creditBundlePriceMeta[bundleId] || creditBundlePriceMeta.standard;
+            const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
             if (creditBundlePriceEl) {
-                const hePrice = creditBundlePriceEl.querySelector('.seo-he');
-                const enPrice = creditBundlePriceEl.querySelector('.seo-en');
-                const heNote = creditBundlePriceEl.querySelector('small .seo-he');
-                const enNote = creditBundlePriceEl.querySelector('small .seo-en');
-                if (hePrice) hePrice.textContent = meta.he;
-                if (enPrice) enPrice.textContent = meta.en;
-                if (heNote) heNote.textContent = meta.noteHe;
-                if (enNote) enNote.textContent = meta.noteEn;
+                const priceEl = creditBundlePriceEl.querySelector('[data-bundle-price]');
+                const noteEl = creditBundlePriceEl.querySelector('[data-bundle-price-note]');
+                if (priceEl) priceEl.textContent = isEn ? meta.en : meta.he;
+                if (noteEl) noteEl.textContent = isEn ? meta.noteEn : meta.noteHe;
             }
             creditBundlePanes.forEach((pane) => {
                 const on = pane.dataset.bundlePane === bundleId;

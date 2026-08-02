@@ -1009,6 +1009,20 @@ def register_transcribe_socketio_handlers(socketio) -> None:
     @socketio.on('medical_transcribe_start')
     def on_medical_transcribe_start(data):
         sid = request.sid
+        cfg = data if isinstance(data, dict) else {}
+        try:
+            from medical_saas import medical_entitlement_for_access_token
+            allowed, _user_id, reason = medical_entitlement_for_access_token(
+                cfg.get('access_token') or cfg.get('accessToken')
+            )
+        except Exception:
+            logger.exception('transcribe socketio entitlement check failed sid=%s', sid)
+            allowed, reason = False, 'medical_entitlement_unavailable'
+        if not allowed:
+            logger.warning('transcribe socketio rejected sid=%s reason=%s', sid, reason)
+            _emit_to_sid(sid, {'type': 'error', 'error': reason})
+            cleanup_transcribe_socketio_bridge(sid)
+            return
         logger.info('transcribe socketio start sid=%s', sid)
         cleanup_transcribe_socketio_bridge(sid)
         bridge = TranscribeStreamBridge(
@@ -1017,7 +1031,6 @@ def register_transcribe_socketio_handlers(socketio) -> None:
         )
         _SOCKETIO_BRIDGES[sid] = bridge
         bridge.send_connected()
-        cfg = data if isinstance(data, dict) else {}
         bridge.handle_start_config({**cfg, 'action': 'start'})
 
     @socketio.on('medical_transcribe_audio')
@@ -1063,6 +1076,7 @@ def run_transcribe_websocket_session(ws) -> dict:
     """Handle one browser/client WebSocket: PCM in → AWS Transcribe → transcript out."""
     logger.info('transcribe ws session opened')
     bridge = TranscribeStreamBridge(lambda payload: _ws_send_json_from_hub(ws, payload))
+    authorized = False
 
     try:
         bridge.send_connected()
@@ -1080,6 +1094,19 @@ def run_transcribe_websocket_session(ws) -> dict:
                 cfg = _parse_start_config(message)
                 action = str(cfg.get('action') or '').strip().lower()
                 if action in ('start', 'config'):
+                    if not authorized:
+                        try:
+                            from medical_saas import medical_entitlement_for_access_token
+                            allowed, _user_id, reason = medical_entitlement_for_access_token(
+                                cfg.get('access_token') or cfg.get('accessToken')
+                            )
+                        except Exception:
+                            logger.exception('transcribe websocket entitlement check failed')
+                            allowed, reason = False, 'medical_entitlement_unavailable'
+                        if not allowed:
+                            _ws_send_json(ws, {'type': 'error', 'error': reason})
+                            break
+                        authorized = True
                     bridge.handle_start_config(cfg)
                     continue
                 if action == 'stop':
@@ -1087,6 +1114,9 @@ def run_transcribe_websocket_session(ws) -> dict:
                 continue
 
             if isinstance(message, (bytes, bytearray)):
+                if not authorized:
+                    _ws_send_json(ws, {'type': 'error', 'error': 'medical_auth_required'})
+                    break
                 bridge.handle_audio(bytes(message))
 
         result_payload = bridge.finish()

@@ -565,15 +565,26 @@ def _seo_canonical_path():
     return path
 
 
+def _qs_locale_from_path(path=None):
+    """Path-prefix locale: /en → English, everything else → Hebrew."""
+    p = path if path is not None else _seo_canonical_path()
+    if p == '/en' or p.startswith('/en/'):
+        return 'en'
+    return 'he'
+
+
 @app.context_processor
 def _inject_static_asset_version():
     path = _seo_canonical_path()
+    locale = _qs_locale_from_path(path)
     canonical_url = QS_CANONICAL_ORIGIN + ('/' if path == '/' else path)
     return {
         'static_asset_version': _get_static_asset_version(),
         'qs_canonical_origin': QS_CANONICAL_ORIGIN,
         'qs_canonical_url': canonical_url,
-        'qs_is_locale_home': path in ('/', '/he', '/en'),
+        'qs_is_locale_home': path in ('/', '/en'),
+        'qs_locale': locale,
+        'qs_is_en': locale == 'en',
     }
 
 
@@ -6705,6 +6716,11 @@ def api_auth_check_email_risk():
             return jsonify({"error": "Valid email required", "allowed": False}), 400
 
         result = assess_email_risk(email)
+        if SIMULATION_MODE:
+            result = dict(result)
+            result['allowed'] = True
+            result['action'] = 'allow'
+            result['simulationBypass'] = True
         score = int(result.get('score') or 0)
         reasons = list(result.get('reasons') or [])
         domain = str(result.get('domain') or '').strip()
@@ -6888,7 +6904,7 @@ def api_stripe_create_checkout_session():
             return jsonify({"error": "Unknown credit bundle"}), 400
         locale = str(data.get("locale") or "").strip().lower()
         pricing = _stripe_bundle_checkout(bundle, locale)
-        success_path = "/en" if _stripe_locale_is_english(locale) else "/he"
+        success_path = "/en" if _stripe_locale_is_english(locale) else "/"
         base_url = str(request.url_root or "").rstrip("/")
         success_url = f"{base_url}{success_path}?stripe_success=1&session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = f"{base_url}{success_path}?stripe_cancelled=1"
@@ -7058,8 +7074,12 @@ def mock_upload():
 def add_security_headers(resp):
     # Use credentialless so cross-origin S3 media can load (S3 does not send CORP).
     # require-corp would block presigned S3 URLs with NotSameOriginAfterDefaultedToSameOriginByCoep.
-    resp.headers['Cross-Origin-Embedder-Policy'] = 'credentialless'
-    resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+    # Skip COEP/COOP on /free: YouTube embeds do not send COEP and are blocked otherwise
+    # (browser shows "לא ניתן היה להתחבר אל www.youtube.com").
+    path = (request.path or '').split('?')[0].rstrip('/') or '/'
+    if path != '/free':
+        resp.headers['Cross-Origin-Embedder-Policy'] = 'credentialless'
+        resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     return resp
 
 @app.errorhandler(413)
@@ -7079,7 +7099,7 @@ def index():
     # Permanent redirects for legacy query-param language URLs.
     q_lang = str(request.args.get('lang') or '').strip().lower()
     if q_lang == 'he':
-        return redirect('/he', code=301)
+        return redirect('/', code=301)
     if q_lang == 'en':
         return redirect('/en', code=301)
     return render_template('index.html', medical_entry=False)
@@ -7088,9 +7108,10 @@ def index():
 @app.route('/he')
 @app.route('/he/')
 def index_he():
-    if request.path.endswith('/') and request.path != '/':
-        return redirect(url_for('index_he'), code=301)
-    return render_template('index.html', medical_entry=False)
+    # Legacy Hebrew home; consolidate to / for SEO.
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
 
 
 @app.route('/en')
@@ -7126,35 +7147,26 @@ def robots_txt():
 
 @app.route('/sitemap.xml')
 def sitemap_xml():
-    """Public sitemap of canonical marketing URLs only."""
-    paths = (
-        '/',
-        '/he',
-        '/en',
-        '/medical',
-        '/about',
-        '/products',
-        '/blog',
-        '/accuracy',
-        '/contact',
-        '/legal',
+    """Serve a static XML sitemap (GSC rejects HTML error/redirect pages)."""
+    return send_from_directory(
+        app.static_folder,
+        'sitemap.xml',
+        mimetype='application/xml',
     )
-    lines = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-    ]
-    for path in paths:
-        loc = QS_CANONICAL_ORIGIN + ('/' if path == '/' else path)
-        lines.append('  <url>')
-        lines.append(f'    <loc>{loc}</loc>')
-        lines.append('  </url>')
-    lines.append('</urlset>')
-    xml = '\n'.join(lines) + '\n'
-    return Response(xml, mimetype='application/xml; charset=utf-8')
 
 
 @app.route('/about')
 def about(): return render_template('about.html')
+
+
+@app.route('/free')
+@app.route('/free/')
+def free_landing():
+    """Standalone conversion landing for organic/social traffic."""
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/free', code=301)
+    return render_template('free.html')
+
 
 @app.route('/products')
 def products():
@@ -10523,6 +10535,31 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                     early_emit_err,
                 )
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
+            if is_medical_job and user_id:
+                medical_bucket = str((pending_info or {}).get('bucket') or '').strip()
+                if not medical_bucket:
+                    medical_bucket = _resolve_storage_profile(
+                        user_id,
+                        input_s3_key=input_s3_key,
+                        is_medical=True,
+                    ).get('bucket')
+                medical_duration_sec = _resolve_claim_credit_duration_sec(
+                    job_id=job_id,
+                    bucket=medical_bucket,
+                    input_s3_key=input_s3_key,
+                    client_duration=(pending_info or {}).get('credit_file_duration_sec') or 0,
+                    segments=segments,
+                    pending_info=pending_info,
+                    result_s3_key=result_s3_key,
+                )
+                try:
+                    record_medical_usage(user_id, job_id, medical_duration_sec)
+                except Exception:
+                    logging.exception(
+                        "medical usage metering failed user=%s job=%s",
+                        str(user_id)[:8],
+                        job_id,
+                    )
             _schedule_runpod_min_workers(0)
             if schedule_post_summary_formatting:
                 _schedule_post_summary_formatting(
@@ -11130,6 +11167,21 @@ def _submit_simulation_job(job_id, s3_key, task='transcribe', language='he', dia
     )
 
 
+def _enforce_medical_request_entitlement(data, s3_key=None):
+    """Require auth + active medical access and replace client-supplied userId."""
+    payload = data if isinstance(data, dict) else {}
+    key = str(s3_key or payload.get('s3Key') or payload.get('s3_key') or '').strip()
+    is_medical = bool(payload.get('isMedical')) or _is_medical_s3_key(key)
+    if not is_medical:
+        return False, None, None
+    user_id, _account, error_response = require_medical_entitlement(request, payload)
+    if error_response:
+        return True, user_id, error_response
+    payload['userId'] = user_id
+    payload['user_id'] = user_id
+    return True, user_id, None
+
+
 @app.route('/api/sign-s3', methods=['POST'])
 def sign_s3():
     import boto3
@@ -11139,8 +11191,14 @@ def sign_s3():
 
     data = request.json or {}
     transcription_options = _site_transcription_options_from_payload(data)
-    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
-    is_medical = bool(data.get('isMedical'))
+    is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
+    if medical_error:
+        return medical_error
+    user_id = (
+        authenticated_medical_user
+        or (data.get('userId') or data.get('user_id') or '').strip()
+        or 'anonymous'
+    )
     if is_medical:
         transcription_options = _apply_medical_audio_transcription_options(transcription_options)
     user_prefix = f"users/{user_id}"
@@ -11289,8 +11347,14 @@ def sign_s3_multipart_init():
 
     data = request.json or {}
     transcription_options = _site_transcription_options_from_payload(data)
-    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
-    is_medical = bool(data.get('isMedical'))
+    is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
+    if medical_error:
+        return medical_error
+    user_id = (
+        authenticated_medical_user
+        or (data.get('userId') or data.get('user_id') or '').strip()
+        or 'anonymous'
+    )
     if is_medical:
         transcription_options = _apply_medical_audio_transcription_options(transcription_options)
     file_size = int(data.get('fileSize') or data.get('file_size') or 0)
@@ -11420,8 +11484,14 @@ def sign_s3_multipart_init():
 def sign_s3_multipart_part_urls():
     """Return presigned PUT URLs for one or more part numbers (same UploadId)."""
     data = request.json or {}
-    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
-    is_medical = bool(data.get('isMedical'))
+    is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
+    if medical_error:
+        return medical_error
+    user_id = (
+        authenticated_medical_user
+        or (data.get('userId') or data.get('user_id') or '').strip()
+        or 'anonymous'
+    )
     bucket_in = (data.get('bucket') or '').strip()
     s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
@@ -11499,8 +11569,14 @@ def sign_s3_multipart_part_urls():
 def sign_s3_multipart_complete():
     """Finalize multipart upload server-side (needs part ETags from client PUT responses)."""
     data = request.json or {}
-    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
-    is_medical = bool(data.get('isMedical'))
+    is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
+    if medical_error:
+        return medical_error
+    user_id = (
+        authenticated_medical_user
+        or (data.get('userId') or data.get('user_id') or '').strip()
+        or 'anonymous'
+    )
     bucket_in = (data.get('bucket') or '').strip()
     s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
@@ -11561,8 +11637,14 @@ def sign_s3_multipart_complete():
 def sign_s3_multipart_abort():
     """Abort an in-progress multipart upload (cleanup after failures)."""
     data = request.json or {}
-    user_id = (data.get('userId') or data.get('user_id') or '').strip() or 'anonymous'
-    is_medical = bool(data.get('isMedical'))
+    is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
+    if medical_error:
+        return medical_error
+    user_id = (
+        authenticated_medical_user
+        or (data.get('userId') or data.get('user_id') or '').strip()
+        or 'anonymous'
+    )
     bucket_in = (data.get('bucket') or '').strip()
     s3_key = (data.get('s3Key') or data.get('s3_key') or '').strip()
     upload_id = (data.get('uploadId') or data.get('upload_id') or '').strip()
@@ -11812,9 +11894,12 @@ def api_medical_complete_stream_transcription():
     """Finalize a medical job transcribed live via /ws/transcribe (no SageMaker)."""
     t0 = time.time()
     data = request.json or {}
+    _is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
+    if medical_error:
+        return medical_error
     job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
     s3_key = str(data.get('s3Key') or data.get('input_s3_key') or '').strip()
-    user_id = str(data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key) or '').strip()
+    user_id = str(authenticated_medical_user or '').strip()
     transcript = str(data.get('transcript') or '').strip()
     duration_sec = data.get('duration_sec') or data.get('durationSec') or 0
     bucket = str(data.get('bucket') or '').strip() or None
@@ -11859,6 +11944,7 @@ def api_medical_complete_stream_transcription():
         'is_medical': True,
         'user_id': user_id,
         'engine': 'aws_transcribe_stream',
+        'credit_file_duration_sec': duration_sec,
     }
 
     payload = {
@@ -11910,9 +11996,12 @@ def api_medical_complete_stream_transcription():
 def medical_session_warmup():
     """Wake SageMaker when a registered doctor opens medical mode (not tied to a patient upload)."""
     data = request.json if request.is_json else {}
-    user_id = (data.get('userId') or data.get('user_id') or '').strip()
-    if not user_id or user_id.lower() == 'anonymous':
-        return jsonify({"status": "error", "message": "userId required"}), 400
+    _is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(
+        {**data, 'isMedical': True}
+    )
+    if medical_error:
+        return medical_error
+    user_id = str(authenticated_medical_user or '').strip()
     try:
         uuid.UUID(str(user_id))
     except (ValueError, AttributeError):
@@ -12785,7 +12874,9 @@ def trigger_processing():
             data = {}
         transcription_options = _site_transcription_options_from_payload(data)
         s3_key = data.get('s3Key')
-        is_medical = bool(data.get('isMedical')) or _is_medical_s3_key(s3_key)
+        is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data, s3_key)
+        if medical_error:
+            return medical_error
         storage_profile = _resolve_storage_profile((data.get('userId') or data.get('user_id') or _extract_user_id_from_s3_key(s3_key)), input_s3_key=s3_key, is_medical=is_medical)
         target_bucket = str(data.get('bucket') or storage_profile.get('bucket') or '').strip() or None
         _require_medical_kms_or_raise(is_medical)
@@ -12830,6 +12921,14 @@ def trigger_processing():
         print(f"📩 Received Trigger Request: {data}")
 
         job_id = data.get('jobId')
+        if is_medical and job_id:
+            medical_duration_sec = _client_media_duration_from_request(data)
+            if medical_duration_sec > 0:
+                pinfo = dict(pending_job_info.get(job_id) or {})
+                pinfo['credit_file_duration_sec'] = medical_duration_sec
+                pinfo['user_id'] = authenticated_medical_user
+                pinfo['input_s3_key'] = s3_key
+                pending_job_info[job_id] = pinfo
         if SIMULATION_MODE and not _simulation_uses_sagemaker_async():
             print("🔮 SIMULATION: Skipping RunPod Trigger")
             if job_id:
@@ -14568,6 +14667,16 @@ try:
     register_cardcom_routes(app)
 except ImportError as _cardcom_import_err:
     logging.warning("cardcom_payments not loaded: %s", _cardcom_import_err)
+
+try:
+    from medical_saas import (
+        record_medical_usage,
+        register_medical_saas_routes,
+        require_medical_entitlement,
+    )
+    register_medical_saas_routes(app)
+except ImportError as _medical_saas_import_err:
+    logging.error("medical_saas not loaded: %s", _medical_saas_import_err)
 
 @socketio.on('connect')
 def handle_connect():

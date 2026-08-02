@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block page_title %}נסו תמלול AI בעברית בחינם | QuickScribe{% endblock %}
+{% block page_description %}העלו קובץ אודיו או וידאו וקבלו תמלול מדויק בעברית תוך דקות. בחינם, ללא צורך בכרטיס אשראי.{% endblock %}
+{% block structured_data %}{% include "snippets/free_video_json_ld.html" %}{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/free_landing.css') }}?v={{ static_asset_version }}">
+{% endblock %}
+{% block content %}
+<div class="app-mode">
+    <div class="main-app-container" id="main-app-container">
+        <section id="seo-home-content" class="seo-home-content free-landing" aria-label="QuickScribe free transcription">
+            <div class="seo-landing-hero seo-landing-band seo-landing-bg-white free-hero">
+                <div class="seo-landing-inner free-hero-inner">
+                    <div class="free-video-wrap">
+                        <iframe
+                            class="free-video-iframe"
+                            src="https://www.youtube-nocookie.com/embed/WDx5fqLYtZA"
+                            title="QuickScribe — תמלול בעברית בחינם"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            referrerpolicy="strict-origin-when-cross-origin"
+                            allowfullscreen
+                            loading="eager"
+                            credentialless></iframe>
+                    </div>
+                    <h1 class="free-hero-title">ראו את התמלול שלכם תוך דקות - בחינם</h1>
+                    <p class="free-hero-sub">העלו קובץ אודיו או וידאו וקבלו תמלול מדויק בעברית מיד. ההרשמה נדרשת רק אם תרצו לייצא את הקובץ.</p>
+                </div>
+            </div>
+
+            <section class="seo-landing-section seo-section seo-landing-bg-gray free-steps-section" aria-labelledby="free-steps-title">
+                <div class="seo-landing-inner">
+                    <h2 id="free-steps-title">איך זה עובד</h2>
+                    <ol class="free-steps">
+                        <li class="free-step">
+                            <span class="free-step-icon" aria-hidden="true">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            </span>
+                            <div>
+                                <strong>שלב 1</strong>
+                                <span>העלו קובץ אודיו/וידאו</span>
+                            </div>
+                        </li>
+                        <li class="free-step">
+                            <span class="free-step-icon" aria-hidden="true">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            </span>
+                            <div>
+                                <strong>שלב 2</strong>
+                                <span>קבלו תמלול מדויק תוך דקות</span>
+                            </div>
+                        </li>
+                        <li class="free-step">
+                            <span class="free-step-icon" aria-hidden="true">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                            </span>
+                            <div>
+                                <strong>שלב 3</strong>
+                                <span>הרשמה חינם לייצוא (SRT / DOCX / TXT)</span>
+                            </div>
+                        </li>
+                    </ol>
+                </div>
+            </section>
+
+            <section class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="free-features-title">
+                <div class="seo-landing-inner">
+                    <h2 id="free-features-title">למה QuickScribe</h2>
+                    <ul class="free-feature-list">
+                        <li>דיוק בסיסי 94%</li>
+                        <li>בידוד קולי מתקדם מרעשי רקע</li>
+                        <li>תמיכה בריבוי דוברים</li>
+                        <li>ייצוא SRT, DOCX, TXT</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section id="faq-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="faq-section-title">
+                <div class="seo-landing-inner">
+                    <h2 id="faq-section-title">שאלות נפוצות</h2>
+                    <details>
+                        <summary>איך עובד תמלול אוטומטי?</summary>
+                        <p>מעלים קובץ אודיו או וידאו, וארכיטקטורת AI מותאמת מבודדת את הדיבור ומייצרת תמלול וכתוביות לעריכה אוטומטית.</p>
+                    </details>
+                    <details>
+                        <summary>אפשר להוריד קובץ SRT?</summary>
+                        <p>כן. ניתן לייצא כתוביות SRT בתקן תעשייתי ולהשתמש בהן מיידית ביוטיוב, Premiere Pro וברשתות החברתיות. להורדה נדרשת הרשמה חינם.</p>
+                    </details>
+                    <details>
+                        <summary>איך אתם מגנים על הנתונים שלי?</summary>
+                        <p>האבטחה מובנית בליבה: כל הקבצים מועלים בפרוטוקולים מוצפנים לדליי אחסון מאובטחים ומעובדים אוטומטית ללא התערבות אנושית. עבור תהליכים רפואיים או רגישים מוצעות סביבות מבודדות התואמות HIPAA.</p>
+                    </details>
+                </div>
+            </section>
+        </section>
+
+        {% include "snippets/core_transcription_workspace.html" %}
+    </div>
+</div>
+{% endblock %}

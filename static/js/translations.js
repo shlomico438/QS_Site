@@ -694,16 +694,27 @@ window.setLocale = async function(code) {
     window.currentLocale = code;
     localStorage.setItem('locale', code);
     try {
-        if (typeof window !== 'undefined' && window.location && window.history && typeof window.history.replaceState === 'function') {
+        if (typeof window !== 'undefined' && window.location) {
             const u = new URL(window.location.href);
             const path = String(u.pathname || '/');
             const isHomePath = (path === '/' || path === '/he' || path === '/he/' || path === '/en' || path === '/en/');
             if (isHomePath) {
-                u.pathname = (code === 'en') ? '/en' : '/he';
+                u.pathname = (code === 'en') ? '/en' : '/';
+                // Never use ?lang= URLs; locale homes use / (Hebrew) and /en.
+                u.searchParams.delete('lang');
+                const next = u.pathname + u.search + u.hash;
+                const cur = window.location.pathname + window.location.search + window.location.hash;
+                // Full navigation so the server re-renders locale-specific SEO HTML.
+                if (next !== cur) {
+                    window.location.assign(next);
+                    return;
+                }
+            } else {
+                u.searchParams.delete('lang');
+                if (window.history && typeof window.history.replaceState === 'function') {
+                    window.history.replaceState({}, document.title, u.pathname + u.search + u.hash);
+                }
             }
-            // Never use ?lang= URLs; locale homes use /he and /en.
-            u.searchParams.delete('lang');
-            window.history.replaceState({}, document.title, u.pathname + u.search + u.hash);
         }
     } catch (_) {}
     document.documentElement.lang = code === 'he' ? 'he' : 'en';
