@@ -1,0 +1,4 @@
+# Optional deps for calibrate_probe.py only (not required for the web app).
+#   pip install -r requirements-calibrate.txt
+faster-whisper>=1.0.0
+numpy>=1.24.0

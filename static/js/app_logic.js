@@ -15647,7 +15647,15 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (_) {}
 
         // Keep processing spinner through summary GPT stage (skip if already generated for this job).
-        if (!summaryAlreadyDone) {
+        if (window.__qsGptDisabled === true) {
+            console.info('[qs-processing-ui] summary_gpt_bypassed (DISABLE_GPT)', {
+                segment_count: (window.currentSegments || []).length
+            });
+            if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
+                // No summary without GPT — show raw transcript/document view.
+                try { setFormatViewMode('doc'); } catch (_) {}
+            }
+        } else if (!summaryAlreadyDone) {
             if (mainBtn) mainBtn.disabled = true;
             console.info('[qs-processing-ui] summary_gpt_start', {
                 segment_count: (window.currentSegments || []).length
