@@ -1409,6 +1409,16 @@ def _force_enable_vad_enabled():
     return v in ('1', 'true', 'yes', 'on')
 
 
+def _gpt_disabled():
+    """Test switch: skip GPT segment correction + summary/format post-process.
+
+    Set DISABLE_GPT=1 (or GPT_DISABLED=1) to compare raw ASR (e.g. Silero VAD on/off)
+    without GPT cleanup/summary confounding the transcript.
+    """
+    v = (os.environ.get('DISABLE_GPT') or os.environ.get('GPT_DISABLED') or '').strip().lower()
+    return v in ('1', 'true', 'yes', 'on')
+
+
 def _site_transcription_options_from_payload(data=None):
     """Optional transcript tuning from Site (request + Site env).
 
@@ -3878,6 +3888,8 @@ def _merge_segment_grammar_corrections(original_segments, corrected_segments):
 def _gpu_callback_server_format_enabled(is_medical_job):
     """Run GPT summary on the server so output JSON + email links include formatted."""
     if is_medical_job:
+        return False
+    if _gpt_disabled():
         return False
     v = (os.environ.get('GPT_FORMAT_ON_GPU_CALLBACK') or 'true').strip().lower()
     return v in ('1', 'true', 'yes', 'on')
@@ -8928,6 +8940,18 @@ def translate_segments(segments, target_lang='he'):
     t0 = time.time()
     if not segments or not isinstance(segments, list):
         return segments, {"total": 0, "ok_count": 0, "empty_count": 0, "error_count": 0, "changed_count": 0, "first_error": ""}
+    if _gpt_disabled():
+        logging.info("GPT disabled (DISABLE_GPT); skipping translate_segments segments=%s", len(segments))
+        return segments, {
+            "total": len(segments),
+            "ok_count": 0,
+            "empty_count": 0,
+            "error_count": 0,
+            "changed_count": 0,
+            "first_error": "",
+            "skipped": "DISABLE_GPT",
+            "model": "",
+        }
     if not TRANSLATE_SCRIPT.exists():
         logging.warning("Translate script not found at %s", TRANSLATE_SCRIPT)
         return segments, {"total": len(segments), "ok_count": 0, "empty_count": 0, "error_count": len(segments), "changed_count": 0, "first_error": "translate.js not found"}
@@ -9466,6 +9490,28 @@ def api_format_transcript_summary():
                 timing_user_id = timing_user_id or last_user_id
         if timing_job_id:
             _update_job_timings(timing_job_id, user_id=timing_user_id, gpt_format_sec=elapsed)
+
+    if _gpt_disabled():
+        raw_disabled = str(data.get('text') or '').strip()
+        if not raw_disabled and isinstance(data.get('segments'), list):
+            raw_disabled = "\n".join(
+                str((s or {}).get('text') or '').strip()
+                for s in data.get('segments')
+                if str((s or {}).get('text') or '').strip()
+            ).strip()
+        if not raw_disabled:
+            return jsonify({"error": "No transcript text provided"}), 400
+        elapsed = time.time() - t0
+        _apply_format_timing(elapsed)
+        logging.info("GPT disabled (DISABLE_GPT); format_transcript_summary mode=%s returning raw text", mode or 'default')
+        return jsonify({
+            "clean_transcript": raw_disabled,
+            "overview": "",
+            "key_points": [],
+            "action_items": [],
+            "gpt_format_sec": round(float(elapsed), 3),
+            "format_guardrail": "DISABLE_GPT",
+        }), 200
 
     if mode == 'clean_chunk':
         part = str(data.get('text') or '').strip()
