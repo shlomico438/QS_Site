@@ -1414,8 +1414,9 @@ def _gpt_disabled():
 
     Set DISABLE_GPT=1 (or GPT_DISABLED=1) to compare raw ASR (e.g. Silero VAD on/off)
     without GPT cleanup/summary confounding the transcript.
+    Restart the Site process after changing the env — gpu_callback reads it live from os.environ.
     """
-    v = (os.environ.get('DISABLE_GPT') or os.environ.get('GPT_DISABLED') or '').strip().lower()
+    v = (os.environ.get('DISABLE_GPT') or os.environ.get('GPT_DISABLED') or '').strip().strip('"').strip("'").lower()
     return v in ('1', 'true', 'yes', 'on')
 
 
@@ -10347,9 +10348,15 @@ def _schedule_post_summary_formatting(
         return
     if not isinstance(segments, list) or not segments:
         return
+    if _gpt_disabled():
+        logging.info("GPT disabled (DISABLE_GPT); skip post-summary cleanup/correction job_id=%s", job_id)
+        return
 
     def _worker():
         try:
+            if _gpt_disabled():
+                logging.info("GPT disabled (DISABLE_GPT); abort post-summary worker job_id=%s", job_id)
+                return
             t0 = time.time()
             clean_result = None
             corrected = None
@@ -13517,7 +13524,12 @@ def retry_trigger():
 @app.route('/api/simulation_mode', methods=['GET'])
 def get_simulation_mode():
     """Return whether server is in simulation mode so frontend can show subtitle upload hint."""
-    return jsonify({"simulation": SIMULATION_MODE}), 200
+    return jsonify({
+        "simulation": SIMULATION_MODE,
+        "gpt_disabled": _gpt_disabled(),
+        "vad_force_disable": _force_disable_vad_enabled(),
+        "vad_force_enable": _force_enable_vad_enabled(),
+    }), 200
 
 
 # --- BURN SUBTITLES (SERVER-SIDE ON KOYEB) ---
@@ -14744,6 +14756,14 @@ def handle_disconnect():
 @app.route('/health')
 def health_check():
     return "OK", 200
+
+
+logging.info(
+    "GPT postprocess: %s (DISABLE_GPT / GPT_DISABLED) | VAD force_disable=%s force_enable=%s",
+    "DISABLED" if _gpt_disabled() else "enabled",
+    _force_disable_vad_enabled(),
+    _force_enable_vad_enabled(),
+)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))

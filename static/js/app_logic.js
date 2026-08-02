@@ -10225,6 +10225,7 @@ if (toggleAuthBtn) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     window.__qsSimulationMode = false;
+    window.__qsGptDisabled = false;
     // Guest→register return: leave init/SEO immediately so restore feels instant.
     try {
         if (localStorage.getItem('pendingOpenGenerateMenu') === '1') {
@@ -10236,7 +10237,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         fetch('/api/simulation_mode', { cache: 'no-store' })
             .then((r) => (r.ok ? r.json() : {}))
-            .then((j) => { window.__qsSimulationMode = j.simulation === true; })
+            .then((j) => {
+                window.__qsSimulationMode = j.simulation === true;
+                window.__qsGptDisabled = j.gpt_disabled === true;
+                if (window.__qsGptDisabled) {
+                    console.info('[GPT] DISABLE_GPT active on server — skipping client GPT postprocess');
+                }
+            })
             .catch(() => {});
     } catch (_) {}
     // 1. Navbar auth first so signed-in CTA → Personal Area before i18n pass
@@ -15673,6 +15680,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (hasStandardFormattedSummary() || window._qsPendingFormattedFromPersist) {
                 console.info('[GPT] format_transcript_summary skip (already have formatted from persist)');
                 return acceptServerFormatted();
+            }
+            if (window.__qsGptDisabled === true) {
+                console.info('[GPT] skipped — DISABLE_GPT is on (raw ASR only)');
+                return false;
             }
             const serverGptPending = !!(
                 rawResult
