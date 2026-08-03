@@ -18119,6 +18119,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const maxTriggerWaitPolls = 240; // ~16 min at 4s; avoids infinite loop on 503 / empty body
                         let ts = skipRunpodHandshake ? { status: 'triggered' } : { status: '' };
                         let httpBadStreak = 0;
+                        let handshakeRetrySent = false;
                         let vocalSepLogged = false;
                         let audioPrepLogged = false;
                         const vocalPrepLabel = isHebrewUi ? 'מפריד קול מהמוזיקה...' : 'Separating vocals from music...';
@@ -18161,6 +18162,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                 }
                                 await new Promise(r => setTimeout(r, pollInterval));
                                 if (jobAlreadyHandledBySocket()) break;
+                                // Early GPU can finish while trigger_status is still stuck on
+                                // "preprocessing" — also probe check_status so we don't wait forever.
+                                if (pollIx % 2 === 1 && typeof qsPollCheckStatusOnce === 'function') {
+                                    try {
+                                        const gotResult = await qsPollCheckStatusOnce(jobId);
+                                        if (gotResult || jobAlreadyHandledBySocket()) {
+                                            console.log('[trigger] results arrived during handshake wait; stopping poll loop');
+                                            ts = { status: 'triggered' };
+                                            break;
+                                        }
+                                    } catch (_) {}
+                                }
                                 try {
                                     const stRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jobId)}`);
                                     if (!stRes.ok) {
@@ -18176,6 +18189,31 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     }
                                     httpBadStreak = 0;
                                     ts = await stRes.json();
+                                    // RunPod accepted early /run but worker never posted gpu_started —
+                                    // after STALE_QUEUED_SEC Site returns stale_queued. Re-dispatch once
+                                    // during handshake (same as startJobStatusPolling); do not wait 16min.
+                                    const handshakeStale = ts.status === 'stale_queued'
+                                        || (ts.status === 'queued' && (ts.queued_since_sec || 0) > 120);
+                                    if (handshakeStale && !handshakeRetrySent && jobId) {
+                                        handshakeRetrySent = true;
+                                        window._triggerRetriedForJobId = jobId;
+                                        try {
+                                            const retryRes = await fetch('/api/retry_trigger', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ jobId }),
+                                            });
+                                            console.log(
+                                                '[trigger] handshake stale — retry_trigger',
+                                                jobId,
+                                                retryRes.status,
+                                            );
+                                        } catch (retryErr) {
+                                            console.warn('[trigger] handshake retry_trigger failed', retryErr);
+                                        }
+                                        // Keep polling for gpu_started after the new /run.
+                                        ts = { status: 'queued', queued_since_sec: 0 };
+                                    }
                                     if (isVocalPreprocessingStatus(ts)) {
                                         if (!vocalSepLogged) {
                                             vocalSepLogged = true;

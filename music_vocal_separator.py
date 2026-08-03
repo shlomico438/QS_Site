@@ -59,6 +59,62 @@ def _env_float(name, default):
         return default
 
 
+def _env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _vocals_gate_threshold_db():
+    """Noise-gate threshold in dB (negative). Env: TRANSCRIBE_MUSIC_VOCAL_GATE_THRESHOLD_DB."""
+    return _env_float("TRANSCRIBE_MUSIC_VOCAL_GATE_THRESHOLD_DB", -45.0)
+
+
+def _apply_vocals_noise_gate(ffmpeg_path, input_wav, output_wav, timeout_sec=600):
+    """Force Demucs artifact hiss to digital silence so WhisperX VAD skips intro noise.
+
+    ffmpeg agate defaults match:
+      agate=threshold=-45dB:ratio=9:attack=5:release=50
+    Threshold is configurable via TRANSCRIBE_MUSIC_VOCAL_GATE_THRESHOLD_DB.
+    Disable with TRANSCRIBE_MUSIC_VOCAL_GATE=0/false/off.
+    """
+    if not _env_bool("TRANSCRIBE_MUSIC_VOCAL_GATE", True):
+        return None
+    threshold_db = _vocals_gate_threshold_db()
+    ratio = max(1.0, _env_float("TRANSCRIBE_MUSIC_VOCAL_GATE_RATIO", 9.0))
+    attack_ms = max(0.1, _env_float("TRANSCRIBE_MUSIC_VOCAL_GATE_ATTACK_MS", 5.0))
+    release_ms = max(1.0, _env_float("TRANSCRIBE_MUSIC_VOCAL_GATE_RELEASE_MS", 50.0))
+    af = (
+        f"agate=threshold={threshold_db:g}dB:ratio={ratio:g}"
+        f":attack={attack_ms:g}:release={release_ms:g}"
+    )
+    cmd = [
+        ffmpeg_path or "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(input_wav),
+        "-af",
+        af,
+        "-c:a",
+        "pcm_s16le",
+        str(output_wav),
+    ]
+    conv = _run_command(cmd, timeout_sec)
+    if conv.returncode != 0 or not os.path.isfile(output_wav) or os.path.getsize(output_wav) < 1024:
+        raise RuntimeError(_format_subprocess_failure("vocals noise gate failed", cmd, conv))
+    return {
+        "threshold_db": threshold_db,
+        "ratio": ratio,
+        "attack_ms": attack_ms,
+        "release_ms": release_ms,
+        "filter": af,
+    }
+
+
 def _is_htdemucs_model(model_name):
     name = str(model_name or "").strip().lower()
     return name.startswith("htdemucs")
@@ -498,11 +554,25 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
         timeout_sec=min(600, timeout_sec),
     )
 
+    # Gate Demucs artifact noise to true silence before WhisperX VAD/timestamps.
+    gate_meta = None
+    gated_path = pathlib.Path(work_dir) / "vocals_16k_mono_gated.wav"
+    try:
+        gate_meta = _apply_vocals_noise_gate(
+            ff, wav_path, gated_path, timeout_sec=min(600, timeout_sec)
+        )
+        if gate_meta:
+            wav_path = gated_path
+    except Exception as gate_err:
+        # Fail open: keep ungated vocals rather than aborting separation.
+        print(f"[separate_vocals] noise gate skipped: {gate_err}", flush=True)
+        gate_meta = {"error": str(gate_err)[:300]}
+
     pcm_final, sr_final = _decode_mono_pcm_f32(ff, str(wav_path), timeout_sec=min(600, timeout_sec))
     vocal_onset_sec = _detect_vocal_onset_sec(pcm_final, sr_final) if pcm_final else (prepend_sec + onset_in_raw_sec)
     final_duration_sec = _probe_media_duration_sec(ff, str(wav_path), timeout_sec=60) or source_duration_sec
 
-    return {
+    out = {
         "vocals_path": str(wav_path),
         "separator": "demucs" if not command_template else "custom",
         "model": model,
@@ -512,3 +582,6 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
         "vocal_onset_sec": round(float(vocal_onset_sec or 0.0), 3),
         "prepended_silence_sec": round(float(prepend_sec or 0.0), 3),
     }
+    if gate_meta:
+        out["noise_gate"] = gate_meta
+    return out

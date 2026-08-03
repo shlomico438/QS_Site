@@ -7649,20 +7649,35 @@ def _resolve_trigger_status_for_poll(job_id):
 
     if mem == "failed":
         return "failed", at_mem
-    if mem == "preprocessing":
-        return "preprocessing", at_mem
-    if gpu_at and mem != "failed":
-        return "triggered", gpu_at
-    if mem == "triggered":
-        return "triggered", at_mem or gpu_at
-    if mem == "run_accepted":
-        return ("triggered", gpu_at) if gpu_at else ("queued", at_mem)
-    if mem == "queued":
-        return "queued", at_mem
 
+    # Early GPU workers call /api/gpu_started before CPU loudnorm finishes. Do not
+    # let a stale in-memory "preprocessing" block the browser handshake forever —
+    # prefer gpu_started / DB "triggered" / completed job row.
     row = _get_job_poll_row(job_id, db_timeout=_worker_handoff_db_timeout_sec())
     persisted_status, persisted_at = _get_trigger_state(job_id, row=row)
     timings = _get_trigger_timings(job_id, row=row)
+    gpu_at = gpu_at or timings.get("gpu_started_at")
+
+    if persisted_status == "failed":
+        return "failed", persisted_at
+    if gpu_at and mem != "failed" and persisted_status != "failed":
+        return "triggered", gpu_at
+    if mem == "triggered" or persisted_status == "triggered":
+        return "triggered", at_mem or persisted_at or gpu_at
+    # run_accepted means Site got RunPod /run 200, but browser handshake waits for
+    # gpu_started. Normalize mem+DB to "queued" so multi-instance polls share one
+    # status and STALE_QUEUED_SEC / retry can fire (raw "run_accepted" never went stale).
+    if mem == "run_accepted" or persisted_status == "run_accepted":
+        return ("triggered", gpu_at) if gpu_at else ("queued", at_mem or persisted_at)
+    if mem == "queued" or persisted_status == "queued":
+        return "queued", at_mem or persisted_at
+    if mem == "preprocessing" or persisted_status == "preprocessing":
+        # Preprocess finished (worker_ready) but memory not cleared yet → treat as queued/triggered.
+        handoff = _get_worker_handoff(job_id)
+        if handoff.get("worker_ready") and not handoff.get("worker_pending_reason"):
+            return ("triggered", gpu_at) if gpu_at else ("queued", at_mem or persisted_at)
+        return "preprocessing", at_mem or persisted_at
+
     upload_done = (job_id in upload_complete) or bool(timings.get("upload_complete"))
     pinfo = pending_job_info.get(job_id) or {}
     if upload_done and pinfo.get("sagemaker_submitted"):
@@ -12736,7 +12751,20 @@ def _finish_audio_preprocess_and_trigger_gpu(job_id, trigger_payload, endpoint_i
     )
     _publish_audio_preprocess_worker_handoff(job_id, trigger_payload)
     if early_gpu_dispatched and state in ('queued', 'run_accepted', 'triggered', 'preprocessing'):
-        logging.info("Audio preprocessing handoff released early GPU job_id=%s", job_id)
+        # Clear stale "preprocessing" so /api/trigger_status can complete the browser handshake.
+        # Early GPU already called gpu_started (or will); mark triggered when known, else queued.
+        if gpu_started_at.get(job_id) or state == 'triggered':
+            pending_trigger[job_id] = 'triggered'
+            _set_trigger_state(job_id, 'triggered')
+        else:
+            pending_trigger[job_id] = 'queued'
+            pending_trigger_at[job_id] = time.time()
+            _set_trigger_state(job_id, 'queued', queued_at=pending_trigger_at[job_id])
+        logging.info(
+            "Audio preprocessing handoff released early GPU job_id=%s trigger=%s",
+            job_id,
+            pending_trigger.get(job_id),
+        )
         return
     pending_trigger[job_id] = 'queued'
     pending_trigger_at[job_id] = time.time()
@@ -13662,6 +13690,43 @@ def retry_trigger():
         if SIMULATION_MODE:
             return jsonify({"status": "retry_started", "job_id": job_id}), 202
         info = pending_job_info.get(job_id)
+        # Multi-instance: handshake stale retry may hit a worker without in-memory pending_job_info.
+        if not info:
+            row = _get_job_row_by_runpod_job_id(
+                job_id,
+                select="user_id,input_s3_key,status,metadata",
+            )
+            if row:
+                md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+                qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+                handoff = _get_worker_handoff(job_id) if job_id else {}
+                s3_from_db = (
+                    str(handoff.get("transcription_s3_key") or "").strip()
+                    or str(qt.get("transcription_s3_key") or "").strip()
+                    or str(row.get("input_s3_key") or "").strip()
+                    or str(qt.get("input_s3_key") or "").strip()
+                )
+                if s3_from_db:
+                    info = {
+                        "input_s3_key": str(row.get("input_s3_key") or s3_from_db).strip(),
+                        "transcription_s3_key": s3_from_db,
+                        "bucket": (
+                            str(qt.get("bucket") or handoff.get("bucket") or "").strip()
+                            or os.environ.get("S3_BUCKET_NAME")
+                            or os.environ.get("BUCKET_NAME")
+                        ),
+                        "is_medical": bool(qt.get("is_medical") or handoff.get("is_medical")),
+                        "user_id": str(row.get("user_id") or "").strip() or None,
+                        "task": str(qt.get("task") or handoff.get("task") or "transcribe").strip() or "transcribe",
+                        "language": str(qt.get("language") or handoff.get("language") or "he").strip() or "he",
+                        "transcription_options": (
+                            handoff.get("transcription_options")
+                            or qt.get("transcription_options")
+                            or {}
+                        ),
+                    }
+                    pending_job_info[job_id] = info
+                    logging.info("retry_trigger: rebuilt pending_job_info from DB for job_id=%s", job_id)
         if not info:
             return jsonify({"status": "error", "message": "Job not found or expired"}), 404
         s3_key = info.get("transcription_s3_key") or info.get("input_s3_key")
