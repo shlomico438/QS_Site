@@ -7448,7 +7448,9 @@ import time  # Ensure time is imported at the top of your file
 # - "failed": RunPod /run failed or warmup/trigger crashed
 pending_trigger = {}  # job_id -> "queued" | "run_accepted" | "triggered" | "failed" (local cache; Supabase jobs row is source of truth)
 pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detection)
-STALE_QUEUED_SEC = 180  # if still "queued" after this, treat as stale and allow retry
+# Cold GPU workers often take 2–4+ minutes before /api/gpu_started. Retrying earlier
+# double-submits /run for the same job_id (two RunPod workers, two Demucs passes).
+STALE_QUEUED_SEC = int(os.environ.get("STALE_QUEUED_SEC", "360") or 360)
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
 # Billing context kept until client finishes GPT + summary (see /api/charge_job_credits).
@@ -12563,6 +12565,63 @@ def _start_trigger_if_configured(
     logging.info("Trigger started at sign-s3 (before upload) for %s", job_id)
 
 
+def _runpod_gpu_dispatch_inflight(job_id, max_age_sec=None):
+    """True if a GPU /run for this job_id was already accepted and is still warming/running.
+
+    Prevents duplicate RunPod workers (same job_id, two requestIds) from:
+    - multi-instance trigger_processing missing in-memory early_run, or
+    - handshake /api/retry_trigger during a long cold start before gpu_started.
+    """
+    jid = str(job_id or "").strip()
+    if not jid:
+        return False
+    try:
+        max_age = int(max_age_sec if max_age_sec is not None else (os.environ.get("RUNPOD_RETRY_INFLIGHT_SEC") or 600))
+    except (TypeError, ValueError):
+        max_age = 600
+    max_age = max(60, max_age)
+    now = time.time()
+
+    if gpu_started_at.get(jid):
+        return True
+    mem = str(pending_trigger.get(jid) or "").strip().lower()
+    if mem in ("run_accepted", "triggered", "queued", "preprocessing"):
+        at = pending_trigger_at.get(jid) or 0
+        try:
+            if at and (now - float(at)) < max_age:
+                return True
+        except (TypeError, ValueError):
+            return True
+
+    handoff = _get_worker_handoff(jid)
+    if handoff.get("early_gpu_dispatched"):
+        timings = _get_trigger_timings(jid)
+        if timings.get("gpu_started_at"):
+            return True
+        for key in ("queued_at", "trigger_completed_at", "at"):
+            raw = timings.get(key)
+            try:
+                if raw and (now - float(raw)) < max_age:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        # early flag set but no timing yet — still treat as in-flight for a short window
+        return True
+
+    st, at_ts = _get_trigger_state(jid)
+    st = str(st or "").strip().lower()
+    if st in ("run_accepted", "triggered", "queued", "preprocessing"):
+        timings = _get_trigger_timings(jid)
+        if timings.get("gpu_started_at"):
+            return True
+        try:
+            if at_ts and (now - float(at_ts)) < max_age:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def _trigger_gpu(job_id, payload, endpoint_id, api_key):
     """Background: POST /run to wake RunPod from cold and start the job. No polling.
     The trigger itself starts the container; worker downloads from S3 and transcribes."""
@@ -12583,8 +12642,19 @@ def _trigger_gpu(job_id, payload, endpoint_id, api_key):
         _update_job_timings(job_id, user_id=user_id, trigger_sec=trigger_sec, trigger_completed_at=trigger_completed_at)
         if response.status_code in (200, 201, 202):
             pending_trigger[job_id] = "run_accepted"
-            _set_trigger_state(job_id, "run_accepted")
+            pending_trigger_at[job_id] = trigger_completed_at
+            runpod_id = None
+            try:
+                runpod_id = (response.json() or {}).get("id") if response.content else None
+            except Exception:
+                runpod_id = None
+            extra = {"queued_at": trigger_completed_at}
+            if runpod_id:
+                extra["runpod_run_id"] = str(runpod_id)
+            _set_trigger_state(job_id, "run_accepted", **extra)
             print(f"🚀 RunPod accepted job {job_id} (container starting)")
+            if runpod_id:
+                logging.info("RunPod /run id=%s job_id=%s", runpod_id, job_id)
         else:
             pending_trigger[job_id] = "failed"
             _set_trigger_state(job_id, "failed")
@@ -13433,7 +13503,16 @@ def trigger_processing():
             "queued",
             "run_accepted",
             "triggered",
-        )
+            "preprocessing",
+        ) or bool(_get_worker_handoff(job_id).get("early_gpu_dispatched"))
+        # Multi-instance: another worker may have already POSTed /run even if this
+        # instance missed pending_trigger — never submit a second GPU job.
+        if (not early_run) and _runpod_gpu_dispatch_inflight(job_id):
+            logging.warning(
+                "trigger_processing: treating job_id=%s as early_run (GPU /run already in flight)",
+                job_id,
+            )
+            early_run = True
         if early_run:
             pinfo = dict(pending_job_info.get(job_id) or {})
             pinfo.update({
@@ -13770,10 +13849,21 @@ def retry_trigger():
         api_key = os.environ.get('RUNPOD_API_KEY')
         if not endpoint_id or not api_key:
             return jsonify({"status": "error", "message": "RunPod not configured"}), 503
+        if _runpod_gpu_dispatch_inflight(job_id):
+            logging.info(
+                "retry_trigger skipped job_id=%s — GPU /run already in flight (avoid duplicate workers)",
+                job_id,
+            )
+            return jsonify({
+                "status": "already_in_flight",
+                "job_id": job_id,
+                "message": "RunPod job already accepted; not submitting a second /run",
+            }), 202
         public_base = _public_base_url(request)
         callback_url = f"{public_base}/api/gpu_callback"
         start_callback_url = f"{public_base}/api/gpu_started"
         upload_status_url = f"{public_base}/api/upload_status?job_id={job_id}"
+        job_options_url = f"{public_base}/api/job_transcription_options?job_id={job_id}" if public_base else None
         payload = {
             "input": {
                 "s3Key": s3_key,
@@ -13786,6 +13876,7 @@ def retry_trigger():
                 "callback_url": callback_url,
                 "start_callback_url": start_callback_url,
                 "upload_status_url": upload_status_url,
+                "job_options_url": job_options_url,
             }
         }
         upload_complete[job_id] = True  # retry: upload was already done

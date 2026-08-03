@@ -2747,7 +2747,8 @@ window.startJobStatusPolling = function(jobId) {
                         });
                         return;
                     }
-                    const stale = ts.status === 'stale_queued' || (ts.status === 'queued' && (ts.queued_since_sec || 0) > 120);
+                    // Match handshake: only Site stale_queued (not a short local queued_since).
+                    const stale = ts.status === 'stale_queued';
                     if (stale && (!window._triggerRetriedForJobId || window._triggerRetriedForJobId !== jobId)) {
                         window._triggerRetriedForJobId = jobId;
                         const retryRes = await fetch('/api/retry_trigger', {
@@ -18189,11 +18190,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     }
                                     httpBadStreak = 0;
                                     ts = await stRes.json();
-                                    // RunPod accepted early /run but worker never posted gpu_started —
-                                    // after STALE_QUEUED_SEC Site returns stale_queued. Re-dispatch once
-                                    // during handshake (same as startJobStatusPolling); do not wait 16min.
-                                    const handshakeStale = ts.status === 'stale_queued'
-                                        || (ts.status === 'queued' && (ts.queued_since_sec || 0) > 120);
+                                    // Only retry when Site marks stale_queued (default 360s). Do NOT
+                                    // retry on a short local queued_since — cold starts often take
+                                    // 2–4 min and a premature retry_trigger spins a second GPU worker.
+                                    const handshakeStale = ts.status === 'stale_queued';
                                     if (handshakeStale && !handshakeRetrySent && jobId) {
                                         handshakeRetrySent = true;
                                         window._triggerRetriedForJobId = jobId;

@@ -115,6 +115,39 @@ def _apply_vocals_noise_gate(ffmpeg_path, input_wav, output_wav, timeout_sec=600
     }
 
 
+def _apply_vocals_loudnorm(ffmpeg_path, input_wav, output_wav, timeout_sec=600):
+    """Single-pass ffmpeg loudnorm on Demucs vocals (mono 16 kHz WAV).
+
+    Matches RunPod CPU preprocess_audio style: one `-af loudnorm` pass.
+    Disable with TRANSCRIBE_MUSIC_VOCAL_LOUDNORM=0/false/off.
+    """
+    if not _env_bool("TRANSCRIBE_MUSIC_VOCAL_LOUDNORM", True):
+        return None
+    cmd = [
+        ffmpeg_path or "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(input_wav),
+        "-vn",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-af",
+        "loudnorm",
+        "-c:a",
+        "pcm_s16le",
+        str(output_wav),
+    ]
+    conv = _run_command(cmd, timeout_sec)
+    if conv.returncode != 0 or not os.path.isfile(output_wav) or os.path.getsize(output_wav) < 1024:
+        raise RuntimeError(_format_subprocess_failure("vocals loudnorm failed", cmd, conv))
+    return {"filter": "loudnorm", "sample_rate": 16000, "channels": 1}
+
+
 def _is_htdemucs_model(model_name):
     name = str(model_name or "").strip().lower()
     return name.startswith("htdemucs")
@@ -568,6 +601,20 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
         print(f"[separate_vocals] noise gate skipped: {gate_err}", flush=True)
         gate_meta = {"error": str(gate_err)[:300]}
 
+    # Single-pass loudnorm after Demucs (+ optional gate), before WhisperX.
+    loudnorm_meta = None
+    loudnorm_path = pathlib.Path(work_dir) / "vocals_16k_mono_loudnorm.wav"
+    try:
+        loudnorm_meta = _apply_vocals_loudnorm(
+            ff, wav_path, loudnorm_path, timeout_sec=min(600, timeout_sec)
+        )
+        if loudnorm_meta:
+            wav_path = loudnorm_path
+            print("[separate_vocals] loudnorm applied (single-pass)", flush=True)
+    except Exception as ln_err:
+        print(f"[separate_vocals] loudnorm skipped: {ln_err}", flush=True)
+        loudnorm_meta = {"error": str(ln_err)[:300]}
+
     pcm_final, sr_final = _decode_mono_pcm_f32(ff, str(wav_path), timeout_sec=min(600, timeout_sec))
     vocal_onset_sec = _detect_vocal_onset_sec(pcm_final, sr_final) if pcm_final else (prepend_sec + onset_in_raw_sec)
     final_duration_sec = _probe_media_duration_sec(ff, str(wav_path), timeout_sec=60) or source_duration_sec
@@ -584,4 +631,6 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
     }
     if gate_meta:
         out["noise_gate"] = gate_meta
+    if loudnorm_meta:
+        out["loudnorm"] = loudnorm_meta
     return out
