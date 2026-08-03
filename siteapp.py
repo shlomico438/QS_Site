@@ -6053,7 +6053,16 @@ def _get_job_rows_by_runpod_job_id(runpod_job_id, select="id,user_id,input_s3_ke
         return []
 
 
-def _jobs_upsert_claimed_anonymous(user_id, runpod_job_id, old_input_key, new_input_key, new_result_key=None, user_name=None, user_email=None):
+def _jobs_upsert_claimed_anonymous(
+    user_id,
+    runpod_job_id,
+    old_input_key,
+    new_input_key,
+    new_result_key=None,
+    user_name=None,
+    user_email=None,
+    display_name=None,
+):
     """Attach or update the jobs row for a claimed anonymous upload.
 
     Prefer patching an existing row (including duplicate runpod_job_id rows for this user)
@@ -6088,6 +6097,11 @@ def _jobs_upsert_claimed_anonymous(user_id, runpod_job_id, old_input_key, new_in
     md['anonymous_input_s3_key'] = old_input_key
     if new_result_key:
         md['result_s3_key'] = new_result_key
+    # Preserve human-readable name (Hebrew etc.) — S3 keys are ASCII-sanitized.
+    claim_display = str(display_name or md.get('display_name') or '').strip()
+    if claim_display:
+        md['display_name'] = claim_display
+        md.setdefault('original_filename', claim_display)
 
     supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
     service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
@@ -6270,6 +6284,7 @@ def _finalize_claimed_anonymous_job(
     wallet,
     moved=None,
     already_claimed=False,
+    display_name=None,
 ):
     """Shared success path after objects are under users/{id}/ (or already were)."""
     new_result = None
@@ -6299,6 +6314,7 @@ def _finalize_claimed_anonymous_job(
         new_result_key=new_result,
         user_name=user_name,
         user_email=user_email,
+        display_name=display_name,
     )
 
     pinfo = dict(pending_job_info.get(job_id) or {})
@@ -6404,6 +6420,9 @@ def api_claim_anonymous_job():
         job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
         input_s3_key = str(data.get('input_s3_key') or data.get('s3Key') or '').strip()
         segments = data.get('segments') if isinstance(data.get('segments'), list) else []
+        display_name = str(
+            data.get('displayName') or data.get('display_name') or data.get('originalFilename') or ''
+        ).strip() or None
         try:
             client_duration = float(data.get('mediaDurationSec') or data.get('media_duration_sec') or 0)
         except (TypeError, ValueError):
@@ -6463,6 +6482,7 @@ def api_claim_anonymous_job():
                         wallet=wallet,
                         moved=[],
                         already_claimed=True,
+                        display_name=display_name,
                     )
 
             src_exists = _s3_object_exists(bucket, input_s3_key)
@@ -6482,6 +6502,7 @@ def api_claim_anonymous_job():
                     wallet=wallet,
                     moved=[],
                     already_claimed=True,
+                    display_name=display_name,
                 )
             if not src_exists and not dst_exists:
                 # Stale DB row (old guest upload already deleted from R2). Soft-skip and
@@ -6557,6 +6578,7 @@ def api_claim_anonymous_job():
                 wallet=wallet,
                 moved=moved,
                 already_claimed=False,
+                display_name=display_name,
             )
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
@@ -11491,6 +11513,8 @@ def sign_s3():
 
         base_name, extension = os.path.splitext(filename)
         job_id = _build_transcription_job_id(filename)
+        # S3 object names stay ASCII-safe (SigV4 / SageMaker). UI uses displayName below.
+        display_name = str(base_name or '').strip() or None
         if base_name != _ascii_safe_job_suffix(base_name):
             logging.info(
                 "sign_s3: sanitized job_id for non-ASCII filename (original_base=%r -> job_id=%s)",
@@ -11546,6 +11570,8 @@ def sign_s3():
                 'jobId': job_id,
                 'bucket': bucket,
                 'isMedical': is_medical,
+                'displayName': display_name,
+                'originalFilename': filename,
                 'signedHeaders': (
                     {
                         'x-amz-server-side-encryption': 'aws:kms',

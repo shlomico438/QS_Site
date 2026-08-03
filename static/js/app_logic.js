@@ -3510,6 +3510,9 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                     input_s3_key: s3Key,
                     segments: window.currentSegments || [],
                     ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
+                    ...(qsRecordingDisplayNameFromUpload()
+                        ? { displayName: qsRecordingDisplayNameFromUpload() }
+                        : {}),
                 }),
             });
             const data = await res.json().catch(() => ({}));
@@ -6891,13 +6894,21 @@ async function runOpenQueryIfPresent() {
 // Job lifecycle: only when user is signed in. pending → uploaded → processed → exported | completed | failed
 // jobs.id is UUID (auto-generated). We store the returned id as lastJobDbId for updates.
 
-async function createJobOnUpload({ jobId, s3Key }) {
+function qsRecordingDisplayNameFromUpload() {
+    // Keep the human-readable name (incl. Hebrew) even when S3 keys are ASCII-sanitized.
+    const fromWindow = String(window.originalFileName || '').trim();
+    if (fromWindow) return fromWindow.replace(/\.[^.]+$/, '') || fromWindow;
+    return '';
+}
+
+async function createJobOnUpload({ jobId, s3Key, displayName } = {}) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
     const info = getAuthUserDisplayInfo(user);
     const user_name = info.displayName === 'Account' ? null : info.displayName;
     const user_email = info.email || null;
+    const niceName = String(displayName || qsRecordingDisplayNameFromUpload() || '').trim();
 
     const row = {
         user_id: user.id,
@@ -6907,7 +6918,10 @@ async function createJobOnUpload({ jobId, s3Key }) {
         runpod_job_id: jobId,
         user_name,
         user_email,
-        metadata: { job_id: jobId }
+        metadata: {
+            job_id: jobId,
+            ...(niceName ? { display_name: niceName, original_filename: niceName } : {}),
+        }
     };
     const { data, error } = await supabase.from('jobs').insert([row]).select('id').single();
     if (error) {
@@ -7037,6 +7051,7 @@ async function ensureJobRecordOnExport(opts) {
     const info = getAuthUserDisplayInfo(user);
     const user_name = info.displayName === 'Account' ? null : info.displayName;
     const user_email = info.email || null;
+    const niceName = qsRecordingDisplayNameFromUpload();
     const row = {
         user_id: user.id,
         type: 'transcription',
@@ -7045,7 +7060,10 @@ async function ensureJobRecordOnExport(opts) {
         runpod_job_id: jobId || null,
         user_name,
         user_email,
-        metadata: { job_id: jobId || null }
+        metadata: {
+            job_id: jobId || null,
+            ...(niceName ? { display_name: niceName, original_filename: niceName } : {}),
+        }
     };
     let { data, error } = await supabase.from('jobs').insert([row]).select('id').single();
     if (error && error.code === '22P02') {
