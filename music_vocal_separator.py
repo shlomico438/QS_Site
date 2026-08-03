@@ -115,14 +115,23 @@ def _apply_vocals_noise_gate(ffmpeg_path, input_wav, output_wav, timeout_sec=600
     }
 
 
-def _apply_vocals_loudnorm(ffmpeg_path, input_wav, output_wav, timeout_sec=600):
-    """Single-pass ffmpeg loudnorm on Demucs vocals (mono 16 kHz WAV).
+def _vocals_loudnorm_filter() -> str:
+    """Explicit loudnorm targets (bare `loudnorm` falls back to ffmpeg I=-24:TP=-2:LRA=7)."""
+    i_lufs = _env_float("TRANSCRIBE_MUSIC_VOCAL_LOUDNORM_I", -16.0)
+    tp = _env_float("TRANSCRIBE_MUSIC_VOCAL_LOUDNORM_TP", -1.5)
+    lra = _env_float("TRANSCRIBE_MUSIC_VOCAL_LOUDNORM_LRA", 11.0)
+    return f"loudnorm=I={i_lufs:g}:TP={tp:g}:LRA={lra:g}"
 
-    Matches RunPod CPU preprocess_audio style: one `-af loudnorm` pass.
+
+def _apply_pre_demucs_loudnorm(ffmpeg_path, input_wav, output_wav, timeout_sec=600):
+    """Single-pass loudnorm on the mix *before* Demucs (keeps input rate/channels).
+
+    Only used on the Demucs path. Filter defaults: loudnorm=I=-16:TP=-1.5:LRA=11.
     Disable with TRANSCRIBE_MUSIC_VOCAL_LOUDNORM=0/false/off.
     """
     if not _env_bool("TRANSCRIBE_MUSIC_VOCAL_LOUDNORM", True):
         return None
+    af = _vocals_loudnorm_filter()
     cmd = [
         ffmpeg_path or "ffmpeg",
         "-hide_banner",
@@ -132,20 +141,17 @@ def _apply_vocals_loudnorm(ffmpeg_path, input_wav, output_wav, timeout_sec=600):
         "-i",
         str(input_wav),
         "-vn",
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
         "-af",
-        "loudnorm",
+        af,
         "-c:a",
         "pcm_s16le",
         str(output_wav),
     ]
+    print(f"[separate_vocals] pre-demucs loudnorm cmd: {' '.join(cmd)}", flush=True)
     conv = _run_command(cmd, timeout_sec)
     if conv.returncode != 0 or not os.path.isfile(output_wav) or os.path.getsize(output_wav) < 1024:
-        raise RuntimeError(_format_subprocess_failure("vocals loudnorm failed", cmd, conv))
-    return {"filter": "loudnorm", "sample_rate": 16000, "channels": 1}
+        raise RuntimeError(_format_subprocess_failure("pre-demucs loudnorm failed", cmd, conv))
+    return {"filter": af, "stage": "pre_demucs"}
 
 
 def _is_htdemucs_model(model_name):
@@ -533,6 +539,20 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
 
     source_duration_sec = _probe_media_duration_sec(ff, str(src), timeout_sec=min(120, timeout_sec)) or 0.0
     demucs_input = _normalize_input_for_demucs(ff, str(src), work_dir, timeout_sec=min(600, timeout_sec))
+    # Loudnorm the mix before Demucs (Demucs path only). Fail-open to normalized input.
+    loudnorm_meta = None
+    loudnorm_path = pathlib.Path(work_dir) / "demucs_input_loudnorm.wav"
+    try:
+        loudnorm_meta = _apply_pre_demucs_loudnorm(
+            ff, demucs_input, loudnorm_path, timeout_sec=min(600, timeout_sec)
+        )
+        if loudnorm_meta:
+            demucs_input = str(loudnorm_path)
+            print("[separate_vocals] pre-demucs loudnorm applied", flush=True)
+    except Exception as ln_err:
+        print(f"[separate_vocals] pre-demucs loudnorm skipped: {ln_err}", flush=True)
+        loudnorm_meta = {"error": str(ln_err)[:300], "stage": "pre_demucs"}
+
     demucs_env = _subprocess_env_with_ffmpeg(ff, work_dir)
     chunk_sec = _env_float("TRANSCRIBE_MUSIC_VOCAL_SEPARATOR_CHUNK_SEC", 120.0)
     chunks = _split_wav_into_chunks(ff, demucs_input, work_dir, chunk_sec, min(600, timeout_sec), demucs_env)
@@ -600,20 +620,6 @@ def separate_vocals(input_path, work_dir, ffmpeg_path="ffmpeg", timeout_sec=1800
         # Fail open: keep ungated vocals rather than aborting separation.
         print(f"[separate_vocals] noise gate skipped: {gate_err}", flush=True)
         gate_meta = {"error": str(gate_err)[:300]}
-
-    # Single-pass loudnorm after Demucs (+ optional gate), before WhisperX.
-    loudnorm_meta = None
-    loudnorm_path = pathlib.Path(work_dir) / "vocals_16k_mono_loudnorm.wav"
-    try:
-        loudnorm_meta = _apply_vocals_loudnorm(
-            ff, wav_path, loudnorm_path, timeout_sec=min(600, timeout_sec)
-        )
-        if loudnorm_meta:
-            wav_path = loudnorm_path
-            print("[separate_vocals] loudnorm applied (single-pass)", flush=True)
-    except Exception as ln_err:
-        print(f"[separate_vocals] loudnorm skipped: {ln_err}", flush=True)
-        loudnorm_meta = {"error": str(ln_err)[:300]}
 
     pcm_final, sr_final = _decode_mono_pcm_f32(ff, str(wav_path), timeout_sec=min(600, timeout_sec))
     vocal_onset_sec = _detect_vocal_onset_sec(pcm_final, sr_final) if pcm_final else (prepend_sec + onset_in_raw_sec)
