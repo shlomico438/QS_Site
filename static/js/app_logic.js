@@ -184,7 +184,26 @@ const QS_MEDICAL_MODE_KEY = 'qs_medical_mode';
 const QS_MEDICAL_LANDING_KEY = 'qs_medical_landing';
 const QS_MEDICAL_PENDING_ONBOARDING_KEY = 'qs_medical_pending_onboarding';
 const QS_MEDICAL_REASSERT_AFTER_LOGOUT = 'qs_reassert_medical_after_logout';
+/** Cached: last /api/medical/account said allowed — skip pricing flash for registered doctors. */
+const QS_MEDICAL_ACCOUNT_ALLOWED_KEY = 'qs_medical_account_allowed';
 const QS_IOS_SAFARI_HINT_TS_KEY = 'qs_ios_safari_hint_ts';
+
+function _qsHasSupabaseAuthStorageHint() {
+    try {
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = String(localStorage.key(i) || '');
+            if (k.startsWith('sb-') && k.includes('auth')) return true;
+        }
+    } catch (_) {}
+    return false;
+}
+
+/** True when a registered session exists — show recording now; account API may still gate later. */
+function qsMedicalOptimisticRecordingAccess() {
+    if (window.__QS_UX_USER_SIGNED_IN === true) return true;
+    return _qsHasSupabaseAuthStorageHint();
+}
+window.qsMedicalOptimisticRecordingAccess = qsMedicalOptimisticRecordingAccess;
 
 function _qsReadMedicalLanding() {
     try {
@@ -285,35 +304,90 @@ function _qsWantsPostLogoutMedical() {
     } catch (_) {}
     return _qsReadMedicalLanding();
 }
+function _qsClearStickyMedicalPreference() {
+    try { sessionStorage.removeItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT); } catch (_) {}
+    try { if (typeof _qsClearMedicalLanding === 'function') _qsClearMedicalLanding(); } catch (_) {}
+    try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '0'); } catch (_) {}
+    try { localStorage.removeItem('qs_medical_training_mode'); } catch (_) {}
+    try { localStorage.removeItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY); } catch (_) {}
+    try { window.__QS_MEDICAL_URL_ENTRY = false; } catch (_) {}
+    try { window.__QS_PENDING_MEDICAL_HOME_REDIRECT = false; } catch (_) {}
+    window.isMedicalMode = false;
+}
+
+/** After sign-out always return to Core (regular). Sticky medical must not trap guests. */
 async function _qsSignOutThenMedicalOrReload() {
-    const wantMedical = typeof _qsWantsPostLogoutMedical === 'function' && _qsWantsPostLogoutMedical();
-    try {
-        if (wantMedical) {
-            if (typeof _qsSetMedicalReassertOnNextPageLoad === 'function') {
-                _qsSetMedicalReassertOnNextPageLoad();
-            }
-            try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
-            if (typeof _qsSetMedicalLanding === 'function') {
-                _qsSetMedicalLanding();
-            }
-        }
-    } catch (_) {}
+    try { _qsClearStickyMedicalPreference(); } catch (_) {}
     await supabase.auth.signOut();
-    if (wantMedical) {
-        try {
-            window.location.assign('/medical');
-        } catch (_) {
-            try { window.location.href = '/medical'; } catch (__) { window.location.reload(); }
+    const locale = String(
+        window.currentLocale ||
+        (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
+        'he'
+    ).toLowerCase().split('-')[0];
+    const home = locale === 'en' ? '/en' : '/';
+    try {
+        window.location.assign(home);
+    } catch (_) {
+        try { window.location.href = home; } catch (__) { window.location.reload(); }
+    }
+}
+
+/**
+ * Signed-in HIPAA preference may send Core home → /medical.
+ * Guests on Core always get regular (clear sticky leftovers from a prior medical session).
+ */
+function qsApplyMedicalPreferenceAfterAuth(user) {
+    let path = '/';
+    try {
+        path = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
+    } catch (_) {}
+    const preferMedical = String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1';
+    const search = String((window.location && window.location.search) || '');
+    const openMatch = /(?:\?|&)open=([^&]+)/i.exec(search);
+    const openId = openMatch ? decodeURIComponent(openMatch[1] || '').trim() : '';
+
+    if (user) {
+        if (path === '/medical') {
+            try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+            try { if (typeof _qsSetMedicalLanding === 'function') _qsSetMedicalLanding(); } catch (_) {}
+            return;
+        }
+        if ((path === '/' || path === '/en') && preferMedical) {
+            const dest = openId
+                ? ('/medical?open=' + encodeURIComponent(openId))
+                : '/medical';
+            try { window.location.replace(dest); } catch (_) { window.location.href = dest; }
+            return;
         }
         return;
     }
-    window.location.reload();
+
+    // Guest
+    if (path === '/medical') {
+        // Path-only medical UI; do not sticky-write preference for guests.
+        try { window.__QS_MEDICAL_URL_ENTRY = true; } catch (_) {}
+        window.isMedicalMode = true;
+        return;
+    }
+    if (path === '/' || path === '/en' || _qsIsMedicalAdjacentPath(path)) {
+        _qsClearStickyMedicalPreference();
+        try {
+            if (typeof setMedicalMode === 'function') {
+                setMedicalMode(false, { bypassMedicalUrlLock: true });
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+        } catch (_) {}
+        try { qsSyncNavLogoHref(); } catch (_) {}
+    }
 }
+window.qsApplyMedicalPreferenceAfterAuth = qsApplyMedicalPreferenceAfterAuth;
 
 /** Keys that may be written while medical lockdown is on (HIPAA: block job/transcript cache, not auth). */
 function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     const k = String(key || '');
-    if (k === QS_MEDICAL_MODE_KEY || k === QS_MEDICAL_LANDING_KEY || k === 'locale' || k === 'qs_console') return true;
+    if (k === QS_MEDICAL_MODE_KEY || k === QS_MEDICAL_LANDING_KEY || k === QS_MEDICAL_ACCOUNT_ALLOWED_KEY || k === 'locale' || k === 'qs_console') return true;
     // Supabase Auth persists session under sb-<project-ref>-… (e.g. auth-token, PKCE). Blocking these breaks Google OAuth / refresh.
     if (k.startsWith('sb-')) return true;
     if (k === 'supabase.auth.token') return true;
@@ -598,6 +672,10 @@ function qsMedicalApplyAccessState(account) {
     const pricingButton = document.getElementById('medical-open-pricing-btn');
     const billingButton = document.getElementById('user-menu-medical-billing');
     const pending = !account || account.allowed !== true;
+    try {
+        if (!pending) localStorage.setItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY, '1');
+        else if (account) localStorage.removeItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY);
+    } catch (_) {}
     document.body.classList.toggle('medical-onboarding-pending', pending);
     if (onboarding) onboarding.hidden = !pending;
     if (pricingButton) {
@@ -750,7 +828,26 @@ async function qsMedicalCompletePendingOnboardingAfterAuth(user) {
 async function qsInitializeMedicalSaasFlow() {
     if (!isMedicalModeEnabled()) return;
     try {
-        const { data: { user } } = await supabase.auth.getUser();
+        // Show recording immediately for registered doctors while account API is in flight.
+        if (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess()) {
+            document.body.classList.remove('medical-onboarding-pending');
+            const onboardingEl = document.getElementById('medical-onboarding-screen');
+            if (onboardingEl) onboardingEl.hidden = true;
+            try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
+        }
+
+        let user = null;
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            user = session?.user || null;
+        } catch (_) {}
+        if (!user) {
+            try {
+                const { data: { user: u } } = await supabase.auth.getUser();
+                user = u || null;
+            } catch (_) {}
+        }
+
         const nameInput = document.getElementById('auth-name');
         const emailInput = document.getElementById('auth-email');
         const specialtyInput = document.getElementById('auth-medical-specialty');
@@ -772,6 +869,7 @@ async function qsInitializeMedicalSaasFlow() {
         }
         if (!user) {
             window.__QS_MEDICAL_EXISTING_AUTH_USER = false;
+            try { localStorage.removeItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY); } catch (_) {}
             qsMedicalApplyAccessState(null);
             return;
         }
@@ -782,8 +880,13 @@ async function qsInitializeMedicalSaasFlow() {
         qsMedicalApplyAccessState(account);
     } catch (err) {
         console.error('[medical-saas] initialize failed', err);
-        qsMedicalApplyAccessState(null);
-        qsMedicalSetOnboardingMessage('לא ניתן לבדוק את החשבון כעת. נסו שוב בעוד רגע.', true);
+        // Keep optimistic recording UI if we already know this doctor was allowed.
+        if (!(typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess())) {
+            qsMedicalApplyAccessState(null);
+            qsMedicalSetOnboardingMessage('לא ניתן לבדוק את החשבון כעת. נסו שוב בעוד רגע.', true);
+        } else {
+            qsMedicalSetOnboardingMessage('בודקים את החשבון ברקע…', false);
+        }
     }
 }
 window.qsInitializeMedicalSaasFlow = qsInitializeMedicalSaasFlow;
@@ -2561,38 +2664,27 @@ try {
     const openMatch = /(?:\?|&)open=([^&]+)/i.exec(search);
     const openId = openMatch ? decodeURIComponent(openMatch[1] || '').trim() : '';
     const preferMedical = String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1';
-    const hadMedicalAffinity = (
-        (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())
-        || preferMedical
-        || String(sessionStorage.getItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT) || '').trim() === '1'
-    );
     if (p === '/medical') {
+        // Path entry: medical UI for this page only. Sticky preference is set after signed-in auth.
         window.__QS_MEDICAL_URL_ENTRY = true;
-        _qsSetMedicalLanding();
-        try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
         window.isMedicalMode = true;
-    } else if (_qsIsMedicalAdjacentPath(p) && hadMedicalAffinity) {
-        // Personal/History from a medical session: keep affinity so "Open" returns to /medical.
+    } else if (_qsIsMedicalAdjacentPath(p) && preferMedical) {
+        // Personal/History while signed-in medical preference is on (auth may confirm later).
         window.__QS_MEDICAL_URL_ENTRY = false;
-        try { _qsSetMedicalLanding(); } catch (_) {}
-        try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
         window.isMedicalMode = true;
     } else if ((p === '/' || p === '/en') && preferMedical) {
-        // HIPAA checkbox preference must survive reloads: send Core home → /medical (do not wipe).
-        const dest = openId
-            ? ('/medical?open=' + encodeURIComponent(openId))
-            : '/medical';
-        window.location.replace(dest);
-    } else if ((p === '/' || p === '/en') && openId && hadMedicalAffinity) {
-        window.location.replace('/medical?open=' + encodeURIComponent(openId));
-    } else {
-        // Core/marketing without HIPAA preference — clear medical shell flags.
+        // Defer Core→/medical until we know the user is signed in (guests must stay on regular).
+        window.__QS_PENDING_MEDICAL_HOME_REDIRECT = true;
         window.__QS_MEDICAL_URL_ENTRY = false;
-        _qsClearMedicalLanding();
-        try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '0'); } catch (_) {}
         window.isMedicalMode = false;
-        // Training is a medical-only sub-feature; never leave it sticky on Core.
-        try { localStorage.removeItem('qs_medical_training_mode'); } catch (_) {}
+    } else if ((p === '/' || p === '/en') && openId && preferMedical) {
+        window.__QS_PENDING_MEDICAL_HOME_REDIRECT = true;
+        window.__QS_MEDICAL_URL_ENTRY = false;
+        window.isMedicalMode = false;
+    } else {
+        // Core/marketing — regular shell for this page (do not wipe sticky key yet; auth decides).
+        window.__QS_MEDICAL_URL_ENTRY = false;
+        window.isMedicalMode = false;
     }
 } catch (_) {}
 
@@ -2620,12 +2712,16 @@ function setMedicalMode(enabled, opts) {
     }
     const on = !!enabled;
     window.isMedicalMode = on;
-    try { localStorage.setItem(QS_MEDICAL_MODE_KEY, on ? '1' : '0'); } catch (_) {}
+    // Sticky localStorage preference only for signed-in users (guests on /medical are path-only).
+    const persistSticky = !!window.__QS_UX_USER_SIGNED_IN || opts.persistMedicalPreference === true;
     if (on) {
-        try { if (typeof _qsSetMedicalLanding === 'function') _qsSetMedicalLanding(); } catch (_) {}
+        if (persistSticky) {
+            try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+            try { if (typeof _qsSetMedicalLanding === 'function') _qsSetMedicalLanding(); } catch (_) {}
+        }
     } else {
+        try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '0'); } catch (_) {}
         try { if (typeof _qsClearMedicalLanding === 'function') _qsClearMedicalLanding(); } catch (_) {}
-        // Training is subordinate to HIPAA — never keep it on when medical is off.
         try {
             if (typeof setMedicalTrainingModeEnabled === 'function') setMedicalTrainingModeEnabled(false);
             else localStorage.removeItem('qs_medical_training_mode');
@@ -2635,7 +2731,16 @@ function setMedicalMode(enabled, opts) {
     try { qsSyncNavLogoHref(); } catch (_) {}
     if (on) {
         clearSensitiveStorageForMedicalMode();
-        try { document.body.classList.add('medical-onboarding-pending'); } catch (_) {}
+        // Registered + previously allowed → recording UI now; otherwise show onboarding until account fetch.
+        try {
+            if (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess()) {
+                document.body.classList.remove('medical-onboarding-pending');
+            } else {
+                document.body.classList.add('medical-onboarding-pending');
+            }
+        } catch (_) {
+            try { document.body.classList.add('medical-onboarding-pending'); } catch (__) {}
+        }
     } else {
         try { document.body.classList.remove('medical-onboarding-pending'); } catch (_) {}
     }
@@ -2669,6 +2774,14 @@ function qsSyncMedicalAccountMenuUi() {
 window.qsSyncMedicalAccountMenuUi = qsSyncMedicalAccountMenuUi;
 
 function qsNavLogoTargetPath() {
+    const locale = String(
+        window.currentLocale ||
+        (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
+        'he'
+    ).toLowerCase().split('-')[0];
+    const coreHome = locale === 'en' ? '/en' : '/';
+    // Guests always use Core home — never trap signed-out users on /medical.
+    if (!window.__QS_UX_USER_SIGNED_IN) return coreHome;
     try {
         if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return '/medical';
     } catch (_) {}
@@ -2678,12 +2791,7 @@ function qsNavLogoTargetPath() {
     try {
         if (String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1') return '/medical';
     } catch (_) {}
-    const locale = String(
-        window.currentLocale ||
-        (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
-        'he'
-    ).toLowerCase().split('-')[0];
-    return locale === 'en' ? '/en' : '/';
+    return coreHome;
 }
 
 function qsSyncNavLogoHref() {
@@ -2716,15 +2824,22 @@ if (document.readyState === 'loading') {
 
 (() => {
     try {
-        if (String(sessionStorage.getItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT) || '').trim() === '1') {
-            try { sessionStorage.removeItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT); } catch (_) {}
-            try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
-            try { _qsSetMedicalLanding(); } catch (_) {}
-            try { window.__QS_MEDICAL_URL_ENTRY = true; } catch (_) {}
+        // Drop obsolete post-logout reassert (it forced guest medical).
+        try { sessionStorage.removeItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT); } catch (_) {}
+        // Keep path-entry medical; otherwise don't force medical chrome from sticky key on Core.
+        if (window.__QS_MEDICAL_URL_ENTRY === true) {
             window.isMedicalMode = true;
+        } else if (window.__QS_PENDING_MEDICAL_HOME_REDIRECT) {
+            window.isMedicalMode = false;
         } else {
-            const raw = localStorage.getItem(QS_MEDICAL_MODE_KEY);
-            window.isMedicalMode = String(raw || '').trim() === '1';
+            const p = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
+            if (p === '/medical') {
+                window.isMedicalMode = true;
+            } else if (_qsIsMedicalAdjacentPath(p) && String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1') {
+                window.isMedicalMode = true;
+            } else {
+                window.isMedicalMode = false;
+            }
         }
     } catch (_) {
         window.isMedicalMode = false;
@@ -2745,10 +2860,10 @@ try {
     )) {
         window.__QS_MEDICAL_URL_ENTRY = true;
         window.isMedicalMode = true;
-        if (typeof _qsSetMedicalLanding === 'function') {
-            _qsSetMedicalLanding();
-        }
-        setMedicalMode(true);
+        // Path bootstrap: in-memory medical UI only — do not sticky-write localStorage for guests.
+        try {
+            if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+        } catch (_) {}
         try {
             document.documentElement.classList.add('qs-medical-entry');
             if (document.body) document.body.classList.add('medical-mode');
@@ -2929,33 +3044,25 @@ supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') {
         try { window.__QS_USER_CREDIT_MINUTES = null; } catch (_) {}
         try { qsSyncUserCreditsUi(); } catch (_) {}
+        try { window.__QS_UX_USER_SIGNED_IN = false; } catch (_) {}
+        try { document.body.classList.remove('qs-user-signed-in'); } catch (_) {}
         try {
+            // Logout navigation clears sticky medical; if this fires in-place, keep medical only on /medical path.
             const p = (window.location && window.location.pathname)
                 ? String(window.location.pathname).replace(/\/+$/, '') || '/'
                 : '/';
-            if (p === '/medical') window.__QS_MEDICAL_URL_ENTRY = true;
-            if (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding()) {
+            if (p === '/medical') {
                 window.__QS_MEDICAL_URL_ENTRY = true;
-            }
-            if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
-                window.__QS_MEDICAL_URL_ENTRY = true;
-            }
-        } catch (_) {}
-        try {
-            window.__QS_UX_USER_SIGNED_IN = false;
-        } catch (_) {}
-        try { document.body.classList.remove('qs-user-signed-in'); } catch (_) {}
-        try {
-            if (window.__QS_MEDICAL_URL_ENTRY || (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell())) {
-                setMedicalMode(true);
+                window.isMedicalMode = true;
             } else {
-                setMedicalMode(false);
+                _qsClearStickyMedicalPreference();
+                setMedicalMode(false, { bypassMedicalUrlLock: true });
             }
         } catch (_) {}
         if (typeof window.applyMedicalModeUi === 'function') {
             try { window.applyMedicalModeUi(); } catch (_) {}
         }
-        try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
+        try { qsSyncNavLogoHref(); } catch (_) {}
     }
     if (event === 'SIGNED_IN' && session) {
         try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
@@ -5517,6 +5624,7 @@ async function setupNavbarAuth(userOverride) {
 
     try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
     try { document.body.classList.toggle('qs-user-signed-in', !!user); } catch (_) {}
+    try { if (typeof qsApplyMedicalPreferenceAfterAuth === 'function') qsApplyMedicalPreferenceAfterAuth(user); } catch (_) {}
     try { syncTranscriptCopyButtonUi(); } catch (_) {}
     if (user) {
         try {
@@ -5604,16 +5712,14 @@ async function setupNavbarAuth(userOverride) {
         qsSetNavAuthVisible(mobileSignedInWrap, true);
         if (signInMobile) signInMobile.removeAttribute('data-i18n');
     } else {
-        // Don't wipe medical when guest on /personal|/history with medical landing (post-logout / session race).
-        if (
-            window.__QS_MEDICAL_URL_ENTRY
-            || (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell())
-            || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())
-        ) {
-            setMedicalMode(true);
-        } else if (isMedicalModeEnabled()) {
-            setMedicalMode(false);
-        }
+        // Guests: medical UI only when URL is /medical (handled in qsApplyMedicalPreferenceAfterAuth).
+        try {
+            const p = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
+            if (p === '/medical') {
+                window.__QS_MEDICAL_URL_ENTRY = true;
+                if (!isMedicalModeEnabled()) setMedicalMode(true, { bypassMedicalUrlLock: true });
+            }
+        } catch (_) {}
         if (nameTrigger) nameTrigger.textContent = 'Account';
         if (nameTriggerMobile) nameTriggerMobile.textContent = 'Account';
         qsSetNavAuthVisible(signInBtn, true);
@@ -5759,7 +5865,7 @@ async function loadUserMenuProfile(user) {
                 path = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
             } catch (_) {}
             if (on) {
-                setMedicalMode(true, { bypassMedicalUrlLock: true });
+                setMedicalMode(true, { bypassMedicalUrlLock: true, persistMedicalPreference: true });
                 if (path !== '/medical') {
                     window.location.assign('/medical');
                     return;
@@ -5770,7 +5876,7 @@ async function loadUserMenuProfile(user) {
                     messageEl.style.color = '#059669';
                 }
             } else {
-                setMedicalMode(false, { bypassMedicalUrlLock: true });
+                setMedicalMode(false, { bypassMedicalUrlLock: true, persistMedicalPreference: true });
                 if (path === '/medical') {
                     const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase().split('-')[0];
                     window.location.assign(locale === 'en' ? '/en' : '/');

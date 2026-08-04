@@ -29,11 +29,10 @@
     {% set is_medical_head = medical_entry | default(false) %}
     {% if is_medical_head %}
     <script>
+      /* Path entry only — do not sticky-write localStorage (that trapped guests on /medical after sign-out). */
       window.__QS_MEDICAL_URL_ENTRY = true;
       window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
       window.isMedicalMode = true;
-      try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
-      try { localStorage.setItem('qs_medical_mode', '1'); } catch (e) {}
       document.documentElement.classList.add('qs-medical-entry');
     </script>
     <style>

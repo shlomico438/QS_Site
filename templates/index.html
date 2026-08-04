@@ -8,12 +8,20 @@
 window.__QS_MEDICAL_URL_ENTRY = true;
 window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
 window.isMedicalMode = true;
-try { localStorage.setItem('qs_medical_landing', '1'); } catch (e) {}
-try { localStorage.setItem('qs_medical_mode', '1'); } catch (e) {}
 try {
   document.documentElement.classList.add('qs-medical-entry');
   document.body.classList.add('medical-mode');
-  document.body.classList.add('medical-onboarding-pending');
+  /* Skip pricing/onboarding flash when a Supabase session already exists (registered user). */
+  var _qsMedAuth = false;
+  try {
+    for (var _i = 0; _i < localStorage.length; _i++) {
+      var _k = localStorage.key(_i) || '';
+      if (_k.indexOf('sb-') === 0 && _k.indexOf('auth') !== -1) { _qsMedAuth = true; break; }
+    }
+  } catch (e2) {}
+  if (!_qsMedAuth) {
+    document.body.classList.add('medical-onboarding-pending');
+  }
 } catch (e) {}
 </script>
 {% endif %}
