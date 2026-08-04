@@ -2560,29 +2560,39 @@ try {
     const search = String((window.location && window.location.search) || '');
     const openMatch = /(?:\?|&)open=([^&]+)/i.exec(search);
     const openId = openMatch ? decodeURIComponent(openMatch[1] || '').trim() : '';
+    const preferMedical = String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1';
     const hadMedicalAffinity = (
         (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())
-        || String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1'
+        || preferMedical
         || String(sessionStorage.getItem(QS_MEDICAL_REASSERT_AFTER_LOGOUT) || '').trim() === '1'
     );
     if (p === '/medical') {
         window.__QS_MEDICAL_URL_ENTRY = true;
         _qsSetMedicalLanding();
+        try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+        window.isMedicalMode = true;
     } else if (_qsIsMedicalAdjacentPath(p) && hadMedicalAffinity) {
         // Personal/History from a medical session: keep affinity so "Open" returns to /medical.
         window.__QS_MEDICAL_URL_ENTRY = false;
         try { _qsSetMedicalLanding(); } catch (_) {}
         try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
         window.isMedicalMode = true;
+    } else if ((p === '/' || p === '/en') && preferMedical) {
+        // HIPAA checkbox preference must survive reloads: send Core home → /medical (do not wipe).
+        const dest = openId
+            ? ('/medical?open=' + encodeURIComponent(openId))
+            : '/medical';
+        window.location.replace(dest);
     } else if ((p === '/' || p === '/en') && openId && hadMedicalAffinity) {
-        // Core /?open= after medical session → bounce to /medical?open= before UI boots as Core.
         window.location.replace('/medical?open=' + encodeURIComponent(openId));
     } else {
-        // Prevent sticky medical landing from forcing Core marketing URLs into HIPAA mode.
+        // Core/marketing without HIPAA preference — clear medical shell flags.
         window.__QS_MEDICAL_URL_ENTRY = false;
         _qsClearMedicalLanding();
         try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '0'); } catch (_) {}
         window.isMedicalMode = false;
+        // Training is a medical-only sub-feature; never leave it sticky on Core.
+        try { localStorage.removeItem('qs_medical_training_mode'); } catch (_) {}
     }
 } catch (_) {}
 
@@ -2605,11 +2615,23 @@ function setMedicalMode(enabled, opts) {
             try { window.applyMedicalModeUi(); } catch (_) {}
         }
         try { qsSyncNavLogoHref(); } catch (_) {}
+        try { if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi(); } catch (_) {}
         return;
     }
     const on = !!enabled;
     window.isMedicalMode = on;
     try { localStorage.setItem(QS_MEDICAL_MODE_KEY, on ? '1' : '0'); } catch (_) {}
+    if (on) {
+        try { if (typeof _qsSetMedicalLanding === 'function') _qsSetMedicalLanding(); } catch (_) {}
+    } else {
+        try { if (typeof _qsClearMedicalLanding === 'function') _qsClearMedicalLanding(); } catch (_) {}
+        // Training is subordinate to HIPAA — never keep it on when medical is off.
+        try {
+            if (typeof setMedicalTrainingModeEnabled === 'function') setMedicalTrainingModeEnabled(false);
+            else localStorage.removeItem('qs_medical_training_mode');
+        } catch (_) {}
+        try { window.__QS_MEDICAL_URL_ENTRY = false; } catch (_) {}
+    }
     try { qsSyncNavLogoHref(); } catch (_) {}
     if (on) {
         clearSensitiveStorageForMedicalMode();
@@ -2624,6 +2646,7 @@ function setMedicalMode(enabled, opts) {
     try {
         if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
     } catch (_) {}
+    try { if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi(); } catch (_) {}
     if (on) {
         try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
         if (!(typeof qsMedicalUseAwsTranscribeStream === 'function' && qsMedicalUseAwsTranscribeStream())) {
@@ -2634,6 +2657,16 @@ function setMedicalMode(enabled, opts) {
         }
     }
 }
+
+/** Account-menu: HIPAA is the only mode switch; training UI follows medical. */
+function qsSyncMedicalAccountMenuUi() {
+    const medicalModeInput = document.getElementById('user-menu-medical-mode');
+    const trainingWrap = document.querySelector('.user-menu-profile-medical-training');
+    const medicalOn = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+    if (medicalModeInput) medicalModeInput.checked = !!medicalOn;
+    if (trainingWrap) trainingWrap.style.display = medicalOn ? '' : 'none';
+}
+window.qsSyncMedicalAccountMenuUi = qsSyncMedicalAccountMenuUi;
 
 function qsNavLogoTargetPath() {
     try {
@@ -5707,7 +5740,6 @@ async function loadUserMenuProfile(user) {
     const cancelBtn = document.getElementById('user-menu-cancel');
     const closeBtn = document.getElementById('user-menu-close');
     const medicalModeInput = document.getElementById('user-menu-medical-mode');
-    const medicalTrainingInput = document.getElementById('user-menu-medical-training-mode');
     const medicalTrainingResetBtn = document.getElementById('user-menu-medical-training-reset');
     const medicalTrainingStatus = document.getElementById('user-menu-medical-training-status');
     if (!nameInput || !emailInput) return;
@@ -5718,36 +5750,39 @@ async function loadUserMenuProfile(user) {
     nameInput.value = currentName;
     emailInput.value = currentEmail;
     if (messageEl) { messageEl.style.display = 'none'; messageEl.textContent = ''; }
+    if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi();
     if (medicalModeInput) {
-        medicalModeInput.checked = isMedicalModeEnabled();
         medicalModeInput.onchange = () => {
-            setMedicalMode(!!medicalModeInput.checked, { bypassMedicalUrlLock: true });
-            if (messageEl) {
-                messageEl.style.display = 'block';
-                messageEl.textContent = medicalModeInput.checked
-                    ? 'Medical mode enabled. Local data was cleared.'
-                    : 'Medical mode disabled.';
-                messageEl.style.color = '#059669';
-            }
-        };
-    }
-    if (medicalTrainingInput) {
-        medicalTrainingInput.checked = isMedicalTrainingModeEnabled();
-        medicalTrainingInput.onchange = async () => {
-            const enabled = !!medicalTrainingInput.checked;
-            if (!enabled) {
-                setMedicalTrainingModeEnabled(false);
-                if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'מצב אימון כבוי.';
-                try {
-                    if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
-                } catch (_) {}
-                return;
-            }
+            const on = !!medicalModeInput.checked;
+            let path = '/';
             try {
-                await activateMedicalTrainingFlow();
-            } catch (_) {
-                medicalTrainingInput.checked = false;
+                path = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
+            } catch (_) {}
+            if (on) {
+                setMedicalMode(true, { bypassMedicalUrlLock: true });
+                if (path !== '/medical') {
+                    window.location.assign('/medical');
+                    return;
+                }
+                if (messageEl) {
+                    messageEl.style.display = 'block';
+                    messageEl.textContent = 'מצב רפואי (HIPAA) פעיל — אימון סיכום זמין מתחת לסיכום הרפואי.';
+                    messageEl.style.color = '#059669';
+                }
+            } else {
+                setMedicalMode(false, { bypassMedicalUrlLock: true });
+                if (path === '/medical') {
+                    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase().split('-')[0];
+                    window.location.assign(locale === 'en' ? '/en' : '/');
+                    return;
+                }
+                if (messageEl) {
+                    messageEl.style.display = 'block';
+                    messageEl.textContent = 'מצב רפואי כבוי.';
+                    messageEl.style.color = '#059669';
+                }
             }
+            if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi();
         };
     }
     if (medicalTrainingResetBtn) {
@@ -5755,7 +5790,6 @@ async function loadUserMenuProfile(user) {
             if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'מאפס אימון...';
             try {
                 await medicalTrainingApi('/api/medical_training/reset', {});
-                setMedicalTrainingModeEnabled(false);
                 window._medicalTrainingCandidatePrompt = '';
                 window._medicalTrainingCandidatePreview = null;
                 window._medicalTrainingLearnedRules = [];
@@ -5764,7 +5798,6 @@ async function loadUserMenuProfile(user) {
                 window._medicalTrainingPanelExpanded = false;
                 window._medicalTrainingBaselineForRetry = '';
                 window._medicalTrainingApprovedCandidatePrompt = '';
-                if (medicalTrainingInput) medicalTrainingInput.checked = false;
                 if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'האימון אופס והפרומפט האישי הושבת.';
                 if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
             } catch (e) {
@@ -8164,16 +8197,18 @@ async function qsCurrentUserId() {
 
 const QS_MEDICAL_TRAINING_MODE_KEY = 'qs_medical_training_mode';
 
+/** Training follows HIPAA — no separate account-menu toggle. */
 function isMedicalTrainingModeEnabled() {
-    try { return localStorage.getItem(QS_MEDICAL_TRAINING_MODE_KEY) === '1'; } catch (_) { return false; }
+    try {
+        if (typeof isMedicalModeEnabled === 'function') return !!isMedicalModeEnabled();
+    } catch (_) {}
+    return window.isMedicalMode === true;
 }
 
 function setMedicalTrainingModeEnabled(on) {
-    try {
-        if (on) localStorage.setItem(QS_MEDICAL_TRAINING_MODE_KEY, '1');
-        else localStorage.removeItem(QS_MEDICAL_TRAINING_MODE_KEY);
-    } catch (_) {}
-    window._medicalTrainingMode = !!on;
+    // Legacy no-op setter: training is tied to medical mode. Clear stale localStorage flag.
+    try { localStorage.removeItem(QS_MEDICAL_TRAINING_MODE_KEY); } catch (_) {}
+    window._medicalTrainingMode = !!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled() && on);
 }
 
 function medicalTrainingSummaryText(fmt) {
@@ -8287,68 +8322,30 @@ async function medicalTrainingPreview(payload) {
     throw new Error('התצוגה המקדימה לוקחת יותר מדי זמן — נסה שוב');
 }
 
-/** Shared by account-menu toggle and summary CTA (e.g. after drag-drop JSON/WAV). */
+/** Ensure server-side training session exists (used when doctor uses the training panel). */
 async function activateMedicalTrainingFlow() {
     const medicalTrainingStatus = document.getElementById('user-menu-medical-training-status');
-    const medicalTrainingInput = document.getElementById('user-menu-medical-training-mode');
-    const medicalModeInput = document.getElementById('user-menu-medical-mode');
-    if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'מפעיל מצב אימון...';
-    setMedicalTrainingModeEnabled(true);
+    if (!isMedicalModeEnabled()) {
+        if (medicalTrainingStatus) {
+            medicalTrainingStatus.textContent = 'יש להפעיל תחילה מצב רפואי (HIPAA).';
+        }
+        throw new Error('Medical mode required for training');
+    }
     try {
         await medicalTrainingApi('/api/medical_training/start', {});
-        if (!isMedicalModeEnabled()) {
-            if (medicalModeInput) medicalModeInput.checked = true;
-            setMedicalMode(true, { bypassMedicalUrlLock: true });
-        }
-        if (medicalTrainingInput) medicalTrainingInput.checked = true;
         if (medicalTrainingStatus) {
-            medicalTrainingStatus.textContent = 'מצב אימון פעיל — אזור האימון מוצג מתחת לסיכום הרפואי.';
+            medicalTrainingStatus.textContent = 'אימון סיכום זמין מתחת לסיכום הרפואי.';
         }
         if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
     } catch (e) {
-        setMedicalTrainingModeEnabled(false);
-        if (medicalTrainingInput) medicalTrainingInput.checked = false;
         if (medicalTrainingStatus) medicalTrainingStatus.textContent = String((e && e.message) || e);
         throw e;
     }
 }
 
-/** When training mode is off, offer one-click enable on the medical summary pane (visible after drag-drop, upload, etc.). */
-function renderMedicalTrainingOnboardingCta(container) {
-    if (!container || !isMedicalModeEnabled() || isMedicalTrainingModeEnabled()) return;
-    const transcript = String(buildTranscriptTextForGptFormat() || '').trim();
-    const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
-    const aiSummary = medicalTrainingSummaryText(fmt);
-    if (!transcript || !aiSummary) return;
-    const wrap = document.createElement('div');
-    wrap.id = 'medical-training-enable-cta';
-    wrap.style.cssText = 'direction:rtl;text-align:right;margin-top:14px;padding:12px;border:1px dashed #5eead4;border-radius:10px;background:#ecfdf5;';
-    wrap.innerHTML = `
-        <div style="font-size:0.9rem;color:#0f766e;margin-bottom:6px;font-weight:700;">התאמת סגנון סיכום (אימון פרומפט)</div>
-        <div style="font-size:0.85rem;color:#115e59;margin-bottom:10px;line-height:1.55;">ניתן ללמד העדפות סגנון ומבנה מהסיכום שלכם. לחצו להפעלת מצב האימון — אותו מצב כמו בתפריט החשבון.</div>
-        <button type="button" id="medical-training-enable-cta-btn" style="padding:8px 14px;border:none;border-radius:8px;background:#0f766e;color:#fff;font-weight:700;cursor:pointer;">הפעל מצב אימון</button>
-        <div id="medical-training-enable-cta-msg" style="margin-top:8px;font-size:0.85rem;color:#b91c1c;"></div>
-    `;
-    container.appendChild(wrap);
-    const btn = wrap.querySelector('#medical-training-enable-cta-btn');
-    const msg = wrap.querySelector('#medical-training-enable-cta-msg');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        if (msg) msg.textContent = '';
-        try {
-            const userId = await qsCurrentUserId();
-            if (!userId) {
-                if (msg) msg.textContent = 'יש להתחבר כדי להפעיל אימון.';
-                btn.disabled = false;
-                return;
-            }
-            await activateMedicalTrainingFlow();
-        } catch (e) {
-            if (msg) msg.textContent = String((e && e.message) || e || 'ההפעלה נכשלה').slice(0, 200);
-            btn.disabled = false;
-        }
-    });
+/** Legacy no-op: training panel is always available when medical mode is on. */
+function renderMedicalTrainingOnboardingCta(_container) {
+    return;
 }
 
 function renderMedicalTrainingPanel(container) {
