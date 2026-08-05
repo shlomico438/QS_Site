@@ -6391,17 +6391,27 @@ async function initPersonalPage() {
     let openMenuId = null;
     let renamingId = null;
     let renameDraft = '';
+    const selectedIds = new Set();
+    const bulkBar = document.getElementById('personal-bulk-bar');
+    const selectAllInput = document.getElementById('personal-select-all');
+    const bulkCountEl = document.getElementById('personal-bulk-count');
+    const bulkDeleteBtn = document.getElementById('personal-bulk-delete-btn');
 
-    const openDeleteConfirm = (fileName) => new Promise((resolve) => {
+    const openDeleteConfirm = (fileName, count = 1) => new Promise((resolve) => {
         const existing = document.getElementById('recording-delete-overlay');
         if (existing) existing.remove();
+        const n = Math.max(1, Number(count) || 1);
+        const title = n === 1 ? 'Delete recording?' : `Delete ${n} recordings?`;
+        const nameBlock = n === 1
+            ? `<p class="personal-delete-file-name">${escapeHtml(fileName)}</p>`
+            : `<p class="personal-delete-file-name">${n} selected recordings</p>`;
         const overlay = document.createElement('div');
         overlay.id = 'recording-delete-overlay';
         overlay.className = 'personal-dialog-overlay';
         overlay.innerHTML = `
             <div class="personal-dialog" role="dialog" aria-modal="true">
-                <p class="personal-dialog-message">Delete recording?</p>
-                <p class="personal-delete-file-name">${escapeHtml(fileName)}</p>
+                <p class="personal-dialog-message">${escapeHtml(title)}</p>
+                ${nameBlock}
                 <p class="personal-delete-subtitle">This will permanently remove:</p>
                 <ul class="personal-delete-list">
                     <li>video file</li>
@@ -6424,6 +6434,79 @@ async function initPersonalPage() {
         overlay.onclick = (e) => { if (e.target === overlay) done(false); };
     });
 
+    const collectJobIdsForFiles = (fileList) => {
+        const ids = [];
+        const seen = new Set();
+        (fileList || []).forEach((file) => {
+            const rowIds = Array.isArray(file._row_ids) && file._row_ids.length
+                ? file._row_ids
+                : [file.file_id];
+            rowIds.forEach((id) => {
+                const s = String(id || '').trim();
+                if (!s || seen.has(s)) return;
+                seen.add(s);
+                ids.push(s);
+            });
+        });
+        return ids;
+    };
+
+    /**
+     * Bulk delete via /api/recordings/delete.
+     * UI rows can map to many DB job ids (grouped duplicates) — chunk so we never hit the server max.
+     */
+    const deleteRecordingRowsBulk = async (fileList) => {
+        const jobIds = collectJobIdsForFiles(fileList);
+        if (!jobIds.length) return { deleted_ids: [] };
+        const chunkSize = 100;
+        const deletedIds = [];
+        let deletedS3 = 0;
+        for (let i = 0; i < jobIds.length; i += chunkSize) {
+            const chunk = jobIds.slice(i, i + chunkSize);
+            const delRes = await fetch('/api/recordings/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: user.id, jobIds: chunk })
+            });
+            const out = await delRes.json().catch(() => ({}));
+            if (!delRes.ok || out.deleted === false) {
+                const done = deletedIds.length;
+                const msg = out.error || `HTTP ${delRes.status}`;
+                throw new Error(done ? `Deleted ${done}, then failed: ${msg}` : msg);
+            }
+            if (Array.isArray(out.deleted_ids)) deletedIds.push(...out.deleted_ids);
+            deletedS3 += Number(out.deleted_s3_objects || 0) || 0;
+        }
+        return { deleted: true, deleted_ids: deletedIds, deleted_s3_objects: deletedS3 };
+    };
+
+    const deleteRecordingRows = async (file) => deleteRecordingRowsBulk([file]);
+
+    const syncBulkBar = () => {
+        // Drop selections that are no longer in the current list.
+        const known = new Set(files.map((f) => f.file_id));
+        Array.from(selectedIds).forEach((id) => {
+            if (!known.has(id)) selectedIds.delete(id);
+        });
+        const selectedVisible = filtered.filter((f) => selectedIds.has(f.file_id));
+        const n = selectedIds.size;
+        if (bulkBar) bulkBar.hidden = !files.length;
+        if (bulkCountEl) {
+            bulkCountEl.textContent = n ? `${n} selected` : (filtered.length ? `${filtered.length} recordings` : '');
+        }
+        if (bulkDeleteBtn) {
+            bulkDeleteBtn.disabled = n === 0;
+            bulkDeleteBtn.textContent = n > 1 ? `Delete selected (${n})` : 'Delete selected';
+        }
+        if (selectAllInput) {
+            const visibleCount = filtered.length;
+            const allVisibleSelected = visibleCount > 0 && selectedVisible.length === visibleCount;
+            selectAllInput.checked = allVisibleSelected;
+            selectAllInput.indeterminate = selectedVisible.length > 0 && !allVisibleSelected;
+            selectAllInput.disabled = visibleCount === 0;
+        }
+    };
+
     const render = () => {
         listEl.innerHTML = '';
         if (!filtered.length) {
@@ -6433,13 +6516,15 @@ async function initPersonalPage() {
                     ? 'No recordings match your search.'
                     : 'No recordings available. Upload recordings from the main screen.';
             }
+            syncBulkBar();
             return;
         }
         if (emptyMsg) emptyMsg.style.display = 'none';
 
         filtered.forEach((file) => {
             const item = document.createElement('article');
-            item.className = 'personal-recording-item';
+            const isChecked = selectedIds.has(file.file_id);
+            item.className = 'personal-recording-item' + (isChecked ? ' is-selected' : '');
             item.setAttribute('role', 'listitem');
             const actionLabel = file.transcript_exists ? 'Open' : 'Transcribe';
             const dateText = formatDate(file.created_at);
@@ -6447,16 +6532,21 @@ async function initPersonalPage() {
             const metaText = durText ? `${dateText} • ${durText}` : dateText;
             const isRenaming = renamingId === file.file_id;
             item.innerHTML = `
-                <div class="personal-recording-main">
-                    ${isRenaming
-                        ? `<div class="personal-rename-inline">
-                                <input class="personal-rename-input" type="text" value="${escapeHtml(renameDraft || file.file_name)}" />
-                                <button type="button" class="personal-rename-save" title="Save">✔</button>
-                                <button type="button" class="personal-rename-cancel" title="Cancel">✖</button>
-                           </div>`
-                        : `<div class="personal-recording-name">🎬 ${escapeHtml(file.file_name)}</div>`
-                    }
-                    <div class="personal-recording-date">${escapeHtml(metaText)}</div>
+                <div class="personal-recording-row">
+                    <label class="personal-recording-check">
+                        <input type="checkbox" class="personal-recording-checkbox" data-file-id="${escapeHtml(file.file_id)}" ${isChecked ? 'checked' : ''} aria-label="Select ${escapeHtml(file.file_name)}">
+                    </label>
+                    <div class="personal-recording-main">
+                        ${isRenaming
+                            ? `<div class="personal-rename-inline">
+                                    <input class="personal-rename-input" type="text" value="${escapeHtml(renameDraft || file.file_name)}" />
+                                    <button type="button" class="personal-rename-save" title="Save">✔</button>
+                                    <button type="button" class="personal-rename-cancel" title="Cancel">✖</button>
+                               </div>`
+                            : `<div class="personal-recording-name">🎬 ${escapeHtml(file.file_name)}</div>`
+                        }
+                        <div class="personal-recording-date">${escapeHtml(metaText)}</div>
+                    </div>
                 </div>
                 <div class="personal-recording-actions-row">
                     <button type="button" class="personal-recording-action">${escapeHtml(actionLabel)}</button>
@@ -6470,6 +6560,17 @@ async function initPersonalPage() {
                     </div>
                 </div>
             `;
+
+            const checkInput = item.querySelector('.personal-recording-checkbox');
+            if (checkInput) {
+                checkInput.addEventListener('click', (e) => e.stopPropagation());
+                checkInput.addEventListener('change', () => {
+                    if (checkInput.checked) selectedIds.add(file.file_id);
+                    else selectedIds.delete(file.file_id);
+                    item.classList.toggle('is-selected', checkInput.checked);
+                    syncBulkBar();
+                });
+            }
 
             const actionBtn = item.querySelector('.personal-recording-action');
             const handlePrimaryOpenAction = async () => {
@@ -6543,22 +6644,14 @@ async function initPersonalPage() {
                         return;
                     }
                     if (action === 'delete') {
-                        const ok = await openDeleteConfirm(file.file_name);
+                        const ok = await openDeleteConfirm(file.file_name, 1);
                         if (!ok) {
                             render();
                             return;
                         }
                         try {
-                            const ids = Array.isArray(file._row_ids) && file._row_ids.length ? file._row_ids : [file.file_id];
-                            for (const id of ids) {
-                                const delRes = await fetch(`/recording/${encodeURIComponent(id)}`, {
-                                    method: 'DELETE',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ userId: user.id })
-                                });
-                                const out = await delRes.json().catch(() => ({}));
-                                if (!delRes.ok) throw new Error(out.error || `HTTP ${delRes.status}`);
-                            }
+                            await deleteRecordingRows(file);
+                            selectedIds.delete(file.file_id);
                             const idx = files.findIndex((f) => f.file_id === file.file_id);
                             if (idx >= 0) files.splice(idx, 1);
                             const q = String(searchInput.value || '').trim().toLowerCase();
@@ -6612,6 +6705,7 @@ async function initPersonalPage() {
             }
             listEl.appendChild(item);
         });
+        syncBulkBar();
     };
 
     searchInput.addEventListener('input', () => {
@@ -6619,6 +6713,56 @@ async function initPersonalPage() {
         filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
         render();
     });
+
+    if (selectAllInput) {
+        selectAllInput.addEventListener('change', () => {
+            if (selectAllInput.checked) {
+                filtered.forEach((f) => selectedIds.add(f.file_id));
+            } else {
+                filtered.forEach((f) => selectedIds.delete(f.file_id));
+            }
+            render();
+        });
+    }
+
+    if (bulkDeleteBtn) {
+        bulkDeleteBtn.addEventListener('click', async () => {
+            const toDelete = files.filter((f) => selectedIds.has(f.file_id));
+            if (!toDelete.length) return;
+            const ok = await openDeleteConfirm(
+                toDelete.length === 1 ? toDelete[0].file_name : '',
+                toDelete.length
+            );
+            if (!ok) return;
+            bulkDeleteBtn.disabled = true;
+            const prevLabel = bulkDeleteBtn.textContent;
+            bulkDeleteBtn.textContent = 'Deleting…';
+            try {
+                await deleteRecordingRowsBulk(toDelete);
+                const removeSet = new Set(toDelete.map((f) => f.file_id));
+                removeSet.forEach((id) => selectedIds.delete(id));
+                for (let i = files.length - 1; i >= 0; i--) {
+                    if (removeSet.has(files[i].file_id)) files.splice(i, 1);
+                }
+                const q = String(searchInput.value || '').trim().toLowerCase();
+                filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+                render();
+                if (typeof showStatus === 'function') {
+                    showStatus(
+                        toDelete.length === 1 ? 'Recording deleted' : `${toDelete.length} recordings deleted`,
+                        false
+                    );
+                }
+            } catch (err) {
+                if (typeof showStatus === 'function') {
+                    showStatus('Delete failed: ' + (err.message || 'Unknown error'), true);
+                }
+            } finally {
+                bulkDeleteBtn.textContent = prevLabel;
+                syncBulkBar();
+            }
+        });
+    }
 
     document.addEventListener('click', (e) => {
         if (!openMenuId) return;
@@ -7911,7 +8055,7 @@ function syncTranscriptCopyButtonUi() {
     const show = !!document.body.classList.contains('has-transcript-actions');
     medicalCopyBtn.style.display = show ? 'inline-flex' : 'none';
     const T = typeof window.t === 'function' ? window.t : (k) => k;
-    const label = T('medical_copy') || 'Copy';
+    const label = T('medical_copy_all') || 'Copy all';
     medicalCopyBtn.setAttribute('aria-label', label);
     medicalCopyBtn.setAttribute('title', label);
 }
@@ -8802,29 +8946,153 @@ function qsCleanupRequestBase(targetLang, jobId) {
     return base;
 }
 
-async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId) {
+async function runFormatTranscriptCleanupRequest(fullText, targetLang, jobId, options = {}) {
     const userId = await qsCurrentUserId();
-    const base = { ...qsCleanupRequestBase(targetLang, jobId), userId: userId || undefined, mode: 'cleanup' };
+    const mode = String((options && options.mode) || 'cleanup').trim() || 'cleanup';
+    const base = {
+        ...qsCleanupRequestBase(targetLang, jobId),
+        userId: userId || undefined,
+        mode,
+        ...(options && options.typoFix ? { typoFix: true } : {}),
+    };
     const t0 = performance.now();
     const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...base, text: fullText }),
     });
-    const fmt = await res.json().catch(() => ({}));
+    const raw = await res.json().catch(() => ({}));
     const elapsedMs = Math.round(performance.now() - t0);
-    const cleanupSec = Number(fmt && (fmt.cleanup_generation_time || fmt.gpt_format_sec));
+    const cleanupSec = Number(raw && (raw.cleanup_generation_time || raw.gpt_format_sec));
     qsTrackEvent('cleanup_generation_time', {
         duration_ms: elapsedMs,
         cleanup_generation_time: Number.isFinite(cleanupSec) ? cleanupSec : undefined,
-        ok: !!(res.ok && fmt && !fmt.error),
+        ok: !!(res.ok && raw && !raw.error),
         chunked: false,
+        mode,
     });
-    const normalized = fmt && !fmt.error
-        ? normalizeFormattedFields({ clean_transcript: fmt.clean_transcript || '' })
-        : fmt;
-    return { ok: res.ok && normalized && typeof normalized === 'object' && !normalized.error, res, fmt: normalized };
+    let fmt = raw;
+    if (raw && !raw.error) {
+        fmt = normalizeFormattedFields({ clean_transcript: raw.clean_transcript || '' }) || {};
+        if (raw.changed != null) fmt.changed = !!raw.changed;
+        if (raw.format_guardrail) fmt.format_guardrail = String(raw.format_guardrail);
+        if (raw.typo_fix != null) fmt.typo_fix = !!raw.typo_fix;
+        if (raw.cleanup_generation_time != null) fmt.cleanup_generation_time = raw.cleanup_generation_time;
+        if (raw.gpt_format_sec != null) fmt.gpt_format_sec = raw.gpt_format_sec;
+    }
+    return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt };
 }
+
+function qsMedicalTypoFixUndoAvailable() {
+    return !!(window._qsMedicalTypoFixUndo && String(window._qsMedicalTypoFixUndo.text || '').trim());
+}
+
+function qsMedicalClearTypoFixUndo() {
+    window._qsMedicalTypoFixUndo = null;
+}
+
+function qsMedicalApplyTranscriptPlainText(text) {
+    const cleaned = String(text || '').trim();
+    const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : {};
+    window.currentFormattedDoc = { ...prev, clean_transcript: cleaned };
+    window._qsDocPreferSegmentsAfterEdit = false;
+    const paragraphs = cleaned.split(/\r?\n+/).map((l) => String(l || '').trim()).filter(Boolean);
+    const lines = paragraphs.length ? paragraphs : (cleaned ? [cleaned] : []);
+    window.currentSegments = lines.map((line, i) => ({
+        start: i,
+        end: i + 1,
+        text: line,
+        speaker: 'SPEAKER_00',
+    }));
+    window._medicalLiveStreamText = cleaned;
+    window.medicalActiveTab = 'transcript';
+    try { if (typeof renderMedicalTranscriptMainView === 'function') renderMedicalTranscriptMainView(); } catch (_) {}
+    try {
+        if (typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
+            qsRenderMedicalEditableTranscriptBoxes(lines.length ? lines : ['']);
+        }
+    } catch (_) {}
+    try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+    return cleaned;
+}
+
+/** Medical end-of-session typo/ASR polish (cleanup only — does not regenerate summary). */
+async function qsMedicalFixTypos() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) {
+        throw new Error('Medical mode required');
+    }
+    try { if (typeof qsPersistMedicalTranscriptBoxesFromDom === 'function') qsPersistMedicalTranscriptBoxesFromDom(); } catch (_) {}
+    const fullText = String(
+        (window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript)
+        || (typeof buildTranscriptTextForGptFormat === 'function' ? buildTranscriptTextForGptFormat() : '')
+        || window._medicalLiveStreamText
+        || ''
+    ).trim();
+    if (!fullText) {
+        throw new Error(T('medical_no_text_to_fix') || 'No transcript to clean.');
+    }
+    const targetLang = String(
+        (typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : null)
+        || window.currentLocale
+        || 'he'
+    ).toLowerCase().split('-')[0] || 'he';
+    const jobId = String(localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+    console.log('[medical] typo fix start', { chars: fullText.length, jobId: jobId || null });
+    const { ok, fmt } = await runFormatTranscriptCleanupRequest(
+        fullText,
+        targetLang,
+        jobId || undefined,
+        { mode: 'typo_fix', typoFix: true }
+    );
+    if (fmt && String(fmt.format_guardrail || '') === 'DISABLE_GPT') {
+        throw new Error(T('medical_typos_gpt_disabled') || 'GPT correction is disabled on the server.');
+    }
+    const cleaned = String((fmt && fmt.clean_transcript) || '').trim();
+    if (!ok || !cleaned) {
+        throw new Error((fmt && fmt.error) || (T('medical_typos_fix_failed') || 'Could not clean transcript.'));
+    }
+    const changed = fmt.changed != null ? !!fmt.changed : (cleaned !== fullText);
+    console.log('[medical] typo fix done', {
+        chars_in: fullText.length,
+        chars_out: cleaned.length,
+        changed,
+        gpt_sec: fmt.cleanup_generation_time || fmt.gpt_format_sec,
+    });
+    if (changed) {
+        window._qsMedicalTypoFixUndo = { text: fullText };
+    }
+    qsMedicalApplyTranscriptPlainText(cleaned);
+    try {
+        if (typeof qsPersistFormattedDocToS3 === 'function') {
+            await qsPersistFormattedDocToS3();
+        }
+    } catch (_) {}
+    return { cleaned, changed };
+}
+window.qsMedicalFixTypos = qsMedicalFixTypos;
+
+/** Revert the last medical GPT typo-clean to the pre-correction transcript. */
+async function qsMedicalUndoTypoFix() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const snapshot = window._qsMedicalTypoFixUndo;
+    const prevText = String((snapshot && snapshot.text) || '').trim();
+    if (!prevText) {
+        throw new Error(T('medical_typos_fix_failed') || 'Nothing to undo.');
+    }
+    qsMedicalClearTypoFixUndo();
+    qsMedicalApplyTranscriptPlainText(prevText);
+    try {
+        if (typeof qsPersistFormattedDocToS3 === 'function') {
+            await qsPersistFormattedDocToS3();
+        }
+    } catch (_) {}
+    return { restored: prevText };
+}
+window.qsMedicalUndoTypoFix = qsMedicalUndoTypoFix;
+window.qsMedicalClearTypoFixUndo = qsMedicalClearTypoFixUndo;
 
 async function runFormatTranscriptCleanChunkRequest(chunkText, targetLang, jobId) {
     const userId = await qsCurrentUserId();
@@ -12029,6 +12297,7 @@ function resetScreenToInitial() {
     try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
     window.isTriggering = false;
     qsStopFakeProgress('reset_screen_to_initial');
+    try { if (typeof qsMedicalClearTypoFixUndo === 'function') qsMedicalClearTypoFixUndo(); } catch (_) {}
     window.currentSegments = [];
     window.currentWords = null;
     window.currentCaptions = null;
@@ -12737,6 +13006,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const medicalTabTranscript = document.getElementById('medical-tab-transcript');
     const medicalTabSummary = document.getElementById('medical-tab-summary');
     const medicalCopyBtn = document.getElementById('medical-copy-btn');
+    const medicalTypoFixBtn = document.getElementById('medical-typo-fix-btn');
     const translateBtn = document.getElementById('btn-translate');
     const medicalToolbarNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
     const mobileSessionBtn = document.getElementById('mobile-new-session-btn');
@@ -12802,17 +13072,18 @@ document.addEventListener('DOMContentLoaded', () => {
             window._qsMedicalStreamAwaitingSummary &&
             (hasTranscript || hasWordModel || hasLiveStream)
         );
+        // Live medical stream text should also open tabs (simulation / pause-before-save).
         const showTabs = isMedicalModeEnabled() && (
-            hasTranscript || hasFormattedSummary || window._medicalHasResult === true || awaitingStreamSummary
+            hasTranscript || hasFormattedSummary || window._medicalHasResult === true
+            || awaitingStreamSummary || hasLiveStream
         );
         medicalTabsWrap.style.display = showTabs ? 'flex' : 'none';
         if (medicalCopyBtn) {
             if (isMedicalModeEnabled()) {
-                // During live streaming, copy lives inside the transcript editor only.
                 medicalCopyBtn.style.display = showTabs ? 'inline-flex' : 'none';
                 if (showTabs) {
                     const T = typeof window.t === 'function' ? window.t : (k) => k;
-                    const label = T('medical_copy') || 'Copy';
+                    const label = T('medical_copy_all') || 'Copy all';
                     medicalCopyBtn.setAttribute('aria-label', label);
                     medicalCopyBtn.setAttribute('title', label);
                 }
@@ -12828,6 +13099,31 @@ document.addEventListener('DOMContentLoaded', () => {
         const isSummary = String(window.medicalActiveTab || 'transcript') === 'summary';
         if (medicalTabTranscript) medicalTabTranscript.classList.toggle('is-active', !isSummary);
         if (medicalTabSummary) medicalTabSummary.classList.toggle('is-active', isSummary);
+        if (medicalTypoFixBtn) {
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            // Hide only while actively recording (live ASR). Show when paused (שמור/מחק) or idle.
+            const isRecording = !!(medicalRecordOuter && medicalRecordOuter.classList.contains('is-recording'));
+            const hasCleanText = !!(
+                String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim()
+                || hasTranscript
+                || hasLiveStream
+            );
+            const showTypoFix = isMedicalModeEnabled() && showTabs && !isSummary && hasCleanText && !isRecording;
+            medicalTypoFixBtn.hidden = !showTypoFix;
+            medicalTypoFixBtn.classList.toggle('is-visible', !!showTypoFix);
+            if (showTypoFix) medicalTypoFixBtn.removeAttribute('hidden');
+            const canUndo = typeof qsMedicalTypoFixUndoAvailable === 'function' && qsMedicalTypoFixUndoAvailable();
+            medicalTypoFixBtn.classList.toggle('is-undo', !!canUndo);
+            const typoLabel = canUndo
+                ? (T('medical_undo_typos') || 'Undo')
+                : (T('medical_fix_typos') || 'Clean transcript');
+            const typoLabelEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-label');
+            const typoIconEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-icon');
+            if (!medicalTypoFixBtn.disabled && typoLabelEl) typoLabelEl.textContent = typoLabel;
+            if (!medicalTypoFixBtn.disabled && typoIconEl) typoIconEl.textContent = canUndo ? '↩' : '🪄';
+            medicalTypoFixBtn.setAttribute('aria-label', typoLabel);
+            medicalTypoFixBtn.setAttribute('title', typoLabel);
+        }
         try { if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn(); } catch (_) {}
         try { syncTranscriptCopyButtonUi(); } catch (_) {}
     }
@@ -13384,6 +13680,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalConfirmStack) medicalConfirmStack.style.display = isPaused ? 'flex' : 'none';
         if (medicalRecordShape) medicalRecordShape.style.opacity = '1';
         syncMedicalPrimaryActionBtn();
+        // Show/hide typo-fix when leaving live recording.
+        try { if (typeof updateMedicalTabUi === 'function') updateMedicalTabUi(); } catch (_) {}
     }
 
     function syncMedicalPrimaryActionBtn() {
@@ -14801,6 +15099,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     function clearMedicalDiscardedRecordingSession() {
         // Full session wipe after trash (מחק): all transcript boxes + live ASR state.
+        try { if (typeof qsMedicalClearTypoFixUndo === 'function') qsMedicalClearTypoFixUndo(); } catch (_) {}
         window._medicalLiveStreamText = '';
         window._medicalLiveLastBoxDirty = false;
         window._medicalHasResult = false;
@@ -14870,6 +15169,7 @@ document.addEventListener('DOMContentLoaded', () => {
             stopMedicalRecordingTimer();
             setMedicalTimerVisibility(false);
             setMedicalRecordingVisualState('idle');
+            try { updateMedicalTabUi(); } catch (_) {}
             if (
                 isMedicalModeEnabled()
                 && !qsMedicalStreamOnlyMode()
@@ -14930,6 +15230,56 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!btn) return;
             e.preventDefault();
             void copyMedicalLiveStreamText();
+        });
+    }
+    if (medicalTypoFixBtn && !medicalTypoFixBtn._qsTypoFixWired) {
+        medicalTypoFixBtn._qsTypoFixWired = true;
+        medicalTypoFixBtn.addEventListener('click', async () => {
+            if (medicalTypoFixBtn.disabled) return;
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            const typoLabelEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-label');
+            const typoIconEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-icon');
+            const setTypoChrome = (label, icon) => {
+                if (typoLabelEl) typoLabelEl.textContent = label;
+                if (typoIconEl && icon != null) typoIconEl.textContent = icon;
+                medicalTypoFixBtn.setAttribute('aria-label', label);
+                medicalTypoFixBtn.setAttribute('title', label);
+            };
+            const canUndo = typeof qsMedicalTypoFixUndoAvailable === 'function' && qsMedicalTypoFixUndoAvailable();
+            medicalTypoFixBtn.disabled = true;
+            try {
+                if (canUndo) {
+                    await qsMedicalUndoTypoFix();
+                    if (typeof showStatus === 'function') {
+                        showStatus(T('medical_typos_undone') || 'Corrections undone.', false);
+                    }
+                } else {
+                    setTypoChrome(T('medical_fixing_typos') || 'Cleaning transcript…', '🪄');
+                    if (typeof showStatus === 'function') {
+                        showStatus(T('medical_fixing_typos') || 'Cleaning transcript…', false);
+                    }
+                    const result = await qsMedicalFixTypos();
+                    if (typeof showStatus === 'function') {
+                        const unchanged = result && result.changed === false;
+                        showStatus(
+                            unchanged
+                                ? (T('medical_typos_unchanged') || 'No typos found to fix.')
+                                : (T('medical_typos_fixed') || 'Transcript cleaned.'),
+                            false
+                        );
+                    }
+                }
+            } catch (e) {
+                if (typeof showStatus === 'function') {
+                    showStatus(
+                        (e && e.message) || (T('medical_typos_fix_failed') || 'Could not clean transcript.'),
+                        true
+                    );
+                }
+            } finally {
+                medicalTypoFixBtn.disabled = false;
+                try { updateMedicalTabUi(); } catch (_) {}
+            }
         });
     }
     if (medicalCopyBtn) {
@@ -18854,7 +19204,12 @@ function renderMedicalPlainStreamTranscript(text) {
     if (!transcriptWindow || !isMedicalModeEnabled()) return;
     const clean = String(text || '').trim();
     if (!clean) return;
+    window._medicalLiveStreamText = clean;
+    window.medicalActiveTab = 'transcript';
     qsRenderMedicalEditableTranscriptBoxes([clean]);
+    try {
+        if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
+    } catch (_) {}
 }
 
 /**

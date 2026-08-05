@@ -18,6 +18,14 @@
                 aria-label="Search recordings"
             >
         </div>
+        <div id="personal-bulk-bar" class="personal-bulk-bar" hidden>
+            <label class="personal-bulk-select-all">
+                <input type="checkbox" id="personal-select-all" aria-label="Select all recordings">
+                <span>Select all</span>
+            </label>
+            <span id="personal-bulk-count" class="personal-bulk-count" aria-live="polite"></span>
+            <button type="button" id="personal-bulk-delete-btn" class="personal-bulk-delete-btn" disabled>Delete selected</button>
+        </div>
         <p id="personal-empty-msg" class="personal-empty-msg" style="display: none;">No recordings available. Upload recordings from the main screen.</p>
         <div id="personal-recordings-list" class="personal-recordings-list" role="list"></div>
     </div>

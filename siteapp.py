@@ -6731,14 +6731,15 @@ def _doctor_prompt_public_profile(profile):
     }
 
 
-def _delete_s3_keys_batch(keys):
+def _delete_s3_keys_batch(keys, s3_client=None):
     keys = [str(k).strip() for k in (keys or []) if str(k).strip()]
     if not keys:
         return 0
     bucket = os.environ.get('S3_BUCKET')
     if not bucket:
         return 0
-    s3_client = _s3_boto_client(bucket=bucket)
+    if s3_client is None:
+        s3_client = _s3_boto_client(bucket=bucket)
     deleted_count = 0
     for i in range(0, len(keys), 1000):
         chunk = keys[i:i + 1000]
@@ -6752,6 +6753,190 @@ def _delete_s3_keys_batch(keys):
             # Best effort cleanup; continue deleting DB row even if some objects fail.
             continue
     return deleted_count
+
+
+def _list_s3_keys_under_prefix(s3_client, bucket, prefix):
+    """List object keys under an S3 prefix (paginated)."""
+    out = []
+    prefix = str(prefix or '').strip()
+    if not s3_client or not bucket or not prefix:
+        return out
+    token = None
+    while True:
+        kwargs = {'Bucket': bucket, 'Prefix': prefix}
+        if token:
+            kwargs['ContinuationToken'] = token
+        res = s3_client.list_objects_v2(**kwargs)
+        for obj in (res.get('Contents') or []):
+            kk = str((obj or {}).get('Key') or '').strip()
+            if kk:
+                out.append(kk)
+        if not res.get('IsTruncated'):
+            break
+        token = res.get('NextContinuationToken')
+    return out
+
+
+def _recording_direct_keys_from_row(row):
+    """S3 keys referenced directly on a jobs row (no prefix listing)."""
+    keys = set()
+    if not isinstance(row, dict):
+        return keys
+    input_key = str(row.get('input_s3_key') or '').strip()
+    result_key = str(row.get('result_s3_key') or '').strip()
+    metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
+    if input_key:
+        keys.add(input_key)
+    if result_key:
+        keys.add(result_key)
+    for k in ('result_s3_key', 'resultS3Key', 'raw_result_s3_key', 'rawResultS3Key', 'output_s3_key', 'outputS3Key'):
+        vv = str(metadata.get(k) or '').strip()
+        if vv:
+            keys.add(vv)
+    return keys
+
+
+def _supabase_fetch_jobs_for_delete(supabase_url, headers, user_id, job_ids):
+    """Fetch job rows for delete in chunks (PostgREST id=in.(...))."""
+    rows = []
+    ids = [str(j).strip() for j in (job_ids or []) if str(j).strip()]
+    if not ids:
+        return rows
+    for i in range(0, len(ids), 80):
+        chunk = ids[i:i + 80]
+        in_list = ','.join(chunk)
+        get_url = (
+            f"{supabase_url}/rest/v1/jobs"
+            f"?id=in.({in_list})&user_id=eq.{user_id}"
+            f"&select=id,input_s3_key,result_s3_key,metadata"
+        )
+        r_get = requests.get(get_url, headers=headers, timeout=30)
+        if r_get.status_code != 200:
+            raise RuntimeError(r_get.text or f"HTTP {r_get.status_code}")
+        part = r_get.json() if r_get.text else []
+        if isinstance(part, list):
+            rows.extend(part)
+    return rows
+
+
+def _supabase_delete_jobs_by_ids(supabase_url, headers, user_id, job_ids):
+    """Delete job rows in chunks. Returns number of ids requested (best-effort)."""
+    ids = [str(j).strip() for j in (job_ids or []) if str(j).strip()]
+    deleted_ids = []
+    for i in range(0, len(ids), 80):
+        chunk = ids[i:i + 80]
+        in_list = ','.join(chunk)
+        del_url = f"{supabase_url}/rest/v1/jobs?id=in.({in_list})&user_id=eq.{user_id}"
+        r_del = requests.delete(
+            del_url,
+            headers={**headers, "Prefer": "return=representation"},
+            timeout=30,
+        )
+        if r_del.status_code not in (200, 204):
+            raise RuntimeError(r_del.text or f"HTTP {r_del.status_code}")
+        if r_del.text:
+            try:
+                body = r_del.json()
+                if isinstance(body, list):
+                    deleted_ids.extend([str(r.get('id')) for r in body if isinstance(r, dict) and r.get('id')])
+                    continue
+            except Exception:
+                pass
+        deleted_ids.extend(chunk)
+    return deleted_ids
+
+
+def _collect_s3_keys_for_job_rows(rows, user_id):
+    """Collect all S3 keys for job rows, listing derived prefixes in parallel."""
+    keys_to_delete = set()
+    prefixes = []
+    for row in (rows or []):
+        keys_to_delete |= _recording_direct_keys_from_row(row)
+        input_key = str((row or {}).get('input_s3_key') or '').strip()
+        if input_key:
+            try:
+                prefixes.append(_derive_output_key_base(user_id, input_key))
+            except Exception:
+                pass
+
+    bucket = os.environ.get('S3_BUCKET')
+    if not bucket or not prefixes:
+        return keys_to_delete, None
+
+    s3_client = _s3_boto_client(bucket=bucket)
+    uniq_prefixes = sorted({p for p in prefixes if p})
+
+    def _list_one(prefix):
+        try:
+            return _list_s3_keys_under_prefix(s3_client, bucket, prefix)
+        except Exception:
+            return []
+
+    # Parallel prefix listing — the main cost when deleting many recordings.
+    max_workers = min(12, max(1, len(uniq_prefixes)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for listed in pool.map(_list_one, uniq_prefixes):
+            for kk in listed:
+                keys_to_delete.add(kk)
+    return keys_to_delete, s3_client
+
+
+def _recordings_delete_many(user_id, job_ids):
+    """
+    Delete many recordings in one pass: one DB fetch, parallel S3 prefix lists,
+    batched S3 delete, batched DB delete. Returns dict for JSON response.
+    """
+    user_id = str(user_id or '').strip()
+    ids = []
+    seen = set()
+    for jid in (job_ids or []):
+        s = str(jid or '').strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        ids.append(s)
+    if not user_id or not ids:
+        return {"error": "userId and jobIds required", "deleted": False}, 400
+    if len(ids) > 500:
+        return {"error": "Too many jobIds (max 500 per request)", "deleted": False}, 400
+
+    supabase_url = os.environ.get('SUPABASE_URL', '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key:
+        return {"error": "Server not configured for delete"}, 503
+
+    headers = _supabase_service_headers(service_key)
+    rows = _supabase_fetch_jobs_for_delete(supabase_url, headers, user_id, ids)
+    if not rows:
+        return {"error": "Recording not found", "deleted": False, "deleted_ids": []}, 404
+
+    found_ids = [str(r.get('id')) for r in rows if isinstance(r, dict) and r.get('id')]
+    keys_to_delete, s3_client = _collect_s3_keys_for_job_rows(rows, user_id)
+    deleted_s3 = _delete_s3_keys_batch(list(keys_to_delete), s3_client=s3_client)
+    deleted_ids = _supabase_delete_jobs_by_ids(supabase_url, headers, user_id, found_ids)
+    return {
+        "deleted": True,
+        "deleted_ids": deleted_ids,
+        "requested": len(ids),
+        "found": len(found_ids),
+        "deleted_s3_objects": deleted_s3,
+    }, 200
+
+
+@app.route('/api/recordings/delete', methods=['POST'])
+def recordings_bulk_delete():
+    """Bulk-delete recordings (DB + S3). Much faster than N sequential DELETE /recording/<id>."""
+    try:
+        data = request.get_json(silent=True) or {}
+        user_id = data.get('userId') or data.get('user_id')
+        job_ids = data.get('jobIds') or data.get('job_ids') or data.get('ids') or []
+        if not isinstance(job_ids, list):
+            return jsonify({"error": "jobIds must be an array", "deleted": False}), 400
+        body, status = _recordings_delete_many(user_id, job_ids)
+        return jsonify(body), status
+    except Exception as e:
+        logging.exception("recordings_bulk_delete failed")
+        return jsonify({"error": str(e), "deleted": False}), 500
 
 
 @app.route('/recording/<file_id>/rename', methods=['POST'])
@@ -6802,66 +6987,8 @@ def recording_delete(file_id):
         user_id = data.get('userId') or data.get('user_id')
         if not user_id or not file_id:
             return jsonify({"error": "userId and file_id required"}), 400
-
-        supabase_url = os.environ.get('SUPABASE_URL', '').rstrip('/')
-        service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
-        if not supabase_url or not service_key:
-            return jsonify({"error": "Server not configured for delete"}), 503
-        headers = _supabase_service_headers(service_key)
-
-        get_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}&select=id,input_s3_key,result_s3_key,metadata"
-        r_get = requests.get(get_url, headers=headers, timeout=15)
-        if r_get.status_code != 200:
-            return jsonify({"error": r_get.text or f"HTTP {r_get.status_code}"}), r_get.status_code
-        rows = r_get.json() if r_get.text else []
-        if not rows:
-            return jsonify({"error": "Recording not found"}), 404
-        row = rows[0]
-
-        input_key = str(row.get('input_s3_key') or '').strip()
-        result_key = str(row.get('result_s3_key') or '').strip()
-        metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
-        keys_to_delete = set()
-        if input_key:
-            keys_to_delete.add(input_key)
-        if result_key:
-            keys_to_delete.add(result_key)
-        for k in ('result_s3_key', 'resultS3Key', 'raw_result_s3_key', 'rawResultS3Key', 'output_s3_key', 'outputS3Key'):
-            vv = str(metadata.get(k) or '').strip()
-            if vv:
-                keys_to_delete.add(vv)
-
-        # Remove all artifacts sharing the derived output base prefix.
-        if input_key:
-            try:
-                bucket = os.environ.get('S3_BUCKET')
-                if bucket:
-                    s3_client = _s3_boto_client(bucket=bucket)
-                    base = _derive_output_key_base(user_id, input_key)
-                    token = None
-                    while True:
-                        kwargs = {'Bucket': bucket, 'Prefix': base}
-                        if token:
-                            kwargs['ContinuationToken'] = token
-                        res = s3_client.list_objects_v2(**kwargs)
-                        for obj in (res.get('Contents') or []):
-                            kk = str((obj or {}).get('Key') or '').strip()
-                            if kk:
-                                keys_to_delete.add(kk)
-                        if not res.get('IsTruncated'):
-                            break
-                        token = res.get('NextContinuationToken')
-            except Exception:
-                pass
-
-        deleted_s3 = _delete_s3_keys_batch(list(keys_to_delete))
-
-        del_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}"
-        r_del = requests.delete(del_url, headers={**headers, "Prefer": "return=representation"}, timeout=15)
-        if r_del.status_code not in (200, 204):
-            return jsonify({"error": r_del.text or f"HTTP {r_del.status_code}", "deleted": False}), r_del.status_code
-
-        return jsonify({"deleted": True, "deleted_s3_objects": deleted_s3}), 200
+        body, status = _recordings_delete_many(user_id, [file_id])
+        return jsonify(body), status
     except Exception as e:
         logging.exception("recording_delete failed")
         return jsonify({"error": str(e), "deleted": False}), 500
@@ -8919,8 +9046,14 @@ def _format_transcript_cleanup_openai(
     timeout_sec=None,
     read_retries=None,
     is_music=False,
+    is_medical=False,
+    typo_fix=False,
 ):
-    """One OpenAI call: light punctuation/STT cleanup; plain text only."""
+    """One OpenAI call: light punctuation/STT cleanup; plain text only.
+
+    typo_fix=True (medical Fix typos): prioritize ASR/spelling corrections over
+    ultra-conservative 'light edit' wording while still forbidding rewrite/summary.
+    """
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
         raise RuntimeError("empty transcript")
@@ -8942,13 +9075,42 @@ def _format_transcript_cleanup_openai(
             "Transcript:\n\n"
             f"{transcript_text}"
         )
+    elif typo_fix:
+        system_prompt = (
+            "You correct ASR typos in transcripts. Return plain text only. "
+            "Do not include markdown fences or JSON."
+        )
+        medical_dialogue = (
+            "This is a clinical doctor–patient dialogue. Keep natural spoken style "
+            "(first/second person, bedside phrasing). Do NOT convert to chart/protocol prose.\n\n"
+            if is_medical else ""
+        )
+        user_prompt = (
+            "Correct transcription / ASR mistakes in this transcript.\n\n"
+            f"{medical_dialogue}"
+            "Requirements:\n\n"
+            "* Fix spelling, grammar, and punctuation errors from speech recognition.\n"
+            "* Correct obvious wrong words when context makes the intended word clear "
+            "(Hebrew letter confusions: ט/ת, ש/ס, ע/א, כ/ק, ב/ו, ה/ח; "
+            "e.g. והטענות not והתענות; medical terms when clearly intended).\n"
+            "* Prefer the corrected word over leaving a garbled ASR token.\n"
+            "* Preserve meaning, speaker intent, and paragraph breaks.\n"
+            "* Do not summarize, omit, invent, or stylistically rewrite.\n"
+            "* Return the full corrected transcript only.\n\n"
+            f"Output language: {output_lang_label}.\n\n"
+            f"Language hint: {lang_hint}\n\n"
+            "Transcript:\n\n"
+            f"{transcript_text}"
+        )
     else:
         system_prompt = (
             "You edit transcripts. Return plain text only. "
             "Do not include markdown fences or JSON."
         )
+        medical_note = _GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else ""
         user_prompt = (
             "You are editing a transcript.\n\n"
+            f"{medical_note}"
             "Requirements:\n\n"
             "* Fix punctuation and spelling.\n"
             "* Correct obvious transcription / ASR mistakes, including Hebrew letter confusions "
@@ -9787,9 +9949,10 @@ def api_format_transcript_summary():
             timeout_sec=cleanup_timeout,
             read_retries=read_retries,
             is_music=is_music_format,
+            is_medical=is_medical,
         )
 
-    if mode == 'cleanup':
+    if mode in ('cleanup', 'typo_fix'):
         segments = data.get('segments') or []
         raw = str(data.get('text') or '').strip()
         if is_music_format and isinstance(segments, list) and segments:
@@ -9800,16 +9963,37 @@ def api_format_transcript_summary():
             return jsonify({"error": "No transcript text provided"}), 400
         try:
             t_cleanup = time.time()
-            out = _run_cleanup_only(raw)
+            typo_fix = mode == 'typo_fix' or bool(data.get('typoFix') or data.get('typo_fix'))
+            out = _format_transcript_cleanup_openai(
+                raw,
+                target_lang=target_lang,
+                timeout_sec=int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '180') or 180),
+                read_retries=read_retries,
+                is_music=is_music_format,
+                is_medical=is_medical,
+                typo_fix=typo_fix or is_medical,
+            )
             elapsed = time.time() - t_cleanup
             _apply_format_timing(elapsed)
+            cleaned = str(out.get("clean_transcript") or "").strip()
+            logging.info(
+                "format_transcript_summary %s done medical=%s chars_in=%s chars_out=%s changed=%s sec=%.2f",
+                mode,
+                is_medical,
+                len(raw),
+                len(cleaned),
+                cleaned != raw,
+                elapsed,
+            )
             return jsonify({
-                "clean_transcript": out.get("clean_transcript") or "",
+                "clean_transcript": cleaned,
                 "cleanup_generation_time": round(float(elapsed), 3),
                 "gpt_format_sec": round(float(elapsed), 3),
+                "typo_fix": True,
+                "changed": cleaned != raw,
             }), 200
         except Exception as e:
-            logging.warning("format_transcript_summary cleanup failed: %s", e)
+            logging.warning("format_transcript_summary %s failed: %s", mode, e)
             return jsonify({"error": str(e)}), 500
 
     if mode in ('summary', 'summary_only'):
