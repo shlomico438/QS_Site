@@ -1366,6 +1366,20 @@ html[dir="ltr"] #pricing-section.seo-landing-section {
 #metrics-section .seo-metrics-row {
     margin-top: 0;
 }
+/* Auth modal: solid scrim only — backdrop-filter is expensive on mobile GPUs. */
+#auth-modal.auth-modal-backdrop,
+.auth-modal-backdrop {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+@media (min-width: 769px) {
+    #auth-modal.auth-modal-backdrop,
+    .auth-modal-backdrop {
+        backdrop-filter: blur(2px);
+        -webkit-backdrop-filter: blur(2px);
+    }
+}
+
 .seo-sales-modal-backdrop {
     position: fixed;
     inset: 0;

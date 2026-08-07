@@ -4841,8 +4841,17 @@ window.toggleModal = function(show) {
             try { applyAuthModalMode(); } catch (_) {}
         }
         modal.style.display = show ? 'flex' : 'none';
+        try { modal.setAttribute('aria-hidden', show ? 'false' : 'true'); } catch (_) {}
     }
 };
+
+function qsMarkAppLogicAuthReady() {
+    try {
+        if (window.__QS_APP_LOGIC_READY) return;
+        window.__QS_APP_LOGIC_READY = true;
+        window.dispatchEvent(new Event('qs-app-logic-ready'));
+    } catch (_) {}
+}
 
 function qsShowAuthError(message) {
     const el = document.getElementById('auth-error');
@@ -11592,6 +11601,9 @@ const authEmailInput = document.getElementById('auth-email');
 if (authEmailInput) {
     authEmailInput.addEventListener('input', () => qsClearAuthError());
 }
+
+// Auth shell can proceed with Google / magic-link once these handlers exist.
+qsMarkAppLogicAuthReady();
 
 function qsSetMainBtnDynamicLabel(text) {
     const mainBtn = document.getElementById('main-btn');

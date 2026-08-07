@@ -99,11 +99,15 @@
     {# Non-blocking Inter: swap in after load; CSS already falls back to system-ui. #}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/+esm">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" media="print" onload="this.media='all'">
     <noscript>
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap">
     </noscript>
 
+    {# Early auth shell: open Sign In modal before the large app_logic module finishes. #}
+    <script src="{{ url_for('static', filename='js/qs_auth_shell.js') }}?v={{ static_asset_version }}" defer></script>
     {# defer non-critical scripts. socket.io stays blocking — body script calls io() during parse. #}
     {# docx + FileSaver are lazy-loaded on first export (qsEnsureExportLibs) to keep homepage light. #}
     <script src="{{ url_for('static', filename='js/translations.js') }}?v={{ static_asset_version }}" defer></script>

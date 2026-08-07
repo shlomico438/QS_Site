@@ -544,6 +544,7 @@ def _resolve_static_asset_version():
         os.path.join(static_root, 'js', 'app_logic.js'),
         os.path.join(static_root, 'js', 'feature_showcase.js'),
         os.path.join(static_root, 'js', 'translations.js'),
+        os.path.join(static_root, 'js', 'qs_auth_shell.js'),
     ]
     showcase_dir = os.path.join(static_root, 'images', 'showcase')
     try:
