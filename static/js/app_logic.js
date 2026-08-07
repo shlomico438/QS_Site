@@ -3066,7 +3066,7 @@ supabase.auth.onAuthStateChange((event, session) => {
     }
     if (event === 'SIGNED_IN' && session) {
         try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
-        window.toggleModal(false);
+        if (typeof window.toggleModal === 'function') window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
         try {
             const signedUser = session.user || null;
@@ -4683,7 +4683,8 @@ window.qsGetActiveJobForResume = function () {
 };
 
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
-if (typeof socket !== 'undefined') {
+const socket = (typeof window !== 'undefined' && window.socket) ? window.socket : null;
+if (socket) {
     socket.on('connect', () => {
         const savedJobId = typeof window.qsGetActiveJobForResume === 'function'
             ? window.qsGetActiveJobForResume()
