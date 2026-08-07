@@ -99,13 +99,10 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
     {# defer non-critical scripts. socket.io stays blocking — body script calls io() during parse. #}
-    {# /medical skips export/showcase libs (docx, FileSaver, feature_showcase) for faster first paint. #}
     <script src="{{ url_for('static', filename='js/translations.js') }}?v={{ static_asset_version }}" defer></script>
-    {% if not is_medical_head %}
     <script src="{{ url_for('static', filename='js/feature_showcase.js') }}?v={{ static_asset_version }}" defer></script>
     <script src="https://unpkg.com/docx@7.1.0/build/index.js" defer></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js" defer></script>
-    {% endif %}
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <script src="{{ url_for('static', filename='js/clinical_training_modal.js') }}?v={{ static_asset_version }}" defer></script>
     <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}?v={{ static_asset_version }}"></script>
