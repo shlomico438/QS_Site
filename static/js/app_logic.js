@@ -6077,6 +6077,7 @@ async function loadUserMenuFiles(user) {
             downloadBtn.onclick = async () => {
                 downloadBtn.disabled = true;
                 try {
+                    try { await qsEnsureExportLibs(); } catch (_) {}
                     const res = await fetch('/api/get_presigned_url', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -6201,6 +6202,7 @@ async function initHistoryPage() {
             dlBtn.onclick = async () => {
                 dlBtn.disabled = true;
                 try {
+                    try { await qsEnsureExportLibs(); } catch (_) {}
                     const res = await fetch('/api/get_presigned_url', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -9670,6 +9672,7 @@ async function deliverBlobToUser(blob, filename, mimeType) {
     const safeName = String(filename || 'download.bin');
     const fileType = String(mimeType || blob?.type || 'application/octet-stream');
     const feedbackKind = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) ? 'medical_download' : 'export';
+    try { await qsEnsureExportLibs(); } catch (_) {}
     if (isMobileClient() && window._qsMobileBatchShareMode) {
         _queueMobileBatchFile(blob, safeName, fileType);
         try { maybeQueuePostExportFeedbackPrompt(safeName, feedbackKind); } catch (_) {}
@@ -9798,9 +9801,74 @@ function getExportBaseNameNoExt() {
     return 'transcript';
 }
 
+function qsLoadScriptOnce(src, isReady) {
+    return new Promise((resolve, reject) => {
+        try {
+            if (typeof isReady === 'function' && isReady()) {
+                resolve();
+                return;
+            }
+        } catch (_) {}
+        const marker = String(src || '');
+        const existing = document.querySelector(`script[data-qs-export-src="${marker.replace(/"/g, '')}"]`);
+        if (existing) {
+            if (typeof isReady === 'function' && isReady()) {
+                resolve();
+                return;
+            }
+            existing.addEventListener('load', () => resolve(), { once: true });
+            existing.addEventListener('error', () => reject(new Error(`Failed to load ${marker}`)), { once: true });
+            return;
+        }
+        const s = document.createElement('script');
+        s.src = marker;
+        s.async = true;
+        s.dataset.qsExportSrc = marker;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`Failed to load ${marker}`));
+        document.head.appendChild(s);
+    });
+}
+
+/** Load FileSaver + docx on first export so they stay off the homepage critical path. */
+async function qsEnsureExportLibs() {
+    const saveReady = () => typeof window.saveAs === 'function';
+    const docxReady = () => typeof window.docx !== 'undefined';
+    if (saveReady() && docxReady()) return true;
+    if (window._qsExportLibsPromise) return window._qsExportLibsPromise;
+    window._qsExportLibsPromise = Promise.all([
+        qsLoadScriptOnce(
+            'https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js',
+            saveReady
+        ),
+        qsLoadScriptOnce(
+            'https://unpkg.com/docx@7.1.0/build/index.js',
+            docxReady
+        ),
+    ]).then(() => {
+        if (!saveReady()) throw new Error('FileSaver library not loaded.');
+        return true;
+    }).catch((err) => {
+        window._qsExportLibsPromise = null;
+        throw err;
+    });
+    return window._qsExportLibsPromise;
+}
+window.qsEnsureExportLibs = qsEnsureExportLibs;
+
 window.downloadFile = async function(type, bypassUser = null, options = {}) {
     const baseName = getExportBaseNameNoExt() || 'transcript';
     await commitActiveWordTokenEditIfAny();
+
+    try {
+        await qsEnsureExportLibs();
+    } catch (e) {
+        console.warn('[export] failed to load export libraries', e);
+        if (typeof showStatus === 'function') {
+            showStatus((e && e.message) || 'Error: FileSaver library not loaded.', true);
+        }
+        return;
+    }
 
     if (!bypassUser && typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
         if (typeof requireUserForCopyOrDownload === 'function') {
