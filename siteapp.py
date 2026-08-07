@@ -504,6 +504,32 @@ DOCX_RSID_P = _safe_rsid(os.environ.get("DOCX_RSID_P"), "009F2D46")
 app = Flask(__name__) 
 app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
+# Fingerprinted CSS/JS use ?v= — allow long browser/CDN cache for /static.
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000
+
+# Gzip text assets (CSS/JS/HTML/JSON/SVG) so Heroku/origin responses are smaller.
+try:
+    from flask_compress import Compress
+    app.config['COMPRESS_ALGORITHM'] = 'gzip'
+    app.config['COMPRESS_MIMETYPES'] = [
+        'text/html',
+        'text/css',
+        'text/plain',
+        'text/xml',
+        'text/javascript',
+        'application/javascript',
+        'application/json',
+        'application/xml',
+        'application/xhtml+xml',
+        'image/svg+xml',
+        'application/rss+xml',
+        'application/atom+xml',
+    ]
+    app.config['COMPRESS_MIN_SIZE'] = 500
+    app.config['COMPRESS_LEVEL'] = 6
+    Compress(app)
+except ImportError:
+    logging.warning('flask-compress not installed; static responses will not be gzip/brotli compressed')
 
 
 def _resolve_static_asset_version():
@@ -7476,6 +7502,21 @@ def add_security_headers(resp):
     if path != '/free':
         resp.headers['Cross-Origin-Embedder-Policy'] = 'credentialless'
         resp.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+
+    # Long-lived cache for /static (CSS/JS are busted via ?v=static_asset_version).
+    # Helps browsers and any CDN in front of the app (e.g. Cloudflare).
+    if path.startswith('/static/'):
+        lower = path.lower()
+        if lower.endswith(('.css', '.js', '.mjs', '.woff', '.woff2', '.ttf', '.otf')):
+            resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        else:
+            # Images/icons: week-long cache (often not query-versioned in templates).
+            resp.headers['Cache-Control'] = 'public, max-age=604800'
+        resp.headers.setdefault('Vary', 'Accept-Encoding')
+    elif resp.mimetype and 'html' in (resp.mimetype or ''):
+        # HTML must stay fresh so deploys and medical shell updates show immediately.
+        resp.headers.setdefault('Cache-Control', 'no-cache')
+
     return resp
 
 @app.errorhandler(413)

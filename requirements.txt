@@ -1,5 +1,6 @@
 flask>=3.0.0,<4
 flask-socketio>=5.3.6
+flask-compress>=1.14
 gevent>=24.2.0
 gevent-websocket>=0.10.1
 gunicorn>=22.0.0
