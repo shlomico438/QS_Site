@@ -4,27 +4,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- Google tag (gtag.js) — Google Ads + Google Analytics 4 -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-QDEKS23DSF"></script>
+    <!-- Google tag + Meta Pixel — load only after first user interaction -->
     <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-QDEKS23DSF');
-      gtag('config', 'AW-1000570995');
-    </script>
-    <!-- Meta Pixel Code -->
-    <script>
-    !function(f,b,e,v,n,t,s)
-    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
-    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
-    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
-    n.queue=[];t=b.createElement(e);t.async=!0;
-    t.src=v;s=b.getElementsByTagName(e)[0];
-    s.parentNode.insertBefore(t,s)}(window, document,'script',
-    'https://connect.facebook.net/en_US/fbevents.js');
-    fbq('init', '1647881855724316');
-    fbq('track', 'PageView');
+      // Defer marketing tags until the user scrolls, moves the mouse, or touches the page.
+      (function () {
+        var interactionEvents = ['scroll', 'mousemove', 'touchstart'];
+        var loaded = false;
+
+        function loadMarketingTags() {
+          if (loaded) return;
+          loaded = true;
+
+          // Remove all interaction listeners after the first trigger.
+          interactionEvents.forEach(function (eventName) {
+            window.removeEventListener(eventName, loadMarketingTags, { passive: true });
+          });
+
+          // Google Analytics / Ads
+          var gtagScript = document.createElement('script');
+          gtagScript.async = true;
+          gtagScript.src = 'https://www.googletagmanager.com/gtag/js?id=G-QDEKS23DSF';
+          document.head.appendChild(gtagScript);
+
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          window.gtag = gtag;
+          gtag('js', new Date());
+          gtag('config', 'G-QDEKS23DSF');
+          gtag('config', 'AW-1000570995');
+
+          // Facebook Pixel
+          !function(f,b,e,v,n,t,s)
+          {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+          n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+          if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+          n.queue=[];t=b.createElement(e);t.async=!0;
+          t.src=v;s=b.getElementsByTagName(e)[0];
+          s.parentNode.insertBefore(t,s)}(window, document,'script',
+          'https://connect.facebook.net/en_US/fbevents.js');
+          fbq('init', '1647881855724316');
+          fbq('track', 'PageView');
+        }
+
+        interactionEvents.forEach(function (eventName) {
+          window.addEventListener(eventName, loadMarketingTags, { passive: true });
+        });
+      })();
     </script>
     {% set is_medical_head = medical_entry | default(false) %}
     {% if is_medical_head %}
@@ -73,8 +98,8 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}?v={{ static_asset_version }}">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
-    <script src="{{ url_for('static', filename='js/translations.js') }}?v={{ static_asset_version }}" defer></script>
-    <script src="{{ url_for('static', filename='js/feature_showcase.js') }}?v={{ static_asset_version }}" defer></script>
+    <script src="{{ url_for('static', filename='js/translations.js') }}?v={{ static_asset_version }}"></script>
+    <script src="{{ url_for('static', filename='js/feature_showcase.js') }}?v={{ static_asset_version }}"></script>
     <script src="https://unpkg.com/docx@7.1.0/build/index.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
