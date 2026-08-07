@@ -422,7 +422,7 @@ def _doctor_prompt_profile_active_prompt(user_id):
             f"{supabase_url}/rest/v1/doctor_prompt_profiles"
             f"?user_id=eq.{uid}&status=eq.active&select=active_prompt&limit=1"
         )
-        r = requests.get(url, headers=_supabase_service_headers(service_key), timeout=10)
+        r = _supabase_http_request('GET', url, headers=_supabase_service_headers(service_key), retries=1)
         if r.status_code != 200:
             logging.warning("doctor prompt profile lookup failed: HTTP %s %s", r.status_code, (r.text or '')[:180])
             return ""
@@ -4414,25 +4414,51 @@ def _supabase_http_session_get():
 
 
 def _supabase_http_timeout_sec():
+    """Total/read timeout seconds (legacy scalar helper)."""
     try:
         return max(2.0, float(os.environ.get('SUPABASE_HTTP_TIMEOUT_SEC', '6') or 6))
     except (TypeError, ValueError):
         return 6.0
 
 
-def _supabase_http_request(method, url, *, timeout=None, retries=2, **kwargs):
-    """Fail-fast Supabase REST with short timeouts so gevent workers are not blocked for 50s+."""
-    req_timeout = timeout if timeout is not None else _supabase_http_timeout_sec()
+def _supabase_http_timeout():
+    """(connect, read) timeouts — short connect abort so gevent workers stay responsive."""
+    try:
+        connect = max(0.5, float(os.environ.get('SUPABASE_HTTP_CONNECT_TIMEOUT_SEC', '2') or 2))
+    except (TypeError, ValueError):
+        connect = 2.0
+    read = _supabase_http_timeout_sec()
+    return (connect, max(connect, read))
+
+
+def _supabase_http_request(method, url, *, timeout=None, retries=1, **kwargs):
+    """Fail-fast Supabase HTTP with short timeouts so gevent workers are not blocked for minutes."""
+    if timeout is None:
+        req_timeout = _supabase_http_timeout()
+    elif isinstance(timeout, (int, float)):
+        # Keep connect short even when callers pass a scalar read budget.
+        try:
+            connect = max(0.5, float(os.environ.get('SUPABASE_HTTP_CONNECT_TIMEOUT_SEC', '2') or 2))
+        except (TypeError, ValueError):
+            connect = 2.0
+        req_timeout = (connect, max(connect, float(timeout)))
+    else:
+        req_timeout = timeout
     session = _supabase_http_session_get()
     last_err = None
-    attempts = max(1, int(retries or 1))
+    attempts = max(1, int(retries if retries is not None else 1))
+    transient = (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        requests.exceptions.SSLError,
+    )
     for attempt in range(attempts):
         try:
             return session.request(method, url, timeout=req_timeout, **kwargs)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        except transient as e:
             last_err = e
             if attempt + 1 < attempts:
-                time.sleep(0.15 * (attempt + 1))
+                time.sleep(0.12 * (attempt + 1))
                 continue
             raise
     if last_err:
@@ -4516,11 +4542,16 @@ def _supabase_auth_user_from_request():
     service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
     if not supabase_url or not service_key:
         return None
-    r_user = requests.get(
-        f"{supabase_url}/auth/v1/user",
-        headers={"Authorization": f"Bearer {token}", "apikey": service_key},
-        timeout=10,
-    )
+    try:
+        r_user = _supabase_http_request(
+            'GET',
+            f"{supabase_url}/auth/v1/user",
+            headers={"Authorization": f"Bearer {token}", "apikey": service_key},
+            retries=1,
+        )
+    except Exception as e:
+        logging.warning("_supabase_auth_user_from_request failed: %s", e)
+        return None
     if r_user.status_code != 200:
         return None
     try:
@@ -4613,10 +4644,11 @@ def _supabase_admin_get_user(user_id):
         'Content-Type': 'application/json',
     }
     try:
-        r_get = requests.get(
+        r_get = _supabase_http_request(
+            'GET',
             f"{supabase_url}/auth/v1/admin/users/{user_id}",
             headers=headers,
-            timeout=10,
+            retries=1,
         )
         if r_get.status_code != 200:
             return None
@@ -4648,11 +4680,12 @@ def _supabase_admin_merge_user_metadata(user_id, patch_meta, current_user=None):
         if not isinstance(meta, dict):
             meta = {}
         merged = {**meta, **patch_meta}
-        r_put = requests.put(
+        r_put = _supabase_http_request(
+            'PUT',
             f"{supabase_url}/auth/v1/admin/users/{user_id}",
             headers=headers,
             json={'user_metadata': merged},
-            timeout=10,
+            retries=1,
         )
         return r_put.status_code in (200, 201)
     except Exception as e:
@@ -4896,18 +4929,18 @@ def _user_credits_sync_user_name(user_id, user_name):
             "credit_minutes": 0,
             "welcome_granted": False,
         })
-        r = requests.post(
+        r = _supabase_http_request(
+            'POST',
             f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
             headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
             json=payload,
-            timeout=15,
         )
     else:
-        r = requests.patch(
+        r = _supabase_http_request(
+            'PATCH',
             f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
             headers={**headers, "Prefer": "return=representation"},
             json=payload,
-            timeout=15,
         )
     if r.status_code not in (200, 201):
         raise RuntimeError(r.text or f"Supabase user_credits name sync HTTP {r.status_code}")
@@ -4937,11 +4970,11 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_n
         if user_name:
             payload["user_name"] = user_name
         url = f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id"
-        r = requests.post(
+        r = _supabase_http_request(
+            'POST',
             url,
             headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
             json=payload,
-            timeout=15,
         )
     else:
         from urllib.parse import quote
@@ -4955,11 +4988,11 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_n
         if user_name:
             payload["user_name"] = user_name
         url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}"
-        r = requests.patch(
+        r = _supabase_http_request(
+            'PATCH',
             url,
             headers={**headers, "Prefer": "return=representation"},
             json=payload,
-            timeout=15,
         )
     if r.status_code not in (200, 201):
         raise RuntimeError(r.text or f"Supabase user_credits upsert HTTP {r.status_code}")
@@ -5024,11 +5057,11 @@ def _user_invoice_billing_save(user_id, tax_id, city):
         'invoice_city': city,
         'updated_at': datetime.utcnow().isoformat() + 'Z',
     }
-    r = requests.patch(
+    r = _supabase_http_request(
+        'PATCH',
         f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
         headers={**headers, 'Prefer': 'return=representation'},
         json=payload,
-        timeout=15,
     )
     if r.status_code not in (200, 204):
         raise RuntimeError(r.text or f"Supabase invoice billing save HTTP {r.status_code}")
@@ -5059,11 +5092,11 @@ def _user_credits_add_minutes(user_id, minutes):
             "welcome_granted": False,
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
-        r = requests.post(
+        r = _supabase_http_request(
+            'POST',
             f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
             headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
             json=payload,
-            timeout=15,
         )
     else:
         from urllib.parse import quote
@@ -5072,11 +5105,11 @@ def _user_credits_add_minutes(user_id, minutes):
             "credit_minutes": int(existing.get('credit_minutes') or 0) + minutes,
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
-        r = requests.patch(
+        r = _supabase_http_request(
+            'PATCH',
             f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
             headers={**headers, "Prefer": "return=representation"},
             json=payload,
-            timeout=15,
         )
     if r.status_code not in (200, 201):
         raise RuntimeError(r.text or f"Supabase user_credits add HTTP {r.status_code}")
@@ -5700,21 +5733,21 @@ def _user_credits_deduct_minutes(user_id, minutes):
             "welcome_granted": False,
             "updated_at": ts,
         }
-        r = requests.post(
+        r = _supabase_http_request(
+            'POST',
             f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
             headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
             json=payload,
-            timeout=15,
         )
     else:
         from urllib.parse import quote
         uid = quote(user_id, safe='')
         payload = {"credit_minutes": new_balance, "updated_at": ts}
-        r = requests.patch(
+        r = _supabase_http_request(
+            'PATCH',
             f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
             headers={**headers, "Prefer": "return=representation"},
             json=payload,
-            timeout=15,
         )
     if r.status_code not in (200, 201):
         raise RuntimeError(r.text or f"Supabase user_credits deduct HTTP {r.status_code}")
@@ -7211,6 +7244,9 @@ def api_user_credits_ensure_welcome():
             "user_name": (row or {}).get('user_name'),
             "granted_minutes": WELCOME_CREDIT_MINUTES,
         })
+    except (requests.exceptions.RequestException, TimeoutError, OSError) as e:
+        logging.warning("api_user_credits_ensure_welcome supabase unavailable: %s", e)
+        return jsonify({"error": "credits_temporarily_unavailable", "detail": str(e)}), 503
     except Exception as e:
         logging.exception("api_user_credits_ensure_welcome failed")
         return jsonify({"error": str(e)}), 500
@@ -7378,10 +7414,11 @@ def delete_account():
         if not supabase_url or not service_key:
             return jsonify({"error": "Server not configured for account deletion"}), 503
         # Validate token and get user id
-        r_user = requests.get(
+        r_user = _supabase_http_request(
+            'GET',
             f"{supabase_url}/auth/v1/user",
             headers={"Authorization": f"Bearer {token}", "apikey": service_key},
-            timeout=10
+            retries=1,
         )
         if r_user.status_code != 200:
             return jsonify({"error": "Invalid or expired token"}), 401
@@ -7394,20 +7431,23 @@ def delete_account():
             return jsonify({"error": "User id not found"}), 401
         # Delete all jobs for this user
         jobs_url = f"{supabase_url}/rest/v1/jobs?user_id=eq.{user_id}"
-        requests.delete(
+        _supabase_http_request(
+            'DELETE',
             jobs_url,
             headers={
                 "apikey": service_key,
                 "Authorization": f"Bearer {service_key}",
                 "Content-Type": "application/json",
             },
-            timeout=30
+            timeout=15,
+            retries=1,
         )
         # Delete user from Auth (admin)
-        r_del = requests.delete(
+        r_del = _supabase_http_request(
+            'DELETE',
             f"{supabase_url}/auth/v1/admin/users/{user_id}",
             headers={"Authorization": f"Bearer {service_key}", "apikey": service_key},
-            timeout=10
+            retries=1,
         )
         if r_del.status_code not in (200, 204):
             return jsonify({"error": r_del.text or f"Failed to delete user ({r_del.status_code})"}), r_del.status_code
@@ -7993,7 +8033,13 @@ def _get_job_timings_from_db(runpod_job_id: str, user_id: str = None) -> dict:
     if uid_s:
         url += f"&user_id=eq.{quote(uid_s, safe='')}"
     try:
-        r = requests.get(url, headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"}, timeout=5)
+        r = _supabase_http_request(
+            'GET',
+            url,
+            headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"},
+            timeout=5,
+            retries=1,
+        )
         if r.status_code == 200 and r.text:
             rows = r.json()
             if isinstance(rows, list) and len(rows) > 0:
@@ -8047,32 +8093,38 @@ def _jobs_patch_by_runpod_job_id(runpod_job_id, user_id, payload):
         url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
         if uid:
             url += f"&user_id=eq.{uid}"
-        r = requests.patch(url, json=body, headers=headers, timeout=10)
+        r = _supabase_http_request('PATCH', url, json=body, headers=headers, timeout=8, retries=1)
         if _rows_updated(r):
             _invalidate_job_poll_row_cache(runpod_job_id)
             return True
         url_alt = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_quoted}"
         if uid:
             url_alt += f"&user_id=eq.{uid}"
-        r2 = requests.patch(url_alt, json=body, headers=headers, timeout=10)
+        r2 = _supabase_http_request('PATCH', url_alt, json=body, headers=headers, timeout=8, retries=1)
         if _rows_updated(r2):
             _invalidate_job_poll_row_cache(runpod_job_id)
             return True
         if uid:
             url_no_uid = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj}"
-            r3 = requests.patch(url_no_uid, json=body, headers=headers, timeout=10)
+            r3 = _supabase_http_request('PATCH', url_no_uid, json=body, headers=headers, timeout=8, retries=1)
             if _rows_updated(r3):
                 _invalidate_job_poll_row_cache(runpod_job_id)
                 return True
         for rj_try in (rj, rj_quoted):
             get_url = f"{supabase_url}/rest/v1/jobs?runpod_job_id=eq.{rj_try}&select=id"
-            get_r = requests.get(get_url, headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"}, timeout=5)
+            get_r = _supabase_http_request(
+                'GET',
+                get_url,
+                headers={"apikey": service_key, "Authorization": f"Bearer {service_key}"},
+                timeout=5,
+                retries=1,
+            )
             if get_r.status_code == 200 and get_r.text:
                 rows = get_r.json()
                 if isinstance(rows, list) and len(rows) > 0 and rows[0].get("id"):
                     job_uuid = rows[0]["id"]
                     patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{job_uuid}"
-                    r4 = requests.patch(patch_url, json=body, headers=headers, timeout=10)
+                    r4 = _supabase_http_request('PATCH', patch_url, json=body, headers=headers, timeout=8, retries=1)
                     if _rows_updated(r4):
                         _invalidate_job_poll_row_cache(runpod_job_id)
                         return True
