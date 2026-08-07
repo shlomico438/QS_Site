@@ -96,7 +96,13 @@
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ static_asset_version }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}?v={{ static_asset_version }}">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    {# Non-blocking Inter: swap in after load; CSS already falls back to system-ui. #}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" media="print" onload="this.media='all'">
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap">
+    </noscript>
 
     {# defer non-critical scripts. socket.io stays blocking — body script calls io() during parse. #}
     {# docx + FileSaver are lazy-loaded on first export (qsEnsureExportLibs) to keep homepage light. #}
