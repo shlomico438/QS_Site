@@ -4915,8 +4915,134 @@ def _schedule_admin_payment_notify(**kwargs):
             args=(payload,),
             daemon=True,
         ).start()
+        # Meta Conversions API Purchase (server-side) — same payload keys.
+        _schedule_meta_capi_purchase(**payload)
     except Exception as e:
         logging.warning('schedule payment notify failed: %s', e)
+
+
+def _meta_pixel_id():
+    return (os.environ.get('META_PIXEL_ID') or '1955862168459302').strip()
+
+
+def _meta_capi_access_token():
+    return (
+        os.environ.get('META_CAPI_ACCESS_TOKEN')
+        or os.environ.get('FACEBOOK_CAPI_ACCESS_TOKEN')
+        or os.environ.get('FB_CAPI_ACCESS_TOKEN')
+        or ''
+    ).strip()
+
+
+def _meta_capi_sha256(value):
+    text = str(value or '').strip().lower()
+    if not text:
+        return None
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _send_meta_capi_purchase(payload):
+    """POST a Purchase event to Meta Conversions API. Returns True on HTTP success."""
+    if not isinstance(payload, dict):
+        return False
+    token = _meta_capi_access_token()
+    pixel_id = _meta_pixel_id()
+    if not token or not pixel_id:
+        logging.info('Meta CAPI Purchase skipped (set META_CAPI_ACCESS_TOKEN / META_PIXEL_ID)')
+        return False
+
+    user_id = str(payload.get('user_id') or '').strip()
+    email = str(payload.get('email') or '').strip()
+    if user_id and not email:
+        auth_user = _supabase_admin_get_user(user_id)
+        if isinstance(auth_user, dict):
+            email = str(auth_user.get('email') or '').strip()
+
+    try:
+        value = float(payload.get('amount') if payload.get('amount') is not None else 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    currency = str(payload.get('currency') or 'ILS').strip().upper() or 'ILS'
+    if value <= 0:
+        logging.info('Meta CAPI Purchase skipped: non-positive amount order=%s', payload.get('order_ref'))
+        return False
+
+    event_id = str(payload.get('order_ref') or payload.get('event_id') or '').strip()
+    if not event_id:
+        event_id = f"qs_{user_id}_{int(time.time())}"
+
+    user_data = {}
+    em = _meta_capi_sha256(email)
+    if em:
+        user_data['em'] = [em]
+    if user_id:
+        # External id helps match logged-in purchasers without sending raw PII.
+        user_data['external_id'] = [_meta_capi_sha256(user_id)]
+
+    event = {
+        'event_name': 'Purchase',
+        'event_time': int(time.time()),
+        'event_id': event_id,
+        'action_source': 'website',
+        'user_data': user_data,
+        'custom_data': {
+            'currency': currency,
+            'value': round(value, 2),
+            'content_type': 'product',
+            'content_ids': [str(payload.get('bundle_id') or payload.get('plan') or 'credits')],
+            'num_items': 1,
+        },
+    }
+    if payload.get('event_source_url'):
+        event['event_source_url'] = str(payload.get('event_source_url'))
+
+    url = f"https://graph.facebook.com/v21.0/{pixel_id}/events"
+    try:
+        r = requests.post(
+            url,
+            params={'access_token': token},
+            json={'data': [event]},
+            timeout=12,
+        )
+        if r.status_code >= 400:
+            logging.warning(
+                'Meta CAPI Purchase failed HTTP %s: %s',
+                r.status_code,
+                (r.text or '')[:300],
+            )
+            return False
+        logging.info(
+            'Meta CAPI Purchase sent pixel=%s order=%s value=%s %s',
+            pixel_id,
+            event_id[:32],
+            value,
+            currency,
+        )
+        return True
+    except Exception as e:
+        logging.warning('Meta CAPI Purchase error: %s', e)
+        return False
+
+
+def _schedule_meta_capi_purchase(**kwargs):
+    """Fire-and-forget Meta CAPI Purchase after a newly credited payment."""
+    try:
+        payload = dict(kwargs or {})
+        if not payload.get('user_id'):
+            return
+        try:
+            amount = float(payload.get('amount') if payload.get('amount') is not None else 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if amount <= 0:
+            return
+        threading.Thread(
+            target=_send_meta_capi_purchase,
+            args=(payload,),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        logging.warning('schedule Meta CAPI Purchase failed: %s', e)
 
 
 def _user_credits_get(user_id):
@@ -7405,15 +7531,20 @@ def api_stripe_confirm_checkout_session():
         row = _user_credits_add_minutes(user_id, minutes)
         _stripe_credit_purchase_mark_credited(session_id)
         try:
-            amount_ils = int((bundle or {}).get('amount_ils') or (purchase or {}).get('amount_ils') or 0)
+            amount_total = session.get('amount_total')
+            if amount_total is not None:
+                amount = float(amount_total) / 100.0
+            else:
+                amount = float((bundle or {}).get('amount_ils') or (purchase or {}).get('amount_ils') or 0)
         except (TypeError, ValueError, AttributeError):
-            amount_ils = 0
+            amount = 0.0
+        currency = str(session.get('currency') or 'ils').strip().upper() or 'ILS'
         _schedule_admin_payment_notify(
             user_id=user_id,
             provider='stripe',
             minutes=minutes,
-            amount=amount_ils,
-            currency='ILS',
+            amount=amount,
+            currency=currency,
             bundle_id=bundle_id,
             order_ref=session_id,
             credit_minutes_after=int((row or {}).get('credit_minutes') or 0),

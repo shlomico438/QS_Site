@@ -497,6 +497,20 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
             "billing_cycle_ends_at": account.get("billing_cycle_ends_at"),
         },
     )
+    try:
+        amount = float(payment.get("amount_ils") or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    sa = _sa()
+    sa._schedule_meta_capi_purchase(
+        user_id=user_id,
+        provider="cardcom",
+        amount=amount,
+        currency="ILS",
+        plan=plan,
+        order_ref=order_id,
+        event_source_url="https://quickscribe.co.il/medical",
+    )
     return {"ok": True, "alreadyActivated": False, **medical_account_public(account)}
 
 
@@ -634,6 +648,16 @@ def _charge_medical_renewal(account: dict) -> dict:
                 "billing_cycle_started_at": account_after.get("billing_cycle_started_at"),
                 "billing_cycle_ends_at": account_after.get("billing_cycle_ends_at"),
             },
+        )
+        sa = _sa()
+        sa._schedule_meta_capi_purchase(
+            user_id=user_id,
+            provider="cardcom",
+            amount=amount_ils,
+            currency="ILS",
+            plan=plan,
+            order_ref=order_id,
+            event_source_url="https://quickscribe.co.il/medical",
         )
         return {
             "ok": True,
