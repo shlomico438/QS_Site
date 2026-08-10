@@ -88,8 +88,15 @@
           if (window.__QS_AUTH_MODAL_USER_OPENED === true) return;
           var modal = document.getElementById('auth-modal');
           if (!modal) return;
-          modal.style.display = 'none';
-          try { modal.setAttribute('aria-hidden', 'true'); } catch (e) {}
+          /* Avoid a MutationObserver loop: write only when state actually changes. */
+          if (String(modal.style.display || '').toLowerCase() !== 'none') {
+            modal.style.display = 'none';
+          }
+          try {
+            if (modal.getAttribute('aria-hidden') !== 'true') {
+              modal.setAttribute('aria-hidden', 'true');
+            }
+          } catch (e) {}
         }
 
         document.addEventListener('DOMContentLoaded', function () {
