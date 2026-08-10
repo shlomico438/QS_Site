@@ -533,10 +533,13 @@ except ImportError:
 
 
 def _resolve_static_asset_version():
-    """Cache-bust query for static CSS/JS (avoids stale CDN/browser CSS after deploy)."""
+    """Content-based cache-bust query for static CSS/JS.
+
+    Koyeb build artifacts can have normalized mtimes (for example 315532801,
+    the 1980 ZIP epoch), so an mtime-only version can remain unchanged across
+    deployments and leave browsers/CDNs running old JavaScript for a year.
+    """
     override = (os.environ.get('QS_STATIC_VERSION') or '').strip()
-    if override:
-        return override
     static_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
     candidates = [
         os.path.join(static_root, 'style.css'),
@@ -546,35 +549,31 @@ def _resolve_static_asset_version():
         os.path.join(static_root, 'js', 'translations.js'),
         os.path.join(static_root, 'js', 'qs_auth_shell.js'),
     ]
-    showcase_dir = os.path.join(static_root, 'images', 'showcase')
-    try:
-        for name in os.listdir(showcase_dir):
-            path = os.path.join(showcase_dir, name)
-            if os.path.isfile(path):
-                candidates.append(path)
-    except OSError:
-        pass
-    mtimes = []
-    for path in candidates:
+
+    digest = hashlib.sha256()
+    files_hashed = 0
+    for path in sorted(candidates):
         try:
-            mtimes.append(int(os.path.getmtime(path)))
+            digest.update(os.path.relpath(path, static_root).replace('\\', '/').encode('utf-8'))
+            with open(path, 'rb') as asset:
+                for chunk in iter(lambda: asset.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            files_hashed += 1
         except OSError:
             continue
-    return str(max(mtimes)) if mtimes else '1'
+    content_version = digest.hexdigest()[:16] if files_hashed else '1'
+    return f'{override}-{content_version}' if override else content_version
 
 
 STATIC_ASSET_VERSION = _resolve_static_asset_version()
 
-# Recompute from file mtimes at most once per _STATIC_VERSION_TTL_SEC so a long-running
-# server process (no restart on static file edits) still picks up CSS/JS changes quickly,
-# without doing filesystem stats on every single request.
+# Recompute periodically so local/static-only edits are picked up without restarting.
+# Production deployments compute a fresh content hash during process startup.
 _STATIC_VERSION_TTL_SEC = 5
 _static_asset_version_cache = {'value': STATIC_ASSET_VERSION, 'checked_at': 0.0}
 
 
 def _get_static_asset_version():
-    if os.environ.get('QS_STATIC_VERSION'):
-        return STATIC_ASSET_VERSION
     now = time.time()
     if (now - _static_asset_version_cache['checked_at']) >= _STATIC_VERSION_TTL_SEC:
         _static_asset_version_cache['value'] = _resolve_static_asset_version()
