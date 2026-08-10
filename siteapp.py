@@ -4720,7 +4720,7 @@ def _supabase_admin_merge_user_metadata(user_id, patch_meta, current_user=None):
 
 
 def _claim_admin_new_registration_notify(user_id):
-    """Return True only for the caller that successfully claims notify.
+    """Return a claim token only for the caller that successfully claims notify.
 
     JWT user_metadata is stale across ensure-welcome calls, so we must read/write
     Supabase Admin — then claim *before* SMTP so later requests (and most races)
@@ -4728,6 +4728,37 @@ def _claim_admin_new_registration_notify(user_id):
     """
     user_id = str(user_id or '').strip()
     if not user_id:
+        return None
+    current = _supabase_admin_get_user(user_id)
+    if not current:
+        return None
+    meta = current.get('user_metadata') or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    existing = meta.get('qs_admin_reg_notified')
+    if existing:
+        return None
+    claim_token = secrets.token_hex(12)
+    if not _supabase_admin_merge_user_metadata(
+        user_id, {'qs_admin_reg_notified': claim_token}, current_user=current
+    ):
+        return None
+    refreshed = _supabase_admin_get_user(user_id)
+    if not refreshed:
+        return None
+    rmeta = refreshed.get('user_metadata') or {}
+    if not isinstance(rmeta, dict):
+        rmeta = {}
+    if str(rmeta.get('qs_admin_reg_notified') or '') != claim_token:
+        return None
+    return claim_token
+
+
+def _finish_admin_new_registration_notify_claim(user_id, claim_token, sent):
+    """Finalize our claim: True after delivery, False after failure so a later request retries."""
+    user_id = str(user_id or '').strip()
+    claim_token = str(claim_token or '').strip()
+    if not user_id or not claim_token:
         return False
     current = _supabase_admin_get_user(user_id)
     if not current:
@@ -4735,27 +4766,13 @@ def _claim_admin_new_registration_notify(user_id):
     meta = current.get('user_metadata') or {}
     if not isinstance(meta, dict):
         meta = {}
-    existing = meta.get('qs_admin_reg_notified')
-    if existing:
+    if str(meta.get('qs_admin_reg_notified') or '') != claim_token:
         return False
-    claim_token = secrets.token_hex(12)
-    if not _supabase_admin_merge_user_metadata(
-        user_id, {'qs_admin_reg_notified': claim_token}, current_user=current
-    ):
-        return False
-    refreshed = _supabase_admin_get_user(user_id)
-    if not refreshed:
-        return False
-    rmeta = refreshed.get('user_metadata') or {}
-    if not isinstance(rmeta, dict):
-        rmeta = {}
-    if str(rmeta.get('qs_admin_reg_notified') or '') != claim_token:
-        return False
-    # Normalize to boolean True for stable future checks.
-    _supabase_admin_merge_user_metadata(
-        user_id, {'qs_admin_reg_notified': True}, current_user=refreshed
+    return _supabase_admin_merge_user_metadata(
+        user_id,
+        {'qs_admin_reg_notified': True if sent else False},
+        current_user=current,
     )
-    return True
 
 
 # Cross-request single-flight within one instance (Koyeb still needs Admin claim above).
@@ -4801,12 +4818,16 @@ def _maybe_notify_admin_new_registration(auth_user):
         _NEW_USER_NOTIFY_INFLIGHT.add(user_id)
     try:
         # Must use Admin API — JWT metadata never has qs_admin_reg_notified after we set it.
-        if not _claim_admin_new_registration_notify(user_id):
+        claim_token = _claim_admin_new_registration_notify(user_id)
+        if not claim_token:
             return
         if not _send_admin_new_user_registration_email(auth_user):
             logging.warning('new user registration email failed user=%s', user_id[:8])
-            # Leave flag set so we do not email-bomb on SMTP flakes; ops can check logs.
+            if not _finish_admin_new_registration_notify_claim(user_id, claim_token, False):
+                logging.warning('new user registration notify claim release failed user=%s', user_id[:8])
             return
+        if not _finish_admin_new_registration_notify_claim(user_id, claim_token, True):
+            logging.warning('new user registration notify success flag failed user=%s', user_id[:8])
         logging.info('new user registration email sent user=%s', user_id[:8])
     finally:
         with _NEW_USER_NOTIFY_LOCK:
