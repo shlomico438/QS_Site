@@ -13,7 +13,8 @@ window.__QS_AUTH_MODAL_USER_OPENED = false;
 try {
   document.documentElement.classList.add('qs-medical-entry');
   document.body.classList.add('medical-mode');
-  /* Guests land on the recording UI; registration is offered when they press the mic. */
+  /* Logged-out visitors start on the Medical landing screen, without an auth popup. */
+  document.body.classList.add('medical-onboarding-pending');
 } catch (e) {}
 </script>
 {% endif %}
@@ -333,7 +334,7 @@ try {
             </div>
         </div>
 
-        <section id="medical-onboarding-screen" class="medical-onboarding-screen" hidden>
+        <section id="medical-onboarding-screen" class="medical-onboarding-screen" {% if not medical_entry %}hidden{% endif %}>
             <div class="medical-onboarding-hero">
                 <span class="medical-onboarding-kicker">QuickScribe Medical</span>
                 <h1>AI Documentation for Healthcare Professionals</h1>

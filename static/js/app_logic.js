@@ -201,7 +201,12 @@ function _qsHasSupabaseAuthStorageHint() {
 /** True when a registered session exists — show recording now; account API may still gate later. */
 function qsMedicalOptimisticRecordingAccess() {
     if (window.__QS_UX_USER_SIGNED_IN === true) return true;
-    return _qsHasSupabaseAuthStorageHint();
+    try {
+        return _qsHasSupabaseAuthStorageHint()
+            && String(localStorage.getItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY) || '').trim() === '1';
+    } catch (_) {
+        return false;
+    }
 }
 window.qsMedicalOptimisticRecordingAccess = qsMedicalOptimisticRecordingAccess;
 
@@ -760,15 +765,9 @@ function qsMedicalApplyAccessState(account) {
     const onboarding = document.getElementById('medical-onboarding-screen');
     const pricingButton = document.getElementById('medical-open-pricing-btn');
     const billingButton = document.getElementById('user-menu-medical-billing');
-    // Guests stay on the recording UI. Only a real signed-in session (or account payload) may show onboarding.
-    const hasAccountPayload = !!(account && (
-        account.subscriptionPlan != null
-        || account.userId
-        || account.onboardingRequired != null
-        || account.allowed != null
-    ));
-    const signedIn = qsMedicalIsSignedInHint() || hasAccountPayload;
-    const pending = signedIn ? (!account || account.allowed !== true) : false;
+    // Logged-out visitors see the Medical landing screen. Recording opens only
+    // after sign-in/trial activation (or through an explicit guest-try flow).
+    const pending = !account || account.allowed !== true;
     try {
         if (!pending) localStorage.setItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY, '1');
         else if (account) localStorage.removeItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY);
@@ -2831,20 +2830,17 @@ function setMedicalMode(enabled, opts) {
     if (on) {
         clearSensitiveStorageForMedicalMode();
         // Registered + previously allowed → recording UI now.
-        // Guests also get recording UI; mic press offers register vs try.
-        // Signed-in without cached allow → onboarding until account fetch.
+        // Everyone else starts on the Medical landing/onboarding screen.
         try {
             if (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess()) {
                 document.body.classList.remove('medical-onboarding-pending');
-            } else if (window.__QS_UX_USER_SIGNED_IN) {
-                document.body.classList.add('medical-onboarding-pending');
             } else {
-                document.body.classList.remove('medical-onboarding-pending');
+                document.body.classList.add('medical-onboarding-pending');
                 const onboardingEl = document.getElementById('medical-onboarding-screen');
-                if (onboardingEl) onboardingEl.hidden = true;
+                if (onboardingEl) onboardingEl.hidden = false;
             }
         } catch (_) {
-            try { document.body.classList.remove('medical-onboarding-pending'); } catch (__) {}
+            try { document.body.classList.add('medical-onboarding-pending'); } catch (__) {}
         }
     } else {
         try { document.body.classList.remove('medical-onboarding-pending'); } catch (_) {}
