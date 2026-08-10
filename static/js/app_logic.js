@@ -320,8 +320,9 @@ function _qsClearStickyMedicalPreference() {
     window.isMedicalMode = false;
 }
 
-/** After sign-out always return to Core (regular). Sticky medical must not trap guests. */
+/** After sign-out, remain on Medical when logout started from the Medical product. */
 async function _qsSignOutThenMedicalOrReload() {
+    const returnToMedical = _qsWantsPostLogoutMedical();
     try { _qsClearStickyMedicalPreference(); } catch (_) {}
     await supabase.auth.signOut();
     const locale = String(
@@ -329,7 +330,7 @@ async function _qsSignOutThenMedicalOrReload() {
         (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
         'he'
     ).toLowerCase().split('-')[0];
-    const home = locale === 'en' ? '/en' : '/';
+    const home = returnToMedical ? '/medical' : (locale === 'en' ? '/en' : '/');
     try {
         window.location.assign(home);
     } catch (_) {
