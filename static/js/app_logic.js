@@ -747,6 +747,7 @@ async function qsMedicalEnsureGuestTryOrRegister() {
     }
     if (choice === 'register') {
         try {
+            window.__QS_AUTH_MODAL_USER_OPENED = true;
             isSignUpMode = true;
             if (typeof applyAuthModalMode === 'function') applyAuthModalMode();
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -989,6 +990,7 @@ function qsWireMedicalSaasOnboarding() {
     if (!openAuthBtn || openAuthBtn.dataset.qsWired === '1') return;
     openAuthBtn.dataset.qsWired = '1';
     openAuthBtn.addEventListener('click', () => {
+        window.__QS_AUTH_MODAL_USER_OPENED = true;
         isSignUpMode = true;
         applyAuthModalMode();
         if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -1007,6 +1009,7 @@ function qsWireMedicalSaasOnboarding() {
     }
     if (openLoginBtn) {
         openLoginBtn.addEventListener('click', () => {
+            window.__QS_AUTH_MODAL_USER_OPENED = true;
             isSignUpMode = false;
             qsMedicalPendingOnboardingClear();
             applyAuthModalMode();
@@ -4919,7 +4922,26 @@ window.qsCloseMobileNav = function qsCloseMobileNav() {
     }
 };
 
-window.toggleModal = function(show) {
+function qsShouldSkipInitialRegistrationPrompt() {
+    try {
+        if (window.__QS_SKIP_INITIAL_REG_PROMPT === true) return true;
+        if (window.__QS_MEDICAL_URL_ENTRY === true || window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH === true) return true;
+        if (window.isMedicalMode === true) return true;
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return true;
+        if (document.documentElement.classList.contains('qs-medical-entry')) return true;
+        if (document.body.classList.contains('medical-mode')) return true;
+        const path = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
+        if (path === '/medical' || path.endsWith('/medical')) return true;
+    } catch (_) {}
+    return false;
+}
+window.qsShouldSkipInitialRegistrationPrompt = qsShouldSkipInitialRegistrationPrompt;
+
+window.toggleModal = function(show, opts) {
+    // Homepage auto-prompt must not open on medical (opts.autoPrompt from maybeShowInitialRegistrationPrompt).
+    if (show && opts && opts.autoPrompt && qsShouldSkipInitialRegistrationPrompt()) {
+        return;
+    }
     if (show) {
         try { window.qsCloseMobileNav(); } catch (_) {}
         // Save the key before the user starts logging in
@@ -5308,12 +5330,7 @@ async function maybeShowInitialRegistrationPrompt() {
         const modal = document.getElementById('auth-modal');
         if (!modal) return;
         // Medical: guests land on the recorder; registration is offered on mic press, not on load.
-        try {
-            if (window.isMedicalMode === true || window.__QS_MEDICAL_URL_ENTRY === true) return;
-            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
-            const path = String(window.location.pathname || '');
-            if (path === '/medical' || path.endsWith('/medical')) return;
-        } catch (_) {}
+        if (qsShouldSkipInitialRegistrationPrompt()) return;
         const user = await qsGetAuthUserForUi({ waitMs: 5000 });
         if (user) return;
         if (window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE === true) return;
@@ -5323,7 +5340,7 @@ async function maybeShowInitialRegistrationPrompt() {
         } catch (_) {}
         isSignUpMode = true;
         applyAuthModalMode();
-        if (typeof window.toggleModal === 'function') window.toggleModal(true);
+        if (typeof window.toggleModal === 'function') window.toggleModal(true, { autoPrompt: true });
     } catch (_) {}
 }
 
@@ -5781,6 +5798,7 @@ async function setupNavbarAuth(userOverride) {
         qsSetNavAuthVisible(btn, !user);
         btn.onclick = (e) => {
             e.preventDefault();
+            window.__QS_AUTH_MODAL_USER_OPENED = true;
             if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
                 isSignUpMode = false;
                 qsMedicalPendingOnboardingClear();
@@ -10938,7 +10956,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } catch (_) {}
             }
         } catch (_) {}
-        if (typeof maybeShowInitialRegistrationPrompt === 'function') {
+        // Never schedule the homepage registration prompt on /medical (even if flags race).
+        if (!isMedicalEntry && !qsShouldSkipInitialRegistrationPrompt()
+            && typeof maybeShowInitialRegistrationPrompt === 'function') {
             setTimeout(() => {
                 void maybeShowInitialRegistrationPrompt();
             }, 1400);

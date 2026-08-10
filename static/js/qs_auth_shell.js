@@ -18,6 +18,13 @@
         const modal = qsAuthModalEl();
         if (!modal) return;
         if (show) {
+            // Medical: ignore auto-open until the user explicitly opens auth.
+            if (
+                (window.__QS_SKIP_INITIAL_REG_PROMPT === true || window.__QS_MEDICAL_URL_ENTRY === true)
+                && window.__QS_AUTH_MODAL_USER_OPENED !== true
+            ) {
+                return;
+            }
             try { document.body.appendChild(modal); } catch (_) {}
             modal.style.zIndex = '14000';
             modal.style.display = 'flex';
@@ -35,6 +42,7 @@
             // onclick so setupNavbarAuth can replace it later without double-firing.
             btn.onclick = function (e) {
                 if (e && e.preventDefault) e.preventDefault();
+                window.__QS_AUTH_MODAL_USER_OPENED = true;
                 if (typeof window.toggleModal === 'function') window.toggleModal(true);
             };
         });
@@ -89,9 +97,11 @@
             if (!modal) return;
             const open = String(modal.style.display || '').toLowerCase() === 'flex'
                 || modal.classList.contains('is-open');
-            if (open && typeof window.toggleModal === 'function') {
+            if (open && window.__QS_AUTH_MODAL_USER_OPENED && typeof window.toggleModal === 'function') {
                 // Re-run full open path (medical fields, i18n mode, snapshot).
                 window.toggleModal(true);
+            } else if (open && !window.__QS_AUTH_MODAL_USER_OPENED && window.__QS_SKIP_INITIAL_REG_PROMPT) {
+                window.toggleModal(false);
             }
         });
     }

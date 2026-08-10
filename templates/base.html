@@ -58,7 +58,26 @@
       window.__QS_MEDICAL_URL_ENTRY = true;
       window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
       window.isMedicalMode = true;
+      /* Guests: never auto-open registration on load (mic press offers register/try). */
+      window.__QS_SKIP_INITIAL_REG_PROMPT = true;
+      window.__QS_AUTH_MODAL_USER_OPENED = false;
+      window.__QS_MEDICAL_BLOCK_AUTO_AUTH_UNTIL = Date.now() + 12000;
       document.documentElement.classList.add('qs-medical-entry');
+      /* Close auth modal if a stale app_logic build still auto-opens it on /medical. */
+      (function () {
+        function qsCloseStaleAutoAuthModal() {
+          if (window.__QS_AUTH_MODAL_USER_OPENED) return;
+          var modal = document.getElementById('auth-modal');
+          if (!modal) return;
+          var open = String(modal.style.display || '').toLowerCase() === 'flex';
+          if (!open) return;
+          modal.style.display = 'none';
+          try { modal.setAttribute('aria-hidden', 'true'); } catch (e) {}
+        }
+        [1600, 2200, 3200, 5500, 8000].forEach(function (ms) {
+          setTimeout(qsCloseStaleAutoAuthModal, ms);
+        });
+      })();
     </script>
     <style>
       /* Paint medical chrome before app_logic.js finishes loading (avoids 1–2s regular-mode flash). */

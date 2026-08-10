@@ -8,17 +8,12 @@
 window.__QS_MEDICAL_URL_ENTRY = true;
 window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH = true;
 window.isMedicalMode = true;
+window.__QS_SKIP_INITIAL_REG_PROMPT = true;
+window.__QS_AUTH_MODAL_USER_OPENED = false;
+window.__QS_MEDICAL_BLOCK_AUTO_AUTH_UNTIL = Date.now() + 12000;
 try {
   document.documentElement.classList.add('qs-medical-entry');
   document.body.classList.add('medical-mode');
-  /* Skip pricing/onboarding flash when a Supabase session already exists (registered user). */
-  var _qsMedAuth = false;
-  try {
-    for (var _i = 0; _i < localStorage.length; _i++) {
-      var _k = localStorage.key(_i) || '';
-      if (_k.indexOf('sb-') === 0 && _k.indexOf('auth') !== -1) { _qsMedAuth = true; break; }
-    }
-  } catch (e2) {}
   /* Guests land on the recording UI; registration is offered when they press the mic. */
 } catch (e) {}
 </script>
