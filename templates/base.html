@@ -62,9 +62,52 @@
       window.__QS_SKIP_INITIAL_REG_PROMPT = true;
       window.__QS_AUTH_MODAL_USER_OPENED = false;
       document.documentElement.classList.add('qs-medical-entry');
+      /*
+       * Production-safe auth guard: cached scripts may still call toggleModal(true)
+       * on startup. The modal can render only after an explicit auth-related click.
+       */
+      (function () {
+        var explicitAuthSelector = [
+          '#nav-auth-btn',
+          '#nav-auth-btn-mobile',
+          '#medical-open-auth-btn',
+          '#medical-open-login-btn',
+          '#medical-guest-try-register'
+        ].join(',');
+
+        document.addEventListener('click', function (event) {
+          var target = event.target && event.target.closest
+            ? event.target.closest(explicitAuthSelector)
+            : null;
+          if (!target) return;
+          window.__QS_AUTH_MODAL_USER_OPENED = true;
+          document.documentElement.classList.add('qs-auth-explicit-open');
+        }, true);
+
+        function closeUnrequestedMedicalAuth() {
+          if (window.__QS_AUTH_MODAL_USER_OPENED === true) return;
+          var modal = document.getElementById('auth-modal');
+          if (!modal) return;
+          modal.style.display = 'none';
+          try { modal.setAttribute('aria-hidden', 'true'); } catch (e) {}
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+          closeUnrequestedMedicalAuth();
+          var modal = document.getElementById('auth-modal');
+          if (!modal || typeof MutationObserver === 'undefined') return;
+          new MutationObserver(closeUnrequestedMedicalAuth).observe(modal, {
+            attributes: true,
+            attributeFilter: ['style', 'class', 'aria-hidden']
+          });
+        }, { once: true });
+      })();
     </script>
     <style>
       /* Paint medical chrome before app_logic.js finishes loading (avoids 1–2s regular-mode flash). */
+      html.qs-medical-entry:not(.qs-auth-explicit-open) #auth-modal {
+        display: none !important;
+      }
       html.qs-medical-entry #seo-home-content,
       html.qs-medical-entry #main-btn,
       html.qs-medical-entry #regular-record-btn { display: none !important; }
