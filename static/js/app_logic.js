@@ -666,12 +666,105 @@ function qsCloseMedicalPricingModal() {
 }
 window.qsCloseMedicalPricingModal = qsCloseMedicalPricingModal;
 
+function qsMedicalIsSignedInHint() {
+    return !!(
+        window.__QS_UX_USER_SIGNED_IN
+        || window.__QS_MEDICAL_EXISTING_AUTH_USER
+        || (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess())
+    );
+}
+
+function qsMedicalGuestTryAccepted() {
+    try {
+        return String(sessionStorage.getItem('qs_medical_guest_try') || '').trim() === '1'
+            || window.__QS_MEDICAL_GUEST_TRY === true;
+    } catch (_) {
+        return window.__QS_MEDICAL_GUEST_TRY === true;
+    }
+}
+
+function qsMedicalMarkGuestTryAccepted() {
+    window.__QS_MEDICAL_GUEST_TRY = true;
+    try { sessionStorage.setItem('qs_medical_guest_try', '1'); } catch (_) {}
+}
+
+function qsShowMedicalGuestTryModal() {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('medical-guest-try-modal');
+        const registerBtn = document.getElementById('medical-guest-try-register');
+        const tryBtn = document.getElementById('medical-guest-try-continue');
+        const cancelBtn = document.getElementById('medical-guest-try-cancel');
+        if (!modal || !registerBtn || !tryBtn) {
+            resolve('try');
+            return;
+        }
+        const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
+        const titleEl = document.getElementById('medical-guest-try-title');
+        const msgEl = document.getElementById('medical-guest-try-message');
+        if (titleEl) titleEl.textContent = T('medical_guest_try_title', 'שמרו על העבודה שלכם');
+        if (msgEl) {
+            msgEl.textContent = T(
+                'medical_guest_try_message',
+                'כדי למנוע אובדן נתונים וכדי שתוכלו להעתיק את התוצאה, עליכם להיות מחוברים לחשבון. ההרשמה היא בחינם.',
+            );
+        }
+        registerBtn.textContent = T('medical_guest_try_register', 'הרשמה בחינם');
+        tryBtn.textContent = T('medical_guest_try_continue', 'המשך במצב צפייה בלבד');
+        if (cancelBtn) cancelBtn.textContent = T('cancel', 'ביטול');
+        const cleanup = (choice) => {
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+            registerBtn.removeEventListener('click', onRegister);
+            tryBtn.removeEventListener('click', onTry);
+            if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
+            modal.removeEventListener('click', onBackdrop);
+            document.removeEventListener('keydown', onEsc);
+            resolve(choice);
+        };
+        const onRegister = () => cleanup('register');
+        const onTry = () => cleanup('try');
+        const onCancel = () => cleanup(null);
+        const onBackdrop = (e) => { if (e.target === modal) cleanup(null); };
+        const onEsc = (e) => { if (e.key === 'Escape') cleanup(null); };
+        registerBtn.addEventListener('click', onRegister);
+        tryBtn.addEventListener('click', onTry);
+        if (cancelBtn) cancelBtn.addEventListener('click', onCancel);
+        modal.addEventListener('click', onBackdrop);
+        document.addEventListener('keydown', onEsc);
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden', 'false');
+        try { registerBtn.focus(); } catch (_) {}
+    });
+}
+
+/** Guest mic gate: register → auth modal; try → allow recording for this session. */
+async function qsMedicalEnsureGuestTryOrRegister() {
+    if (qsMedicalGuestTryAccepted()) return 'try';
+    const choice = await qsShowMedicalGuestTryModal();
+    if (choice === 'try') {
+        qsMedicalMarkGuestTryAccepted();
+        return 'try';
+    }
+    if (choice === 'register') {
+        try {
+            isSignUpMode = true;
+            if (typeof applyAuthModalMode === 'function') applyAuthModalMode();
+            if (typeof window.toggleModal === 'function') window.toggleModal(true);
+        } catch (_) {}
+        return 'register';
+    }
+    return null;
+}
+window.qsMedicalEnsureGuestTryOrRegister = qsMedicalEnsureGuestTryOrRegister;
+
 function qsMedicalApplyAccessState(account) {
     window.__QS_MEDICAL_ACCOUNT = account || null;
     const onboarding = document.getElementById('medical-onboarding-screen');
     const pricingButton = document.getElementById('medical-open-pricing-btn');
     const billingButton = document.getElementById('user-menu-medical-billing');
-    const pending = !account || account.allowed !== true;
+    // Guests stay on the recording UI; signed-in users without access still see onboarding/pricing.
+    const signedIn = qsMedicalIsSignedInHint() || !!(account && (account.subscriptionPlan != null || account.userId || account.onboardingRequired != null));
+    const pending = signedIn ? (!account || account.allowed !== true) : false;
     try {
         if (!pending) localStorage.setItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY, '1');
         else if (account) localStorage.removeItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY);
@@ -2731,15 +2824,21 @@ function setMedicalMode(enabled, opts) {
     try { qsSyncNavLogoHref(); } catch (_) {}
     if (on) {
         clearSensitiveStorageForMedicalMode();
-        // Registered + previously allowed → recording UI now; otherwise show onboarding until account fetch.
+        // Registered + previously allowed → recording UI now.
+        // Guests also get recording UI; mic press offers register vs try.
+        // Signed-in without cached allow → onboarding until account fetch.
         try {
             if (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess()) {
                 document.body.classList.remove('medical-onboarding-pending');
-            } else {
+            } else if (window.__QS_UX_USER_SIGNED_IN) {
                 document.body.classList.add('medical-onboarding-pending');
+            } else {
+                document.body.classList.remove('medical-onboarding-pending');
+                const onboardingEl = document.getElementById('medical-onboarding-screen');
+                if (onboardingEl) onboardingEl.hidden = true;
             }
         } catch (_) {
-            try { document.body.classList.add('medical-onboarding-pending'); } catch (__) {}
+            try { document.body.classList.remove('medical-onboarding-pending'); } catch (__) {}
         }
     } else {
         try { document.body.classList.remove('medical-onboarding-pending'); } catch (_) {}
@@ -4924,6 +5023,7 @@ function applyAuthModalMode() {
         else subtitleEl.textContent = T('sign_in_to_save');
     }
     if (signupFieldsEl) signupFieldsEl.style.display = (showMedicalProfile || (!isMedical && isSignUpMode)) ? 'block' : 'none';
+    // Specialty sits above Google so it clearly applies to both Google and email signup.
     if (specialtyWrap) specialtyWrap.style.display = showMedicalProfile ? 'block' : 'none';
     if (authSubmitBtnEl) {
         authSubmitBtnEl.textContent = isMedicalLogin
@@ -5207,6 +5307,13 @@ async function maybeShowInitialRegistrationPrompt() {
     try {
         const modal = document.getElementById('auth-modal');
         if (!modal) return;
+        // Medical: guests land on the recorder; registration is offered on mic press, not on load.
+        try {
+            if (window.isMedicalMode === true || window.__QS_MEDICAL_URL_ENTRY === true) return;
+            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
+            const path = String(window.location.pathname || '');
+            if (path === '/medical' || path.endsWith('/medical')) return;
+        } catch (_) {}
         const user = await qsGetAuthUserForUi({ waitMs: 5000 });
         if (user) return;
         if (window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE === true) return;
@@ -5634,6 +5741,10 @@ async function setupNavbarAuth(userOverride) {
 
     try { window.__QS_UX_USER_SIGNED_IN = !!user; } catch (_) {}
     try { document.body.classList.toggle('qs-user-signed-in', !!user); } catch (_) {}
+    if (user) {
+        window.__QS_MEDICAL_GUEST_TRY = false;
+        try { sessionStorage.removeItem('qs_medical_guest_try'); } catch (_) {}
+    }
     try { if (typeof qsApplyMedicalPreferenceAfterAuth === 'function') qsApplyMedicalPreferenceAfterAuth(user); } catch (_) {}
     try { syncTranscriptCopyButtonUi(); } catch (_) {}
     if (user) {
@@ -14266,11 +14377,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!cfg || !cfg.use_aws_transcribe_stream) return null;
         const languageCode = String(cfg.transcribe_stream_language || 'he-IL');
         const transport = String(cfg.transcribe_stream_transport || 'socketio').toLowerCase();
+        const accessToken = await qsSupabaseAccessToken();
+        const guestTry = !accessToken && qsMedicalGuestTryAccepted();
         const stream = new MedicalAwsTranscribeStream({
             languageCode,
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
             transport,
-            accessToken: await qsSupabaseAccessToken(),
+            accessToken,
+            guestTry,
             onPartial: (t) => {
                 const next = String(t || '').trim();
                 const combined = transcriptPrefix && next
@@ -14785,25 +14899,32 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         if (isMedicalModeEnabled()) {
-            try {
-                let account = window.__QS_MEDICAL_ACCOUNT;
-                if (!account || account.allowed !== true) {
-                    account = await qsMedicalAccountFetch();
-                }
-                if (!account || account.allowed !== true) {
-                    qsMedicalApplyAccessState(account);
-                    qsMedicalSetOnboardingMessage(
-                        account?.onboardingRequired
-                            ? 'יש להפעיל את תקופת הניסיון לפני תחילת הקלטה.'
-                            : 'נדרש מסלול רפואי פעיל כדי להתחיל הקלטה.',
-                        true,
-                    );
+            let accessToken = '';
+            try { accessToken = await qsSupabaseAccessToken(); } catch (_) { accessToken = ''; }
+            if (!accessToken) {
+                const guestChoice = await qsMedicalEnsureGuestTryOrRegister();
+                if (guestChoice !== 'try') return;
+            } else {
+                try {
+                    let account = window.__QS_MEDICAL_ACCOUNT;
+                    if (!account || account.allowed !== true) {
+                        account = await qsMedicalAccountFetch();
+                    }
+                    if (!account || account.allowed !== true) {
+                        qsMedicalApplyAccessState(account);
+                        qsMedicalSetOnboardingMessage(
+                            account?.onboardingRequired
+                                ? 'יש להפעיל את תקופת הניסיון לפני תחילת הקלטה.'
+                                : 'נדרש מסלול רפואי פעיל כדי להתחיל הקלטה.',
+                            true,
+                        );
+                        return;
+                    }
+                } catch (err) {
+                    qsMedicalApplyAccessState(null);
+                    qsMedicalSetOnboardingMessage('לא ניתן לאמת את החשבון כעת. נסו שוב.', true);
                     return;
                 }
-            } catch (err) {
-                qsMedicalApplyAccessState(null);
-                qsMedicalSetOnboardingMessage('לא ניתן לאמת את החשבון כעת. נסו שוב.', true);
-                return;
             }
         }
         window._qsMedicalStreamAwaitingSummary = null;
@@ -15000,11 +15121,35 @@ document.addEventListener('DOMContentLoaded', () => {
                     const file = await buildMedicalRecordingFile(prefix, mime);
                     let uploadedViaWarmup = false;
                     if (isMedicalModeEnabled() && streamOk) {
-                        uploadedViaWarmup = await uploadWarmedMedicalRecordingWithStream(
-                            file,
-                            streamResult,
-                            window.__QS_MEDICAL_LAST_RECORDING_MS
-                        );
+                        let saveToken = '';
+                        try { saveToken = await qsSupabaseAccessToken(); } catch (_) { saveToken = ''; }
+                        if (!saveToken) {
+                            // Guest try: keep transcript on screen; do not persist.
+                            const keepTx = (typeof resolveMedicalStreamTranscript === 'function'
+                                ? resolveMedicalStreamTranscript(streamResult)
+                                : '') || String((streamResult && streamResult.transcript) || '').trim();
+                            if (keepTx && typeof renderMedicalPlainStreamTranscript === 'function') {
+                                window.medicalActiveTab = 'transcript';
+                                try { renderMedicalPlainStreamTranscript(keepTx); } catch (_) {}
+                            }
+                            window._medicalHasResult = true;
+                            try { if (typeof updateMedicalTabUi === 'function') updateMedicalTabUi(); } catch (_) {}
+                            const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
+                            if (typeof showStatus === 'function') {
+                                showStatus(
+                                    T('medical_guest_try_unsaved', 'התמלול זמין במסך — כדי לשמור אותו יש להירשם.'),
+                                    false,
+                                    { duration: 8000 },
+                                );
+                            }
+                            uploadedViaWarmup = true;
+                        } else {
+                            uploadedViaWarmup = await uploadWarmedMedicalRecordingWithStream(
+                                file,
+                                streamResult,
+                                window.__QS_MEDICAL_LAST_RECORDING_MS
+                            );
+                        }
                     }
                     if (!uploadedViaWarmup) {
                         if (streamOnly) {

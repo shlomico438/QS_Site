@@ -19,9 +19,7 @@ try {
       if (_k.indexOf('sb-') === 0 && _k.indexOf('auth') !== -1) { _qsMedAuth = true; break; }
     }
   } catch (e2) {}
-  if (!_qsMedAuth) {
-    document.body.classList.add('medical-onboarding-pending');
-  }
+  /* Guests land on the recording UI; registration is offered when they press the mic. */
 } catch (e) {}
 </script>
 {% endif %}
@@ -341,7 +339,7 @@ try {
             </div>
         </div>
 
-        <section id="medical-onboarding-screen" class="medical-onboarding-screen" {% if not medical_entry %}hidden{% endif %}>
+        <section id="medical-onboarding-screen" class="medical-onboarding-screen" hidden>
             <div class="medical-onboarding-hero">
                 <span class="medical-onboarding-kicker">QuickScribe Medical</span>
                 <h1>AI Documentation for Healthcare Professionals</h1>
@@ -439,6 +437,21 @@ try {
                 <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
                 <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
 
+                <div id="auth-medical-specialty-wrap" style="display:none; text-align:start;">
+                    <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;">בחרו תחום מקצועי</label>
+                    <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
+                        <option value="">בחרו תחום מקצועי</option>
+                        <option value="physician">רפואה</option>
+                        <option value="psychologist">פסיכולוגיה</option>
+                        <option value="occupational_therapist">ריפוי בעיסוק</option>
+                        <option value="physiotherapist">פיזיותרפיה</option>
+                        <option value="speech_therapist">קלינאות תקשורת</option>
+                        <option value="nurse">סיעוד</option>
+                        <option value="social_worker">עבודה סוציאלית רפואית</option>
+                        <option value="other">מקצוע בריאות אחר</option>
+                    </select>
+                </div>
+
                 <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
                     <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;">
                         <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="14" height="14" alt="Google">
@@ -454,19 +467,6 @@ try {
 
                 <div id="signup-fields">
                     <input type="text" id="auth-name" data-i18n-placeholder="full_name" placeholder="Full Name (optional)" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
-                    <div id="auth-medical-specialty-wrap" style="display:none;">
-                        <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
-                            <option value="">בחרו תחום מקצועי</option>
-                            <option value="physician">רפואה</option>
-                            <option value="psychologist">פסיכולוגיה</option>
-                            <option value="occupational_therapist">ריפוי בעיסוק</option>
-                            <option value="physiotherapist">פיזיותרפיה</option>
-                            <option value="speech_therapist">קלינאות תקשורת</option>
-                            <option value="nurse">סיעוד</option>
-                            <option value="social_worker">עבודה סוציאלית רפואית</option>
-                            <option value="other">מקצוע בריאות אחר</option>
-                        </select>
-                    </div>
                 </div>
                 <input type="email" id="auth-email" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:6px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
                 <p id="auth-error" role="alert" aria-live="polite" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:8px; background:#fef2f2; color:#b91c1c; font-size:0.875rem; line-height:1.45; text-align:start;"></p>
@@ -526,6 +526,17 @@ try {
                     <button type="button" id="medical-wake-choice-record" class="medical-confirm-btn primary" data-i18n="medical_wake_choice_record">הקלט בזמן ההתכוננות</button>
                 </div>
                 <button type="button" id="medical-wake-choice-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
+            </div>
+        </div>
+        <div id="medical-guest-try-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-guest-try-title">
+                <h3 id="medical-guest-try-title" data-i18n="medical_guest_try_title">שמרו על העבודה שלכם</h3>
+                <p id="medical-guest-try-message" data-i18n="medical_guest_try_message">כדי למנוע אובדן נתונים וכדי שתוכלו להעתיק את התוצאה, עליכם להיות מחוברים לחשבון. ההרשמה היא בחינם.</p>
+                <div class="medical-confirm-modal-actions medical-wake-choice-actions">
+                    <button type="button" id="medical-guest-try-register" class="medical-confirm-btn primary" data-i18n="medical_guest_try_register">הרשמה בחינם</button>
+                    <button type="button" id="medical-guest-try-continue" class="medical-confirm-btn secondary" data-i18n="medical_guest_try_continue">המשך במצב צפייה בלבד</button>
+                </div>
+                <button type="button" id="medical-guest-try-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
             </div>
         </div>
         <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">

@@ -1010,11 +1010,16 @@ def register_transcribe_socketio_handlers(socketio) -> None:
     def on_medical_transcribe_start(data):
         sid = request.sid
         cfg = data if isinstance(data, dict) else {}
+        token = str(cfg.get('access_token') or cfg.get('accessToken') or '').strip()
+        guest_try = bool(cfg.get('guest_try') or cfg.get('guestTry'))
         try:
-            from medical_saas import medical_entitlement_for_access_token
-            allowed, _user_id, reason = medical_entitlement_for_access_token(
-                cfg.get('access_token') or cfg.get('accessToken')
-            )
+            if not token and guest_try:
+                # Live try-only stream: no persistence/save (upload APIs still require auth).
+                allowed, reason = True, 'guest_try'
+                logger.info('transcribe socketio guest_try allowed sid=%s', sid)
+            else:
+                from medical_saas import medical_entitlement_for_access_token
+                allowed, _user_id, reason = medical_entitlement_for_access_token(token)
         except Exception:
             logger.exception('transcribe socketio entitlement check failed sid=%s', sid)
             allowed, reason = False, 'medical_entitlement_unavailable'
@@ -1095,11 +1100,15 @@ def run_transcribe_websocket_session(ws) -> dict:
                 action = str(cfg.get('action') or '').strip().lower()
                 if action in ('start', 'config'):
                     if not authorized:
+                        token = str(cfg.get('access_token') or cfg.get('accessToken') or '').strip()
+                        guest_try = bool(cfg.get('guest_try') or cfg.get('guestTry'))
                         try:
-                            from medical_saas import medical_entitlement_for_access_token
-                            allowed, _user_id, reason = medical_entitlement_for_access_token(
-                                cfg.get('access_token') or cfg.get('accessToken')
-                            )
+                            if not token and guest_try:
+                                allowed, reason = True, 'guest_try'
+                                logger.info('transcribe websocket guest_try allowed')
+                            else:
+                                from medical_saas import medical_entitlement_for_access_token
+                                allowed, _user_id, reason = medical_entitlement_for_access_token(token)
                         except Exception:
                             logger.exception('transcribe websocket entitlement check failed')
                             allowed, reason = False, 'medical_entitlement_unavailable'

@@ -84,6 +84,7 @@ export class MedicalAwsTranscribeStream {
         this.languageCode = options.languageCode || 'he-IL';
         this.sampleRateHz = Number(options.sampleRateHz) || 16000;
         this.accessToken = String(options.accessToken || '').trim();
+        this.guestTry = options.guestTry === true;
         this.applySpeechGain = options.applySpeechGain !== false;
         this.transport = options.transport || 'socketio';
         this.onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
@@ -411,6 +412,7 @@ export class MedicalAwsTranscribeStream {
             sample_rate_hz: this.sampleRateHz,
             language_code: this.languageCode,
             access_token: this.accessToken,
+            guest_try: this.guestTry === true,
         });
 
         const readyTimer = setTimeout(() => {
@@ -470,6 +472,7 @@ export class MedicalAwsTranscribeStream {
             sample_rate_hz: this.sampleRateHz,
             language_code: this.languageCode,
             access_token: this.accessToken,
+            guest_try: this.guestTry === true,
         }));
 
         const readyTimer = setTimeout(() => {
