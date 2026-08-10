@@ -36,7 +36,7 @@
     };
 
     function qsWireEarlySignInButtons() {
-        ['nav-auth-btn', 'nav-auth-btn-mobile', 'medical-open-auth-btn', 'medical-open-login-btn'].forEach(function (id) {
+        ['nav-auth-btn', 'nav-auth-btn-mobile', 'medical-open-login-btn'].forEach(function (id) {
             const btn = document.getElementById(id);
             if (!btn) return;
             // onclick so setupNavbarAuth / medical wiring can replace it later without double-firing.
@@ -45,12 +45,25 @@
                 window.__QS_AUTH_MODAL_USER_OPENED = true;
                 if (id === 'medical-open-login-btn') {
                     try { window.isSignUpMode = false; } catch (_) {}
-                } else if (id === 'medical-open-auth-btn') {
-                    try { window.isSignUpMode = true; } catch (_) {}
                 }
                 if (typeof window.toggleModal === 'function') window.toggleModal(true);
             };
         });
+
+        const startTrialBtn = document.getElementById('medical-open-auth-btn');
+        if (startTrialBtn) {
+            startTrialBtn.onclick = function (e) {
+                if (window.__QS_APP_LOGIC_READY) return;
+                if (e && e.preventDefault) e.preventDefault();
+                // Before the main bundle loads, enter the guest workspace directly.
+                window.__QS_MEDICAL_GUEST_WORKSPACE = true;
+                window.__QS_MEDICAL_GUEST_TRY = false;
+                try { sessionStorage.removeItem('qs_medical_guest_try'); } catch (_) {}
+                document.body.classList.remove('medical-onboarding-pending');
+                const onboarding = document.getElementById('medical-onboarding-screen');
+                if (onboarding) onboarding.hidden = true;
+            };
+        }
     }
 
     function qsWhenAppLogicReady(fn) {

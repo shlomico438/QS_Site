@@ -676,6 +676,25 @@ function qsMedicalIsSignedInHint() {
     return !!(window.__QS_UX_USER_SIGNED_IN || window.__QS_MEDICAL_EXISTING_AUTH_USER);
 }
 
+function qsMedicalGuestWorkspaceEnabled() {
+    return window.__QS_MEDICAL_GUEST_WORKSPACE === true;
+}
+
+function qsMedicalEnterGuestWorkspace() {
+    window.__QS_MEDICAL_GUEST_WORKSPACE = true;
+    window.__QS_MEDICAL_GUEST_TRY = false;
+    try { sessionStorage.removeItem('qs_medical_guest_try'); } catch (_) {}
+    const onboarding = document.getElementById('medical-onboarding-screen');
+    document.body.classList.remove('medical-onboarding-pending');
+    if (onboarding) onboarding.hidden = true;
+    try {
+        if (typeof window.applyMedicalModeUi === 'function') {
+            window.applyMedicalModeUi();
+        }
+    } catch (_) {}
+}
+window.qsMedicalEnterGuestWorkspace = qsMedicalEnterGuestWorkspace;
+
 function qsMedicalGuestTryAccepted() {
     try {
         return String(sessionStorage.getItem('qs_medical_guest_try') || '').trim() === '1'
@@ -750,6 +769,7 @@ async function qsMedicalEnsureGuestTryOrRegister() {
     if (choice === 'register') {
         try {
             window.__QS_AUTH_MODAL_USER_OPENED = true;
+            document.documentElement.classList.add('qs-auth-explicit-open');
             isSignUpMode = true;
             if (typeof applyAuthModalMode === 'function') applyAuthModalMode();
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -765,9 +785,9 @@ function qsMedicalApplyAccessState(account) {
     const onboarding = document.getElementById('medical-onboarding-screen');
     const pricingButton = document.getElementById('medical-open-pricing-btn');
     const billingButton = document.getElementById('user-menu-medical-billing');
-    // Logged-out visitors see the Medical landing screen. Recording opens only
-    // after sign-in/trial activation (or through an explicit guest-try flow).
-    const pending = !account || account.allowed !== true;
+    // Logged-out visitors start on the landing screen. After explicitly choosing
+    // "Start trial", they may enter the guest workspace and get the auth/try choice on mic press.
+    const pending = (!account || account.allowed !== true) && !qsMedicalGuestWorkspaceEnabled();
     try {
         if (!pending) localStorage.setItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY, '1');
         else if (account) localStorage.removeItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY);
@@ -991,8 +1011,17 @@ function qsWireMedicalSaasOnboarding() {
     const openAuthBtn = document.getElementById('medical-open-auth-btn');
     if (!openAuthBtn || openAuthBtn.dataset.qsWired === '1') return;
     openAuthBtn.dataset.qsWired = '1';
-    openAuthBtn.addEventListener('click', () => {
+    openAuthBtn.addEventListener('click', async () => {
+        let token = '';
+        try { token = await qsSupabaseAccessToken(); } catch (_) { token = ''; }
+        if (!token) {
+            // Guest: show the recorder first. The mic itself asks register vs view-only.
+            qsMedicalEnterGuestWorkspace();
+            return;
+        }
+        // Signed-in user without an active Medical trial still needs profile activation.
         window.__QS_AUTH_MODAL_USER_OPENED = true;
+        document.documentElement.classList.add('qs-auth-explicit-open');
         isSignUpMode = true;
         applyAuthModalMode();
         if (typeof window.toggleModal === 'function') window.toggleModal(true);
@@ -1012,6 +1041,7 @@ function qsWireMedicalSaasOnboarding() {
     if (openLoginBtn) {
         openLoginBtn.addEventListener('click', () => {
             window.__QS_AUTH_MODAL_USER_OPENED = true;
+            document.documentElement.classList.add('qs-auth-explicit-open');
             isSignUpMode = false;
             qsMedicalPendingOnboardingClear();
             applyAuthModalMode();
@@ -2830,10 +2860,16 @@ function setMedicalMode(enabled, opts) {
     if (on) {
         clearSensitiveStorageForMedicalMode();
         // Registered + previously allowed → recording UI now.
+        // An explicit guest workspace choice also stays on the recorder.
         // Everyone else starts on the Medical landing/onboarding screen.
         try {
-            if (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess()) {
+            if (
+                qsMedicalGuestWorkspaceEnabled()
+                || (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess())
+            ) {
                 document.body.classList.remove('medical-onboarding-pending');
+                const onboardingEl = document.getElementById('medical-onboarding-screen');
+                if (onboardingEl) onboardingEl.hidden = true;
             } else {
                 document.body.classList.add('medical-onboarding-pending');
                 const onboardingEl = document.getElementById('medical-onboarding-screen');
