@@ -666,12 +666,9 @@ function qsCloseMedicalPricingModal() {
 }
 window.qsCloseMedicalPricingModal = qsCloseMedicalPricingModal;
 
+/** Confirmed signed-in only — do not treat leftover sb-* storage as a session (that forced guest onboarding). */
 function qsMedicalIsSignedInHint() {
-    return !!(
-        window.__QS_UX_USER_SIGNED_IN
-        || window.__QS_MEDICAL_EXISTING_AUTH_USER
-        || (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess())
-    );
+    return !!(window.__QS_UX_USER_SIGNED_IN || window.__QS_MEDICAL_EXISTING_AUTH_USER);
 }
 
 function qsMedicalGuestTryAccepted() {
@@ -763,8 +760,14 @@ function qsMedicalApplyAccessState(account) {
     const onboarding = document.getElementById('medical-onboarding-screen');
     const pricingButton = document.getElementById('medical-open-pricing-btn');
     const billingButton = document.getElementById('user-menu-medical-billing');
-    // Guests stay on the recording UI; signed-in users without access still see onboarding/pricing.
-    const signedIn = qsMedicalIsSignedInHint() || !!(account && (account.subscriptionPlan != null || account.userId || account.onboardingRequired != null));
+    // Guests stay on the recording UI. Only a real signed-in session (or account payload) may show onboarding.
+    const hasAccountPayload = !!(account && (
+        account.subscriptionPlan != null
+        || account.userId
+        || account.onboardingRequired != null
+        || account.allowed != null
+    ));
+    const signedIn = qsMedicalIsSignedInHint() || hasAccountPayload;
     const pending = signedIn ? (!account || account.allowed !== true) : false;
     try {
         if (!pending) localStorage.setItem(QS_MEDICAL_ACCOUNT_ALLOWED_KEY, '1');

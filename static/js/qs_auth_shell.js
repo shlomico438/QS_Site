@@ -36,13 +36,18 @@
     };
 
     function qsWireEarlySignInButtons() {
-        ['nav-auth-btn', 'nav-auth-btn-mobile'].forEach(function (id) {
+        ['nav-auth-btn', 'nav-auth-btn-mobile', 'medical-open-auth-btn', 'medical-open-login-btn'].forEach(function (id) {
             const btn = document.getElementById(id);
             if (!btn) return;
-            // onclick so setupNavbarAuth can replace it later without double-firing.
+            // onclick so setupNavbarAuth / medical wiring can replace it later without double-firing.
             btn.onclick = function (e) {
                 if (e && e.preventDefault) e.preventDefault();
                 window.__QS_AUTH_MODAL_USER_OPENED = true;
+                if (id === 'medical-open-login-btn') {
+                    try { window.isSignUpMode = false; } catch (_) {}
+                } else if (id === 'medical-open-auth-btn') {
+                    try { window.isSignUpMode = true; } catch (_) {}
+                }
                 if (typeof window.toggleModal === 'function') window.toggleModal(true);
             };
         });
