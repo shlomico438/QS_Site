@@ -720,6 +720,8 @@ function qsShowMedicalGuestTryModal() {
             resolve('try');
             return;
         }
+        const isMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+        modal.classList.toggle('regular-guest-choice', !isMedical);
         const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
         const titleEl = document.getElementById('medical-guest-try-title');
         const msgEl = document.getElementById('medical-guest-try-message');
@@ -780,6 +782,26 @@ async function qsMedicalEnsureGuestTryOrRegister() {
     return null;
 }
 window.qsMedicalEnsureGuestTryOrRegister = qsMedicalEnsureGuestTryOrRegister;
+
+/** Regular guest start gate: account holders continue; guests choose register or view-only. */
+async function qsRegularEnsureGuestStartChoice() {
+    let token = '';
+    try { token = await qsSupabaseAccessToken(); } catch (_) { token = ''; }
+    if (token) return true;
+
+    const choice = await qsShowMedicalGuestTryModal();
+    if (choice === 'try') {
+        return true;
+    }
+    if (choice === 'register') {
+        window.__QS_AUTH_MODAL_USER_OPENED = true;
+        isSignUpMode = true;
+        try { applyAuthModalMode(); } catch (_) {}
+        if (typeof window.toggleModal === 'function') window.toggleModal(true);
+    }
+    return false;
+}
+window.qsRegularEnsureGuestStartChoice = qsRegularEnsureGuestStartChoice;
 
 function qsMedicalApplyAccessState(account) {
     window.__QS_MEDICAL_ACCOUNT = account || null;
@@ -5065,7 +5087,6 @@ function applyAuthModalMode() {
     const authSwitchTextEl = document.getElementById('auth-switch-text');
     const toggleAuthModeEl = document.getElementById('toggle-auth-mode');
     const switchRow = document.getElementById('auth-mode-switch-row');
-    const skipBtn = document.getElementById('auth-skip-for-now');
     const googleBtn = document.getElementById('google-login');
     const providerDivider = document.getElementById('auth-provider-divider');
     const nameInput = document.getElementById('auth-name');
@@ -5101,7 +5122,6 @@ function applyAuthModalMode() {
             : (isSignUpMode ? T('log_in') : T('sign_up'));
     }
     if (switchRow) switchRow.style.display = existingMedicalUser ? 'none' : '';
-    if (skipBtn) skipBtn.style.display = isMedical ? 'none' : '';
     if (googleBtn) googleBtn.style.display = existingMedicalUser ? 'none' : 'flex';
     if (providerDivider) providerDivider.style.display = existingMedicalUser ? 'none' : 'flex';
     if (nameInput) nameInput.placeholder = isMedical ? 'שם מלא' : (T('full_name') || 'Full Name (optional)');
@@ -5360,25 +5380,6 @@ window.qsRefreshUserCredits = qsRefreshUserCredits;
 window.qsSyncUserCreditsUi = qsSyncUserCreditsUi;
 window.qsApplyDefaultPlanFromCredits = qsApplyDefaultPlanFromCredits;
 window.qsGetSelectedPlan = qsGetSelectedPlan;
-
-async function maybeShowInitialRegistrationPrompt() {
-    try {
-        const modal = document.getElementById('auth-modal');
-        if (!modal) return;
-        // Medical: guests land on the recorder; registration is offered on mic press, not on load.
-        if (qsShouldSkipInitialRegistrationPrompt()) return;
-        const user = await qsGetAuthUserForUi({ waitMs: 5000 });
-        if (user) return;
-        if (window.__QS_REG_PROMPT_DISMISSED_THIS_PAGE === true) return;
-        if (window.isTriggering === true) return;
-        try {
-            if (String(localStorage.getItem('activeJobId') || '').trim()) return;
-        } catch (_) {}
-        isSignUpMode = true;
-        applyAuthModalMode();
-        if (typeof window.toggleModal === 'function') window.toggleModal(true, { autoPrompt: true });
-    } catch (_) {}
-}
 
 // --- SUBTITLE CHUNKER (semantic segmentation + sqrt word-weight timing) ---
 function splitLongSegments(segments, _maxChars = 40) {
@@ -10816,11 +10817,6 @@ function dismissAuthModalAsGuest() {
     }
 }
 
-const authSkipForNowBtn = document.getElementById('auth-skip-for-now');
-if (authSkipForNowBtn) {
-    authSkipForNowBtn.addEventListener('click', () => dismissAuthModalAsGuest());
-}
-
 const authModalOverlay = document.getElementById('auth-modal');
 if (authModalOverlay) {
     authModalOverlay.addEventListener('click', (e) => {
@@ -10992,13 +10988,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } catch (_) {}
             }
         } catch (_) {}
-        // Never schedule the homepage registration prompt on /medical (even if flags race).
-        if (!isMedicalEntry && !qsShouldSkipInitialRegistrationPrompt()
-            && typeof maybeShowInitialRegistrationPrompt === 'function') {
-            setTimeout(() => {
-                void maybeShowInitialRegistrationPrompt();
-            }, 1400);
-        }
+        // Do not auto-open registration for guests. Registration is offered only
+        // after the user starts upload/recording (or explicitly presses Sign in).
     }
 
     // History / My files page: list user's jobs and allow downloading originals from S3
@@ -15374,6 +15365,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (regularRecordBtn) {
         regularRecordBtn.addEventListener('click', async () => {
             if (isMedicalModeEnabled()) return;
+            if (!(await qsRegularEnsureGuestStartChoice())) return;
             window._qsRegularRecordVisible = true;
             if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
             await toggleMedicalRecording();
@@ -15870,6 +15862,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 void confirmAndStartNewSession();
                 return;
             }
+            if (!(await qsRegularEnsureGuestStartChoice())) return;
             openFilePickerAfterDisclaimer();
         });
     }
