@@ -3043,10 +3043,16 @@ function qsIsSevereServerPollError(status) {
 async function qsPollCheckStatusOnce(jobId) {
     const jid = String(jobId || '').trim();
     if (!jid || typeof window.handleJobUpdate !== 'function') return false;
-    if (window._lastProcessedJobId === jid) return true;
+    if (window._lastProcessedJobId === jid) {
+        // Already finished in this tab — drop sticky activeJobId so reconnect won't rejoin forever.
+        if (typeof window.qsMarkJobTerminal === 'function') window.qsMarkJobTerminal(jid, 'already_processed');
+        else if (typeof window.qsClearActiveJob === 'function') window.qsClearActiveJob();
+        return true;
+    }
     try {
         const res = await fetch(`/api/check_status/${encodeURIComponent(jid)}`);
-        if (!res.ok) return false;
+        // 202 = still processing; 200 with body may be completed/failed.
+        if (!res.ok && res.status !== 202) return false;
         const data = await res.json();
         const done = data.status === 'completed' || data.status === 'failed'
             || (Array.isArray(data.segments) && data.segments.length > 0);
@@ -3178,7 +3184,8 @@ window.startJobStatusPolling = function(jobId) {
 /** Call after "GPU trigger failed" to re-send trigger for the active job (no re-upload). */
 window.retryTriggerForActiveJob = async function() {
     const jobId = String(
-        localStorage.getItem('activeJobId')
+        localStorage.getItem(QS_RETRY_JOB_KEY)
+        || localStorage.getItem('activeJobId')
         || localStorage.getItem('lastJobId')
         || localStorage.getItem('pendingJobId')
         || ''
@@ -3191,8 +3198,18 @@ window.retryTriggerForActiveJob = async function() {
         return;
     }
     try {
+        // Allow this job to resume again after an explicit retry.
+        try {
+            const raw = sessionStorage.getItem(QS_TERMINAL_JOBS_KEY);
+            if (raw) {
+                const map = JSON.parse(raw) || {};
+                delete map[jobId];
+                sessionStorage.setItem(QS_TERMINAL_JOBS_KEY, JSON.stringify(map));
+            }
+        } catch (_) {}
         if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(jobId);
         else localStorage.setItem('activeJobId', jobId);
+        try { localStorage.removeItem(QS_RETRY_JOB_KEY); } catch (_) {}
         // force: true — previous RunPod worker may be dead while Site still thinks /run is in-flight.
         const r = await fetch('/api/retry_trigger', {
             method: 'POST',
@@ -4828,8 +4845,12 @@ async function qsS3MultipartUploadFile(opts) {
 }
 
 const QS_ACTIVE_JOB_STARTED_KEY = 'activeJobStartedAt';
+const QS_RETRY_JOB_KEY = 'qsRetryJobId';
+const QS_TERMINAL_JOBS_KEY = 'qsTerminalJobIds';
 /** Match server CHECK_STATUS_MAX_AFTER_QUEUED_SEC (~90m); do not resume stale jobs on refresh. */
 const QS_ACTIVE_JOB_RESUME_MAX_MS = 90 * 60 * 1000;
+/** On reconnect/refresh, abandon "processing" jobs older than this (RunPod idle pod ~10m). */
+const QS_ACTIVE_JOB_STALE_PROCESSING_MS = 10 * 60 * 1000;
 
 window.qsSetActiveJob = function (jobId) {
     const id = String(jobId || '').trim();
@@ -4846,14 +4867,43 @@ window.qsClearActiveJob = function () {
     });
 };
 
-/** Active job worth resuming after refresh (recent + not dismissed). */
+window.qsMarkJobTerminal = function (jobId, status) {
+    const id = String(jobId || '').trim();
+    if (!id) return;
+    try {
+        const raw = sessionStorage.getItem(QS_TERMINAL_JOBS_KEY);
+        const map = raw ? JSON.parse(raw) : {};
+        map[id] = String(status || 'done');
+        sessionStorage.setItem(QS_TERMINAL_JOBS_KEY, JSON.stringify(map));
+    } catch (_) {}
+    if (typeof window.qsClearActiveJob === 'function') window.qsClearActiveJob();
+};
+
+window.qsIsJobTerminalLocally = function (jobId) {
+    const id = String(jobId || '').trim();
+    if (!id) return false;
+    if (window._lastProcessedJobId && String(window._lastProcessedJobId) === id) return true;
+    try {
+        const raw = sessionStorage.getItem(QS_TERMINAL_JOBS_KEY);
+        const map = raw ? JSON.parse(raw) : {};
+        return !!map[id];
+    } catch (_) {
+        return false;
+    }
+};
+
+/** Active job worth resuming after refresh (recent + not dismissed + not already finished). */
 window.qsGetActiveJobForResume = function () {
     const jobId = String(localStorage.getItem('activeJobId') || '').trim();
     if (!jobId) return '';
+    if (typeof window.qsIsJobTerminalLocally === 'function' && window.qsIsJobTerminalLocally(jobId)) {
+        window.qsClearActiveJob();
+        return '';
+    }
     let started = parseInt(localStorage.getItem(QS_ACTIVE_JOB_STARTED_KEY) || '0', 10);
     if (!started) {
-        // Jobs parked before qsSetActiveJob stored a timestamp — do not clear on socket reconnect.
-        started = Date.now();
+        // Legacy jobs without a timestamp: do not refresh the clock forever on every reconnect.
+        started = Date.now() - (5 * 60 * 1000);
         try { localStorage.setItem(QS_ACTIVE_JOB_STARTED_KEY, String(started)); } catch (_) {}
     }
     if ((Date.now() - started) > QS_ACTIVE_JOB_RESUME_MAX_MS) {
@@ -4861,6 +4911,87 @@ window.qsGetActiveJobForResume = function () {
         return '';
     }
     return jobId;
+};
+
+/**
+ * Decide whether to rejoin/poll an active job after refresh/reconnect.
+ * Clears sticky activeJobId for terminal/stale jobs so we stop "Re-joining room" forever.
+ */
+window.qsResumeActiveJobAfterConnect = async function (jobId) {
+    const jid = String(jobId || '').trim();
+    if (!jid) return false;
+    if (typeof window.qsIsJobTerminalLocally === 'function' && window.qsIsJobTerminalLocally(jid)) {
+        console.info('[qs] skip resume — job already terminal locally', jid);
+        if (typeof window.qsClearActiveJob === 'function') window.qsClearActiveJob();
+        return false;
+    }
+    let started = parseInt(localStorage.getItem(QS_ACTIVE_JOB_STARTED_KEY) || '0', 10) || 0;
+    const ageMs = started ? (Date.now() - started) : 0;
+
+    try {
+        const res = await fetch(`/api/check_status/${encodeURIComponent(jid)}`);
+        if (res.ok || res.status === 202) {
+            const data = await res.json().catch(() => ({}));
+            const st = String(data.status || '').toLowerCase();
+            const hasSegs = Array.isArray(data.segments) && data.segments.length > 0;
+            if (st === 'failed' || st === 'completed' || hasSegs) {
+                if (typeof window.qsMarkJobTerminal === 'function') {
+                    window.qsMarkJobTerminal(jid, st || 'completed');
+                }
+                if (typeof window.handleJobUpdate === 'function' && window._lastProcessedJobId !== jid) {
+                    qsInvokeHandleJobUpdate(data);
+                }
+                return false;
+            }
+        }
+    } catch (_) {}
+
+    try {
+        const tsRes = await fetch(`/api/trigger_status?job_id=${encodeURIComponent(jid)}`);
+        if (tsRes.ok) {
+            const ts = await tsRes.json().catch(() => ({}));
+            if (String(ts.status || '').toLowerCase() === 'failed') {
+                if (typeof window.qsMarkJobTerminal === 'function') window.qsMarkJobTerminal(jid, 'failed');
+                if (typeof window.handleJobUpdate === 'function' && window._lastProcessedJobId !== jid) {
+                    qsInvokeHandleJobUpdate({
+                        jobId: jid,
+                        status: 'failed',
+                        error: ts.message || ts.error || 'GPU trigger failed.',
+                    });
+                }
+                return false;
+            }
+        }
+    } catch (_) {}
+
+    // Dead worker / hung Demucs: still "processing" but nothing listens on the room.
+    if (ageMs > QS_ACTIVE_JOB_STALE_PROCESSING_MS) {
+        console.warn('[qs] abandoning stale active job on resume', { jid, ageMin: Math.round(ageMs / 60000) });
+        try { localStorage.setItem(QS_RETRY_JOB_KEY, jid); } catch (_) {}
+        try { localStorage.setItem('lastJobId', jid); } catch (_) {}
+        if (typeof window.qsMarkJobTerminal === 'function') window.qsMarkJobTerminal(jid, 'stale');
+        window.isTriggering = false;
+        if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI('stale_active_job_resume');
+        qsStopFakeProgress('stale_active_job_resume');
+        const mb = document.getElementById('main-btn');
+        if (mb) mb.disabled = false;
+        const isHe = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+        const msg = isHe
+            ? 'העיבוד נתקע. אפשר לנסות שוב בלי להעלות מחדש.'
+            : 'Processing got stuck. You can retry without re-uploading.';
+        if (typeof showTriggerErrorDialog === 'function') {
+            showTriggerErrorDialog(msg, {
+                onClose: () => {
+                    try { localStorage.removeItem(QS_RETRY_JOB_KEY); } catch (_) {}
+                },
+            });
+        } else if (typeof showStatus === 'function') {
+            showStatus(msg, true);
+        }
+        return false;
+    }
+
+    return true;
 };
 
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
@@ -4871,21 +5002,33 @@ if (socket) {
             ? window.qsGetActiveJobForResume()
             : String(localStorage.getItem('activeJobId') || '').trim();
         if (savedJobId) {
-            console.log('🔄 Re-joining room:', savedJobId);
-            socket.emit('join', { room: savedJobId });
-            // Socket room alone is not enough after RunPod dies — resume HTTP polling
-            // so failed/completed jobs surface even when no worker is listening.
-            try {
-                if (typeof window.startJobStatusPolling === 'function') {
-                    if (window._pollingJobId !== savedJobId || !window._checkStatusPollInterval) {
-                        window.startJobStatusPolling(savedJobId);
+            void (async () => {
+                let shouldResume = true;
+                try {
+                    if (typeof window.qsResumeActiveJobAfterConnect === 'function') {
+                        shouldResume = await window.qsResumeActiveJobAfterConnect(savedJobId);
+                    }
+                } catch (_) {
+                    shouldResume = true;
+                }
+                if (!shouldResume) return;
+                // Job may have been cleared while awaiting the probe.
+                const stillActive = String(localStorage.getItem('activeJobId') || '').trim();
+                if (stillActive !== savedJobId) return;
+                console.log('🔄 Re-joining room:', savedJobId);
+                socket.emit('join', { room: savedJobId });
+                try {
+                    if (typeof window.startJobStatusPolling === 'function') {
+                        if (window._pollingJobId !== savedJobId || !window._checkStatusPollInterval) {
+                            window.startJobStatusPolling(savedJobId);
+                        } else {
+                            void qsPollCheckStatusOnce(savedJobId);
+                        }
                     } else {
                         void qsPollCheckStatusOnce(savedJobId);
                     }
-                } else {
-                    void qsPollCheckStatusOnce(savedJobId);
-                }
-            } catch (_) {}
+                } catch (_) {}
+            })();
         }
         const warmUid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
         if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
@@ -11011,15 +11154,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ? window.qsGetActiveJobForResume()
                 : String(localStorage.getItem('activeJobId') || '').trim();
             if (activeJobId && !hasOpenQuery && !window.__qsOpenHandledFor) {
-                window.isTriggering = true;
-                if (typeof qsStartUnifiedProgressPhase === 'function') qsStartUnifiedProgressPhase('transcribe');
-                if (typeof startProcessingStateUI === 'function') startProcessingStateUI();
-                if (typeof window.startJobStatusPolling === 'function') {
-                    window.startJobStatusPolling(activeJobId);
+                let shouldResume = true;
+                if (typeof window.qsResumeActiveJobAfterConnect === 'function') {
+                    shouldResume = await window.qsResumeActiveJobAfterConnect(activeJobId);
                 }
-                try {
-                    if (typeof socket !== 'undefined') socket.emit('join', { room: activeJobId });
-                } catch (_) {}
+                const stillActive = String(localStorage.getItem('activeJobId') || '').trim();
+                if (shouldResume && stillActive === activeJobId) {
+                    window.isTriggering = true;
+                    if (typeof qsStartUnifiedProgressPhase === 'function') qsStartUnifiedProgressPhase('transcribe');
+                    if (typeof startProcessingStateUI === 'function') startProcessingStateUI();
+                    if (typeof window.startJobStatusPolling === 'function') {
+                        window.startJobStatusPolling(activeJobId);
+                    }
+                    try {
+                        if (typeof socket !== 'undefined') socket.emit('join', { room: activeJobId });
+                    } catch (_) {}
+                }
             }
         } catch (_) {}
         // Do not auto-open registration for guests. Registration is offered only
@@ -16269,6 +16419,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const hasSegments = Array.isArray(rawResult.segments) && rawResult.segments.length > 0
             || (output && Array.isArray(output.segments) && output.segments.length > 0);
         const isFailedJob = jobStatus === 'failed' || (!!jobError && !hasSegments);
+        // Mark non-failed completions terminal early so reconnect cannot rejoin this room.
+        if (jobId && !isFailedJob && (jobStatus === 'completed' || hasSegments)) {
+            if (typeof window.qsMarkJobTerminal === 'function') window.qsMarkJobTerminal(jobId, 'completed');
+        }
         if (
             isFailedJob &&
             jobId &&
@@ -16371,22 +16525,21 @@ document.addEventListener('DOMContentLoaded', () => {
             window.isTriggering = false;
             stopProcessingStateUI('handle_job_update_job_failed');
             if (mainBtn) mainBtn.disabled = false;
-            // Regular mode: offer retry without re-upload (keeps job id for /api/retry_trigger).
+            // Regular mode: offer retry without re-upload. Use qsRetryJobId (NOT activeJobId)
+            // so socket reconnect does not keep "Re-joining room" for a dead job.
             const isMedicalFail = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+            if (jobId && typeof window.qsMarkJobTerminal === 'function') {
+                window.qsMarkJobTerminal(jobId, 'failed');
+            }
             if (!isMedicalFail && jobId && typeof showTriggerErrorDialog === 'function') {
-                try {
-                    if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(jobId);
-                    else localStorage.setItem('activeJobId', jobId);
-                } catch (_) {}
+                try { localStorage.setItem(QS_RETRY_JOB_KEY, jobId); } catch (_) {}
+                try { localStorage.setItem('lastJobId', jobId); } catch (_) {}
                 const isHeFail = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
                 showTriggerErrorDialog(
                     jobError || (isHeFail ? 'התמלול נכשל. אפשר לנסות שוב בלי להעלות מחדש.' : 'Transcription failed. You can retry without re-uploading.'),
                     {
                         onClose: () => {
-                            if (typeof window.qsClearActiveJob === 'function') window.qsClearActiveJob();
-                            else {
-                                try { localStorage.removeItem('activeJobId'); } catch (_) {}
-                            }
+                            try { localStorage.removeItem(QS_RETRY_JOB_KEY); } catch (_) {}
                             if (mainBtn) mainBtn.disabled = false;
                         },
                     }
