@@ -9323,7 +9323,7 @@ def _format_transcript_cleanup_openai(
     elif typo_fix:
         if is_medical:
             system_prompt = (
-                "You correct Hebrew medical transcripts from speech-to-text. Two tasks, same pass:\n\n"
+                "You correct Hebrew medical transcripts from speech-to-text. Three tasks, same pass:\n\n"
                 "1. TYPOS: Fix Hebrew spelling/transcription errors (wrong letters, split/merged words, "
                 "obvious ASR mistakes). Keep sentence structure and meaning unchanged.\n\n"
                 "2. MEDICAL TERMS: Speakers often say English/Latin medical terms mid-sentence (diagnoses, "
@@ -9331,10 +9331,18 @@ def _format_transcript_cleanup_openai(
                 "Hebrew phonetic garble. Replace ONLY high-confidence (>90%) matches with correct "
                 "English spelling. Adjust adjacent Hebrew function words only as needed for grammatical "
                 "agreement (e.g. ה-/-ית suffixes). Use context to disambiguate.\n\n"
+                "3. NUMBERS: Convert Hebrew number-words to digit form wherever they appear — ages, doses, "
+                "lab values, measurements, dates, times, counts, vital signs, etc. This includes compound "
+                "numbers (\"שלוש מאות עשרים\" → 320), decimals (\"אחת נקודה חמש\" → 1.5), and units attached "
+                "to numbers (\"חמישה מיליגרם\" → 5 מ\"ג / 5 mg — keep the unit in whatever language it was "
+                "said). Apply this conversion even when confidence is not >90%, since number-word-to-digit "
+                "mapping is deterministic and low-risk, unlike medical term substitution.\n\n"
                 "RULES:\n"
                 "- If unsure whether something is a real Hebrew word or garbled English, leave it unchanged.\n"
-                "- Never touch numbers, dates, patient IDs, dosages unless they are themselves garbled terms.\n"
-                "- Don't paraphrase, summarize, or rewrite anything beyond fixing typos and term substitution.\n"
+                "- Do not invent, round, or change numeric *values* — only convert Hebrew number-words to digits "
+                "(and normalize attached units as above). Leave patient IDs / codes that are already digits as-is.\n"
+                "- Don't paraphrase, summarize, or rewrite anything beyond fixing typos, term substitution, "
+                "and number-word→digit conversion.\n"
                 "- Apply medical-term substitutions only when confidence > 0.9; otherwise leave the token as-is.\n"
                 "- Keep natural spoken clinical dialogue (first/second person); do NOT convert to chart/protocol prose.\n\n"
                 "Return the full corrected transcript as plain text only. "
@@ -9395,7 +9403,21 @@ def _format_transcript_cleanup_openai(
     clean = _openai_chat_text_completion(
         system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
     )
-    clean = _wrap_text_to_max_chars(str(clean or "").strip())
+    clean = str(clean or "").strip()
+    # Medical typo/adaptation: keep one continuous dialogue block — do not soft-wrap.
+    # Wrapping inserts single \n that the medical UI used to treat as separate sections.
+    if typo_fix and is_medical:
+        clean = _normalize_clean_transcript_storage(clean)
+        # Collapse soft wraps; preserve intentional blank-line paragraphs only.
+        parts = []
+        for block in re.split(r'(?:\r?\n\s*){2,}', clean):
+            line = re.sub(r'\s*\r?\n\s*', ' ', block)
+            line = re.sub(r' {2,}', ' ', line).strip()
+            if line:
+                parts.append(line)
+        clean = '\n\n'.join(parts).strip()
+    else:
+        clean = _wrap_text_to_max_chars(clean)
     return {"clean_transcript": clean}
 
 

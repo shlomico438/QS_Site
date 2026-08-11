@@ -9333,6 +9333,16 @@ function qsMedicalClearTypoFixUndo() {
     window._qsMedicalTypoFixUndo = null;
 }
 
+/** Medical editable boxes = real paragraphs only (\n\n). Soft wraps (\n) collapse to spaces. */
+function qsMedicalParagraphsFromPlainText(text) {
+    const cleaned = String(text || '').trim();
+    if (!cleaned) return [];
+    return cleaned
+        .split(/(?:\r?\n\s*){2,}/)
+        .map((block) => String(block || '').replace(/\s*\r?\n\s*/g, ' ').replace(/ {2,}/g, ' ').trim())
+        .filter(Boolean);
+}
+
 function qsMedicalApplyTranscriptPlainText(text) {
     const cleaned = String(text || '').trim();
     const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
@@ -9340,9 +9350,11 @@ function qsMedicalApplyTranscriptPlainText(text) {
         : {};
     window.currentFormattedDoc = { ...prev, clean_transcript: cleaned };
     window._qsDocPreferSegmentsAfterEdit = false;
-    const paragraphs = cleaned.split(/\r?\n+/).map((l) => String(l || '').trim()).filter(Boolean);
-    const lines = paragraphs.length ? paragraphs : (cleaned ? [cleaned] : []);
-    window.currentSegments = lines.map((line, i) => ({
+    // Do NOT split on single \n — GPT cleanup / _wrap_text_to_max_chars insert soft wraps
+    // that were wrongly becoming separate medical "sections".
+    const lines = qsMedicalParagraphsFromPlainText(cleaned);
+    const paras = lines.length ? lines : (cleaned ? [cleaned] : []);
+    window.currentSegments = paras.map((line, i) => ({
         start: i,
         end: i + 1,
         text: line,
@@ -9353,7 +9365,7 @@ function qsMedicalApplyTranscriptPlainText(text) {
     try { if (typeof renderMedicalTranscriptMainView === 'function') renderMedicalTranscriptMainView(); } catch (_) {}
     try {
         if (typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
-            qsRenderMedicalEditableTranscriptBoxes(lines.length ? lines : ['']);
+            qsRenderMedicalEditableTranscriptBoxes(paras.length ? paras : ['']);
         }
     } catch (_) {}
     try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
@@ -19698,7 +19710,9 @@ function renderMedicalTranscriptMainView() {
         ''
     ).trim();
     if (clean) {
-        const paragraphs = clean.split(/\r?\n+/).map((l) => String(l || '').trim()).filter(Boolean);
+        const paragraphs = typeof qsMedicalParagraphsFromPlainText === 'function'
+            ? qsMedicalParagraphsFromPlainText(clean)
+            : clean.split(/(?:\r?\n\s*){2,}/).map((l) => String(l || '').trim()).filter(Boolean);
         qsRenderMedicalEditableTranscriptBoxes(paragraphs.length ? paragraphs : [clean]);
         return;
     }
