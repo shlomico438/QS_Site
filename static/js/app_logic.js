@@ -3177,13 +3177,27 @@ window.startJobStatusPolling = function(jobId) {
 
 /** Call after "GPU trigger failed" to re-send trigger for the active job (no re-upload). */
 window.retryTriggerForActiveJob = async function() {
-    const jobId = localStorage.getItem('activeJobId');
-    if (!jobId) return;
+    const jobId = String(
+        localStorage.getItem('activeJobId')
+        || localStorage.getItem('lastJobId')
+        || localStorage.getItem('pendingJobId')
+        || ''
+    ).trim();
+    if (!jobId) {
+        if (typeof showStatus === 'function') {
+            const isHe = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+            showStatus(isHe ? 'לא נמצאה משימה לנסות שוב.' : 'No job to retry.', true);
+        }
+        return;
+    }
     try {
+        if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(jobId);
+        else localStorage.setItem('activeJobId', jobId);
+        // force: true — previous RunPod worker may be dead while Site still thinks /run is in-flight.
         const r = await fetch('/api/retry_trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jobId })
+            body: JSON.stringify({ jobId, force: true })
         });
         const body = await r.json().catch(() => ({}));
         if (!r.ok) {
@@ -3191,9 +3205,16 @@ window.retryTriggerForActiveJob = async function() {
             return;
         }
         window.isTriggering = true;
+        window._lastProcessedJobId = null;
         window._triggerRetriedForJobId = null;
+        if (typeof startProcessingStateUI === 'function') startProcessingStateUI();
+        if (typeof qsStartUnifiedProgressPhase === 'function') qsStartUnifiedProgressPhase('transcribe');
         if (typeof startFakeProgress === 'function') startFakeProgress();
+        try {
+            if (typeof socket !== 'undefined' && socket) socket.emit('join', { room: jobId });
+        } catch (_) {}
         if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(jobId);
+        console.info('[trigger] retry_trigger started', { jobId, status: body.status });
     } catch (e) {
         if (typeof showStatus === 'function') showStatus('Retry failed', true);
     }
@@ -4852,6 +4873,19 @@ if (socket) {
         if (savedJobId) {
             console.log('🔄 Re-joining room:', savedJobId);
             socket.emit('join', { room: savedJobId });
+            // Socket room alone is not enough after RunPod dies — resume HTTP polling
+            // so failed/completed jobs surface even when no worker is listening.
+            try {
+                if (typeof window.startJobStatusPolling === 'function') {
+                    if (window._pollingJobId !== savedJobId || !window._checkStatusPollInterval) {
+                        window.startJobStatusPolling(savedJobId);
+                    } else {
+                        void qsPollCheckStatusOnce(savedJobId);
+                    }
+                } else {
+                    void qsPollCheckStatusOnce(savedJobId);
+                }
+            } catch (_) {}
         }
         const warmUid = String(window.__QS_MEDICAL_WARMUP_USER_ID || '').trim();
         if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
@@ -16336,6 +16370,28 @@ document.addEventListener('DOMContentLoaded', () => {
             setDiarizationBusyState(false);
             window.isTriggering = false;
             stopProcessingStateUI('handle_job_update_job_failed');
+            if (mainBtn) mainBtn.disabled = false;
+            // Regular mode: offer retry without re-upload (keeps job id for /api/retry_trigger).
+            const isMedicalFail = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+            if (!isMedicalFail && jobId && typeof showTriggerErrorDialog === 'function') {
+                try {
+                    if (typeof window.qsSetActiveJob === 'function') window.qsSetActiveJob(jobId);
+                    else localStorage.setItem('activeJobId', jobId);
+                } catch (_) {}
+                const isHeFail = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+                showTriggerErrorDialog(
+                    jobError || (isHeFail ? 'התמלול נכשל. אפשר לנסות שוב בלי להעלות מחדש.' : 'Transcription failed. You can retry without re-uploading.'),
+                    {
+                        onClose: () => {
+                            if (typeof window.qsClearActiveJob === 'function') window.qsClearActiveJob();
+                            else {
+                                try { localStorage.removeItem('activeJobId'); } catch (_) {}
+                            }
+                            if (mainBtn) mainBtn.disabled = false;
+                        },
+                    }
+                );
+            }
             if (jobId) {
                 window._handleJobUpdateInFlight = null;
                 window._lastProcessedJobId = jobId;

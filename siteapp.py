@@ -11403,6 +11403,27 @@ def gpu_callback():
         failed_pending = pending_job_info.pop(job_id, None)
         pending_trigger[job_id] = "failed"
         _set_trigger_state(job_id, "failed")
+        # Drop in-memory start marker so retry is not blocked forever by "already in flight".
+        gpu_started_at.pop(job_id, None)
+        # Keep pending_job_info fields needed for /api/retry_trigger (s3 key, options).
+        if isinstance(failed_pending, dict):
+            keep = {
+                k: failed_pending.get(k)
+                for k in (
+                    "input_s3_key",
+                    "transcription_s3_key",
+                    "bucket",
+                    "is_medical",
+                    "user_id",
+                    "task",
+                    "language",
+                    "transcription_options",
+                )
+                if failed_pending.get(k) is not None
+            }
+            if keep:
+                keep["early_gpu_dispatched"] = False
+                pending_job_info[job_id] = keep
         fail_payload = {
             "jobId": job_id,
             "status": "failed",
@@ -11528,8 +11549,21 @@ def on_join(data):
             if s3_payload:
                 print(f"Found S3 result for {room}, sending now!")
                 socketio.emit('job_status_update', s3_payload, room=request.sid)
+                return
         except Exception as join_s3_err:
             logging.debug("join S3 recovery failed room=%s: %s", room, join_s3_err)
+        # Multi-instance / failed RunPod: no live worker, but trigger status is failed —
+        # push failure so the client does not sit forever after "Re-joining room".
+        try:
+            status, _ = _resolve_trigger_status_for_poll(room)
+            if status == "failed":
+                pinfo = pending_job_info.get(room) or {}
+                err = (pinfo.get('sagemaker_error') or '').strip() or 'Processing trigger failed'
+                fail_payload = {"jobId": room, "status": "failed", "error": err}
+                print(f"Join room {room}: trigger failed — emitting failure to client")
+                socketio.emit('job_status_update', fail_payload, room=request.sid)
+        except Exception as join_fail_err:
+            logging.debug("join failed-status probe room=%s: %s", room, join_fail_err)
 
 # --- SIMULATION BACKGROUND TASK ---
 # This simulates the GPU finishing and sending data back after 4 seconds
@@ -12994,12 +13028,43 @@ def _start_trigger_if_configured(
     logging.info("Trigger started at sign-s3 (before upload) for %s", job_id)
 
 
+def _clear_runpod_dispatch_gate(job_id, *, clear_result_cache=False):
+    """Clear stale in-flight markers so /api/retry_trigger can submit a fresh /run.
+
+    Needed when the previous worker died/failed after gpu_started — otherwise
+    _runpod_gpu_dispatch_inflight stays True forever and the UI rejoins a dead room.
+    """
+    jid = str(job_id or "").strip()
+    if not jid:
+        return
+    gpu_started_at.pop(jid, None)
+    if clear_result_cache:
+        job_results_cache.pop(jid, None)
+    info = pending_job_info.get(jid)
+    if isinstance(info, dict) and info.get("early_gpu_dispatched"):
+        info = dict(info)
+        info["early_gpu_dispatched"] = False
+        pending_job_info[jid] = info
+    try:
+        _set_worker_handoff(jid, early_gpu_dispatched=False)
+    except Exception as e:
+        logging.warning("_clear_runpod_dispatch_gate handoff job_id=%s: %s", jid, e)
+    try:
+        # Drop gpu_started_at from persisted timings so multi-instance retries agree.
+        _update_trigger_timings(jid, gpu_started_at=None)
+    except Exception:
+        pass
+
+
 def _runpod_gpu_dispatch_inflight(job_id, max_age_sec=None):
     """True if a GPU /run for this job_id was already accepted and is still warming/running.
 
     Prevents duplicate RunPod workers (same job_id, two requestIds) from:
     - multi-instance trigger_processing missing in-memory early_run, or
     - handshake /api/retry_trigger during a long cold start before gpu_started.
+
+    Never blocks forever after a failed/dead worker: failed status and age caps
+    allow a real retry (user "Try again" / page resume).
     """
     jid = str(job_id or "").strip()
     if not jid:
@@ -13011,43 +13076,56 @@ def _runpod_gpu_dispatch_inflight(job_id, max_age_sec=None):
     max_age = max(60, max_age)
     now = time.time()
 
-    if gpu_started_at.get(jid):
-        return True
     mem = str(pending_trigger.get(jid) or "").strip().lower()
+    if mem == "failed":
+        return False
+    st, at_ts = _get_trigger_state(jid)
+    st = str(st or "").strip().lower()
+    if st == "failed":
+        return False
+    cached = job_results_cache.get(jid)
+    if isinstance(cached, dict) and str(cached.get("status") or "").strip().lower() == "failed":
+        return False
+
+    def _within_age(ts):
+        try:
+            return bool(ts) and (now - float(ts)) < max_age
+        except (TypeError, ValueError):
+            return False
+
+    timings = _get_trigger_timings(jid)
+    started = gpu_started_at.get(jid) or timings.get("gpu_started_at")
+    if started:
+        if _within_age(started):
+            return True
+        # Stale gpu_started (worker likely dead / hung) — allow retry.
+        gpu_started_at.pop(jid, None)
+
     if mem in ("run_accepted", "triggered", "queued", "preprocessing"):
         at = pending_trigger_at.get(jid) or 0
-        try:
-            if at and (now - float(at)) < max_age:
-                return True
-        except (TypeError, ValueError):
+        if _within_age(at):
             return True
+        if not at:
+            # Unknown age — treat as in-flight briefly via persisted at_ts.
+            if _within_age(at_ts):
+                return True
 
     handoff = _get_worker_handoff(jid)
     if handoff.get("early_gpu_dispatched"):
-        timings = _get_trigger_timings(jid)
-        if timings.get("gpu_started_at"):
-            return True
         for key in ("queued_at", "trigger_completed_at", "at"):
-            raw = timings.get(key)
-            try:
-                if raw and (now - float(raw)) < max_age:
-                    return True
-            except (TypeError, ValueError):
-                continue
-        # early flag set but no timing yet — still treat as in-flight for a short window
-        return True
-
-    st, at_ts = _get_trigger_state(jid)
-    st = str(st or "").strip().lower()
-    if st in ("run_accepted", "triggered", "queued", "preprocessing"):
-        timings = _get_trigger_timings(jid)
-        if timings.get("gpu_started_at"):
-            return True
-        try:
-            if at_ts and (now - float(at_ts)) < max_age:
+            if _within_age(timings.get(key)):
                 return True
-        except (TypeError, ValueError):
+        if _within_age(at_ts):
             return True
+        # early flag with no fresh timing — do not block forever
+        return False
+
+    if st in ("run_accepted", "triggered", "queued", "preprocessing"):
+        if _within_age(at_ts):
+            return True
+        for key in ("queued_at", "trigger_completed_at"):
+            if _within_age(timings.get(key)):
+                return True
     return False
 
 
@@ -14193,6 +14271,7 @@ def retry_trigger():
     try:
         data = request.json if request.is_json else {}
         job_id = (data or {}).get('jobId')
+        force_retry = bool((data or {}).get('force') or (data or {}).get('forceRetry'))
         if not job_id:
             return jsonify({"status": "error", "message": "jobId required"}), 400
         if SIMULATION_MODE:
@@ -14243,6 +14322,19 @@ def retry_trigger():
         task = info.get('task', 'transcribe')
         language = info.get('language', 'he')
         is_medical = bool(info.get("is_medical"))
+        prev_status, _ = _resolve_trigger_status_for_poll(job_id)
+        prev_failed = str(prev_status or "").strip().lower() == "failed"
+        cached_fail = (
+            isinstance(job_results_cache.get(job_id), dict)
+            and str((job_results_cache.get(job_id) or {}).get("status") or "").strip().lower() == "failed"
+        )
+        # User-initiated retry after failure / stuck worker: clear stale gate and result mailbox.
+        if force_retry or prev_failed or cached_fail:
+            _clear_runpod_dispatch_gate(job_id, clear_result_cache=True)
+            logging.info(
+                "retry_trigger clearing dispatch gate job_id=%s force=%s prev_failed=%s",
+                job_id, force_retry, prev_failed or cached_fail,
+            )
         if is_medical and _medical_uses_sagemaker_transcription():
             upload_complete[job_id] = True
             pending_trigger[job_id] = "triggered"
@@ -14278,7 +14370,7 @@ def retry_trigger():
         api_key = os.environ.get('RUNPOD_API_KEY')
         if not endpoint_id or not api_key:
             return jsonify({"status": "error", "message": "RunPod not configured"}), 503
-        if _runpod_gpu_dispatch_inflight(job_id):
+        if (not force_retry) and (not prev_failed) and (not cached_fail) and _runpod_gpu_dispatch_inflight(job_id):
             logging.info(
                 "retry_trigger skipped job_id=%s — GPU /run already in flight (avoid duplicate workers)",
                 job_id,
@@ -14288,6 +14380,9 @@ def retry_trigger():
                 "job_id": job_id,
                 "message": "RunPod job already accepted; not submitting a second /run",
             }), 202
+        if force_retry and _runpod_gpu_dispatch_inflight(job_id):
+            # Explicit user retry: tear down gate and submit anyway.
+            _clear_runpod_dispatch_gate(job_id, clear_result_cache=True)
         public_base = _public_base_url(request)
         callback_url = f"{public_base}/api/gpu_callback"
         start_callback_url = f"{public_base}/api/gpu_started"
