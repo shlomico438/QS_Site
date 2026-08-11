@@ -13527,12 +13527,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const typoLabel = canUndo
                 ? (T('medical_undo_typos') || 'Undo')
                 : (T('medical_fix_typos') || 'Clean transcript');
+            const typoTooltip = canUndo
+                ? typoLabel
+                : (T('medical_fix_typos_tooltip')
+                    || 'ממיר מונחים רפואיים שנכתבו פונטית בעברית לאיות האנגלי הנכון, ומתקן שגיאות כתיב');
             const typoLabelEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-label');
             const typoIconEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-icon');
             if (!medicalTypoFixBtn.disabled && typoLabelEl) typoLabelEl.textContent = typoLabel;
             if (!medicalTypoFixBtn.disabled && typoIconEl) typoIconEl.textContent = canUndo ? '↩' : '🪄';
             medicalTypoFixBtn.setAttribute('aria-label', typoLabel);
-            medicalTypoFixBtn.setAttribute('title', typoLabel);
+            medicalTypoFixBtn.setAttribute('title', typoTooltip);
         }
         try { if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn(); } catch (_) {}
         try { syncTranscriptCopyButtonUi(); } catch (_) {}
@@ -15693,11 +15697,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const T = typeof window.t === 'function' ? window.t : (k) => k;
             const typoLabelEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-label');
             const typoIconEl = medicalTypoFixBtn.querySelector('.medical-typo-fix-icon');
-            const setTypoChrome = (label, icon) => {
+            const setTypoChrome = (label, icon, titleOpt) => {
                 if (typoLabelEl) typoLabelEl.textContent = label;
                 if (typoIconEl && icon != null) typoIconEl.textContent = icon;
                 medicalTypoFixBtn.setAttribute('aria-label', label);
-                medicalTypoFixBtn.setAttribute('title', label);
+                medicalTypoFixBtn.setAttribute(
+                    'title',
+                    titleOpt
+                        || T('medical_fix_typos_tooltip')
+                        || 'ממיר מונחים רפואיים שנכתבו פונטית בעברית לאיות האנגלי הנכון, ומתקן שגיאות כתיב'
+                );
             };
             const canUndo = typeof qsMedicalTypoFixUndoAvailable === 'function' && qsMedicalTypoFixUndoAvailable();
             medicalTypoFixBtn.disabled = true;
