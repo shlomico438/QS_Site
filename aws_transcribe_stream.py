@@ -95,6 +95,50 @@ def _start_real_os_thread(target: Callable[[], None], name: str) -> None:
 
 DEFAULT_LANGUAGE = 'he-IL'
 DEFAULT_SAMPLE_RATE = 16000
+# Doctors often mix Hebrew + English mid-visit. IdentifyMultipleLanguages needs ≥2 options
+# and language_code must be omitted (see amazon-transcribe StartStreamTranscription).
+DEFAULT_LANGUAGE_OPTIONS = ('he-IL', 'en-US')
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == '':
+        return bool(default)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def medical_transcribe_identify_multiple_languages() -> bool:
+    """Default on — set MEDICAL_TRANSCRIBE_IDENTIFY_MULTIPLE_LANGUAGES=false to force fixed language_code."""
+    return _env_truthy('MEDICAL_TRANSCRIBE_IDENTIFY_MULTIPLE_LANGUAGES', True)
+
+
+def medical_transcribe_language_options() -> List[str]:
+    raw = (
+        os.environ.get('MEDICAL_TRANSCRIBE_LANGUAGE_OPTIONS')
+        or ','.join(DEFAULT_LANGUAGE_OPTIONS)
+    )
+    opts = []
+    seen = set()
+    for part in str(raw).split(','):
+        code = part.strip()
+        if not code:
+            continue
+        key = code.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        opts.append(code)
+    if len(opts) < 2:
+        opts = list(DEFAULT_LANGUAGE_OPTIONS)
+    return opts
+
+
+def medical_transcribe_preferred_language() -> str:
+    return (
+        os.environ.get('MEDICAL_TRANSCRIBE_PREFERRED_LANGUAGE')
+        or os.environ.get('MEDICAL_TRANSCRIBE_STREAM_LANGUAGE')
+        or DEFAULT_LANGUAGE
+    ).strip() or DEFAULT_LANGUAGE
 _TRANSCRIBE_STREAM_REGION_FALLBACK = 'eu-west-1'
 # Amazon Transcribe Streaming is not available in every AWS/SageMaker region.
 # Keep this allowlist separate from AWS_REGION because medical SageMaker runs in eu-north-1.
@@ -320,6 +364,9 @@ class AwsTranscribeStreamSession:
         region: Optional[str] = None,
         language_code: str = DEFAULT_LANGUAGE,
         sample_rate_hz: int = DEFAULT_SAMPLE_RATE,
+        identify_multiple_languages: Optional[bool] = None,
+        language_options: Optional[List[str]] = None,
+        preferred_language: Optional[str] = None,
         on_partial: Optional[Callable[[str], None]] = None,
         on_ready: Optional[Callable[[], None]] = None,
         on_error: Optional[Callable[[BaseException], None]] = None,
@@ -330,6 +377,17 @@ class AwsTranscribeStreamSession:
         self.region = normalize_transcribe_region(region)
         self.language_code = language_code
         self.sample_rate_hz = int(sample_rate_hz or DEFAULT_SAMPLE_RATE)
+        if identify_multiple_languages is None:
+            identify_multiple_languages = medical_transcribe_identify_multiple_languages()
+        self.identify_multiple_languages = bool(identify_multiple_languages)
+        opts = list(language_options or []) if language_options else medical_transcribe_language_options()
+        if self.identify_multiple_languages and len(opts) < 2:
+            opts = list(DEFAULT_LANGUAGE_OPTIONS)
+        self.language_options = opts
+        self.preferred_language = (
+            str(preferred_language or medical_transcribe_preferred_language()).strip()
+            or DEFAULT_LANGUAGE
+        )
         self.on_partial = on_partial
         self.on_ready = on_ready
         self.on_error = on_error
@@ -523,13 +581,35 @@ class AwsTranscribeStreamSession:
                 pass
 
     async def _async_run(self) -> str:
-        logger.info('AWS Transcribe stream connecting region=%s lang=%s', self.region, self.language_code)
         client = TranscribeStreamingClient(region=self.region)
-        stream = await client.start_stream_transcription(
-            language_code=self.language_code,
-            media_sample_rate_hz=self.sample_rate_hz,
-            media_encoding='pcm',
-        )
+        if self.identify_multiple_languages:
+            # Must omit language_code; AWS picks per segment from LanguageOptions.
+            logger.info(
+                'AWS Transcribe stream connecting region=%s identify_multiple_languages=True '
+                'language_options=%s preferred_language=%s',
+                self.region,
+                ','.join(self.language_options),
+                self.preferred_language,
+            )
+            stream = await client.start_stream_transcription(
+                language_code=None,  # type: ignore[arg-type]
+                media_sample_rate_hz=self.sample_rate_hz,
+                media_encoding='pcm',
+                identify_multiple_languages=True,
+                language_options=list(self.language_options),
+                preferred_language=self.preferred_language,
+            )
+        else:
+            logger.info(
+                'AWS Transcribe stream connecting region=%s lang=%s',
+                self.region,
+                self.language_code,
+            )
+            stream = await client.start_stream_transcription(
+                language_code=self.language_code,
+                media_sample_rate_hz=self.sample_rate_hz,
+                media_encoding='pcm',
+            )
         logger.info('AWS Transcribe stream accepted by AWS')
         self._aws_accepted = True
         _mark_transcribe_active(self)
@@ -695,6 +775,9 @@ class TranscribeStreamBridge:
         self.region = transcribe_stream_region()
         self.language_code = DEFAULT_LANGUAGE
         self.sample_rate_hz = DEFAULT_SAMPLE_RATE
+        self.identify_multiple_languages = medical_transcribe_identify_multiple_languages()
+        self.language_options = medical_transcribe_language_options()
+        self.preferred_language = medical_transcribe_preferred_language()
         self.session: Optional[AwsTranscribeStreamSession] = None
         self.audio_pending: List[bytes] = []
         self.session_live = False
@@ -861,6 +944,9 @@ class TranscribeStreamBridge:
             region=self.region,
             language_code=self.language_code,
             sample_rate_hz=self.sample_rate_hz,
+            identify_multiple_languages=self.identify_multiple_languages,
+            language_options=list(self.language_options),
+            preferred_language=self.preferred_language,
             on_partial=self._on_partial,
             on_ready=self._on_session_ready,
             on_error=self._on_session_error,
@@ -876,16 +962,36 @@ class TranscribeStreamBridge:
         self.language_code = str(cfg.get('language_code') or self.language_code).strip() or self.language_code
         self.sample_rate_hz = int(cfg.get('sample_rate_hz') or self.sample_rate_hz)
         self.region = normalize_transcribe_region(cfg.get('region') or self.region)
+        if 'identify_multiple_languages' in cfg:
+            self.identify_multiple_languages = bool(cfg.get('identify_multiple_languages'))
+        elif 'identifyMultipleLanguages' in cfg:
+            self.identify_multiple_languages = bool(cfg.get('identifyMultipleLanguages'))
+        raw_opts = cfg.get('language_options') or cfg.get('languageOptions')
+        if isinstance(raw_opts, str):
+            raw_opts = [p.strip() for p in raw_opts.split(',') if p.strip()]
+        if isinstance(raw_opts, (list, tuple)) and len(raw_opts) >= 2:
+            self.language_options = [str(x).strip() for x in raw_opts if str(x).strip()]
+        pref = cfg.get('preferred_language') or cfg.get('preferredLanguage')
+        if pref:
+            self.preferred_language = str(pref).strip() or self.preferred_language
+        elif self.language_code:
+            self.preferred_language = self.language_code
         if self.session is None:
             logger.info(
-                'transcribe start action lang=%s rate=%s region=%s',
+                'transcribe start action lang=%s multi=%s options=%s preferred=%s rate=%s region=%s',
                 self.language_code,
+                self.identify_multiple_languages,
+                ','.join(self.language_options),
+                self.preferred_language,
                 self.sample_rate_hz,
                 self.region,
             )
             self._emit({
                 'type': 'starting',
                 'language_code': self.language_code,
+                'identify_multiple_languages': self.identify_multiple_languages,
+                'language_options': list(self.language_options),
+                'preferred_language': self.preferred_language,
                 'sample_rate_hz': self.sample_rate_hz,
                 'region': self.region,
             })

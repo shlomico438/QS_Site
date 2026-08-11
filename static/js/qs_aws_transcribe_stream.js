@@ -83,6 +83,12 @@ export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
         this.languageCode = options.languageCode || 'he-IL';
         this.sampleRateHz = Number(options.sampleRateHz) || 16000;
+        this.identifyMultipleLanguages = options.identifyMultipleLanguages !== false;
+        const opts = Array.isArray(options.languageOptions) ? options.languageOptions : null;
+        this.languageOptions = (opts && opts.length >= 2)
+            ? opts.map((x) => String(x || '').trim()).filter(Boolean)
+            : ['he-IL', 'en-US'];
+        this.preferredLanguage = String(options.preferredLanguage || this.languageCode || 'he-IL').trim() || 'he-IL';
         this.accessToken = String(options.accessToken || '').trim();
         this.guestTry = options.guestTry === true;
         this.applySpeechGain = options.applySpeechGain !== false;
@@ -411,6 +417,9 @@ export class MedicalAwsTranscribeStream {
             action: 'start',
             sample_rate_hz: this.sampleRateHz,
             language_code: this.languageCode,
+            identify_multiple_languages: this.identifyMultipleLanguages === true,
+            language_options: this.languageOptions,
+            preferred_language: this.preferredLanguage,
             access_token: this.accessToken,
             guest_try: this.guestTry === true,
         });
@@ -471,6 +480,9 @@ export class MedicalAwsTranscribeStream {
             action: 'start',
             sample_rate_hz: this.sampleRateHz,
             language_code: this.languageCode,
+            identify_multiple_languages: this.identifyMultipleLanguages === true,
+            language_options: this.languageOptions,
+            preferred_language: this.preferredLanguage,
             access_token: this.accessToken,
             guest_try: this.guestTry === true,
         }));

@@ -4965,9 +4965,9 @@ window.qsResumeActiveJobAfterConnect = async function (jobId) {
     } catch (_) {}
 
     // Dead worker / hung Demucs: still "processing" but nothing listens on the room.
+    // Clear silently — no retry dialog (confusing); user can upload again if needed.
     if (ageMs > QS_ACTIVE_JOB_STALE_PROCESSING_MS) {
         console.warn('[qs] abandoning stale active job on resume', { jid, ageMin: Math.round(ageMs / 60000) });
-        try { localStorage.setItem(QS_RETRY_JOB_KEY, jid); } catch (_) {}
         try { localStorage.setItem('lastJobId', jid); } catch (_) {}
         if (typeof window.qsMarkJobTerminal === 'function') window.qsMarkJobTerminal(jid, 'stale');
         window.isTriggering = false;
@@ -4975,19 +4975,6 @@ window.qsResumeActiveJobAfterConnect = async function (jobId) {
         qsStopFakeProgress('stale_active_job_resume');
         const mb = document.getElementById('main-btn');
         if (mb) mb.disabled = false;
-        const isHe = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
-        const msg = isHe
-            ? 'העיבוד נתקע. אפשר לנסות שוב בלי להעלות מחדש.'
-            : 'Processing got stuck. You can retry without re-uploading.';
-        if (typeof showTriggerErrorDialog === 'function') {
-            showTriggerErrorDialog(msg, {
-                onClose: () => {
-                    try { localStorage.removeItem(QS_RETRY_JOB_KEY); } catch (_) {}
-                },
-            });
-        } else if (typeof showStatus === 'function') {
-            showStatus(msg, true);
-        }
         return false;
     }
 
@@ -14600,6 +14587,9 @@ document.addEventListener('DOMContentLoaded', () => {
             cfg = {
                 use_aws_transcribe_stream: true,
                 transcribe_stream_language: 'he-IL',
+                transcribe_stream_identify_multiple_languages: true,
+                transcribe_stream_language_options: ['he-IL', 'en-US'],
+                transcribe_stream_preferred_language: 'he-IL',
                 transcribe_stream_transport: 'socketio',
                 transcribe_stream_sample_rate_hz: 16000,
             };
@@ -14610,8 +14600,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const transport = String(cfg.transcribe_stream_transport || 'socketio').toLowerCase();
         const accessToken = await qsSupabaseAccessToken();
         const guestTry = !accessToken && qsMedicalGuestTryAccepted();
+        const languageOptions = Array.isArray(cfg.transcribe_stream_language_options)
+            ? cfg.transcribe_stream_language_options
+            : ['he-IL', 'en-US'];
         const stream = new MedicalAwsTranscribeStream({
             languageCode,
+            identifyMultipleLanguages: cfg.transcribe_stream_identify_multiple_languages !== false,
+            languageOptions,
+            preferredLanguage: String(cfg.transcribe_stream_preferred_language || languageCode || 'he-IL'),
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
             transport,
             accessToken,
@@ -16525,25 +16521,8 @@ document.addEventListener('DOMContentLoaded', () => {
             window.isTriggering = false;
             stopProcessingStateUI('handle_job_update_job_failed');
             if (mainBtn) mainBtn.disabled = false;
-            // Regular mode: offer retry without re-upload. Use qsRetryJobId (NOT activeJobId)
-            // so socket reconnect does not keep "Re-joining room" for a dead job.
-            const isMedicalFail = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
             if (jobId && typeof window.qsMarkJobTerminal === 'function') {
                 window.qsMarkJobTerminal(jobId, 'failed');
-            }
-            if (!isMedicalFail && jobId && typeof showTriggerErrorDialog === 'function') {
-                try { localStorage.setItem(QS_RETRY_JOB_KEY, jobId); } catch (_) {}
-                try { localStorage.setItem('lastJobId', jobId); } catch (_) {}
-                const isHeFail = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
-                showTriggerErrorDialog(
-                    jobError || (isHeFail ? 'התמלול נכשל. אפשר לנסות שוב בלי להעלות מחדש.' : 'Transcription failed. You can retry without re-uploading.'),
-                    {
-                        onClose: () => {
-                            try { localStorage.removeItem(QS_RETRY_JOB_KEY); } catch (_) {}
-                            if (mainBtn) mainBtn.disabled = false;
-                        },
-                    }
-                );
             }
             if (jobId) {
                 window._handleJobUpdateInFlight = null;
