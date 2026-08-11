@@ -9296,8 +9296,8 @@ def _format_transcript_cleanup_openai(
 ):
     """One OpenAI call: light punctuation/STT cleanup; plain text only.
 
-    typo_fix=True (medical Fix typos): prioritize ASR/spelling corrections over
-    ultra-conservative 'light edit' wording while still forbidding rewrite/summary.
+    typo_fix=True + is_medical: Hebrew ASR typos + high-confidence English/Latin
+    medical-term ungarbling (button: תקן שגיאות). Still forbids rewrite/summary.
     """
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
@@ -9321,32 +9321,52 @@ def _format_transcript_cleanup_openai(
             f"{transcript_text}"
         )
     elif typo_fix:
-        system_prompt = (
-            "You correct ASR typos in transcripts. Return plain text only. "
-            "Do not include markdown fences or JSON."
-        )
-        medical_dialogue = (
-            "This is a clinical doctor–patient dialogue. Keep natural spoken style "
-            "(first/second person, bedside phrasing). Do NOT convert to chart/protocol prose.\n\n"
-            if is_medical else ""
-        )
-        user_prompt = (
-            "Correct transcription / ASR mistakes in this transcript.\n\n"
-            f"{medical_dialogue}"
-            "Requirements:\n\n"
-            "* Fix spelling, grammar, and punctuation errors from speech recognition.\n"
-            "* Correct obvious wrong words when context makes the intended word clear "
-            "(Hebrew letter confusions: ט/ת, ש/ס, ע/א, כ/ק, ב/ו, ה/ח; "
-            "e.g. והטענות not והתענות; medical terms when clearly intended).\n"
-            "* Prefer the corrected word over leaving a garbled ASR token.\n"
-            "* Preserve meaning, speaker intent, and paragraph breaks.\n"
-            "* Do not summarize, omit, invent, or stylistically rewrite.\n"
-            "* Return the full corrected transcript only.\n\n"
-            f"Output language: {output_lang_label}.\n\n"
-            f"Language hint: {lang_hint}\n\n"
-            "Transcript:\n\n"
-            f"{transcript_text}"
-        )
+        if is_medical:
+            system_prompt = (
+                "You correct Hebrew medical transcripts from speech-to-text. Two tasks, same pass:\n\n"
+                "1. TYPOS: Fix Hebrew spelling/transcription errors (wrong letters, split/merged words, "
+                "obvious ASR mistakes). Keep sentence structure and meaning unchanged.\n\n"
+                "2. MEDICAL TERMS: Speakers often say English/Latin medical terms mid-sentence (diagnoses, "
+                "anatomy, drugs, findings). The engine has no English lexicon, so these come out as "
+                "Hebrew phonetic garble. Replace ONLY high-confidence (>90%) matches with correct "
+                "English spelling. Adjust adjacent Hebrew function words only as needed for grammatical "
+                "agreement (e.g. ה-/-ית suffixes). Use context to disambiguate.\n\n"
+                "RULES:\n"
+                "- If unsure whether something is a real Hebrew word or garbled English, leave it unchanged.\n"
+                "- Never touch numbers, dates, patient IDs, dosages unless they are themselves garbled terms.\n"
+                "- Don't paraphrase, summarize, or rewrite anything beyond fixing typos and term substitution.\n"
+                "- Apply medical-term substitutions only when confidence > 0.9; otherwise leave the token as-is.\n"
+                "- Keep natural spoken clinical dialogue (first/second person); do NOT convert to chart/protocol prose.\n\n"
+                "Return the full corrected transcript as plain text only. "
+                "Do not include markdown fences, JSON, or a separate medical_terms list."
+            )
+            user_prompt = (
+                f"Output language: {output_lang_label}.\n\n"
+                f"Language hint: {lang_hint}\n\n"
+                "Transcript:\n\n"
+                f"{transcript_text}"
+            )
+        else:
+            system_prompt = (
+                "You correct ASR typos in transcripts. Return plain text only. "
+                "Do not include markdown fences or JSON."
+            )
+            user_prompt = (
+                "Correct transcription / ASR mistakes in this transcript.\n\n"
+                "Requirements:\n\n"
+                "* Fix spelling, grammar, and punctuation errors from speech recognition.\n"
+                "* Correct obvious wrong words when context makes the intended word clear "
+                "(Hebrew letter confusions: ט/ת, ש/ס, ע/א, כ/ק, ב/ו, ה/ח; "
+                "e.g. והטענות not והתענות; medical terms when clearly intended).\n"
+                "* Prefer the corrected word over leaving a garbled ASR token.\n"
+                "* Preserve meaning, speaker intent, and paragraph breaks.\n"
+                "* Do not summarize, omit, invent, or stylistically rewrite.\n"
+                "* Return the full corrected transcript only.\n\n"
+                f"Output language: {output_lang_label}.\n\n"
+                f"Language hint: {lang_hint}\n\n"
+                "Transcript:\n\n"
+                f"{transcript_text}"
+            )
     else:
         system_prompt = (
             "You edit transcripts. Return plain text only. "
