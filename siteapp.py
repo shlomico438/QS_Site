@@ -1472,7 +1472,11 @@ def _site_transcription_options_from_payload(data=None):
     out = {
         "batch_size": _pick("batch_size", "TRANSCRIBE_BATCH_SIZE", int, 16),
         "skip_word_alignment": _pick("skip_word_alignment", "TRANSCRIBE_SKIP_WORD_ALIGNMENT", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
-        "save_pre_align_json": _pick("save_pre_align_json", "TRANSCRIBE_SAVE_PRE_ALIGN_JSON", lambda v: str(v).strip().lower() in ('1', 'true', 'yes', 'on'), False),
+        # Temporary timing diagnostic: always request Whisper's pre-alignment
+        # segments so language-switch drift can be compared with final output.
+        # Sending True here also works with older GPU images where job options
+        # take precedence over the worker's SAVE_PRE_ALIGN_JSON environment flag.
+        "save_pre_align_json": True,
         "align_model_name": _pick("align_model_name", "TRANSCRIBE_ALIGN_MODEL_NAME", str, ""),
     }
     force_disable = _force_disable_vad_enabled()
