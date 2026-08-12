@@ -9213,6 +9213,12 @@ def _truncate_transcript_for_unified_gpt(transcript_text):
 
 def _format_output_lang_label(target_lang='he'):
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
+    if lang_hint in ('preserve', 'original', 'mixed'):
+        return (
+            'Preserve the original language of each passage (mixed-language output is expected)',
+            'mixed; preserve each source language and never translate',
+            False,
+        )
     want_hebrew = lang_hint.startswith('he')
     return ('Hebrew' if want_hebrew else str(target_lang or 'English')), lang_hint, want_hebrew
 
@@ -9307,6 +9313,15 @@ def _format_transcript_cleanup_openai(
     if read_retries is None:
         read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
     output_lang_label, lang_hint, _want_hebrew = _format_output_lang_label(target_lang)
+    preserve_source_languages = str(target_lang or '').strip().lower() in (
+        'preserve', 'original', 'mixed'
+    )
+    language_rule = (
+        "* Preserve the original language of every passage. Mixed Hebrew/English/other-language "
+        "transcripts are expected. Never translate any word, sentence, or passage into another language.\n"
+        if preserve_source_languages
+        else ""
+    )
     if is_music:
         system_prompt = (
             "You are an expert Hebrew linguistic editor and cultural archivist. "
@@ -9315,6 +9330,7 @@ def _format_transcript_cleanup_openai(
         )
         user_prompt = (
             f"{_GPT_MUSIC_CLEAN_TRANSCRIPT_PROMPT}"
+            f"{language_rule}"
             f"Output language: {output_lang_label}.\n\n"
             f"Language hint: {lang_hint}\n\n"
             "Transcript:\n\n"
@@ -9353,6 +9369,7 @@ def _format_transcript_cleanup_openai(
                 "e.g. והטענות not והתענות; medical terms when clearly intended).\n"
                 "* Prefer the corrected word over leaving a garbled ASR token.\n"
                 "* Preserve meaning, speaker intent, and paragraph breaks.\n"
+                f"{language_rule}"
                 "* Do not summarize, omit, invent, or stylistically rewrite.\n"
                 "* Return the full corrected transcript only.\n\n"
                 f"Output language: {output_lang_label}.\n\n"
@@ -9370,6 +9387,7 @@ def _format_transcript_cleanup_openai(
             "You are editing a transcript.\n\n"
             f"{medical_note}"
             "Requirements:\n\n"
+            f"{language_rule}"
             "* Fix punctuation and spelling.\n"
             "* Correct obvious transcription / ASR mistakes, including Hebrew letter confusions "
             "(ט/ת, ש/ס, ע/א, כ/ק) when the intended word is clear from context "
@@ -11056,7 +11074,9 @@ def _schedule_post_summary_formatting(
             try:
                 clean_result = _format_transcript_cleanup_openai(
                     plain_text,
-                    target_lang='he',
+                    # Cleanup may receive mixed Hebrew/English speech. Keep each
+                    # passage in its source language; only the summary is Hebrew.
+                    target_lang='preserve',
                     gpt_model=(
                         os.environ.get('GPT_CLEANUP_MODEL')
                         or os.environ.get('GPT_MODEL')
