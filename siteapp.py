@@ -8013,20 +8013,14 @@ def _resolve_trigger_status_for_poll(job_id):
     at_mem = pending_trigger_at.get(job_id)
     gpu_at = gpu_started_at.get(job_id)
 
-    if mem == "failed":
-        return "failed", at_mem
-
     # Early GPU workers call /api/gpu_started before CPU loudnorm finishes. Do not
-    # let a stale in-memory "preprocessing" block the browser handshake forever —
-    # prefer gpu_started / DB "triggered" / completed job row.
+    # let stale per-instance memory (including "failed") override durable progress.
     row = _get_job_poll_row(job_id, db_timeout=_worker_handoff_db_timeout_sec())
     persisted_status, persisted_at = _get_trigger_state(job_id, row=row)
     timings = _get_trigger_timings(job_id, row=row)
     gpu_at = gpu_at or timings.get("gpu_started_at")
 
-    if persisted_status == "failed":
-        return "failed", persisted_at
-    if gpu_at and mem != "failed" and persisted_status != "failed":
+    if gpu_at:
         return "triggered", gpu_at
     if mem == "triggered" or persisted_status == "triggered":
         return "triggered", at_mem or persisted_at or gpu_at
@@ -8043,6 +8037,11 @@ def _resolve_trigger_status_for_poll(job_id):
         if handoff.get("worker_ready") and not handoff.get("worker_pending_reason"):
             return ("triggered", gpu_at) if gpu_at else ("queued", at_mem or persisted_at)
         return "preprocessing", at_mem or persisted_at
+
+    # A failure is terminal only when no instance or persisted state has newer
+    # positive evidence that RunPod accepted or started the job.
+    if mem == "failed" or persisted_status == "failed":
+        return "failed", at_mem or persisted_at
 
     upload_done = (job_id in upload_complete) or bool(timings.get("upload_complete"))
     pinfo = pending_job_info.get(job_id) or {}

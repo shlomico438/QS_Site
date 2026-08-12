@@ -19275,6 +19275,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         const maxTriggerWaitPolls = 240; // ~16 min at 4s; avoids infinite loop on 503 / empty body
                         let ts = skipRunpodHandshake ? { status: 'triggered' } : { status: '' };
                         let httpBadStreak = 0;
+                        let triggerFailedStreak = 0;
                         let handshakeRetrySent = false;
                         let vocalSepLogged = false;
                         let audioPrepLogged = false;
@@ -19345,6 +19346,31 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                                     }
                                     httpBadStreak = 0;
                                     ts = await stRes.json();
+                                    if (ts.status === 'failed') {
+                                        // Multi-instance state can briefly expose a stale failure
+                                        // while another Site instance has already dispatched RunPod.
+                                        // Confirm before showing a terminal error.
+                                        try {
+                                            const gotResult = typeof qsPollCheckStatusOnce === 'function'
+                                                ? await qsPollCheckStatusOnce(jobId)
+                                                : false;
+                                            if (gotResult || jobAlreadyHandledBySocket()) {
+                                                ts = { status: 'triggered' };
+                                                break;
+                                            }
+                                        } catch (_) {}
+                                        triggerFailedStreak++;
+                                        if (triggerFailedStreak < 3) {
+                                            console.warn(
+                                                '[trigger] transient failed handshake; confirming',
+                                                { jobId, attempt: triggerFailedStreak },
+                                            );
+                                            ts = { status: 'queued' };
+                                            continue;
+                                        }
+                                    } else {
+                                        triggerFailedStreak = 0;
+                                    }
                                     // Only retry when Site marks stale_queued (default 360s). Do NOT
                                     // retry on a short local queued_since — cold starts often take
                                     // 2–4 min and a premature retry_trigger spins a second GPU worker.
