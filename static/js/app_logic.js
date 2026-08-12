@@ -2712,8 +2712,51 @@ function getLocalPreviewAudioMime() {
     try { return localStorage.getItem('currentAudioMime') || ''; } catch (_) { return ''; }
 }
 
+/**
+ * Blob previews fail in Chromium when <video crossorigin="anonymous"> is set.
+ * Remote/presigned URLs need CORS for VTT / canvas; local blob: URLs must not.
+ */
+function qsConfigureMainVideoCorsForUrl(url) {
+    const video = document.getElementById('main-video');
+    if (!video) return;
+    if (String(url || '').startsWith('blob:')) {
+        try { video.removeAttribute('crossorigin'); } catch (_) {}
+    } else if (url) {
+        try { video.setAttribute('crossorigin', 'anonymous'); } catch (_) {}
+    }
+}
+
+/** Bind a playable URL onto #main-video / #video-source (handles blob vs remote). */
+function qsBindMainVideoUrl(url, mimeType) {
+    const video = document.getElementById('main-video');
+    const videoSrc = document.getElementById('video-source');
+    if (!video || !url) return;
+    qsConfigureMainVideoCorsForUrl(url);
+    const mime = mimeType || 'video/mp4';
+    // Prefer element.src for blob: — empty <source src=""> + crossorigin often won't play.
+    if (String(url).startsWith('blob:')) {
+        if (videoSrc) {
+            try { videoSrc.removeAttribute('src'); } catch (_) {}
+        }
+        video.src = url;
+    } else {
+        try { video.removeAttribute('src'); } catch (_) {}
+        if (videoSrc) {
+            videoSrc.src = url;
+            videoSrc.type = mime;
+        } else {
+            video.src = url;
+        }
+    }
+    try {
+        video.controls = true;
+        video.load();
+    } catch (_) {}
+}
+
 /** Show audio/video player immediately after the user picks a file (before credit checks). */
-function qsShowLocalUploadMediaPreview(file) {
+function qsShowLocalUploadMediaPreview(file, opts) {
+    opts = opts || {};
     if (!file) return null;
     let isAudio = typeof qsIsAudioMediaFile === 'function' && qsIsAudioMediaFile(file);
     let isVideo = !isAudio && typeof qsIsVideoMediaFile === 'function' && qsIsVideoMediaFile(file);
@@ -2724,8 +2767,10 @@ function qsShowLocalUploadMediaPreview(file) {
     window.uploadWasVideo = !!isVideo;
     qsPersistUploadWasVideoFlag(!!isVideo);
     window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'media';
-    // Always blob-preview audio locally (simulation JSON+WAV and normal picks). Large-file skip is video-only.
-    const skipLocalBlobPreview = !isAudio
+    // Always blob-preview audio locally (simulation JSON+WAV and normal picks). Large-file skip is video-only —
+    // except when attaching media after a local JSON transcript (must be playable offline).
+    const skipLocalBlobPreview = !opts.forceBlobPreview
+        && !isAudio
         && typeof qsIsLargeUploadFile === 'function'
         && qsIsLargeUploadFile(file);
     let objectUrl = null;
@@ -2739,7 +2784,6 @@ function qsShowLocalUploadMediaPreview(file) {
     const videoWrapper = document.getElementById('video-wrapper');
     const videoPlayer = document.getElementById('video-player-container');
     const playerContainer = document.getElementById('audio-player-container');
-    const videoSrc = document.getElementById('video-source');
     const video = document.getElementById('main-video');
     const audioSource = document.getElementById('audio-source');
     const mainAudio = document.getElementById('main-audio');
@@ -2750,18 +2794,16 @@ function qsShowLocalUploadMediaPreview(file) {
             if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
             if (video) video.style.display = '';
             if (videoPlayer) videoPlayer.style.display = 'block';
-            if (objectUrl && videoSrc) {
+            if (objectUrl) {
                 const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
-                videoSrc.src = objectUrl;
-                videoSrc.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
-            }
-            if (video && objectUrl) {
-                video.style.position = 'relative';
-                video.style.zIndex = '1002';
-                video.controls = true;
-                video.load();
-                video.pause();
-                try { video.focus(); } catch (_) {}
+                const mime = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+                qsBindMainVideoUrl(objectUrl, mime);
+                if (video) {
+                    video.style.position = 'relative';
+                    video.style.zIndex = '1002';
+                    video.pause();
+                    try { video.focus(); } catch (_) {}
+                }
             }
         } else {
             // Audio (wav/mp3/m4a/…): always reveal the player chrome; src when blob is ready.
@@ -3692,19 +3734,25 @@ async function qsAttachS3MediaPreview(s3Key, userId, opts) {
         if (playerContainer) playerContainer.style.display = 'none';
         if (videoWrapper) { videoWrapper.style.display = 'flex'; videoWrapper.classList.add('visible'); }
         if (video) video.style.display = '';
-        if (videoSrc) {
+        const mimeMap = { '.mp4': 'video/mp4', '.mov': 'video/mp4', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
+        const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+        const mime = opts.mime || mimeMap[ext] || 'video/mp4';
+        if (typeof qsBindMainVideoUrl === 'function') {
+            qsBindMainVideoUrl(url, mime);
+        } else if (videoSrc) {
             videoSrc.src = url;
-            const mimeMap = { '.mp4': 'video/mp4', '.mov': 'video/mp4', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
-            const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
-            videoSrc.type = opts.mime || mimeMap[ext] || 'video/mp4';
+            videoSrc.type = mime;
+            if (video) {
+                video.controls = true;
+                video.load();
+            }
         }
         if (video) {
             video.controls = true;
-            video.load();
             video.pause();
         }
         if (videoPlayer) videoPlayer.style.display = 'block';
-        setLocalPreviewAudio(url, opts.mime || videoSrc?.type || 'video/mp4');
+        setLocalPreviewAudio(url, opts.mime || mime || 'video/mp4');
     } else {
         if (videoWrapper) {
             videoWrapper.style.display = 'none';
@@ -4798,14 +4846,54 @@ async function qsS3MultipartUploadFile(opts) {
             }
             const url = urlByPart[pn];
             if (!url) throw new Error('Missing presigned URL for part ' + pn);
-            const putRes = await fetch(url, { method: 'PUT', body: blob });
-            if (!putRes.ok) {
-                throw new Error('Part ' + pn + ' upload failed: HTTP ' + putRes.status);
+            const maxAttempts = 4;
+            let etag = '';
+            let lastError = null;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    const putRes = await fetch(url, { method: 'PUT', body: blob });
+                    if (!putRes.ok) {
+                        const err = new Error('Part ' + pn + ' upload failed: HTTP ' + putRes.status);
+                        // Retrying cannot repair an expired/invalid signature or permissions.
+                        err.qsNoRetry = !(
+                            putRes.status === 408 ||
+                            putRes.status === 429 ||
+                            putRes.status >= 500
+                        );
+                        throw err;
+                    }
+                    etag = putRes.headers.get('ETag') || putRes.headers.get('etag') || '';
+                    if (!etag) {
+                        const err = new Error(
+                            'Missing ETag for part ' + pn + '. Configure S3 CORS ExposeHeader: ETag for PUT.'
+                        );
+                        err.qsNoRetry = true;
+                        throw err;
+                    }
+                    if (attempt > 1) {
+                        qsUploadTrace('s3_multipart_part_retry_ok', { partNumber: pn, attempt });
+                    }
+                    break;
+                } catch (e) {
+                    lastError = e;
+                    const noRetry = !!(e && e.qsNoRetry);
+                    qsUploadTraceErr('s3_multipart_part_attempt_failed', {
+                        partNumber: pn,
+                        attempt,
+                        maxAttempts,
+                        retryable: !noRetry,
+                        err: String((e && e.message) || e),
+                    });
+                    if (noRetry || attempt === maxAttempts) break;
+                    // Jitter prevents all parallel parts retrying R2 simultaneously.
+                    const backoffMs = (500 * (2 ** (attempt - 1))) + Math.floor(Math.random() * 250);
+                    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+                }
             }
-            const etag = putRes.headers.get('ETag') || putRes.headers.get('etag');
             if (!etag) {
                 throw new Error(
-                    'Missing ETag for part ' + pn + '. Configure S3 CORS ExposeHeader: ETag for PUT.'
+                    'Part ' + pn + ' failed after retries: ' +
+                    String((lastError && lastError.message) || lastError || 'unknown error')
                 );
             }
             uploadedSoFar += blob.size;
@@ -7467,16 +7555,21 @@ async function initOpenInAppImpl(jobIdStr) {
             const isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
             if (isMobile) document.body.classList.add('mobile-video-session');
         } catch (_) {}
-        if (src) {
-            src.src = mediaUrl;
+        {
             // Use video/mp4 for .mov so Chrome/Firefox use MP4 decoder (many .mov are H.264 in QuickTime container)
-            const mime = { '.mp4': 'video/mp4', '.mov': 'video/mp4', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
+            const mimeMap = { '.mp4': 'video/mp4', '.mov': 'video/mp4', '.webm': 'video/webm', '.m4v': 'video/x-m4v', '.mkv': 'video/x-matroska' };
             const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
-            src.type = mime[ext] || 'video/mp4';
+            const mime = mimeMap[ext] || 'video/mp4';
+            if (typeof qsBindMainVideoUrl === 'function') {
+                qsBindMainVideoUrl(mediaUrl, mime);
+            } else if (src) {
+                src.src = mediaUrl;
+                src.type = mime;
+                if (video) video.load();
+            }
         }
         if (video) {
             video.controls = true;
-            video.load();
             video.pause();
             if (window.currentSegments.length > 0) {
                 let subtitlesAttached = false;
@@ -13588,9 +13681,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!isVideo && !isAudio) return false;
         try { setSeoHomeContentVisibility(false); } catch (_) {}
         if (typeof qsShowLocalUploadMediaPreview === 'function') {
-            qsShowLocalUploadMediaPreview(file);
+            // Simulation attach: always create a local blob so the player can play without upload.
+            qsShowLocalUploadMediaPreview(file, { forceBlobPreview: true });
         }
-        // Re-assert audio player visibility (preview may race with chrome sync).
+        // Re-assert player visibility (preview may race with chrome sync).
         if (isAudio) {
             const playerContainer = document.getElementById('audio-player-container');
             const videoWrapper = document.getElementById('video-wrapper');
@@ -13602,6 +13696,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 playerContainer.style.display = 'block';
                 try { playerContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
             }
+        } else if (isVideo) {
+            const videoWrapper = document.getElementById('video-wrapper');
+            const videoPlayer = document.getElementById('video-player-container');
+            const playerContainer = document.getElementById('audio-player-container');
+            const video = document.getElementById('main-video');
+            if (playerContainer) playerContainer.style.display = 'none';
+            if (videoWrapper) {
+                videoWrapper.style.display = 'flex';
+                videoWrapper.classList.add('visible');
+            }
+            if (video) video.style.display = '';
+            if (videoPlayer) videoPlayer.style.display = 'block';
+            try {
+                const previewUrl = typeof getLocalPreviewAudioUrl === 'function' ? getLocalPreviewAudioUrl() : null;
+                if (previewUrl && typeof qsBindMainVideoUrl === 'function') {
+                    qsBindMainVideoUrl(previewUrl, file.type || 'video/mp4');
+                    if (video) {
+                        video.pause();
+                        try { video.focus(); } catch (_) {}
+                    }
+                }
+            } catch (_) {}
+            try { videoWrapper && videoWrapper.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
         }
         const placeholderEl = document.getElementById('placeholder');
         if (placeholderEl) placeholderEl.style.display = 'none';
@@ -17176,7 +17293,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             if (docParagraphs.length) {
                 const htmlDoc = docParagraphs.map((p) => {
                     const safe = p.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em;"><p style="margin: 0; line-height: 1.7; cursor: text;">${safe}</p></div>`;
+                    return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em;"><p class="transcript-preview-line" style="margin: 0; line-height: 1.7; cursor: text; unicode-bidi:plaintext;">${safe}</p></div>`;
                 }).join('');
                 transcriptWindow.innerHTML = banner + htmlDoc;
                 transcriptWindow.contentEditable = 'false';
@@ -17206,7 +17323,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     <span style="display: ${showLabel ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(g.speaker)};">
                         ${g.speaker.replace('SPEAKER_', 'דובר ')}
                     </span>
-                </div><p data-idx="${rowIndex}" style="margin: 0 !important; margin-top: -2px; line-height: 1.2;">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
+                </div><p class="transcript-preview-line" data-idx="${rowIndex}" style="margin: 0 !important; margin-top: -2px; line-height: 1.2; unicode-bidi:plaintext;">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
             </div>`;
         }).join('');
 
@@ -18788,18 +18905,22 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 try {
                     if (isVideo && objectUrl) {
                         window.originalFileName = file.name.replace(/\.[^.]+$/, '');
-                        const src = document.getElementById('video-source');
-                        const video = document.getElementById('main-video');
-                        if (src) {
-                            src.src = objectUrl;
-                            const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
-                            src.type = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+                        const isMov = /\.mov$/i.test(file.name) || (file.type || '').toLowerCase().includes('quicktime');
+                        const mime = isMov ? 'video/mp4' : (file.type || 'video/mp4');
+                        if (typeof qsBindMainVideoUrl === 'function') {
+                            qsBindMainVideoUrl(objectUrl, mime);
+                        } else {
+                            const src = document.getElementById('video-source');
+                            if (src) {
+                                src.src = objectUrl;
+                                src.type = mime;
+                            }
                         }
+                        const video = document.getElementById('main-video');
                         if (video) {
                             video.style.position = 'relative';
                             video.style.zIndex = '1002';
                             video.controls = true;
-                            video.load();
                             video.pause();
                             try { video.focus(); } catch (e) {}
                         }
@@ -20174,7 +20295,7 @@ function renderTranscriptFromCues(cues) {
         return `
         <div class="paragraph-row" id="seg-${Math.floor(Number(startSec) || c.start || 0)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign}; cursor: pointer;"${jumpAttr}>
             <div style="font-size:0.85em; color:#6b7280; margin-bottom:0; line-height:1.05;">[${formatTime(c.start)}]</div>
-            <p data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap;">${safe}</p>
+            <p class="transcript-preview-line" data-idx="${idx}" style="margin:0 !important; margin-top:-2px; line-height:1.2; white-space:pre-wrap; direction:${textDirection}; text-align:${textAlign}; unicode-bidi:plaintext;">${safe}</p>
         </div>`;
     }).join('');
 
@@ -21174,7 +21295,7 @@ function renderLegacyTimingModeTranscript(container) {
                 <div class="qs-sync-text-stack">
                     <div class="qs-sync-legacy-text-row" style="display:flex; flex-direction:row; align-items:center; width:100%; max-width:100%; min-width:0;">
                         <div class="segment-content-wrapper">
-                            <p data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:1; min-width:0;">${safe}</p>
+                            <p class="transcript-preview-line" data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:1; min-width:0; unicode-bidi:plaintext;">${safe}</p>
                         </div>
                         <button type="button" class="qs-sync-handle qs-sync-handle--end" data-timing-idx="${idx}" data-qs-sync-handle="end" aria-label="גרור לשינוי זמן הסיום"></button>
                     </div>
@@ -21187,7 +21308,7 @@ function renderLegacyTimingModeTranscript(container) {
         <div class="paragraph-row qs-timing-legacy-row${ov}${sl}" data-timing-idx="${idx}" id="seg-${Math.floor(c.start)}" style="display:block; margin-bottom: 0.1em; direction: ${textDirection}; text-align: ${textAlign};">
             <div class="qs-sync-legacy-ts segment-timestamps">${timeLine}</div>
             <div class="segment-content-wrapper">
-              <p data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:1; min-width:0;">${safe}</p>
+              <p class="transcript-preview-line" data-idx="${idx}" style="margin:0 !important; line-height:1.2; white-space:pre-wrap; flex:1; min-width:0; unicode-bidi:plaintext;">${safe}</p>
             </div>
         </div>`;
     }).join('');
@@ -21404,7 +21525,9 @@ function renderWordCaptionEditor() {
                 const title = (typeof wStart === 'number' && typeof wEnd === 'number') ? `${wStart.toFixed(2)}\u200e \u2192 ${wEnd.toFixed(2)}` : '';
                 const hl = w && w.highlighted ? '1' : '0';
                 const tokTab = timingMode ? '-1' : '0';
-                return `<span class="word-token" contenteditable="false" tabindex="${tokTab}" data-wi="${wi}" data-highlighted="${hl}" data-empty="${isEmpty ? '1' : '0'}" data-start="${wStart}" data-end="${wEnd}" title="${title}" style="display:inline-block; min-width:0.8ch;">${display}</span>`;
+                // Keep display:inline (not inline-block): atomic boxes each become their own
+                // BiDi unit and reverse embedded English word order inside RTL lines.
+                return `<span class="word-token" contenteditable="false" tabindex="${tokTab}" data-wi="${wi}" data-highlighted="${hl}" data-empty="${isEmpty ? '1' : '0'}" data-start="${wStart}" data-end="${wEnd}" title="${title}">${display}</span>`;
             })
             .join(' ');
         const posLabelMap = { bottom: 'תחתון', middle: 'אמצע', top: 'עליון' };
@@ -21442,13 +21565,13 @@ function renderWordCaptionEditor() {
               <div class="caption-row-body qs-sync-caption-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
                 ${toolbarHtml}
                 <div class="segment-content-wrapper segment-content-wrapper--sync-text">
-                  <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0; direction:${textDirection}; text-align:${textAlign};">${tokenHtml}</div>
+                  <div class="caption-text transcript-preview-line" ${isEditing ? 'contenteditable="true" spellcheck="false"' : 'contenteditable="false" spellcheck="false"'} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0; direction:${textDirection}; text-align:${textAlign};">${tokenHtml}</div>
                 </div>
               </div>`
             : `
               <div class="caption-row-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
                 <div class="segment-content-wrapper">
-                  <div class="caption-text" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0;">${tokenHtml}</div>
+                  <div class="caption-text transcript-preview-line" ${isEditing ? 'contenteditable="true" spellcheck="false"' : ''} style="margin:0 !important; padding:0; line-height:1.2; flex:1; min-width:0; direction:${textDirection}; text-align:${textAlign};">${tokenHtml}</div>
                   ${(!timingMode && isEditing) ? '' : toolbarHtml}
                 </div>
               </div>`;
@@ -21483,9 +21606,16 @@ function renderWordCaptionEditor() {
 
     // Base styles for word editor (non-debug)
     (function ensureWordEditorBaseStyles() {
-        if (document.getElementById('qs-word-editor-base-style')) return;
-        const st = document.createElement('style');
-        st.id = 'qs-word-editor-base-style';
+        const STYLE_ID = 'qs-word-editor-base-style';
+        const STYLE_VER = '2'; // bump when BiDi / word-token display rules change
+        let st = document.getElementById(STYLE_ID);
+        if (st && st.getAttribute('data-qs-ver') === STYLE_VER) return;
+        if (!st) {
+            st = document.createElement('style');
+            st.id = STYLE_ID;
+            document.head.appendChild(st);
+        }
+        st.setAttribute('data-qs-ver', STYLE_VER);
         st.textContent = `
           #transcript-window .word-token.editing {
             outline: none;
@@ -21580,9 +21710,28 @@ function renderWordCaptionEditor() {
             padding: 0 !important;
             line-height: 1.2 !important;
           }
+          /* BiDi: keep mixed Hebrew+English in logical order (data is already correct). */
+          #transcript-window .transcript-preview-line {
+            unicode-bidi: plaintext;
+          }
+          #transcript-window.qs-rtl .transcript-preview-line {
+            direction: rtl;
+            text-align: right;
+          }
+          #transcript-window:not(.qs-rtl) .transcript-preview-line {
+            direction: ltr;
+            text-align: left;
+          }
           #transcript-window .caption-text .word-token {
+            display: inline;
             line-height: 1.2 !important;
-            vertical-align: top !important;
+            vertical-align: baseline !important;
+            /* Do NOT use unicode-bidi:isolate here — each word would reorder independently. */
+          }
+          #transcript-window .caption-text .word-token[data-empty="1"] {
+            display: inline-block;
+            min-width: 0.8ch;
+            unicode-bidi: isolate;
           }
           #transcript-window.transcript-editing .caption-ts {
             cursor: pointer;
@@ -21826,7 +21975,7 @@ function renderWordCaptionEditor() {
             animation: qsHandleFlash 280ms ease-out;
           }
         `;
-        document.head.appendChild(st);
+        if (!st.parentNode) document.head.appendChild(st);
     })();
 
     // Debug helpers: set window.DEBUG_WORD_EDITOR = true in console.
@@ -23296,7 +23445,8 @@ window.updateVideoWordOverlay = function(currentTime) {
         })();
         inner.style.direction = isRtl ? 'rtl' : 'ltr';
         inner.style.textAlign = 'center';
-        inner.innerHTML = `<span dir="${isRtl ? 'rtl' : 'ltr'}" style="display:block;max-width:100%;white-space:normal;word-break:break-word;line-height:1.25;text-shadow:0 2px 6px rgba(0,0,0,0.85);unicode-bidi:plaintext;">${renderedTokens.join('<span aria-hidden="true">&nbsp;</span>')}</span>`;
+        // Join with a real space (not a span) so English runs stay one BiDi sequence.
+        inner.innerHTML = `<span class="transcript-preview-line" dir="${isRtl ? 'rtl' : 'ltr'}" style="display:block;max-width:100%;white-space:normal;word-break:break-word;line-height:1.25;text-shadow:0 2px 6px rgba(0,0,0,0.85);unicode-bidi:plaintext;">${renderedTokens.join(' ')}</span>`;
         // For highlighted mode, use only overlay to avoid duplicate lines.
         ov.style.display = 'block';
         setNativeTrackMode('hidden');
@@ -23753,13 +23903,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!f) return;
         const url = URL.createObjectURL(f);
         window.originalFileName = f.name.replace(/\.[^.]+$/, '');
-        const src = document.getElementById('video-source');
-        if (src) src.src = url;
+        if (typeof qsBindMainVideoUrl === 'function') {
+            qsBindMainVideoUrl(url, f.type || 'video/mp4');
+        } else {
+            const src = document.getElementById('video-source');
+            if (src) src.src = url;
+            if (video) video.load();
+        }
         if (video) {
             video.style.position = 'relative';
             video.style.zIndex = '1002';
             video.controls = true;
-            video.load();
             video.pause();
             try { video.focus(); } catch (e) {}
         }

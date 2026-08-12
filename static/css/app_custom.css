@@ -3702,6 +3702,31 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
     direction: rtl;
 }
 
+/* BiDi: Hebrew RTL lines with embedded English must keep logical word order.
+   Word karaoke uses inline .word-token spans — never isolate each word as a box. */
+#transcript-window .transcript-preview-line {
+    unicode-bidi: plaintext;
+}
+#transcript-window.qs-rtl .transcript-preview-line,
+html[dir="rtl"] #transcript-window .transcript-preview-line {
+    direction: rtl;
+    text-align: right;
+}
+#transcript-window:not(.qs-rtl) .transcript-preview-line {
+    direction: ltr;
+    text-align: left;
+}
+#transcript-window .caption-text .word-token {
+    display: inline;
+    unicode-bidi: normal;
+    vertical-align: baseline;
+}
+#transcript-window .caption-text .word-token[data-empty="1"] {
+    display: inline-block;
+    min-width: 0.8ch;
+    unicode-bidi: isolate;
+}
+
 /* Medical full transcript should be plain paragraph text, not subtitle row layout. */
 .main-app-container.medical-mode #transcript-window .qs-medical-plain-paragraph {
     display: block !important;

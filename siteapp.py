@@ -9322,38 +9322,23 @@ def _format_transcript_cleanup_openai(
         )
     elif typo_fix:
         if is_medical:
+            # Keep this prompt short — latency is dominated by the model call.
             system_prompt = (
-                "You correct Hebrew medical transcripts from speech-to-text. Three tasks, same pass:\n\n"
-                "1. TYPOS: Fix Hebrew spelling/transcription errors (wrong letters, split/merged words, "
-                "obvious ASR mistakes). Keep sentence structure and meaning unchanged.\n\n"
-                "2. MEDICAL TERMS: Speakers often say English/Latin medical terms mid-sentence (diagnoses, "
-                "anatomy, drugs, findings). The engine has no English lexicon, so these come out as "
-                "Hebrew phonetic garble. Replace ONLY high-confidence (>90%) matches with correct "
-                "English spelling. Adjust adjacent Hebrew function words only as needed for grammatical "
-                "agreement (e.g. ה-/-ית suffixes). Use context to disambiguate.\n\n"
-                "3. NUMBERS: Convert Hebrew number-words to digit form wherever they appear — ages, doses, "
-                "lab values, measurements, dates, times, counts, vital signs, etc. This includes compound "
-                "numbers (\"שלוש מאות עשרים\" → 320), decimals (\"אחת נקודה חמש\" → 1.5), and units attached "
-                "to numbers (\"חמישה מיליגרם\" → 5 מ\"ג / 5 mg — keep the unit in whatever language it was "
-                "said). Apply this conversion even when confidence is not >90%, since number-word-to-digit "
-                "mapping is deterministic and low-risk, unlike medical term substitution.\n\n"
-                "RULES:\n"
-                "- If unsure whether something is a real Hebrew word or garbled English, leave it unchanged.\n"
-                "- Do not invent, round, or change numeric *values* — only convert Hebrew number-words to digits "
-                "(and normalize attached units as above). Leave patient IDs / codes that are already digits as-is.\n"
-                "- Don't paraphrase, summarize, or rewrite anything beyond fixing typos, term substitution, "
-                "and number-word→digit conversion.\n"
-                "- Apply medical-term substitutions only when confidence > 0.9; otherwise leave the token as-is.\n"
-                "- Keep natural spoken clinical dialogue (first/second person); do NOT convert to chart/protocol prose.\n\n"
-                "Return the full corrected transcript as plain text only. "
-                "Do not include markdown fences, JSON, or a separate medical_terms list."
+                "Edit a Hebrew medical ASR transcript. Return plain text only (no markdown/JSON). "
+                "Keep meaning, order, and spoken clinical style. Do not summarize or invent.\n"
+                "1) Fix Hebrew ASR typos.\n"
+                "2) Rewrite clear drug names and Latin/English medical terms that appear in Hebrew letters "
+                "into English spelling; leave native Hebrew clinical phrases in Hebrew.\n"
+                "3) Convert Hebrew number-words to digits; do not change numeric values."
             )
-            user_prompt = (
-                f"Output language: {output_lang_label}.\n\n"
-                f"Language hint: {lang_hint}\n\n"
-                "Transcript:\n\n"
-                f"{transcript_text}"
-            )
+            user_prompt = f"Transcript:\n\n{transcript_text}"
+            if not gpt_model:
+                # Faster default for this interactive button (override with MEDICAL_TYPO_FIX_MODEL).
+                gpt_model = (
+                    os.environ.get('MEDICAL_TYPO_FIX_MODEL')
+                    or os.environ.get('POST_TRANSLATION_MODEL')
+                    or 'gpt-4o-mini'
+                ).strip()
         else:
             system_prompt = (
                 "You correct ASR typos in transcripts. Return plain text only. "
