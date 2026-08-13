@@ -3594,12 +3594,6 @@ function qsFormatMediaDurationForConfirm(seconds) {
 
 /** Read duration from file metadata before upload confirm (hidden audio/video element). */
 function qsProbeFileMediaDurationSec(file, timeoutMs) {
-    const fromPlayer = typeof qsClientMediaDurationSecForCredits === 'function'
-        ? qsClientMediaDurationSecForCredits()
-        : 0;
-    if (Number.isFinite(fromPlayer) && fromPlayer > 0) {
-        return Promise.resolve(fromPlayer);
-    }
     const limit = Number.isFinite(timeoutMs) ? timeoutMs : 8000;
     return new Promise((resolve) => {
         if (!file) {
@@ -3780,8 +3774,6 @@ async function qsAttachS3MediaPreview(s3Key, userId, opts) {
 function qsClientMediaDurationSecForCredits() {
     const stored = Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC);
     if (Number.isFinite(stored) && stored > 0) return stored;
-    const recalled = typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec() : 0;
-    if (Number.isFinite(recalled) && recalled > 0) return recalled;
     const pick = (el) => {
         if (!el) return 0;
         const d = Number(el.duration);
@@ -3793,7 +3785,10 @@ function qsClientMediaDurationSecForCredits() {
         if (fromVideo > 0) return fromVideo;
     }
     const audio = document.getElementById('main-audio');
-    return pick(audio);
+    const fromAudio = pick(audio);
+    if (fromAudio > 0) return fromAudio;
+    const recalled = typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec() : 0;
+    return (Number.isFinite(recalled) && recalled > 0) ? recalled : 0;
 }
 
 /** Persist billable duration across OAuth/signup reloads (anonymous → registered claim). */
@@ -3803,7 +3798,9 @@ function qsRememberMediaDurationSec(sec, jobId) {
     try { window.__QS_UPLOAD_MEDIA_DURATION_SEC = d; } catch (_) {}
     try {
         localStorage.setItem('lastMediaDurationSec', String(d));
-        const jid = String(jobId || localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+        // Only bind a duration to a job when that exact job ID is supplied.
+        // During pre-upload probing, lastJobId still belongs to the previous file.
+        const jid = String(jobId || '').trim();
         if (jid) localStorage.setItem(`mediaDurationSec:${jid}`, String(d));
     } catch (_) {}
 }
@@ -3811,11 +3808,18 @@ window.qsRememberMediaDurationSec = qsRememberMediaDurationSec;
 
 function qsRecallMediaDurationSec(jobId) {
     try {
-        const jid = String(jobId || localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
+        const explicitJobId = jobId != null && String(jobId).trim() !== '';
+        const jid = String(
+            explicitJobId
+                ? jobId
+                : (localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '')
+        ).trim();
         if (jid) {
             const byJob = Number(localStorage.getItem(`mediaDurationSec:${jid}`));
             if (Number.isFinite(byJob) && byJob > 0) return byJob;
         }
+        // An explicit job lookup must never borrow another upload's last value.
+        if (explicitJobId) return 0;
         const last = Number(localStorage.getItem('lastMediaDurationSec'));
         if (Number.isFinite(last) && last > 0) return last;
     } catch (_) {}
@@ -3879,10 +3883,6 @@ function qsDeferJobCreditsAfterDelivery(jobId, inputS3Key) {
             const mediaDurationSec = (
                 typeof qsRecallMediaDurationSec === 'function'
                     ? qsRecallMediaDurationSec(jid)
-                    : 0
-            ) || (
-                typeof qsUploadMediaDurationForApi === 'function'
-                    ? qsUploadMediaDurationForApi()
                     : 0
             );
             const res = await fetch('/api/charge_job_credits', {
@@ -4487,21 +4487,9 @@ async function qsMedicalJsonHeaders() {
 /** Probe duration in the background (upload-first flow); does not block the UI. */
 function qsStartUploadDurationProbeInBackground(file) {
     window.__QS_UPLOAD_MEDIA_DURATION_SEC = null;
-    void (async () => {
-        for (let i = 0; i < 24; i++) {
-            const fromPlayer = typeof qsClientMediaDurationSecForCredits === 'function'
-                ? qsClientMediaDurationSecForCredits()
-                : 0;
-            if (Number.isFinite(fromPlayer) && fromPlayer > 0) {
-                if (typeof qsRememberMediaDurationSec === 'function') {
-                    qsRememberMediaDurationSec(fromPlayer);
-                } else {
-                    window.__QS_UPLOAD_MEDIA_DURATION_SEC = fromPlayer;
-                }
-                return;
-            }
-            await new Promise((r) => setTimeout(r, 250));
-        }
+    const promise = (async () => {
+        // Probe this File directly. The preview player/localStorage may still
+        // contain metadata from the previous upload during the first moments.
         const probed = await qsProbeFileMediaDurationSec(file, 15000);
         if (Number.isFinite(probed) && probed > 0) {
             if (typeof qsRememberMediaDurationSec === 'function') {
@@ -4510,7 +4498,11 @@ function qsStartUploadDurationProbeInBackground(file) {
                 window.__QS_UPLOAD_MEDIA_DURATION_SEC = probed;
             }
         }
+        return Number.isFinite(probed) && probed > 0 ? probed : 0;
     })();
+    window.__QS_UPLOAD_DURATION_PROMISE = promise;
+    void promise;
+    return promise;
 }
 
 /** Fast wallet gate before upload (full duration check happens server-side after upload). */
@@ -4665,9 +4657,16 @@ async function qsEnsureCreditsForUpload(durationSec, opts) {
 function qsUploadMediaDurationForApi() {
     const stored = Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC);
     if (Number.isFinite(stored) && stored > 0) return stored;
-    const recalled = typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec() : 0;
-    if (Number.isFinite(recalled) && recalled > 0) return recalled;
-    return qsClientMediaDurationSecForCredits();
+    const pick = (el) => {
+        if (!el) return 0;
+        const d = Number(el.duration);
+        return (Number.isFinite(d) && d > 0) ? d : 0;
+    };
+    if (window.uploadWasVideo === true) {
+        const fromVideo = pick(document.getElementById('main-video'));
+        if (fromVideo > 0) return fromVideo;
+    }
+    return pick(document.getElementById('main-audio'));
 }
 
 /** Legacy audio-profile browser logging removed (routing is GPU tiny-probe now). */
@@ -19211,7 +19210,20 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     uploadPhase = 'trigger_processing';
                     // Always runs after S3 upload completes: tells server upload is complete (upload_status for worker).
                     console.log("Upload complete → /api/trigger_processing");
-                    const mediaDurationSec = qsUploadMediaDurationForApi();
+                    let mediaDurationSec = qsUploadMediaDurationForApi();
+                    if (
+                        !(mediaDurationSec > 0)
+                        && window.__QS_UPLOAD_DURATION_PROMISE
+                    ) {
+                        try {
+                            mediaDurationSec = Number(
+                                await window.__QS_UPLOAD_DURATION_PROMISE
+                            ) || 0;
+                        } catch (_) {}
+                    }
+                    if (mediaDurationSec > 0 && typeof qsRememberMediaDurationSec === 'function') {
+                        qsRememberMediaDurationSec(mediaDurationSec, jobId);
+                    }
                     const triggerPayload = {
                         s3Key: s3Key,
                         bucket: bucket,
