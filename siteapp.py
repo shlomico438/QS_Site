@@ -5349,13 +5349,17 @@ def _job_is_medical_for_credits(input_s3_key, pending_info=None):
 
 
 def _credit_minutes_from_duration(duration_sec):
+    """Bill whole minutes, truncating leftover seconds (2:03 → 2, 4:19 → 4).
+
+    Clips shorter than 60 seconds still cost 1 minute.
+    """
     try:
         duration = float(duration_sec or 0)
     except (TypeError, ValueError):
         return 0
     if duration <= 0:
         return 0
-    return max(1, int(math.ceil(duration / 60.0)))
+    return max(1, int(duration // 60.0))
 
 
 def _segments_duration_seconds_for_credits(segments):
@@ -5391,25 +5395,36 @@ def _duration_from_job_metadata_dict(md):
     """Pull file length hints persisted on jobs.metadata / qs_trigger / preprocess timing."""
     if not isinstance(md, dict):
         return 0.0
+    qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
+    for src in (md, qt if isinstance(qt, dict) else {}):
+        try:
+            val = float(src.get('credit_file_duration_sec') or 0)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
     candidates = []
-    for key in ('credit_file_duration_sec', 'file_duration_sec', 'input_duration_sec', 'media_duration_sec'):
+    for key in ('file_duration_sec', 'input_duration_sec', 'media_duration_sec'):
         try:
             val = float(md.get(key) or 0)
             if val > 0:
                 candidates.append(val)
         except (TypeError, ValueError):
             pass
-    qt = md.get(_QS_TRIGGER_META_KEY) if isinstance(md.get(_QS_TRIGGER_META_KEY), dict) else {}
     if isinstance(qt, dict):
+        for key in ('file_duration_sec', 'input_duration_sec', 'media_duration_sec'):
+            try:
+                val = float(qt.get(key) or 0)
+                if val > 0:
+                    candidates.append(val)
+            except (TypeError, ValueError):
+                pass
         for nest_key in ('audio_preprocessing', 'vocal_separation'):
             nest = qt.get(nest_key) if isinstance(qt.get(nest_key), dict) else {}
             timing = nest.get('timing') if isinstance(nest.get('timing'), dict) else {}
-            for key in ('input_duration_sec', 'source_duration_sec', 'total_sec'):
+            for key in ('input_duration_sec', 'source_duration_sec'):
                 try:
                     val = float(timing.get(key) or nest.get(key) or 0)
-                    # total_sec for preprocess is wall time, not media length — skip it here.
-                    if key == 'total_sec':
-                        continue
                     if val > 0:
                         candidates.append(val)
                 except (TypeError, ValueError):
@@ -5437,11 +5452,10 @@ def _resolve_claim_credit_duration_sec(
     result_s3_key=None,
 ):
     """Resolve billable seconds for anonymous→user claim (OAuth often wipes in-memory client duration)."""
-    best = 0.0
     try:
         client_val = float(client_duration or 0)
-        if client_val > 0:
-            best = max(best, client_val)
+        if 0 < client_val <= 86400:
+            return client_val
     except (TypeError, ValueError):
         pass
 
@@ -5449,27 +5463,32 @@ def _resolve_claim_credit_duration_sec(
         try:
             stored = float(pending_info.get('credit_file_duration_sec') or 0)
             if stored > 0:
-                best = max(best, stored)
+                return stored
         except (TypeError, ValueError):
             pass
 
-    best = max(best, _duration_from_pending_credit_context(job_id))
-    best = max(best, _duration_from_job_metadata_dict(job_metadata))
-    best = max(best, _segments_duration_seconds_for_credits(segments))
+    best = _duration_from_pending_credit_context(job_id)
+    if best > 0:
+        return best
+    best = _duration_from_job_metadata_dict(job_metadata)
+    if best > 0:
+        return best
 
-    if best <= 0 and result_s3_key:
+    if result_s3_key:
         try:
             payload = _get_json_object_from_s3_key(result_s3_key)
             if isinstance(payload, dict):
-                segs = payload.get('segments') or (payload.get('result') or {}).get('segments')
-                best = max(best, _segments_duration_seconds_for_credits(segs))
                 for key in ('file_duration_sec', 'credit_file_duration_sec', 'media_duration_sec', 'duration'):
                     try:
                         val = float(payload.get(key) or 0)
                         if val > 0:
-                            best = max(best, val)
+                            return val
                     except (TypeError, ValueError):
                         pass
+                segs = payload.get('segments') or (payload.get('result') or {}).get('segments')
+                seg_dur = _segments_duration_seconds_for_credits(segs)
+                if seg_dur > 0:
+                    return seg_dur
         except Exception:
             logging.warning(
                 "claim duration: could not read result json job=%s key=%s",
@@ -5477,25 +5496,30 @@ def _resolve_claim_credit_duration_sec(
                 str(result_s3_key)[-80:],
             )
 
-    if best <= 0 and bucket and input_s3_key:
-        best = max(
-            best,
-            float(
-                _file_duration_seconds_for_credits(
-                    bucket,
-                    input_s3_key,
-                    pending_info=pending_info,
-                    client_duration_sec=client_duration,
-                )
-                or 0
-            ),
+    if bucket and input_s3_key:
+        probed = float(
+            _file_duration_seconds_for_credits(
+                bucket,
+                input_s3_key,
+                pending_info=pending_info,
+                client_duration_sec=client_duration,
+            )
+            or 0
         )
+        if probed > 0:
+            return probed
 
-    return best if best > 0 else 0.0
+    seg_dur = _segments_duration_seconds_for_credits(segments)
+    return seg_dur if seg_dur > 0 else 0.0
 
 
 def _file_duration_seconds_for_credits(bucket, s3_key, pending_info=None, client_duration_sec=0.0):
-    """Billable media length from uploaded file metadata (not transcribed segment spans)."""
+    """Billable media length from uploaded file metadata (not transcribed segment spans).
+
+    Prefer browser playback duration, then the duration stored at trigger time.
+    S3/ffprobe is a fallback only — VBR MP3/MP4 headers often overestimate length,
+    and taking max(client, probe) overbills (e.g. 4:19 billed as 7:49).
+    """
     stored_sec = 0.0
     if isinstance(pending_info, dict):
         try:
@@ -5511,18 +5535,20 @@ def _file_duration_seconds_for_credits(bucket, s3_key, pending_info=None, client
             client_sec = client_val
     except (TypeError, ValueError):
         client_sec = 0.0
-    # Browser already probed duration for credits gate — skip slow S3/ffmpeg download on large files.
     if client_sec > 0:
-        return max(stored_sec, client_sec)
-    probed_sec = 0.0
+        return client_sec
+    if stored_sec > 0:
+        return stored_sec
     if bucket and s3_key:
-        probed_sec = _media_duration_seconds_from_s3(
-            bucket,
-            s3_key,
-            client_duration_sec=client_duration_sec,
+        return float(
+            _media_duration_seconds_from_s3(
+                bucket,
+                s3_key,
+                client_duration_sec=client_duration_sec,
+            )
+            or 0.0
         )
-    # Prefer the longest reliable duration so large files are not under-billed (e.g. 49 min file vs 10 min speech).
-    return max(stored_sec, probed_sec, client_sec)
+    return 0.0
 
 
 def _min_credit_minutes_for_upload():
@@ -5913,6 +5939,7 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
         pinfo['credit_required_minutes'] = float(minutes)
         pinfo['credit_file_duration_sec'] = float(duration_sec)
         pending_job_info[job_id] = pinfo
+        _stash_deferred_credit_context(job_id, user_id, s3_key, pending_info=pinfo)
 
     return {
         "ok": True,
@@ -6020,8 +6047,24 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
             duration_sec = override
     except (TypeError, ValueError):
         duration_sec = 0.0
+    if duration_sec <= 0 and isinstance(pending_info, dict):
+        try:
+            stored = float(pending_info.get('credit_file_duration_sec') or 0)
+            if stored > 0:
+                duration_sec = stored
+        except (TypeError, ValueError):
+            pass
     if duration_sec <= 0:
-        duration_sec = _file_duration_seconds_for_credits(bucket, input_s3_key, pending_info=pending_info)
+        duration_sec = _file_duration_seconds_for_credits(
+            bucket,
+            input_s3_key,
+            pending_info=pending_info,
+            client_duration_sec=(
+                pending_info.get('client_duration_sec')
+                if isinstance(pending_info, dict)
+                else 0.0
+            ),
+        )
     if duration_sec <= 0:
         duration_sec = _segments_duration_seconds_for_credits(segments)
     minutes = _credit_minutes_from_duration(duration_sec)
@@ -6102,6 +6145,12 @@ def _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=N
             if pending_info.get(k) is not None:
                 ctx[k] = pending_info[k]
     pending_credit_charge_context[jid] = ctx
+    dur = ctx.get('credit_file_duration_sec')
+    if dur:
+        try:
+            _merge_job_qs_trigger(jid, {"credit_file_duration_sec": float(dur)})
+        except Exception:
+            logging.warning("stash credit duration persist failed job_id=%s", jid)
 
 
 @app.route('/api/charge_job_credits', methods=['POST'])
@@ -6143,7 +6192,21 @@ def api_charge_job_credits():
                 ctx = pending_credit_charge_context.pop(job_id, None) or {}
         if not input_s3_key:
             input_s3_key = str(ctx.get('input_s3_key') or '').strip()
-        pending_info = dict(ctx) if ctx else None
+        pending_info = dict(ctx) if ctx else {}
+        client_duration = _client_media_duration_from_request(data)
+        if client_duration > 0:
+            pending_info['client_duration_sec'] = client_duration
+            if not pending_info.get('credit_file_duration_sec'):
+                pending_info['credit_file_duration_sec'] = client_duration
+        if not pending_info.get('credit_file_duration_sec'):
+            try:
+                row = _get_job_row_by_runpod_job_id(job_id, select="metadata")
+                md = row.get('metadata') if isinstance(row, dict) else None
+                persisted = _duration_from_job_metadata_dict(md)
+                if persisted > 0:
+                    pending_info['credit_file_duration_sec'] = persisted
+            except Exception:
+                pass
         if not isinstance(segments, list):
             segments = []
         credit_info = _charge_job_credits(
@@ -6151,7 +6214,8 @@ def api_charge_job_credits():
             job_id,
             segments,
             input_s3_key,
-            pending_info=pending_info,
+            pending_info=pending_info or None,
+            file_duration_sec=client_duration if client_duration > 0 else None,
         )
         if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
             return jsonify({**credit_info, "ok": False}), 402

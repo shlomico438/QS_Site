@@ -3876,6 +3876,15 @@ function qsDeferJobCreditsAfterDelivery(jobId, inputS3Key) {
                 }
                 return;
             }
+            const mediaDurationSec = (
+                typeof qsRecallMediaDurationSec === 'function'
+                    ? qsRecallMediaDurationSec(jid)
+                    : 0
+            ) || (
+                typeof qsUploadMediaDurationForApi === 'function'
+                    ? qsUploadMediaDurationForApi()
+                    : 0
+            );
             const res = await fetch('/api/charge_job_credits', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3885,6 +3894,7 @@ function qsDeferJobCreditsAfterDelivery(jobId, inputS3Key) {
                     input_s3_key: s3Key,
                     segments: window.currentSegments || [],
                     isMedical: false,
+                    ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
                 })
             });
             const data = await res.json().catch(() => ({}));
