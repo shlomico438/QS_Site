@@ -1332,6 +1332,13 @@ def _log_audio_profile_metrics(job_id, audio_profile_info, *, source=None, s3_ke
     prof = str(ap.get('profile') or '').strip().lower()
     key_suffix = (s3_key[-80:] if isinstance(s3_key, str) and len(s3_key) > 80 else s3_key)
     src = f" ({source})" if source else ''
+    print(
+        f"audio-profile job_id={job_id} profile={prof or 'unknown'} source={source or ap.get('source') or ''} "
+        f"basis={ap.get('classification_basis')} energy_variance={ap.get('energy_variance')} "
+        f"threshold={ap.get('threshold')} vad={'off' if prof == 'music' else 'on'} "
+        f"key_suffix={key_suffix}",
+        flush=True,
+    )
     if prof == 'music':
         logging.info(
             "Music detected (audio-profile%s) job_id=%s key_suffix=%s energy_variance=%s post_intro_var=%s tail_var=%s threshold=%s basis=%s video_container=%s",
@@ -1549,6 +1556,14 @@ def _s3_key_likely_video_container(s3_key):
     ext = pathlib.Path(str(s3_key or '')).suffix.lower()
     return ext in (
         '.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi', '.mpeg', '.mpg', '.wmv', '.flv',
+    )
+
+
+def _s3_key_likely_audio_container(s3_key):
+    """Bare audio uploads (songs) need a looser music threshold than video lectures."""
+    ext = pathlib.Path(str(s3_key or '')).suffix.lower()
+    return ext in (
+        '.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.wma', '.aiff', '.aif',
     )
 
 
@@ -1787,6 +1802,10 @@ def _infer_audio_profile_from_s3(bucket, s3_key, seconds=20):
         video_mult = 1.0
         if _s3_key_likely_video_container(s3_key):
             video_mult = float(os.environ.get('AUDIO_PROFILE_VIDEO_MUSIC_THRESHOLD_MULT', '2.5') or 2.5)
+        elif _s3_key_likely_audio_container(s3_key):
+            # Sung tracks have speech-like RMS gaps; a slightly looser gate still
+            # leaves talk-heavy audio above threshold in practice.
+            video_mult = float(os.environ.get('AUDIO_PROFILE_AUDIO_MUSIC_THRESHOLD_MULT', '4.0') or 4.0)
         thr = thr_base * video_mult
         skip_intro_sec = max(0.0, float(os.environ.get('AUDIO_PROFILE_SKIP_INTRO_SECONDS', '5') or 5))
         post_intro_start = min(len(rms_vals), int(round(skip_intro_sec / 0.1)))
