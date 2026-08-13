@@ -2262,6 +2262,10 @@ def _apply_medical_audio_transcription_options(base_options):
 
 def _music_vocal_separation_enabled():
     """Enable Site-side vocals-only preprocessing for jobs classified as music."""
+    demucs_raw = os.environ.get('TRANSCRIBE_DEMUCS_ENABLED')
+    if demucs_raw is not None and str(demucs_raw).strip() != '':
+        if str(demucs_raw).strip().lower() not in ('1', 'true', 'yes', 'on'):
+            return False
     raw = os.environ.get('TRANSCRIBE_MUSIC_VOCAL_SEPARATION')
     if raw is None or str(raw).strip() == '':
         return True
