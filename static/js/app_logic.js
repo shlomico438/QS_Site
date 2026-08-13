@@ -19014,8 +19014,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
                     fileSize: currentFile.size,
                 };
-                if (!isMedicalModeEnabled()) {
-                    multipartInitBody.treatAsMusic = qsUserTreatAsMusicForUpload();
+                if (!isMedicalModeEnabled() && qsUserTreatAsMusicForUpload()) {
+                    multipartInitBody.treatAsMusic = true;
                 }
                 const uploadDurationSec = qsUploadMediaDurationForApi();
                 if (uploadDurationSec > 0) {
@@ -19211,8 +19211,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
                         ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
                     };
-                    if (!isMedicalUpload) {
-                        triggerPayload.treatAsMusic = qsUserTreatAsMusicForUpload();
+                    if (!isMedicalUpload && qsUserTreatAsMusicForUpload()) {
+                        triggerPayload.treatAsMusic = true;
                     }
                     const { triggerRes, triggerData } = await qsPostTriggerProcessingWithRetry(triggerPayload, jobId);
                     if (!triggerRes.ok) {
