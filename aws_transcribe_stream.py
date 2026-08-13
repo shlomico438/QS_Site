@@ -410,6 +410,7 @@ class AwsTranscribeStreamSession:
         self._bytes_fed_to_aws = 0
         self._aws_accepted = False
         self._ended_max_duration = False
+        self._feed_task: Optional[asyncio.Task] = None
 
     def _start_blocking(self, timeout_sec: float = 30.0) -> None:
         """Run only from an OS thread (ThreadPoolExecutor worker)."""
@@ -462,6 +463,12 @@ class AwsTranscribeStreamSession:
             if not self._audio_deque_has_sentinel:
                 self._audio_deque_has_sentinel = True
                 self._audio_deque.append(None)
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(lambda: None)
+                except Exception:
+                    pass
             return
         self._chunks_queued += 1
         self._audio_deque.append(bytes(chunk))
@@ -576,6 +583,14 @@ class AwsTranscribeStreamSession:
             except _REAL_QUEUE_FULL:
                 pass
             try:
+                pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
                 self._loop.close()
             except Exception:
                 pass
@@ -662,6 +677,7 @@ class AwsTranscribeStreamSession:
                 logger.debug('AWS Transcribe on_ready callback failed', exc_info=True)
 
         feed_task = asyncio.create_task(_feed_aws())
+        self._feed_task = feed_task
 
         async def _max_session_guard() -> None:
             await asyncio.sleep(_transcribe_max_session_sec())
@@ -682,6 +698,13 @@ class AwsTranscribeStreamSession:
             await asyncio.gather(feed_task, self._handler.handle_events())
         finally:
             guard_task.cancel()
+            if not feed_task.done():
+                feed_task.cancel()
+                try:
+                    await feed_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._feed_task = None
         logger.info(
             'AWS Transcribe stream finished queued=%d fed=%d bytes_fed=%d transcript_len=%d',
             self._chunks_queued,
@@ -792,6 +815,8 @@ class TranscribeStreamBridge:
         self._aws_session_count = 0
         self._rollover_lock = _REAL_LOCK()
         self._ever_ready = False
+        self._last_client_audio_at = 0.0
+        self._rollover_count = 0
 
     def _combined_transcript(self, current_session_text: str = '') -> str:
         parts = list(self._committed_segments)
@@ -810,20 +835,56 @@ class TranscribeStreamBridge:
             return
         self._committed_segments.append(text)
 
+    def _client_audio_idle_sec(self) -> float:
+        if self._last_client_audio_at <= 0:
+            return float('inf')
+        return max(0.0, time.time() - self._last_client_audio_at)
+
+    def _should_rollover_after_audio_timeout(self) -> bool:
+        if not self._alive:
+            return False
+        pending_audio = bool(self.audio_pending)
+        idle_sec = self._client_audio_idle_sec()
+        max_rollovers = max(1, int(os.environ.get('MEDICAL_TRANSCRIBE_MAX_ROLLOVERS', '8') or 8))
+        idle_limit = max(2.0, float(os.environ.get('MEDICAL_TRANSCRIBE_ROLLOVER_IDLE_SEC', '8') or 8))
+        if self._rollover_count >= max_rollovers:
+            logger.warning(
+                'transcribe rollover suppressed: max replacements reached (%d) idle=%.1fs pending_audio=%d',
+                max_rollovers,
+                idle_sec if idle_sec != float('inf') else -1,
+                len(self.audio_pending),
+            )
+            return False
+        if pending_audio:
+            return True
+        if idle_sec <= idle_limit:
+            return True
+        logger.info(
+            'transcribe rollover skipped: client audio idle=%.1fs pending_audio=%d committed_len=%d',
+            idle_sec if idle_sec != float('inf') else -1,
+            len(self.audio_pending),
+            len(self._combined_transcript('')),
+        )
+        return False
+
     def _roll_over_session(self, reason: str) -> None:
         if not self._alive:
+            return
+        if reason == 'audio_timeout' and not self._should_rollover_after_audio_timeout():
             return
         with self._rollover_lock:
             self.session_live = False
             with self.start_lock:
                 self.start_scheduled = False
             self.session = self._make_session()
+            self._rollover_count += 1
             logger.info(
-                'transcribe starting replacement aws session #%d after %s (committed_len=%d pending_audio=%d)',
+                'transcribe starting replacement aws session #%d after %s (committed_len=%d pending_audio=%d idle=%.1fs)',
                 self._aws_session_count,
                 reason,
                 len(self._combined_transcript('')),
                 len(self.audio_pending),
+                self._client_audio_idle_sec() if self._last_client_audio_at else -1,
             )
             self._schedule_session_start()
 
@@ -1001,6 +1062,7 @@ class TranscribeStreamBridge:
     def handle_audio(self, chunk: bytes) -> None:
         if not chunk or not self._alive:
             return
+        self._last_client_audio_at = time.time()
         self._audio_chunks_received += 1
         rms, peak = _pcm16_level(chunk)
         self._last_audio_rms = rms
