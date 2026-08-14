@@ -116,6 +116,30 @@ body.qs-transcript-present .upload-zone-app-footer {
 .upload-zone-app-footer a[href*="linkedin.com"] {
     display: none !important;
 }
+.upload-zone-app-footer .medical-aws-footnote {
+    display: none;
+    color: #9ca3af;
+}
+body.medical-mode .upload-zone-app-footer .medical-aws-footnote,
+.main-app-container.medical-mode .upload-zone-app-footer .medical-aws-footnote {
+    display: inline;
+}
+body.medical-mode .upload-zone-app-footer .medical-aws-footnote::before,
+.main-app-container.medical-mode .upload-zone-app-footer .medical-aws-footnote::before {
+    content: "·";
+    margin-inline: 0.35em;
+    color: #d1d5db;
+}
+.medical-aws-footnote {
+    margin: 0;
+    text-align: center;
+    font-size: 12px;
+    color: #9ca3af;
+}
+.medical-onboarding-screen > .medical-aws-footnote {
+    margin-top: 28px;
+    padding-bottom: 8px;
+}
 
 /* Tier 1: utility bar */
 .navbar-utility {

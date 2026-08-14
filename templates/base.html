@@ -96,7 +96,7 @@
       html.qs-medical-entry #medical-recording-wrap { display: block !important; }
     </style>
     {% endif %}
-    <title>{% block page_title %}{% if is_medical_head %}QuickScribe Medical | תיעוד רפואי חכם{% else %}תמלול אוטומטי בעברית ויצירת כתוביות לסרטונים | QuickScribe{% endif %}{% endblock %}</title>
+    <title>{% block page_title %}{% if is_medical_head %}QuickScribe Medical | תיעוד רפואי חכם{% else %}תמלול AI שמבין אתכם - בכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה | QuickScribe{% endif %}{% endblock %}</title>
     {% if is_medical_head %}
     <meta name="description" content="הפיכת הקלטות מפגש רפואי לטקסט מדוייק וסיכומי ביקור מותאמים אישית בשניות. חסכו זמן יקר בתיעוד הרפואי.">
     <meta property="og:type" content="website">
@@ -108,7 +108,15 @@
     <meta name="twitter:title" content="QuickScribe Medical | תיעוד רפואי חכם">
     <meta name="twitter:description" content="תמלול וסיכום ביקורים רפואיים בשניות. מותאם במיוחד לרופאים וצוותים רפואיים.">
     {% else %}
-    <meta name="description" content="{% block page_description %}QuickScribe מאפשר תמלול אוטומטי בעברית ויצירת כתוביות SRT לסרטונים ואודיו. העלו קובץ וקבלו תמלול מדויק תוך דקות.{% endblock %}">
+    <meta name="description" content="{% block page_description %}זיהוי אוטומטי של 99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות. המערכת בנויה להתמודד עם רעשי רקע, ריבוי דוברים והקלטות מהשטח.{% endblock %}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{{ qs_canonical_url }}">
+    <meta property="og:title" content="{{ self.page_title()|striptags|trim }}">
+    <meta property="og:description" content="{{ self.page_description()|striptags|trim }}">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="{{ qs_canonical_url }}">
+    <meta name="twitter:title" content="{{ self.page_title()|striptags|trim }}">
+    <meta name="twitter:description" content="{{ self.page_description()|striptags|trim }}">
     {% endif %}
     <link rel="canonical" href="{{ qs_canonical_url }}">
     {% if qs_is_locale_home %}

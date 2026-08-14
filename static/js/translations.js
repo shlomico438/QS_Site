@@ -142,6 +142,7 @@ window.translations = {
         upload_prompt_video_or_audio: "בחר וידאו או אודיו כדי להתחיל",
         medical_session_secure_recording: "סשן הקלטה רפואי מאובטח",
         medical_session_hipaa_active: "תמלול קליני בתקן HIPAA פעיל",
+        medical_aws_footnote: "מבוסס על תשתית \u200fAWS",
         medical_secure_clinical_session: "סשן קליני מאובטח",
         medical_start_recording_hint: "התחילו בהקלטה מהכפתור למטה. התמלול יוצג תוך כדי דיבור.",
         medical_warmup_cold_title: "סשן קליני חדש",
@@ -481,6 +482,7 @@ window.translations = {
         upload_prompt_video_or_audio: "Choose video or audio to get started",
         medical_session_secure_recording: "Secure medical recording session",
         medical_session_hipaa_active: "Clinical transcription with HIPAA mode active",
+        medical_aws_footnote: "Built on AWS infrastructure",
         medical_secure_clinical_session: "Secure clinical session",
         medical_start_recording_hint: "Start recording with the button below. The transcript will appear as you speak.",
         medical_warmup_cold_title: "New clinical session",
@@ -818,7 +820,13 @@ window.applyTranslations = function() {
             return;
         }
         const key = el.getAttribute('data-i18n');
-        if (key) el.textContent = window.t(key);
+        if (key) {
+            el.textContent = window.t(key);
+            if (key === 'medical_aws_footnote') {
+                const loc = String(window.currentLocale || document.documentElement.lang || 'he').toLowerCase();
+                el.dir = loc.startsWith('en') ? 'ltr' : 'rtl';
+            }
+        }
     });
     document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
         const key = el.getAttribute('data-i18n-placeholder');
