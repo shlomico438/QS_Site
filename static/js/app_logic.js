@@ -292,6 +292,148 @@ function qsResolveAppLocale() {
     return 'he';
 }
 window.qsResolveAppLocale = qsResolveAppLocale;
+
+/** Detected ASR language for the active transcript (e.g. "en", "he") — drives LTR/RTL of transcript/subtitle panes. */
+window.currentTranscriptLanguage = null;
+
+function qsNormalizeTranscriptLang(code) {
+    const raw = String(code || '').trim().toLowerCase();
+    if (!raw || raw === 'auto' || raw === 'unknown' || raw === 'und') return '';
+    const base = raw.split(/[-_]/)[0];
+    if (base === 'iw') return 'he';
+    if (base === 'nb' || base === 'nn') return 'no';
+    return base;
+}
+
+function qsSampleTranscriptPlainText(maxChars) {
+    const limit = Math.max(80, Number(maxChars) || 1200);
+    const parts = [];
+    let size = 0;
+    const push = (t) => {
+        const s = String(t || '').trim();
+        if (!s) return;
+        parts.push(s);
+        size += s.length + 1;
+    };
+    try {
+        if (Array.isArray(window.currentWords)) {
+            for (const w of window.currentWords) {
+                push(w && (w.word || w.text));
+                if (size >= limit) break;
+            }
+        }
+        if (size < limit && Array.isArray(window.currentSegments)) {
+            for (const seg of window.currentSegments) {
+                push(seg && (seg.text || seg.translated_text));
+                if (size >= limit) break;
+            }
+        }
+        if (size < limit && Array.isArray(window.currentCaptions)) {
+            for (const c of window.currentCaptions) {
+                push(c && c.text);
+                if (size >= limit) break;
+            }
+        }
+    } catch (_) {}
+    return parts.join(' ').slice(0, limit);
+}
+
+function qsExtractTranscriptLanguageFromPayload(raw) {
+    if (!raw || typeof raw !== 'object') return '';
+    const result = (raw.result && typeof raw.result === 'object') ? raw.result : null;
+    const output = (raw.output && typeof raw.output === 'object') ? raw.output : null;
+    const candidates = [
+        raw.language,
+        result && result.language,
+        output && output.language,
+        raw.detected_language,
+        result && result.detected_language,
+    ];
+    for (const c of candidates) {
+        const n = qsNormalizeTranscriptLang(c);
+        if (n) return n;
+    }
+    const blocks =
+        raw.languageBlocks ||
+        raw.language_blocks ||
+        (result && (result.languageBlocks || result.language_blocks)) ||
+        (output && (output.languageBlocks || output.language_blocks)) ||
+        [];
+    if (Array.isArray(blocks) && blocks.length) {
+        const scores = Object.create(null);
+        for (const b of blocks) {
+            if (!b || typeof b !== 'object') continue;
+            const lang = qsNormalizeTranscriptLang(b.lang || b.language);
+            if (!lang) continue;
+            const start = Number(b.start);
+            const end = Number(b.end);
+            const dur = (Number.isFinite(start) && Number.isFinite(end) && end > start) ? (end - start) : 1;
+            scores[lang] = (scores[lang] || 0) + dur;
+        }
+        let best = '';
+        let bestScore = -1;
+        for (const [lang, score] of Object.entries(scores)) {
+            if (score > bestScore) {
+                best = lang;
+                bestScore = score;
+            }
+        }
+        if (best) return best;
+    }
+    return '';
+}
+
+function qsRememberTranscriptLanguageFromPayload(raw) {
+    const lang = qsExtractTranscriptLanguageFromPayload(raw);
+    if (lang) window.currentTranscriptLanguage = lang;
+    return lang || window.currentTranscriptLanguage || '';
+}
+
+/**
+ * Direction for transcript / subtitle content panes.
+ * Prefer detected ASR language; otherwise script heuristic; finally UI locale.
+ * (UI chrome can stay Hebrew while an English song renders LTR.)
+ */
+function qsTranscriptContentLayout() {
+    const rtlLangs = new Set(['he', 'ar', 'fa', 'ur', 'yi']);
+    const explicit = qsNormalizeTranscriptLang(window.currentTranscriptLanguage);
+    if (explicit) {
+        const isRtl = rtlLangs.has(explicit);
+        return {
+            isRtl,
+            textDirection: isRtl ? 'rtl' : 'ltr',
+            textAlign: isRtl ? 'right' : 'left',
+            source: 'language',
+        };
+    }
+    const sample = qsSampleTranscriptPlainText(1600);
+    if (sample) {
+        const rtlChars = (sample.match(/[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/g) || []).length;
+        const ltrChars = (sample.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+        if (rtlChars + ltrChars >= 12) {
+            const isRtl = rtlChars > ltrChars * 0.35;
+            return {
+                isRtl,
+                textDirection: isRtl ? 'rtl' : 'ltr',
+                textAlign: isRtl ? 'right' : 'left',
+                source: 'script',
+            };
+        }
+    }
+    const locale = String(
+        typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')
+    ).toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    return {
+        isRtl,
+        textDirection: isRtl ? 'rtl' : 'ltr',
+        textAlign: isRtl ? 'right' : 'left',
+        source: 'ui',
+    };
+}
+window.qsTranscriptContentLayout = qsTranscriptContentLayout;
+window.qsRememberTranscriptLanguageFromPayload = qsRememberTranscriptLanguageFromPayload;
+
 /** True if this browser should return to the medical (HIPAA) product surface after sign-out. */
 function _qsWantsPostLogoutMedical() {
     try {
@@ -2476,6 +2618,11 @@ async function qsFetchTranscriptJsonFromS3Key(resultS3Key) {
 /** Apply words/captions/segments from a transcript JSON object; returns segment list used for render. */
 function qsApplyTranscriptPayloadFromJson(tr) {
     if (!tr || typeof tr !== 'object') return [];
+    try {
+        if (typeof qsRememberTranscriptLanguageFromPayload === 'function') {
+            qsRememberTranscriptLanguageFromPayload(tr);
+        }
+    } catch (_) {}
     const trFmt = typeof pickFormattedFromObject === 'function' ? pickFormattedFromObject(tr) : null;
     if (trFmt) {
         window.currentFormattedDoc = trFmt;
@@ -12825,6 +12972,7 @@ function resetScreenToInitial() {
     window.currentSegments = [];
     window.currentWords = null;
     window.currentCaptions = null;
+    window.currentTranscriptLanguage = null;
     window._qsShowEmptyTranscriptNotice = false;
     window._medicalHasResult = false;
     window.currentFormattedDoc = null;
@@ -14740,8 +14888,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!cfg || !cfg.use_aws_transcribe_stream) return null;
         const languageCode = String(cfg.transcribe_stream_language || 'he-IL');
         const transport = String(cfg.transcribe_stream_transport || 'socketio').toLowerCase();
-        const accessToken = await qsSupabaseAccessToken();
-        const guestTry = !accessToken && qsMedicalGuestTryAccepted();
         const languageOptions = Array.isArray(cfg.transcribe_stream_language_options)
             ? cfg.transcribe_stream_language_options
             : ['he-IL', 'en-US'];
@@ -14752,8 +14898,8 @@ document.addEventListener('DOMContentLoaded', () => {
             preferredLanguage: String(cfg.transcribe_stream_preferred_language || languageCode || 'he-IL'),
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
             transport,
-            accessToken,
-            guestTry,
+            accessToken: '',
+            guestTry: false,
             onPartial: (t) => {
                 const next = String(t || '').trim();
                 const combined = transcriptPrefix && next
@@ -14763,9 +14909,20 @@ document.addEventListener('DOMContentLoaded', () => {
             },
             onStatus: (s) => renderMedicalLiveStreamStatus(s),
         });
+        // Capture PCM immediately — MediaRecorder UI may already be recording while auth/socket await.
         try {
-            await stream.start(mediaStream);
-            window._medicalAwsTranscribeStream = stream;
+            stream.beginCapture(mediaStream);
+        } catch (captureErr) {
+            console.error('[medical] AWS Transcribe capture failed to start', captureErr);
+            try { stream.abort(); } catch (_) {}
+            throw captureErr;
+        }
+        window._medicalAwsTranscribeStream = stream;
+        try {
+            const accessToken = await qsSupabaseAccessToken();
+            stream.accessToken = accessToken || '';
+            stream.guestTry = !accessToken && qsMedicalGuestTryAccepted();
+            await stream.connectAndAwaitReady();
             return stream;
         } catch (e) {
             const msg = String((e && e.message) || e || 'transcribe_stream_start_failed');
@@ -15705,6 +15862,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.currentSegments = [];
         window.currentWords = null;
         window.currentCaptions = null;
+        window.currentTranscriptLanguage = null;
         window.currentFormattedDoc = null;
         window._qsDocPreferSegmentsAfterEdit = false;
         try { abortMedicalAwsTranscribeStream(); } catch (_) {}
@@ -16723,6 +16881,11 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (_) {}
         }
         const flatWordSegments = (output && output.word_segments) || rawResult.word_segments || (rawResult.result && rawResult.result.word_segments);
+        try {
+            if (typeof qsRememberTranscriptLanguageFromPayload === 'function') {
+                qsRememberTranscriptLanguageFromPayload(rawResult);
+            }
+        } catch (_) {}
         const isMedicalStreamJob = qsJobEngineFromPayload(rawResult) === 'aws_transcribe_stream' ||
             !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
         // Real word timestamps → word/caption model (coerces numeric strings; optional flat `word_segments`).
@@ -17296,13 +17459,19 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
         // Subtitle mode = per-segment lines; Doc mode = glued paragraphs by speaker.
         window.isDocumentMode = isDocumentFormatEnabled();
+        const layout = (typeof qsTranscriptContentLayout === 'function')
+            ? qsTranscriptContentLayout()
+            : { isRtl: true, textDirection: 'rtl', textAlign: 'right' };
+        transcriptWindow.classList.toggle('qs-rtl', !!layout.isRtl);
+        transcriptWindow.style.direction = layout.textDirection;
+        transcriptWindow.style.textAlign = layout.textAlign;
         if (window.isDocumentMode) {
             const docParagraphs = getDocFormatParagraphs();
             const banner = qsTranscriptCleanupBannerHtml();
             if (docParagraphs.length) {
                 const htmlDoc = docParagraphs.map((p) => {
                     const safe = p.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em;"><p class="transcript-preview-line" style="margin: 0; line-height: 1.7; cursor: text; unicode-bidi:plaintext;">${safe}</p></div>`;
+                    return `<div class="paragraph-row" style="display:block; margin-bottom: 0.35em; direction: ${layout.textDirection}; text-align: ${layout.textAlign};"><p class="transcript-preview-line" style="margin: 0; line-height: 1.7; cursor: text; unicode-bidi:plaintext; direction: ${layout.textDirection}; text-align: ${layout.textAlign};">${safe}</p></div>`;
                 }).join('');
                 transcriptWindow.innerHTML = banner + htmlDoc;
                 transcriptWindow.contentEditable = 'false';
@@ -17322,7 +17491,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             const startNum = Number(g.start);
             const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
             return `
-            <div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom: 2px; cursor: pointer;"${rowClick}>
+            <div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom: 2px; cursor: pointer; direction: ${layout.textDirection}; text-align: ${layout.textAlign};"${rowClick}>
                 <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
 
                     <span class="timestamp" style="display: ${isTimeVisible ? 'block' : 'none'};">
@@ -17332,7 +17501,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     <span style="display: ${showLabel ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(g.speaker)};">
                         ${g.speaker.replace('SPEAKER_', 'דובר ')}
                     </span>
-                </div><p class="transcript-preview-line" data-idx="${rowIndex}" style="margin: 0 !important; margin-top: -2px; line-height: 1.2; unicode-bidi:plaintext;">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
+                </div><p class="transcript-preview-line" data-idx="${rowIndex}" style="margin: 0 !important; margin-top: -2px; line-height: 1.2; unicode-bidi:plaintext; direction: ${layout.textDirection}; text-align: ${layout.textAlign};">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
             </div>`;
         }).join('');
 
@@ -18804,11 +18973,14 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const fullText = window.isDocumentMode ? fullTextRaw : wrapTextByMaxChars(fullTextRaw, 50);
         const translatedParts = group.sentences.map(s => s.translated_text).filter(Boolean);
         const translatedLine = translatedParts.length ? translatedParts.join(" ").replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+        const layout = (typeof qsTranscriptContentLayout === 'function')
+            ? qsTranscriptContentLayout()
+            : { textDirection: 'rtl', textAlign: 'right' };
 
         const startNum = Number(group.start);
         const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
         return `
-        <div class="paragraph-row" style="display:block; width: 100%; margin-bottom: 2px; direction: rtl; text-align: right; cursor: pointer;"${rowClick}>
+        <div class="paragraph-row" style="display:block; width: 100%; margin-bottom: 2px; direction: ${layout.textDirection}; text-align: ${layout.textAlign}; cursor: pointer;"${rowClick}>
             <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
                 <div style="display: ${isTimeVisible ? 'block' : 'none'};">${formatTime(group.start)}</div>
                 <div style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(rawSpeaker)};">
@@ -20248,9 +20420,13 @@ function renderTranscriptFromCues(cues) {
         container._qsSelectionChangeHandler = null;
     }
     const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
-    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-    const textDirection = isRtl ? 'rtl' : 'ltr';
-    const textAlign = isRtl ? 'right' : 'left';
+    const uiRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const contentLayout = (typeof qsTranscriptContentLayout === 'function')
+        ? qsTranscriptContentLayout()
+        : { isRtl: uiRtl, textDirection: uiRtl ? 'rtl' : 'ltr', textAlign: uiRtl ? 'right' : 'left' };
+    const isRtl = contentLayout.isRtl;
+    const textDirection = contentLayout.textDirection;
+    const textAlign = contentLayout.textAlign;
     // Do not paint the clinical summary shell on the landing screen (no job / no cues yet).
     const showMedicalSummaryPane =
         isMedical &&
@@ -20266,8 +20442,8 @@ function renderTranscriptFromCues(cues) {
         const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const emptyMsg = _medicalText('medical_summary_empty', 'No medical summary is available yet.');
         const notSpecifiedMsg = _medicalText('medical_summary_not_specified', 'Not specified.');
-        const summaryDirection = isRtl ? 'rtl' : 'ltr';
-        const summaryAlign = isRtl ? 'right' : 'left';
+        const summaryDirection = uiRtl ? 'rtl' : 'ltr';
+        const summaryAlign = uiRtl ? 'right' : 'left';
         if (hasStructured) {
             const chief = _medicalSummaryFieldBody(fmt.medical_chief_complaint, 'chief');
             const exam = _medicalSummaryFieldBody(fmt.medical_examination_transcript, 'exam');
@@ -20348,6 +20524,7 @@ function renderTranscriptFromCues(cues) {
     }).join('');
 
     container.innerHTML = html;
+    container.classList.toggle('qs-rtl', !!isRtl);
     container.style.direction = textDirection;
     container.style.textAlign = textAlign;
     container.contentEditable = 'false';
@@ -21305,10 +21482,16 @@ function renderLegacyTimingModeTranscript(container) {
     if (!container || !window._qsTimingMode) return;
     const cues = window.currentSegments || [];
     if (!cues.length) return;
-    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
-    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-    const textDirection = isRtl ? 'rtl' : 'ltr';
-    const textAlign = isRtl ? 'right' : 'left';
+    const layout = (typeof qsTranscriptContentLayout === 'function')
+        ? qsTranscriptContentLayout()
+        : (() => {
+            const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+            const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+            return { isRtl, textDirection: isRtl ? 'rtl' : 'ltr', textAlign: isRtl ? 'right' : 'left' };
+        })();
+    const isRtl = layout.isRtl;
+    const textDirection = layout.textDirection;
+    const textAlign = layout.textAlign;
     container.classList.toggle('qs-rtl', !!isRtl);
     const overlap = _qsCaptionOverlapIndexSet();
     const sel = window._qsTimingSelectedCi;
@@ -21529,10 +21712,16 @@ function renderWordCaptionEditor() {
         return;
     }
 
-    const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
-    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
-    const textDirection = isRtl ? 'rtl' : 'ltr';
-    const textAlign = isRtl ? 'right' : 'left';
+    const layout = (typeof qsTranscriptContentLayout === 'function')
+        ? qsTranscriptContentLayout()
+        : (() => {
+            const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase();
+            const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+            return { isRtl, textDirection: isRtl ? 'rtl' : 'ltr', textAlign: isRtl ? 'right' : 'left' };
+        })();
+    const isRtl = layout.isRtl;
+    const textDirection = layout.textDirection;
+    const textAlign = layout.textAlign;
     const isEditing = container.classList.contains('transcript-editing');
     const timingMode = !!window._qsTimingMode;
     container.classList.toggle('qs-rtl', !!isRtl);
@@ -23484,6 +23673,9 @@ window.updateVideoWordOverlay = function(currentTime) {
         inner.style.transform = (pos === 'middle') ? 'translate(-50%, -50%)' : 'translateX(-50%)';
         const isRtl = (() => {
             try {
+                if (typeof qsTranscriptContentLayout === 'function') {
+                    return !!qsTranscriptContentLayout().isRtl;
+                }
                 const lang = String(document.documentElement.lang || '').toLowerCase();
                 const dir = String(document.documentElement.dir || '').toLowerCase();
                 return dir === 'rtl' || lang.startsWith('he') || lang.startsWith('ar');

@@ -3708,10 +3708,14 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
     background: #fff;
     border: 1px solid #e5e7eb;
     border-radius: 0 0 8px 8px;
-    direction: rtl;
-    text-align: right;
+    direction: ltr;
+    text-align: left;
     /* Visual Fixes */
     display: block;
+}
+#transcript-window.qs-rtl {
+    direction: rtl;
+    text-align: right;
 }
 /* While editing: text cursor (I-beam), no jump on click */
 #transcript-window.transcript-editing,
@@ -3723,16 +3727,17 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
     align-items: baseline;
     gap: 15px;
     margin-bottom: 0.1em;
-    direction: rtl;
+    direction: inherit;
+    text-align: inherit;
 }
 
 /* BiDi: Hebrew RTL lines with embedded English must keep logical word order.
-   Word karaoke uses inline .word-token spans — never isolate each word as a box. */
+   Word karaoke uses inline .word-token spans — never isolate each word as a box.
+   Content direction follows #transcript-window.qs-rtl (ASR language), not the UI chrome dir. */
 #transcript-window .transcript-preview-line {
     unicode-bidi: plaintext;
 }
-#transcript-window.qs-rtl .transcript-preview-line,
-html[dir="rtl"] #transcript-window .transcript-preview-line {
+#transcript-window.qs-rtl .transcript-preview-line {
     direction: rtl;
     text-align: right;
 }
