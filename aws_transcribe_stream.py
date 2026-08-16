@@ -77,6 +77,28 @@ except Exception:  # pragma: no cover
     except Exception:
         _REAL_START_NEW_THREAD = None
 
+def _patch_amazon_transcribe_real_locks() -> None:
+    """amazon-transcribe uses threading.Lock between AWS CRT callbacks and asyncio.
+
+    After gevent monkey.patch_all(), those locks cannot be acquired from the AWS OS
+    thread (LoopExit / 'int' has no attribute 'pending'). The client already got
+    'ready' and then never receives partials.
+    """
+    try:
+        from amazon_transcribe import httpsession as _hs
+        _orig_init = _hs.AwsCrtHttpResponse.__init__
+
+        def _init(self, *args, **kwargs):
+            _orig_init(self, *args, **kwargs)
+            self._chunk_lock = _REAL_LOCK()
+
+        _hs.AwsCrtHttpResponse.__init__ = _init  # type: ignore[method-assign]
+        logger.info('amazon_transcribe HTTP chunk lock using real threading.Lock')
+    except Exception:
+        logger.warning('failed to patch amazon_transcribe locks', exc_info=True)
+
+_patch_amazon_transcribe_real_locks()
+
 
 def _start_real_os_thread(target: Callable[[], None], name: str) -> None:
     """Start target in a real OS thread, bypassing gevent-patched Thread.start()."""
@@ -108,7 +130,7 @@ def _env_truthy(name: str, default: bool = False) -> bool:
 
 
 def medical_transcribe_identify_multiple_languages() -> bool:
-    """Default on — set MEDICAL_TRANSCRIBE_IDENTIFY_MULTIPLE_LANGUAGES=false to force fixed language_code."""
+    """Default on (he-IL + en-US). Set MEDICAL_TRANSCRIBE_IDENTIFY_MULTIPLE_LANGUAGES=false for fixed language_code."""
     return _env_truthy('MEDICAL_TRANSCRIBE_IDENTIFY_MULTIPLE_LANGUAGES', True)
 
 
@@ -281,6 +303,97 @@ def _pcm16_level(chunk: bytes) -> tuple[int, int]:
     return int((total / samples) ** 0.5) if samples else 0, peak
 
 
+_TOKEN_SPLIT = re.compile(r'[\s.,;:!?،۔]+')
+
+
+def _transcript_tokens(text: str) -> List[str]:
+    return [t for t in _TOKEN_SPLIT.split(str(text or '').strip()) if t]
+
+
+def _norm_phrase(text: str) -> str:
+    return ' '.join(_transcript_tokens(text)).lower()
+
+
+def _drop_leading_tokens(text: str, n_tokens: int) -> str:
+    s = str(text or '').strip()
+    if n_tokens <= 0:
+        return s
+    toks = _transcript_tokens(s)
+    if n_tokens >= len(toks):
+        return ''
+    parts = [re.escape(t) for t in toks[:n_tokens]]
+    pat = r'^[\s.,;:!?،۔]*' + r'[\s.,;:!?،۔]+'.join(parts) + r'[\s.,;:!?،۔]*'
+    return re.sub(pat, '', s, count=1, flags=re.IGNORECASE).strip()
+
+
+def _collapse_repeated_sentences(text: str) -> str:
+    """Drop intra-result repeats like 'Nice. Nice' or 'יפה מאוד. יפה מאוד.'."""
+    s = re.sub(r'\s+', ' ', str(text or '').strip())
+    if not s:
+        return ''
+    parts = [p.strip() for p in re.split(r'(?<=[.!?])\s+', s) if p.strip()]
+    if len(parts) < 2:
+        toks = _transcript_tokens(s)
+        n = len(toks)
+        if n >= 2 and n % 2 == 0:
+            half = n // 2
+            if [t.lower() for t in toks[:half]] == [t.lower() for t in toks[half:]]:
+                return _drop_leading_tokens(s, half)
+        return s
+    out: List[str] = [parts[0]]
+    for part in parts[1:]:
+        prev_toks = _transcript_tokens(out[-1])
+        cur_toks = _transcript_tokens(part)
+        if not cur_toks:
+            continue
+        prev_l = [t.lower() for t in prev_toks]
+        cur_l = [t.lower() for t in cur_toks]
+        if cur_l == prev_l:
+            continue
+        overlap = 0
+        for k in range(min(len(prev_l), len(cur_l)), 0, -1):
+            if prev_l[-k:] == cur_l[:k]:
+                overlap = k
+                break
+        if overlap:
+            rest = _drop_leading_tokens(part, overlap)
+            if rest:
+                out.append(rest)
+            continue
+        out.append(part)
+    return ' '.join(out)
+
+
+def _strip_transcript_overlap(new_text: str, committed: str) -> str:
+    """Drop text AWS re-emits when it finalizes one language and starts the next."""
+    new = _collapse_repeated_sentences(new_text)
+    old = re.sub(r'\s+', ' ', str(committed or '').strip())
+    if not new:
+        return ''
+    if not old:
+        return new
+    if _norm_phrase(new) == _norm_phrase(old):
+        return ''
+    if new.startswith(old):
+        return new[len(old):].lstrip(' .,;:!?-')
+    old_toks = _transcript_tokens(old)
+    new_toks = _transcript_tokens(new)
+    if not new_toks:
+        return new
+    old_l = [t.lower() for t in old_toks]
+    new_l = [t.lower() for t in new_toks]
+    if old_l[-len(new_l):] == new_l:
+        return ''
+    overlap = 0
+    for k in range(min(len(old_l), len(new_l)), 0, -1):
+        if old_l[-k:] == new_l[:k]:
+            overlap = k
+            break
+    if not overlap:
+        return new
+    return _drop_leading_tokens(new, overlap)
+
+
 def _is_transcribe_audio_timeout(err: Optional[BaseException]) -> bool:
     msg = str(err or '').lower()
     return 'timed out' in msg and 'no new audio' in msg
@@ -301,6 +414,17 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         self._current_partial = ''
         self._on_partial = on_partial
         self._event_count = 0
+        self._results: dict = {}
+        self._result_order: List[str] = []
+        self._frozen_ids = set()
+
+    def _frozen_text(self) -> str:
+        parts = [
+            str(self._results.get(rid) or '').strip()
+            for rid in self._result_order
+            if rid in self._frozen_ids and str(self._results.get(rid) or '').strip()
+        ]
+        return ' '.join(parts).strip()
 
     def _notify_live(self) -> None:
         if not self._on_partial:
@@ -326,13 +450,28 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
             if not text:
                 continue
             self._event_count += 1
+            rid = str(getattr(result, 'result_id', '') or '').strip() or f'anon-{self._event_count}'
+            if rid not in self._results:
+                self._result_order.append(rid)
+            committed = self._frozen_text()
+            cleaned = _strip_transcript_overlap(text, committed)
             if result.is_partial:
-                self._current_partial = text
-                self._partial_history.append(text)
+                if rid in self._frozen_ids:
+                    continue
+                self._results[rid] = cleaned
+                self._current_partial = cleaned
             else:
-                self._final_parts.append(text)
+                if cleaned:
+                    self._results[rid] = cleaned
+                elif rid in self._results and not self._results.get(rid):
+                    self._results[rid] = ''
+                self._frozen_ids.add(rid)
                 self._current_partial = ''
-                self._partial_history.append(text)
+                self._final_parts = [
+                    str(self._results.get(i) or '').strip()
+                    for i in self._result_order
+                    if i in self._frozen_ids and str(self._results.get(i) or '').strip()
+                ]
             if self._event_count <= 3 or self._event_count % 10 == 0 or not result.is_partial:
                 logger.info(
                     'AWS transcript event count=%d partial=%s text_len=%d full_len=%d',
@@ -345,10 +484,17 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
 
     @property
     def full_transcript(self) -> str:
-        parts = list(self._final_parts)
-        if self._current_partial:
-            parts.append(self._current_partial)
-        return ' '.join(p.strip() for p in parts if p.strip()).strip()
+        parts: List[str] = []
+        for rid in self._result_order:
+            t = _collapse_repeated_sentences(str(self._results.get(rid) or '').strip())
+            if not t:
+                continue
+            if parts and _norm_phrase(t) == _norm_phrase(parts[-1]):
+                continue
+            t = _strip_transcript_overlap(t, ' '.join(parts))
+            if t:
+                parts.append(t)
+        return ' '.join(parts).strip()
 
     @property
     def partial_history(self) -> List[str]:
@@ -820,7 +966,10 @@ class TranscribeStreamBridge:
 
     def _combined_transcript(self, current_session_text: str = '') -> str:
         parts = list(self._committed_segments)
-        current = str(current_session_text or '').strip()
+        current = _strip_transcript_overlap(
+            str(current_session_text or '').strip(),
+            ' '.join(p.strip() for p in parts if p.strip()),
+        )
         if current:
             parts.append(current)
         return ' '.join(p.strip() for p in parts if p.strip()).strip()
@@ -831,7 +980,13 @@ class TranscribeStreamBridge:
         text = str(session.best_transcript or '').strip()
         if not text:
             return
-        if self._committed_segments and self._committed_segments[-1] == text:
+        text = _strip_transcript_overlap(
+            text,
+            ' '.join(p.strip() for p in self._committed_segments if p.strip()),
+        )
+        if not text:
+            return
+        if self._committed_segments and _norm_phrase(self._committed_segments[-1]) == _norm_phrase(text):
             return
         self._committed_segments.append(text)
 
@@ -867,10 +1022,31 @@ class TranscribeStreamBridge:
         )
         return False
 
+    def _park_dead_session(self, reason: str) -> None:
+        """AWS died while the client is idle (user pause). Next audio chunk starts a new session."""
+        old = None
+        with self._rollover_lock:
+            self.session_live = False
+            with self.start_lock:
+                self.start_scheduled = False
+            old = self.session
+            self.session = None
+            logger.info(
+                'transcribe parked after %s while client idle; next audio will start a new aws session (committed_len=%d)',
+                reason,
+                len(self._combined_transcript('')),
+            )
+        if old and not getattr(old, '_closed', False):
+            try:
+                old._queue_audio(None)
+            except Exception:
+                logger.debug('transcribe park end-marker failed', exc_info=True)
+
     def _roll_over_session(self, reason: str) -> None:
         if not self._alive:
             return
         if reason == 'audio_timeout' and not self._should_rollover_after_audio_timeout():
+            self._park_dead_session(reason)
             return
         with self._rollover_lock:
             self.session_live = False
@@ -923,7 +1099,7 @@ class TranscribeStreamBridge:
             return
         if session is not self.session:
             return
-        if reason in ('audio_timeout', 'max_duration'):
+        if reason in ('audio_timeout', 'max_duration', 'error'):
             self._commit_session_transcript(session)
             logger.info(
                 'transcribe aws session ended (%s); transparent rollover for client (committed_len=%d)',
@@ -932,8 +1108,6 @@ class TranscribeStreamBridge:
             )
             self._roll_over_session(reason)
             return
-        if reason == 'error':
-            logger.error('transcribe aws session ended with error while recording active')
 
     def _flush_pending_audio(self) -> None:
         if not self.session or not self.session_live:

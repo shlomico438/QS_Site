@@ -104,6 +104,24 @@
                 <button type="button" id="medical-guest-try-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
             </div>
         </div>
+        <div id="medical-mic-test-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="medical-confirm-modal medical-mic-test-card" role="dialog" aria-modal="true" aria-labelledby="medical-mic-test-title">
+                <h3 id="medical-mic-test-title" data-i18n="medical_mic_title">Microphone</h3>
+                <label for="medical-mic-device-select" class="medical-mic-device-label" data-i18n="medical_mic_device_label">Microphone</label>
+                <select id="medical-mic-device-select" class="medical-mic-device-select" aria-label="Microphone"></select>
+                <div class="medical-mic-test-row">
+                    <button type="button" id="medical-mic-test-btn" class="medical-mic-test-btn">
+                        <span class="medical-mic-test-btn-dot" aria-hidden="true"></span>
+                        <span id="medical-mic-test-btn-label" data-i18n="medical_mic_test">Test microphone</span>
+                    </button>
+                    <div id="medical-mic-level-meter" class="medical-mic-level-meter" aria-hidden="true">
+                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                </div>
+                <p id="medical-mic-test-status" class="medical-mic-test-status" role="status" aria-live="polite"></p>
+                <button type="button" id="medical-mic-test-close" class="medical-confirm-btn secondary" data-i18n="medical_mic_close">Close</button>
+            </div>
+        </div>
         <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
                 <h3 id="translation-modal-title">Translate transcript</h3>
@@ -346,7 +364,18 @@
                 <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
             </div>
             <div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
-                <div class="medical-record-controls">
+                <div class="medical-mic-test-entry-wrap" id="medical-mic-test-entry-wrap">
+                    <button type="button" id="medical-mic-test-entry-btn" class="medical-mic-test-entry-btn" data-i18n-aria-label="medical_settings_test_mic" aria-label="Mic test">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="2" width="6" height="11" rx="3"></rect>
+                            <path d="M5 11a7 7 0 0 0 14 0"></path>
+                            <line x1="12" y1="18" x2="12" y2="22"></line>
+                            <line x1="8" y1="22" x2="16" y2="22"></line>
+                        </svg>
+                        <span data-i18n="medical_settings_test_mic">Mic test</span>
+                    </button>
+                </div>
+                <div class="medical-record-controls" dir="ltr">
                     <div id="medical-cancel-stack" class="medical-side-action-stack" style="display:none;">
                         <button id="medical-cancel-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_delete_recording" aria-label="מחק הקלטה">
                             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -372,6 +401,9 @@
                             </span>
                         </span>
                     </button>
+                    <div id="medical-live-level-meter" class="medical-live-level-meter" aria-hidden="true" hidden>
+                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                    </div>
                     <div id="medical-confirm-stack" class="medical-side-action-stack" style="display:none;">
                         <button id="medical-confirm-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_save_recording" aria-label="שמור הקלטה">
                             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

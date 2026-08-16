@@ -14355,11 +14355,464 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    const QS_MEDICAL_MIC_DEVICE_KEY = 'qs_medical_mic_device_id';
+    let _medicalMicTestStream = null;
+    let _medicalMicTestCtx = null;
+    let _medicalMicTestRaf = 0;
+    let _medicalMicTestActive = false;
+    let _medicalMicUiBound = false;
+    let _medicalMicTestHoldTimer = 0;
+    let _medicalLiveLevelRaf = 0;
+    let _medicalLiveLevelActive = false;
+
+    function qsMedicalMicT(key, fallback) {
+        try {
+            if (typeof window.t === 'function') {
+                const v = window.t(key);
+                if (v && v !== key) return v;
+            }
+        } catch (_) {}
+        return fallback || key;
+    }
+
+    function qsGetPreferredMedicalMicDeviceId() {
+        try {
+            return String(localStorage.getItem(QS_MEDICAL_MIC_DEVICE_KEY) || '').trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function qsSetPreferredMedicalMicDeviceId(deviceId) {
+        const id = String(deviceId || '').trim();
+        try {
+            if (id) localStorage.setItem(QS_MEDICAL_MIC_DEVICE_KEY, id);
+            else localStorage.removeItem(QS_MEDICAL_MIC_DEVICE_KEY);
+        } catch (_) {}
+    }
+
+    function qsMedicalMicAudioConstraints(deviceId) {
+        const audio = {
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: true },
+            autoGainControl: { ideal: true },
+            channelCount: { ideal: 1 },
+            sampleRate: { ideal: 48000 },
+        };
+        const id = String(deviceId || '').trim();
+        if (id) audio.deviceId = { ideal: id };
+        return { audio };
+    }
+
+    function qsPinMedicalMicFromStream(stream) {
+        try {
+            const track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+            if (!track || typeof track.getSettings !== 'function') return '';
+            const settings = track.getSettings() || {};
+            const id = String(settings.deviceId || '').trim();
+            if (!id) return '';
+            qsSetPreferredMedicalMicDeviceId(id);
+            const select = document.getElementById('medical-mic-device-select');
+            if (select) {
+                const hasOpt = Array.from(select.options || []).some((opt) => opt.value === id);
+                if (hasOpt) select.value = id;
+            }
+            return id;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function qsClearMedicalMicTestHoldTimer() {
+        if (!_medicalMicTestHoldTimer) return;
+        try { clearTimeout(_medicalMicTestHoldTimer); } catch (_) {}
+        _medicalMicTestHoldTimer = 0;
+    }
+
+    function qsStopMedicalMicTest() {
+        qsClearMedicalMicTestHoldTimer();
+        _medicalMicTestActive = false;
+        if (_medicalMicTestRaf) {
+            try { cancelAnimationFrame(_medicalMicTestRaf); } catch (_) {}
+            _medicalMicTestRaf = 0;
+        }
+        const ctx = _medicalMicTestCtx;
+        _medicalMicTestCtx = null;
+        const held = _medicalMicTestStream;
+        _medicalMicTestStream = null;
+        try {
+            if (ctx) void ctx.close();
+        } catch (_) {}
+        try {
+            if (held) {
+                (held.getTracks() || []).forEach((t) => {
+                    try { t.stop(); } catch (_) {}
+                });
+            }
+        } catch (_) {}
+        qsSetMedicalMicLevel(0);
+        qsUpdateMedicalMicTestButtonUi();
+    }
+
+    async function qsReleaseMedicalMicTestForRecording() {
+        qsClearMedicalMicTestHoldTimer();
+        _medicalMicTestActive = false;
+        if (_medicalMicTestRaf) {
+            try { cancelAnimationFrame(_medicalMicTestRaf); } catch (_) {}
+            _medicalMicTestRaf = 0;
+        }
+        const ctx = _medicalMicTestCtx;
+        _medicalMicTestCtx = null;
+        const held = _medicalMicTestStream;
+        _medicalMicTestStream = null;
+        try {
+            if (ctx) await ctx.close();
+        } catch (_) {}
+        try {
+            if (held) {
+                (held.getTracks() || []).forEach((t) => {
+                    try { t.stop(); } catch (_) {}
+                });
+            }
+        } catch (_) {}
+        qsSetMedicalMicLevel(0);
+        qsUpdateMedicalMicTestButtonUi();
+        const modal = document.getElementById('medical-mic-test-modal');
+        if (modal) {
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+        }
+        // Give Windows/Chrome time to fully release the capture device.
+        await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+
+    function qsSetMedicalMicTestStatus(text, isError) {
+        const el = document.getElementById('medical-mic-test-status');
+        if (!el) return;
+        el.textContent = String(text || '');
+        el.classList.toggle('is-error', !!isError && !!text);
+    }
+
+    function qsSetMedicalMicLevel(activeBars) {
+        const meter = document.getElementById('medical-mic-level-meter');
+        if (!meter) return;
+        const spans = meter.querySelectorAll('span');
+        const n = Math.max(0, Math.min(spans.length, Number(activeBars) || 0));
+        spans.forEach((span, idx) => {
+            const on = idx < n;
+            span.classList.toggle('is-active', on);
+            span.classList.toggle('is-hot', on && idx >= spans.length - 2);
+        });
+    }
+
+    function qsSetMedicalLiveLevel(activeBars) {
+        const meter = document.getElementById('medical-live-level-meter');
+        if (!meter) return;
+        const spans = meter.querySelectorAll('span');
+        const n = Math.max(0, Math.min(spans.length, Number(activeBars) || 0));
+        spans.forEach((span, idx) => {
+            const on = idx < n;
+            span.classList.toggle('is-active', on);
+            span.classList.toggle('is-hot', on && idx >= spans.length - 2);
+            const level = on ? Math.max(0.22, (idx + 1) / spans.length) : 0.14;
+            span.style.transform = `scaleY(${level})`;
+        });
+    }
+
+    function qsShowMedicalLiveLevelMeter(visible) {
+        const meter = document.getElementById('medical-live-level-meter');
+        if (!meter) return;
+        meter.hidden = !visible;
+        meter.classList.toggle('is-visible', !!visible);
+        meter.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        if (!visible) qsSetMedicalLiveLevel(0);
+    }
+
+    function qsReadLiveMicRms() {
+        const stream = window._medicalAwsTranscribeStream;
+        if (stream && typeof stream.getLastRms === 'function') {
+            const rms = Number(stream.getLastRms());
+            if (Number.isFinite(rms)) return { rms, fromAnalyser: false };
+        }
+        const wf = window._medicalWave;
+        if (wf && wf.analyser && wf.dataArray) {
+            try {
+                wf.analyser.getByteTimeDomainData(wf.dataArray);
+                let sum = 0;
+                for (let i = 0; i < wf.dataArray.length; i++) {
+                    const v = (wf.dataArray[i] - 128) / 128;
+                    sum += v * v;
+                }
+                return { rms: Math.sqrt(sum / wf.dataArray.length), fromAnalyser: true };
+            } catch (_) {}
+        }
+        return { rms: 0, fromAnalyser: false };
+    }
+
+    function qsStartMedicalLiveLevelMeter() {
+        qsShowMedicalLiveLevelMeter(true);
+        if (_medicalLiveLevelActive) return;
+        _medicalLiveLevelActive = true;
+        const tick = () => {
+            if (!_medicalLiveLevelActive) return;
+            const { rms, fromAnalyser } = qsReadLiveMicRms();
+            const gain = fromAnalyser ? 18 : 90;
+            const bars = Math.min(8, Math.max(0, Math.round(rms * gain)));
+            qsSetMedicalLiveLevel(bars);
+            _medicalLiveLevelRaf = requestAnimationFrame(tick);
+        };
+        _medicalLiveLevelRaf = requestAnimationFrame(tick);
+    }
+
+    function qsStopMedicalLiveLevelMeter() {
+        _medicalLiveLevelActive = false;
+        if (_medicalLiveLevelRaf) {
+            try { cancelAnimationFrame(_medicalLiveLevelRaf); } catch (_) {}
+        }
+        _medicalLiveLevelRaf = 0;
+        qsShowMedicalLiveLevelMeter(false);
+    }
+
+    function qsUpdateMedicalMicTestButtonUi() {
+        const btn = document.getElementById('medical-mic-test-btn');
+        const label = document.getElementById('medical-mic-test-btn-label');
+        if (!btn || !label) return;
+        btn.classList.toggle('is-testing', !!_medicalMicTestActive);
+        label.textContent = _medicalMicTestActive
+            ? qsMedicalMicT('medical_mic_stop_test', 'Stop test')
+            : qsMedicalMicT('medical_mic_test', 'Test microphone');
+        label.setAttribute('data-i18n', _medicalMicTestActive ? 'medical_mic_stop_test' : 'medical_mic_test');
+    }
+
+    async function qsPopulateMedicalMicDevices() {
+        const select = document.getElementById('medical-mic-device-select');
+        if (!select || !navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
+            return;
+        }
+        const preferred = qsGetPreferredMedicalMicDeviceId();
+        let devices = [];
+        try {
+            devices = await navigator.mediaDevices.enumerateDevices();
+        } catch (_) {
+            devices = [];
+        }
+        const mics = (devices || []).filter((d) => d && d.kind === 'audioinput');
+        select.innerHTML = '';
+        if (!mics.length) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = qsMedicalMicT('medical_mic_no_devices', 'No microphones found.');
+            select.appendChild(opt);
+            qsSetMedicalMicTestStatus(qsMedicalMicT('medical_mic_no_devices', 'No microphones found.'), true);
+            return;
+        }
+        qsSetMedicalMicTestStatus('', false);
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = qsMedicalMicT('medical_mic_default_device', 'System default');
+        select.appendChild(defaultOpt);
+        let matched = false;
+        mics.forEach((d, idx) => {
+            const opt = document.createElement('option');
+            opt.value = String(d.deviceId || '');
+            opt.textContent = String(d.label || '').trim() || (`Microphone ${idx + 1}`);
+            if (preferred && opt.value === preferred) {
+                opt.selected = true;
+                matched = true;
+            }
+            select.appendChild(opt);
+        });
+        if (!matched) select.value = '';
+    }
+
+    async function qsEnsureMedicalMicPermission() {
+        if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+            throw new Error('media_devices_unavailable');
+        }
+        const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+        try {
+            (probe.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
+        } catch (_) {}
+    }
+
+    async function qsStartMedicalMicTest() {
+        const select = document.getElementById('medical-mic-device-select');
+        const deviceId = String((select && select.value) || qsGetPreferredMedicalMicDeviceId() || '').trim();
+        qsStopMedicalMicTest();
+        qsSetMedicalMicTestStatus(qsMedicalMicT('medical_mic_testing', 'Testing…'), false);
+        const constraints = qsMedicalMicAudioConstraints(deviceId);
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+            if (deviceId) {
+                stream = await navigator.mediaDevices.getUserMedia(qsMedicalMicAudioConstraints(''));
+            } else {
+                throw err;
+            }
+        }
+        _medicalMicTestStream = stream;
+        qsPinMedicalMicFromStream(stream);
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) throw new Error('audio_context_unavailable');
+        const ctx = new AudioCtx();
+        _medicalMicTestCtx = ctx;
+        if (ctx.state === 'suspended') {
+            try { await ctx.resume(); } catch (_) {}
+        }
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.7;
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.fftSize);
+        _medicalMicTestActive = true;
+        qsUpdateMedicalMicTestButtonUi();
+
+        const tick = () => {
+            if (!_medicalMicTestActive || !_medicalMicTestCtx) return;
+            try {
+                analyser.getByteTimeDomainData(data);
+                let sum = 0;
+                for (let i = 0; i < data.length; i++) {
+                    const v = (data[i] - 128) / 128;
+                    sum += v * v;
+                }
+                const rms = Math.sqrt(sum / data.length);
+                const bars = Math.min(8, Math.max(0, Math.round(rms * 18)));
+                qsSetMedicalMicLevel(bars);
+            } catch (_) {}
+            _medicalMicTestRaf = requestAnimationFrame(tick);
+        };
+        _medicalMicTestRaf = requestAnimationFrame(tick);
+        qsSetMedicalMicTestStatus('', false);
+    }
+
+    function qsCloseMedicalMicTestModal() {
+        qsStopMedicalMicTest();
+        const modal = document.getElementById('medical-mic-test-modal');
+        if (!modal) return;
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'true');
+    }
+
+    async function qsOpenMedicalMicTestModal() {
+        const modal = document.getElementById('medical-mic-test-modal');
+        if (!modal) return;
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden', 'false');
+        qsSetMedicalMicTestStatus('', false);
+        qsUpdateMedicalMicTestButtonUi();
+        try {
+            await qsEnsureMedicalMicPermission();
+            await qsPopulateMedicalMicDevices();
+        } catch (err) {
+            console.warn('[medical] mic test permission/devices failed', err);
+            qsSetMedicalMicTestStatus(
+                qsMedicalMicT('medical_mic_permission_denied', 'Microphone permission denied. Allow access in the browser and try again.'),
+                true
+            );
+            await qsPopulateMedicalMicDevices();
+        }
+        try {
+            if (typeof window.applyTranslations === 'function') window.applyTranslations();
+        } catch (_) {}
+    }
+
+    function qsWireMedicalMicSettingsUi() {
+        const entryBtn = document.getElementById('medical-mic-test-entry-btn');
+        const modal = document.getElementById('medical-mic-test-modal');
+        const closeBtn = document.getElementById('medical-mic-test-close');
+        const testBtn = document.getElementById('medical-mic-test-btn');
+        const select = document.getElementById('medical-mic-device-select');
+        if (entryBtn && !entryBtn.dataset.qsWired) {
+            entryBtn.dataset.qsWired = '1';
+            entryBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void qsOpenMedicalMicTestModal();
+            });
+        }
+        if (closeBtn && !closeBtn.dataset.qsWired) {
+            closeBtn.dataset.qsWired = '1';
+            closeBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                qsCloseMedicalMicTestModal();
+            });
+        }
+        if (modal && !modal.dataset.qsWired) {
+            modal.dataset.qsWired = '1';
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) qsCloseMedicalMicTestModal();
+            });
+        }
+        if (testBtn && !testBtn.dataset.qsWired) {
+            testBtn.dataset.qsWired = '1';
+            testBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                try {
+                    if (_medicalMicTestActive) {
+                        qsStopMedicalMicTest();
+                        qsSetMedicalMicTestStatus('', false);
+                        return;
+                    }
+                    await qsStartMedicalMicTest();
+                } catch (err) {
+                    console.warn('[medical] mic test failed', err);
+                    qsStopMedicalMicTest();
+                    qsSetMedicalMicTestStatus(
+                        qsMedicalMicT('medical_mic_permission_denied', 'Microphone permission denied. Allow access in the browser and try again.'),
+                        true
+                    );
+                }
+            });
+        }
+        if (select && !select.dataset.qsWired) {
+            select.dataset.qsWired = '1';
+            select.addEventListener('change', () => {
+                const id = String(select.value || '').trim();
+                if (id) qsSetPreferredMedicalMicDeviceId(id);
+                if (_medicalMicTestActive) {
+                    void qsStartMedicalMicTest().catch(() => {});
+                }
+            });
+        }
+        if (!_medicalMicUiBound) {
+            _medicalMicUiBound = true;
+            document.addEventListener('keydown', (e) => {
+                if (e.key !== 'Escape') return;
+                const modalEl = document.getElementById('medical-mic-test-modal');
+                if (modalEl && modalEl.style.display !== 'none' && modalEl.getAttribute('aria-hidden') !== 'true') {
+                    qsCloseMedicalMicTestModal();
+                }
+            });
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') qsStopMedicalMicTest();
+            });
+            try {
+                if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
+                    navigator.mediaDevices.addEventListener('devicechange', () => {
+                        const modalEl = document.getElementById('medical-mic-test-modal');
+                        if (modalEl && modalEl.style.display !== 'none') {
+                            void qsPopulateMedicalMicDevices();
+                        }
+                    });
+                }
+            } catch (_) {}
+        }
+    }
+
+    window.qsGetPreferredMedicalMicDeviceId = qsGetPreferredMedicalMicDeviceId;
+    window.qsStopMedicalMicTest = qsStopMedicalMicTest;
+    window.qsCloseMedicalMicTestModal = qsCloseMedicalMicTestModal;
+    qsWireMedicalMicSettingsUi();
+
     function setMedicalRecordingVisualState(mode) {
         const isRecording = mode === 'recording';
         const isPaused = mode === 'paused';
         const isIdle = mode === 'idle';
         const isActive = isRecording || isPaused;
+        if (isActive && typeof qsStopMedicalMicTest === 'function') qsStopMedicalMicTest();
         if (medicalRecordShape) {
             medicalRecordShape.classList.toggle('medical-record-shape-pause', isActive);
         }
@@ -14379,6 +14832,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalCancelStack) medicalCancelStack.style.display = isPaused ? 'flex' : 'none';
         if (medicalConfirmStack) medicalConfirmStack.style.display = isPaused ? 'flex' : 'none';
         if (medicalRecordShape) medicalRecordShape.style.opacity = '1';
+        if (isRecording) qsStartMedicalLiveLevelMeter();
+        else qsStopMedicalLiveLevelMeter();
         syncMedicalPrimaryActionBtn();
         // Show/hide typo-fix when leaving live recording.
         try { if (typeof updateMedicalTabUi === 'function') updateMedicalTabUi(); } catch (_) {}
@@ -15325,7 +15780,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setMedicalRecordingVisualState('recording');
         renderMedicalRecordingTimer();
         const stream = rec.stream;
-        if (stream) startMedicalWaveform(stream);
+        if (stream && !qsMedicalStreamOnlyMode()) startMedicalWaveform(stream);
     }
 
     function startMedicalResumeRetryLoop() {
@@ -15470,20 +15925,28 @@ document.addEventListener('DOMContentLoaded', () => {
         const transcriptPrefix = String((options && options.transcriptPrefix) || '').trim();
         let stream = null;
         try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: { ideal: true },
-                    noiseSuppression: { ideal: true },
-                    autoGainControl: { ideal: true },
-                    channelCount: { ideal: 1 },
-                    sampleRate: { ideal: 48000 },
+            await qsReleaseMedicalMicTestForRecording();
+            const audioConstraints = qsMedicalMicAudioConstraints(
+                typeof qsGetPreferredMedicalMicDeviceId === 'function'
+                    ? qsGetPreferredMedicalMicDeviceId()
+                    : ''
+            ).audio;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+            } catch (deviceErr) {
+                if (audioConstraints.deviceId) {
+                    delete audioConstraints.deviceId;
+                    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+                } else {
+                    throw deviceErr;
                 }
-            });
+            }
             try {
                 const track = stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
                 if (track && typeof track.getSettings === 'function') {
                     console.info('[medical] app mic settings', track.getSettings());
                 }
+                qsPinMedicalMicFromStream(stream);
             } catch (_) {}
             if (resumeFromInterruption) {
                 // iOS can hand back a stream while the phone call still owns the mic. Do not accept muted/ended tracks.
@@ -15808,7 +16271,20 @@ document.addEventListener('DOMContentLoaded', () => {
             renderMedicalRecordingTimer();
             const stream = rec.stream;
             if (stream && !qsMedicalStreamOnlyMode()) startMedicalWaveform(stream);
-            if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.resume();
+            // AWS Transcribe dies after ~15s with no audio. Restart the live session on
+            // resume so pause → talk again keeps producing partials.
+            if (stream && isMedicalModeEnabled() && qsMedicalUseAwsTranscribeStream()) {
+                try { qsSyncMedicalLiveStreamTextFromDom(); } catch (_) {}
+                const transcriptPrefix = String(window._medicalLiveStreamText || '').trim();
+                void startMedicalAwsTranscribeStream(stream, { transcriptPrefix }).catch((err) => {
+                    console.error('[medical] AWS Transcribe restart failed after pause', err);
+                    try {
+                        if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.resume();
+                    } catch (_) {}
+                });
+            } else if (window._medicalAwsTranscribeStream) {
+                window._medicalAwsTranscribeStream.resume();
+            }
             return;
         }
         window._medicalRecordingToggleBusy = true;

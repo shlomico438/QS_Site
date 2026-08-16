@@ -308,7 +308,6 @@ export class MedicalAwsTranscribeStream {
             const channels = inBuf.numberOfChannels || 1;
             let mono = inBuf.getChannelData(0);
             if (channels > 1) {
-                // Some webcams deliver stronger voice on one channel; average to stable mono.
                 const ch1 = inBuf.getChannelData(1);
                 const mixed = new Float32Array(mono.length);
                 for (let i = 0; i < mono.length; i++) mixed[i] = 0.5 * (mono[i] + ch1[i]);
@@ -379,7 +378,7 @@ export class MedicalAwsTranscribeStream {
         }
         if (this._audioWatchdog) clearInterval(this._audioWatchdog);
         this._audioWatchdog = setInterval(() => {
-            if (this._feedPaused || !this._audioCtx) return;
+            if (!this._audioCtx) return;
             if (this._audioCtx.state === 'suspended') {
                 void this._audioCtx.resume().catch(() => {});
             }
@@ -552,10 +551,21 @@ export class MedicalAwsTranscribeStream {
 
     pause() {
         this._feedPaused = true;
+        console.info('[transcribe-stream] feed paused');
     }
 
     resume() {
         this._feedPaused = false;
+        if (this._audioCtx && this._audioCtx.state === 'suspended') {
+            void this._audioCtx.resume().catch(() => {});
+        }
+        console.info('[transcribe-stream] feed resumed');
+    }
+
+    getLastRms() {
+        if (this._feedPaused) return 0;
+        const n = Number(this._lastRms);
+        return Number.isFinite(n) ? n : 0;
     }
 
     _resolveStopWithLocalFallback(timeoutMs = 12000) {

@@ -3176,10 +3176,173 @@ body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
 }
 
 .medical-record-controls {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 18px;
+}
+
+.medical-live-level-meter {
+  display: none;
+  position: absolute;
+  left: calc(50% + 52px);
+  top: 50%;
+  margin-top: -16px;
+  align-items: flex-end;
+  gap: 3px;
+  height: 32px;
+  width: 36px;
+  pointer-events: none;
+}
+.medical-live-level-meter.is-visible {
+  display: flex;
+}
+.medical-live-level-meter[hidden] {
+  display: none !important;
+}
+.medical-live-level-meter span {
+  flex: 1 1 0;
+  height: 100%;
+  border-radius: 2px;
+  background: #e2e8f0;
+  transform: scaleY(0.14);
+  transform-origin: bottom center;
+  transition: background-color 0.08s linear, transform 0.08s linear;
+}
+.medical-live-level-meter span.is-active {
+  background: #14b8a6;
+}
+.medical-live-level-meter span.is-hot {
+  background: #0f766e;
+}
+
+.medical-mic-test-entry-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 10px;
+}
+.medical-mic-test-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  background: #f0fdfa;
+  color: #0f766e;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.medical-mic-test-entry-btn:hover {
+  background: #ccfbf1;
+}
+body.medical-mode:not(.medical-onboarding-pending) .main-app-container.medical-has-session-result .medical-mic-test-entry-wrap,
+body.qs-app-busy .medical-mic-test-entry-wrap,
+.main-app-container.medical-mode:has(.medical-record-outer.is-recording) .medical-mic-test-entry-wrap,
+.main-app-container.medical-mode:has(.medical-record-outer.is-paused) .medical-mic-test-entry-wrap {
+  display: none;
+}
+.medical-mic-test-card {
+  max-width: 420px;
+  text-align: start;
+}
+.medical-mic-device-label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #334155;
+}
+.medical-mic-device-select {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.92rem;
+  color: #0f172a;
+}
+.medical-mic-test-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.medical-mic-test-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.medical-mic-test-btn:hover {
+  background: #f8fafc;
+}
+.medical-mic-test-btn.is-testing {
+  border-color: #0d9488;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+.medical-mic-test-btn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #64748b;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+}
+.medical-mic-test-btn.is-testing .medical-mic-test-btn-dot {
+  border-color: #0d9488;
+  background: #0d9488;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.2);
+}
+.medical-mic-level-meter {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 22px;
+  flex: 1 1 140px;
+  min-width: 140px;
+}
+.medical-mic-level-meter span {
+  flex: 1 1 0;
+  height: 100%;
+  border-radius: 3px;
+  background: #e2e8f0;
+  transition: background-color 0.08s linear;
+}
+.medical-mic-level-meter span.is-active {
+  background: #14b8a6;
+}
+.medical-mic-level-meter span.is-hot {
+  background: #0f766e;
+}
+.medical-mic-test-status {
+  min-height: 1.2em;
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+.medical-mic-test-status.is-error {
+  color: #b91c1c;
+}
+#medical-mic-test-modal .medical-confirm-btn.secondary {
+  width: 100%;
 }
 
 .medical-recording-timer-slot {
