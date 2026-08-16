@@ -14911,7 +14911,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         // Capture PCM immediately — MediaRecorder UI may already be recording while auth/socket await.
         try {
-            stream.beginCapture(mediaStream);
+            if (typeof stream.beginCapture === 'function') {
+                stream.beginCapture(mediaStream);
+            } else if (typeof stream.start === 'function') {
+                // Stale cached qs_aws_transcribe_stream.js without beginCapture — fall back.
+                console.warn('[medical] beginCapture missing; using stream.start() (hard-refresh recommended)');
+                window._medicalAwsTranscribeStream = stream;
+                await stream.start(mediaStream);
+                return stream;
+            } else {
+                throw new Error('transcribe_stream_api_unavailable');
+            }
         } catch (captureErr) {
             console.error('[medical] AWS Transcribe capture failed to start', captureErr);
             try { stream.abort(); } catch (_) {}

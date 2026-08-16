@@ -151,6 +151,18 @@
     {% if is_medical_head %}
     <script src="{{ url_for('static', filename='js/clinical_training_modal.js') }}?v={{ static_asset_version }}" defer></script>
     {% endif %}
+    {# Bust long-lived caches for ES modules imported relatively by app_logic.js #}
+    <script type="importmap">
+    {
+      "imports": {
+        "/static/js/qs_aws_transcribe_stream.js": "{{ url_for('static', filename='js/qs_aws_transcribe_stream.js') }}?v={{ static_asset_version }}",
+        "/static/js/qs_subtitle_pipeline.js": "{{ url_for('static', filename='js/qs_subtitle_pipeline.js') }}?v={{ static_asset_version }}",
+        "/static/js/qs_subtitle_semantic.js": "{{ url_for('static', filename='js/qs_subtitle_semantic.js') }}?v={{ static_asset_version }}",
+        "/static/js/qs_subtitle_timing.js": "{{ url_for('static', filename='js/qs_subtitle_timing.js') }}?v={{ static_asset_version }}",
+        "/static/js/qs_subtitle_layout.js": "{{ url_for('static', filename='js/qs_subtitle_layout.js') }}?v={{ static_asset_version }}"
+      }
+    }
+    </script>
     <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}?v={{ static_asset_version }}"></script>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
     {% block structured_data %}{% endblock %}

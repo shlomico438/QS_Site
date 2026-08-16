@@ -548,6 +548,13 @@ def _resolve_static_asset_version():
         os.path.join(static_root, 'js', 'feature_showcase.js'),
         os.path.join(static_root, 'js', 'translations.js'),
         os.path.join(static_root, 'js', 'qs_auth_shell.js'),
+        # ES module graph imported by app_logic.js (relative imports need hash churn too)
+        os.path.join(static_root, 'js', 'qs_aws_transcribe_stream.js'),
+        os.path.join(static_root, 'js', 'qs_subtitle_pipeline.js'),
+        os.path.join(static_root, 'js', 'qs_subtitle_semantic.js'),
+        os.path.join(static_root, 'js', 'qs_subtitle_timing.js'),
+        os.path.join(static_root, 'js', 'qs_subtitle_layout.js'),
+        os.path.join(static_root, 'js', 'clinical_training_modal.js'),
     ]
 
     digest = hashlib.sha256()
