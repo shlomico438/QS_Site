@@ -7481,6 +7481,163 @@ def api_auth_check_email_risk():
         return jsonify({"allowed": True, "score": 0, "reasons": [], "action": "allow", "degraded": True}), 200
 
 
+_MAGIC_LINK_RATE = {}
+_MAGIC_LINK_RATE_LOCK = threading.Lock()
+_MAGIC_LINK_RATE_WINDOW_SEC = 10 * 60
+_MAGIC_LINK_RATE_MAX = 5
+
+
+def _magic_link_rate_allow(email: str, ip: str) -> bool:
+    key = f"{str(ip or '').strip()}|{str(email or '').strip().lower()}"
+    now = time.time()
+    with _MAGIC_LINK_RATE_LOCK:
+        stamps = [t for t in _MAGIC_LINK_RATE.get(key, []) if now - t < _MAGIC_LINK_RATE_WINDOW_SEC]
+        if len(stamps) >= _MAGIC_LINK_RATE_MAX:
+            _MAGIC_LINK_RATE[key] = stamps
+            return False
+        stamps.append(now)
+        _MAGIC_LINK_RATE[key] = stamps
+    return True
+
+
+def _sanitize_magic_link_redirect(raw: str) -> str:
+    fallback = QS_CANONICAL_ORIGIN.rstrip('/') + '/'
+    text = str(raw or '').strip()
+    if not text:
+        return fallback
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(text)
+    except Exception:
+        return fallback
+    host = str(parsed.hostname or '').strip().lower()
+    allowed = {
+        'www.getquickscribe.com',
+        'getquickscribe.com',
+        'localhost',
+        '127.0.0.1',
+    }
+    if host not in allowed:
+        return fallback
+    path = parsed.path or '/'
+    if not path.startswith('/'):
+        path = '/' + path
+    return f"{parsed.scheme or 'https'}://{parsed.netloc}{path}"
+
+
+def _magic_link_email_copy(locale: str, action_link: str) -> tuple[str, str, str]:
+    is_he = str(locale or '').lower().startswith('he')
+    safe_link = html_module.escape(action_link, quote=True)
+    if is_he:
+        subject = 'קישור התחברות ל-QuickScribe'
+        text = (
+            "שלום,\n\n"
+            "לחצו על הקישור כדי להתחבר ל-QuickScribe:\n"
+            f"{action_link}\n\n"
+            "אם לא ביקשתם קישור זה, אפשר להתעלם מהמייל.\n\n"
+            "— QuickScribe"
+        )
+        html = (
+            "<p>שלום,</p>"
+            "<p>לחצו על הקישור כדי להתחבר ל-QuickScribe:</p>"
+            f'<p><a href="{safe_link}">התחברות ל-QuickScribe</a></p>'
+            "<p>אם לא ביקשתם קישור זה, אפשר להתעלם מהמייל.</p>"
+            "<p>— QuickScribe</p>"
+        )
+        return subject, text, html
+    subject = 'Your QuickScribe sign-in link'
+    text = (
+        "Hi,\n\n"
+        "Use this link to sign in to QuickScribe:\n"
+        f"{action_link}\n\n"
+        "If you did not request this, you can ignore the email.\n\n"
+        "— QuickScribe"
+    )
+    html = (
+        "<p>Hi,</p>"
+        "<p>Use this link to sign in to QuickScribe:</p>"
+        f'<p><a href="{safe_link}">Sign in to QuickScribe</a></p>'
+        "<p>If you did not request this, you can ignore the email.</p>"
+        "<p>— QuickScribe</p>"
+    )
+    return subject, text, html
+
+
+def _supabase_generate_magic_link(email: str, redirect_to: str, user_metadata=None) -> str:
+    supabase_url, service_key, headers = _supabase_rest_config()
+    payload = {
+        "type": "magiclink",
+        "email": email,
+        "redirect_to": redirect_to,
+    }
+    if user_metadata:
+        payload["data"] = user_metadata
+    r = _supabase_http_request(
+        "POST",
+        f"{supabase_url}/auth/v1/admin/generate_link",
+        json=payload,
+        headers=headers,
+        timeout=12,
+    )
+    if r.status_code >= 400:
+        logging.warning(
+            "generate_link failed HTTP %s email=%s body=%s",
+            r.status_code,
+            email,
+            (r.text or "")[:400],
+        )
+        raise RuntimeError("Could not create sign-in link")
+    body = r.json() if r.text else {}
+    if not isinstance(body, dict):
+        raise RuntimeError("Could not create sign-in link")
+    props = body.get("properties") if isinstance(body.get("properties"), dict) else {}
+    action_link = str(
+        body.get("action_link")
+        or props.get("action_link")
+        or ""
+    ).strip()
+    if not action_link:
+        raise RuntimeError("Could not create sign-in link")
+    return action_link
+
+
+@app.route('/api/auth/send-magic-link', methods=['POST'])
+def api_auth_send_magic_link():
+    """Create a magic link via Supabase Admin and send it with Zoho SMTP.
+
+    Used when Supabase Auth's own mailer fails (common for Yahoo).
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        email = str(data.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            return jsonify({"error": "Valid email required"}), 400
+        ip = str(request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip()
+        if not _magic_link_rate_allow(email, ip):
+            return jsonify({"error": "Please wait a few minutes before requesting another link."}), 429
+
+        risk = assess_email_risk(email)
+        if not SIMULATION_MODE and str(risk.get("action") or "") == "block":
+            return jsonify({
+                "error": "This email address cannot be used. Please use a permanent email address."
+            }), 400
+
+        redirect_to = _sanitize_magic_link_redirect(data.get("redirectTo") or data.get("emailRedirectTo"))
+        meta = data.get("data") if isinstance(data.get("data"), dict) else None
+        action_link = _supabase_generate_magic_link(email, redirect_to, meta)
+        locale = str(data.get("locale") or request.headers.get("Accept-Language") or "he")
+        subject, text, html = _magic_link_email_copy(locale, action_link)
+        sent = _send_email_via_zoho(email, subject, text, body_html=html)
+        if not sent:
+            logging.warning("magic link Zoho send failed email=%s", email)
+            return jsonify({"error": "Error sending magic link email"}), 502
+        logging.info("magic link emailed via Zoho email=%s", email)
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        logging.exception("api_auth_send_magic_link failed: %s", e)
+        return jsonify({"error": "Error sending magic link email"}), 500
+
+
 @app.route('/api/analytics/event', methods=['POST'])
 def api_analytics_event():
     """Best-effort product analytics (server log). No PII required."""

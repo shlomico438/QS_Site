@@ -12280,7 +12280,34 @@ if (authSubmitBtn) {
                 }
             });
 
-            if (error) throw error;
+            if (error) {
+                const sendFailed = /sending magic link email/i.test(String(error.message || ''));
+                if (!sendFailed) throw error;
+                const meta = (isSignUpMode && fullName) ? {
+                    full_name: fullName,
+                    ...(isMedical ? {
+                        professional_specialty: professionalSpecialty,
+                        product: 'medical',
+                    } : {}),
+                } : undefined;
+                const fallbackRes = await fetch('/api/auth/send-magic-link', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email,
+                        redirectTo: qsOAuthRedirectTo(),
+                        locale: document.documentElement.lang || 'he',
+                        data: meta,
+                    }),
+                });
+                const fallback = await fallbackRes.json().catch(() => ({}));
+                if (!fallbackRes.ok) {
+                    const fallbackErr = new Error(fallback.error || error.message || 'Error sending magic link email');
+                    fallbackErr.status = fallbackRes.status;
+                    throw fallbackErr;
+                }
+                console.warn('[auth] magic link sent via Zoho fallback after Supabase mailer 500');
+            }
 
             console.log("✅ Magic link sent to:", email);
             if (isMedical) {
@@ -12301,7 +12328,11 @@ if (authSubmitBtn) {
                     name: err.name
                 });
             }
-            const errMsg = err.message || (err.error_description || err.msg || "Login failed");
+            const rawErr = String(err.message || err.error_description || err.msg || '');
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            const errMsg = /sending magic link email/i.test(rawErr)
+                ? (T('magic_link_send_failed') || rawErr)
+                : (rawErr || 'Login failed');
             qsShowAuthError(errMsg);
         } finally {
             authSubmitBtn.disabled = false;

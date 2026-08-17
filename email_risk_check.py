@@ -28,6 +28,9 @@ TRUSTED_EMAIL_DOMAINS = frozenset(
         "live.com",
         "icloud.com",
         "yahoo.com",
+        "yahoo.co.il",
+        "ymail.com",
+        "rocketmail.com",
     }
 )
 
