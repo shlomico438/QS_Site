@@ -723,6 +723,9 @@ def _cardcom_already_credited_result(order_id: str, purchase: dict) -> dict:
         'already_credited': True,
         'added_minutes': 0,
         'order_id': order_id,
+        'amount': float(purchase.get('amount_ils') or 0),
+        'currency': 'ILS',
+        'bundle_id': str(purchase.get('bundle_id') or '').strip(),
         'credit_minutes': int((row or {}).get('credit_minutes') or 0),
         **_cardcom_invoice_fields_for_client(purchase),
     }
@@ -863,6 +866,9 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         'already_credited': False,
         'added_minutes': minutes,
         'order_id': order_id,
+        'amount': float(purchase.get('amount_ils') or paid_amount or 0),
+        'currency': 'ILS',
+        'bundle_id': bundle_id,
         'credit_minutes': int((row or {}).get('credit_minutes') or 0),
         **_cardcom_invoice_fields_for_client(purchase_after),
     }

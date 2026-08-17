@@ -1076,6 +1076,18 @@ async function qsConfirmMedicalCardcomReturn() {
         window.history.replaceState({}, '', clean.pathname + clean.search + clean.hash);
     } catch (_) {}
     qsMedicalApplyAccessState(data);
+    try {
+        if (typeof qsTrackGa4Purchase === 'function') {
+            qsTrackGa4Purchase({
+                transaction_id: orderId,
+                value: data.amount_ils ?? data.amount,
+                currency: data.currency || 'ILS',
+                items: data.subscriptionPlan || data.plan
+                    ? [{ item_id: String(data.subscriptionPlan || data.plan), item_name: 'QuickScribe Medical' }]
+                    : undefined,
+            });
+        }
+    } catch (_) {}
     return true;
 }
 
@@ -5617,12 +5629,13 @@ window.qsGetAuthUserForUi = qsGetAuthUserForUi;
 function qsTrackGoogleAdsRegistrationConversion(userId) {
     try {
         const uid = String(userId || '').trim();
-        if (!uid || typeof window.gtag !== 'function') return false;
+        if (!uid) return false;
         const key = `qs_ads_reg_conv_${uid}`;
         try {
             if (localStorage.getItem(key) === '1') return false;
         } catch (_) {}
-        window.gtag('event', 'conversion', {
+        qsTrackGa4Event('sign_up', { method: 'supabase' });
+        qsTrackGa4Event('conversion', {
             send_to: 'AW-1000570995/P9OzCNO6_9AcEPOAjt0D',
             value: 1.0,
             currency: 'ILS',
@@ -5632,6 +5645,56 @@ function qsTrackGoogleAdsRegistrationConversion(userId) {
     } catch (_) {
         return false;
     }
+}
+
+function qsEnsureMarketingTags() {
+    try {
+        if (typeof window.qsLoadMarketingTags === 'function') window.qsLoadMarketingTags();
+    } catch (_) {}
+}
+
+function qsTrackGa4Event(eventName, params) {
+    const name = String(eventName || '').trim();
+    if (!name) return;
+    const payload = (params && typeof params === 'object') ? { ...params } : {};
+    const send = () => {
+        if (typeof window.gtag !== 'function') return false;
+        window.gtag('event', name, payload);
+        return true;
+    };
+    qsEnsureMarketingTags();
+    if (send()) return;
+    let attempts = 0;
+    const timer = setInterval(() => {
+        attempts += 1;
+        qsEnsureMarketingTags();
+        if (send() || attempts >= 40) clearInterval(timer);
+    }, 250);
+}
+
+function qsTrackGa4FileUpload(details) {
+    const props = (details && typeof details === 'object') ? details : {};
+    qsTrackGa4Event('file_upload', props);
+}
+
+function qsTrackGa4Purchase(details) {
+    const info = (details && typeof details === 'object') ? details : {};
+    const transactionId = String(info.transaction_id || info.transactionId || info.order_id || '').trim();
+    if (!transactionId) return;
+    const key = `qs_ga4_purchase_${transactionId}`;
+    try {
+        if (localStorage.getItem(key) === '1') return;
+    } catch (_) {}
+    const value = Number(info.value ?? info.amount ?? info.amount_ils);
+    const currency = String(info.currency || 'ILS').trim().toUpperCase() || 'ILS';
+    const payload = {
+        transaction_id: transactionId,
+        value: Number.isFinite(value) ? value : 0,
+        currency,
+    };
+    if (Array.isArray(info.items) && info.items.length) payload.items = info.items;
+    qsTrackGa4Event('purchase', payload);
+    try { localStorage.setItem(key, '1'); } catch (_) {}
 }
 
 function qsUserIsRecentRegistration(user, maxAgeMs) {
@@ -5795,6 +5858,9 @@ function qsApplyDefaultPlanFromCredits() {
 }
 window.qsEnsureWelcomeCredits = qsEnsureWelcomeCredits;
 window.qsTrackGoogleAdsRegistrationConversion = qsTrackGoogleAdsRegistrationConversion;
+window.qsTrackGa4Event = qsTrackGa4Event;
+window.qsTrackGa4FileUpload = qsTrackGa4FileUpload;
+window.qsTrackGa4Purchase = qsTrackGa4Purchase;
 window.qsRefreshUserCredits = qsRefreshUserCredits;
 window.qsSyncUserCreditsUi = qsSyncUserCreditsUi;
 window.qsApplyDefaultPlanFromCredits = qsApplyDefaultPlanFromCredits;
@@ -19881,6 +19947,18 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 if (mainBtn) qsSetMainBtnDynamicLabel(uploadLabel);
                 qsUploadTrace('s3_multipart_complete', { jobId, bytes: currentFile && currentFile.size });
                 console.log("✅ File uploaded to S3 (multipart).");
+                try {
+                    const fileName = String((currentFile && currentFile.name) || '');
+                    const ext = (fileName.split('.').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
+                    if (typeof qsTrackGa4FileUpload === 'function') {
+                        qsTrackGa4FileUpload({
+                            file_extension: ext || 'unknown',
+                            file_size: Number(currentFile && currentFile.size) || 0,
+                            job_id: jobId || undefined,
+                            upload_context: isMedicalUpload ? 'medical' : 'standard',
+                        });
+                    }
+                } catch (_) {}
                 if (skipLocalBlobPreview && userId && s3Key) {
                     try {
                         await qsAttachS3MediaPreview(s3Key, userId, {

@@ -46,6 +46,8 @@
           fbq('track', 'PageView');
         }
 
+        window.qsLoadMarketingTags = loadMarketingTags;
+
         interactionEvents.forEach(function (eventName) {
           window.addEventListener(eventName, loadMarketingTags, { passive: true });
         });

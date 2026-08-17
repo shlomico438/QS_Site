@@ -7654,10 +7654,18 @@ def api_stripe_confirm_checkout_session():
         existing = _stripe_credit_purchase_get(session_id)
         if existing and existing.get("credited_at"):
             row = _user_credits_get(user_id)
+            try:
+                amount = float((existing or {}).get("amount_ils") or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
             return jsonify({
                 "ok": True,
                 "already_credited": True,
                 "credit_minutes": int((row or {}).get("credit_minutes") or 0),
+                "amount": amount,
+                "currency": "ILS",
+                "transaction_id": session_id,
+                "bundle_id": str((existing or {}).get("bundle_id") or "").strip(),
             }), 200
         session = _stripe_api("GET", f"checkout/sessions/{session_id}")
         metadata = session.get("metadata") or {}
@@ -7683,10 +7691,18 @@ def api_stripe_confirm_checkout_session():
             purchase = _stripe_credit_purchase_get(session_id)
             if purchase and purchase.get("credited_at"):
                 row = _user_credits_get(user_id)
+                try:
+                    amount = float((purchase or {}).get("amount_ils") or (bundle or {}).get("amount_ils") or 0)
+                except (TypeError, ValueError):
+                    amount = 0.0
                 return jsonify({
                     "ok": True,
                     "already_credited": True,
                     "credit_minutes": int((row or {}).get("credit_minutes") or 0),
+                    "amount": amount,
+                    "currency": str(session.get("currency") or "ils").strip().upper() or "ILS",
+                    "transaction_id": session_id,
+                    "bundle_id": bundle_id,
                 }), 200
         row = _user_credits_add_minutes(user_id, minutes)
         _stripe_credit_purchase_mark_credited(session_id)
@@ -7713,6 +7729,10 @@ def api_stripe_confirm_checkout_session():
             "ok": True,
             "added_minutes": minutes,
             "credit_minutes": int((row or {}).get("credit_minutes") or 0),
+            "amount": amount,
+            "currency": currency,
+            "transaction_id": session_id,
+            "bundle_id": bundle_id,
         }), 200
     except Exception as e:
         logging.exception("api_stripe_confirm_checkout_session failed")

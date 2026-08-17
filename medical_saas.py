@@ -453,7 +453,19 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         raise ValueError("Unknown medical subscription order")
     if str(payment.get("status") or "") == "paid":
         account = _medical_account_get(str(payment.get("user_id") or ""))
-        return {"ok": True, "alreadyActivated": True, **medical_account_public(account or {})}
+        try:
+            amount = float(payment.get("amount_ils") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        return {
+            "ok": True,
+            "alreadyActivated": True,
+            "order_id": order_id,
+            "amount_ils": amount,
+            "currency": "ILS",
+            "plan": str(payment.get("plan") or ""),
+            **medical_account_public(account or {}),
+        }
 
     if _simulation_mode():
         token_info = {
@@ -511,7 +523,15 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         order_ref=order_id,
         event_source_url="https://quickscribe.co.il/medical",
     )
-    return {"ok": True, "alreadyActivated": False, **medical_account_public(account)}
+    return {
+        "ok": True,
+        "alreadyActivated": False,
+        "order_id": order_id,
+        "amount_ils": amount,
+        "currency": "ILS",
+        "plan": plan,
+        **medical_account_public(account),
+    }
 
 
 def handle_medical_cardcom_webhook(data: dict) -> bool:
