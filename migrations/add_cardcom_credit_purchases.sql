@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS public.cardcom_credit_purchases (
   order_id text PRIMARY KEY,
   low_profile_id text,
   user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_name text,
   bundle_id text NOT NULL CHECK (bundle_id IN ('light', 'standard', 'plus')),
   credit_minutes integer NOT NULL CHECK (credit_minutes > 0),
   amount_ils numeric(10, 2) NOT NULL CHECK (amount_ils > 0),
@@ -19,6 +20,7 @@ COMMENT ON TABLE public.cardcom_credit_purchases IS 'Idempotent Cardcom Low Prof
 COMMENT ON COLUMN public.cardcom_credit_purchases.order_id IS 'ReturnValue sent to Cardcom (e.g. qs_cc_<uuid>).';
 COMMENT ON COLUMN public.cardcom_credit_purchases.low_profile_id IS 'Cardcom LowProfileId from Create response.';
 COMMENT ON COLUMN public.cardcom_credit_purchases.credited_at IS 'Set after purchased minutes are added to the wallet.';
+COMMENT ON COLUMN public.cardcom_credit_purchases.user_name IS 'User display name at purchase time (from auth profile metadata).';
 
 CREATE INDEX IF NOT EXISTS idx_cardcom_credit_purchases_low_profile
   ON public.cardcom_credit_purchases (low_profile_id)

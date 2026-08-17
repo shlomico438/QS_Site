@@ -7844,12 +7844,17 @@ def index_he():
 
 
 @app.route('/en')
-@app.route('/en/')
 def index_en():
-    # Keep path canonical.
-    if request.path.endswith('/') and request.path != '/':
-        return redirect(url_for('index_en'), code=301)
     return render_template('index.html', medical_entry=False)
+
+
+@app.route('/en/')
+def index_en_slash():
+    # Canonical English home is /en (no trailing slash). Hardcoded target — url_for('index_en')
+    # can emit /en/ and 301 to itself, which GSC reports as a redirect bounce.
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
 
 
 @app.route('/medical')

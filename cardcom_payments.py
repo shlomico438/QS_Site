@@ -307,6 +307,19 @@ def _cardcom_purchase_insert(row: dict) -> Optional[dict]:
             json=row,
             timeout=15,
         )
+        if (
+            r.status_code == 400
+            and 'user_name' in row
+            and 'user_name' in (r.text or '')
+        ):
+            row_wo = {k: v for k, v in row.items() if k != 'user_name'}
+            r = requests.post(
+                f"{supabase_url}/rest/v1/cardcom_credit_purchases",
+                headers={**headers, 'Prefer': 'return=representation'},
+                json=row_wo,
+                timeout=15,
+            )
+            row = row_wo
         if r.status_code == 409:
             return _cardcom_purchase_get(order_id)
         if r.status_code in (400, 404) and 'cardcom_credit_purchases' in (r.text or ''):
@@ -402,6 +415,10 @@ def _cardcom_parse_supabase_user(user_data: dict) -> Optional[dict]:
         or user_data.get('name')
         or ''
     ).strip()
+    if not name:
+        given = str(meta.get('given_name') or '').strip()
+        family = str(meta.get('family_name') or '').strip()
+        name = ' '.join(part for part in (given, family) if part).strip() or given
     if not name and email and '@' in email:
         name = email.split('@', 1)[0]
     return {'user_id': user_id, 'email': email, 'name': name}
@@ -596,6 +613,7 @@ def _cardcom_create_low_profile(
         'order_id': order_id,
         'low_profile_id': low_profile_id,
         'user_id': user_id,
+        'user_name': str((user or {}).get('name') or '').strip() or None,
         'bundle_id': bundle_id,
         'credit_minutes': int(bundle['credit_minutes']),
         'amount_ils': amount_ils,
@@ -748,6 +766,7 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
             bundle_id=bundle_id,
             order_ref=order_id,
             email=str(purchase.get('user_email') or '').strip() or None,
+            user_name=str(purchase.get('user_name') or '').strip() or None,
             credit_minutes_after=int((row or {}).get('credit_minutes') or 0),
         )
         return {
@@ -836,6 +855,7 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         bundle_id=bundle_id,
         order_ref=order_id,
         email=str(purchase.get('user_email') or '').strip() or None,
+        user_name=str(purchase.get('user_name') or '').strip() or None,
         credit_minutes_after=int((row or {}).get('credit_minutes') or 0),
     )
     return {

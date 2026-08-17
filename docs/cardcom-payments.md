@@ -40,14 +40,15 @@ CARDCOM_ENABLED=true
 Deploy with **`SIMULATION_MODE=false`** (real transcription, etc.) but keep **Cardcom test environment** — users see the real Cardcom payment page; only test cards are charged.
 
 1. Apply `migrations/add_cardcom_credit_purchases.sql` in Supabase.
-2. In the **Cardcom merchant portal**, create or open an **API interface user** (ממשקים / API). Cardcom gives you a matched set:
+2. Apply `migrations/add_cardcom_credit_purchases_user_name.sql` (adds `user_name` on each purchase).
+3. In the **Cardcom merchant portal**, create or open an **API interface user** (ממשקים / API). Cardcom gives you a matched set:
    - `TerminalNumber` (מסוף)
    - `ApiName` (שם משתמש)
    - `ApiPassword` (סיסמה)
    
    These three must belong to the **same** interface. Do not mix terminal `1000` from docs with your own username unless Cardcom explicitly issued that pair to you.
 
-3. Set on Koyeb:
+4. Set on Koyeb:
 
 ```env
 SIMULATION_MODE=false
@@ -68,9 +69,9 @@ Cardcom returned **wrong username or password** — the app reached Cardcom, but
 - `CARDCOM_TERMINAL_NUMBER` does not match the terminal tied to that API user
 - `CARDCOM_API_PASSWORD` missing (add it — see [Cardcom Low Profile docs](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514))
 
-4. Register webhook in Cardcom: `https://www.getquickscribe.com/api/cardcom/webhook`
-5. Test with Cardcom test card `4580000000000000` (expiry/CVV per [Cardcom docs](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514)).
-6. **Invoices (optional):** enable the **Documents** model on your Cardcom terminal, set `CARDCOM_INVOICES=true` (default on in sandbox), run `migrations/add_cardcom_invoice_columns.sql`, then complete a sandbox purchase — Cardcom issues **TaxInvoiceAndReceipt** with the charge. See [Invoices](#invoices-tax-invoice--receipt) below.
+5. Register webhook in Cardcom: `https://www.getquickscribe.com/api/cardcom/webhook`
+6. Test with Cardcom test card `4580000000000000` (expiry/CVV per [Cardcom docs](https://cardcomapi.zendesk.com/hc/he/articles/28448202810514)).
+7. **Invoices (optional):** enable the **Documents** model on your Cardcom terminal, set `CARDCOM_INVOICES=true` (default on in sandbox), run `migrations/add_cardcom_invoice_columns.sql`, then complete a sandbox purchase — Cardcom issues **TaxInvoiceAndReceipt** with the charge. See [Invoices](#invoices-tax-invoice--receipt) below.
 
 **Important:** `CARDCOM_SIMULATION=false` disables the green page. `CARDCOM_SANDBOX=true` marks sandbox mode in logs/status only; the API host is the same (`https://secure.cardcom.solutions/api/v11`).
 
