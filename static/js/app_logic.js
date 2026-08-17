@@ -10201,13 +10201,55 @@ function _qsFeedbackSubmittedStorageKey(user) {
     return key ? `qs_pefb_submitted_${key}` : '';
 }
 
+function _qsFeedbackAskedStorageKey(user) {
+    const key = _qsFeedbackUserKey(user);
+    return key ? `qs_pefb_asked_${key}` : '';
+}
+
 function hasUserSubmittedPostExportFeedback(user) {
     if (!user) return false;
     const meta = user.user_metadata || {};
     if (meta.qs_post_export_feedback_submitted_at || meta.qs_feedback_submitted_at) return true;
+    if (meta.qs_post_export_feedback_asked_at) return true;
     const storageKey = _qsFeedbackSubmittedStorageKey(user);
-    if (!storageKey) return false;
-    try { return String(localStorage.getItem(storageKey) || '') === '1'; } catch (_) { return false; }
+    const askedKey = _qsFeedbackAskedStorageKey(user);
+    try {
+        if (storageKey && String(localStorage.getItem(storageKey) || '') === '1') return true;
+        if (askedKey && String(localStorage.getItem(askedKey) || '') === '1') return true;
+    } catch (_) {}
+    return false;
+}
+
+function markUserAskedPostExportFeedback(user) {
+    if (!user) return;
+    const askedKey = _qsFeedbackAskedStorageKey(user);
+    try { if (askedKey) localStorage.setItem(askedKey, '1'); } catch (_) {}
+}
+
+/** Rating is only for newly subscribed users, never for doctors already working. */
+function qsIsFirstSubscribedRatingEligible(user) {
+    if (!user) return false;
+    try {
+        if (String(sessionStorage.getItem('qs_medical_show_feedback_on_next_copy') || '') === '1') {
+            return true;
+        }
+    } catch (_) {}
+    const weekMs = 7 * 24 * 3600 * 1000;
+    if (typeof qsUserIsRecentRegistration === 'function' && qsUserIsRecentRegistration(user, weekMs)) {
+        return true;
+    }
+    try {
+        const acc = window.__QS_MEDICAL_ACCOUNT;
+        const stamps = [
+            acc && acc.trialStartedAt,
+            acc && acc.billingCycleStartedAt,
+        ];
+        for (const raw of stamps) {
+            const t = Date.parse(String(raw || ''));
+            if (Number.isFinite(t) && (Date.now() - t) <= weekMs) return true;
+        }
+    } catch (_) {}
+    return false;
 }
 
 async function markUserSubmittedPostExportFeedback(user) {
@@ -10224,8 +10266,8 @@ async function markUserSubmittedPostExportFeedback(user) {
 }
 
 /**
- * After a file is delivered to the user, optionally show feedback for signed-in users.
- * A real submitted response suppresses future prompts for that account.
+ * After a file is delivered to the user, optionally show feedback for first-time subscribers.
+ * Existing medical users are never interrupted while working.
  */
 function maybeQueuePostExportFeedbackPrompt(safeFilename, kind) {
     const name = String(safeFilename || '').toLowerCase();
@@ -10254,10 +10296,13 @@ async function maybeShowPostExportFeedbackModal(kind) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     if (hasUserSubmittedPostExportFeedback(user)) return;
+    if (!qsIsFirstSubscribedRatingEligible(user)) return;
     const m = document.getElementById('post-export-feedback-modal');
     if (!m) return;
     if (m.style.display === 'flex') return;
+    try { sessionStorage.removeItem('qs_medical_show_feedback_on_next_copy'); } catch (_) {}
     try { sessionStorage.setItem('qs_pefb_shown', '1'); } catch (_) {}
+    markUserAskedPostExportFeedback(user);
     try {
         window._qsFeedbackModalSource = kind === 'medical_copy'
             ? 'medical_copy'
@@ -16552,15 +16597,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 } catch (_) {}
                 try {
-                    if (String(sessionStorage.getItem('qs_pefb_shown') || '') !== '1') {
-                        if (String(sessionStorage.getItem('qs_medical_show_feedback_on_next_copy') || '') === '1') {
-                            try { sessionStorage.removeItem('qs_medical_show_feedback_on_next_copy'); } catch (_) {}
-                        }
+                    const allowMedicalCopyRating = String(sessionStorage.getItem('qs_medical_show_feedback_on_next_copy') || '') === '1';
+                    const isMedicalCopy = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled());
+                    if (!isMedicalCopy || allowMedicalCopyRating) {
                         setTimeout(() => {
                             try {
-                                const kind = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
-                                    ? 'medical_copy'
-                                    : 'export';
+                                const kind = isMedicalCopy ? 'medical_copy' : 'export';
                                 void maybeShowPostExportFeedbackModal(kind);
                             } catch (_) {}
                         }, 400);
