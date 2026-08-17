@@ -7574,31 +7574,7 @@ def _append_query_params(url: str, extra: dict) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-def _supabase_generate_magic_link(email: str, redirect_to: str, user_metadata=None) -> str:
-    supabase_url, service_key, headers = _supabase_rest_config()
-    payload = {
-        "type": "magiclink",
-        "email": email,
-        "redirect_to": redirect_to,
-    }
-    if user_metadata:
-        payload["data"] = user_metadata
-    r = _supabase_http_request(
-        "POST",
-        f"{supabase_url}/auth/v1/admin/generate_link",
-        json=payload,
-        headers=headers,
-        timeout=12,
-    )
-    if r.status_code >= 400:
-        logging.warning(
-            "generate_link failed HTTP %s email=%s body=%s",
-            r.status_code,
-            email,
-            (r.text or "")[:400],
-        )
-        raise RuntimeError("Could not create sign-in link")
-    body = r.json() if r.text else {}
+def _magic_link_url_from_generate_body(body, redirect_to: str, email: str) -> str:
     if not isinstance(body, dict):
         raise RuntimeError("Could not create sign-in link")
     props = body.get("properties") if isinstance(body.get("properties"), dict) else {}
@@ -7620,17 +7596,11 @@ def _supabase_generate_magic_link(email: str, redirect_to: str, user_metadata=No
             token_hash = str((parse_qs(urlparse(action_link).query).get("token") or [""])[0]).strip()
         except Exception:
             token_hash = ""
-    verify_type = str(
-        body.get("verification_type")
-        or props.get("verification_type")
-        or "magiclink"
-    ).strip().lower() or "magiclink"
-    if verify_type not in ("magiclink", "signup", "invite", "recovery", "email"):
-        verify_type = "magiclink"
     if token_hash:
+        # Site URL + POST verifyOtp: Yahoo/Outlook GET prefetch cannot burn the token.
         return _append_query_params(redirect_to, {
             "qs_token_hash": token_hash,
-            "qs_type": verify_type,
+            "qs_type": "email",
         })
     if not action_link:
         raise RuntimeError("Could not create sign-in link")
@@ -7638,11 +7608,53 @@ def _supabase_generate_magic_link(email: str, redirect_to: str, user_metadata=No
     return action_link
 
 
+def _supabase_generate_magic_link(email: str, redirect_to: str, user_metadata=None) -> str:
+    supabase_url, service_key, headers = _supabase_rest_config()
+    last_status = None
+    last_body = ""
+    for link_type in ("magiclink", "signup"):
+        payload = {
+            "type": link_type,
+            "email": email,
+            "redirect_to": redirect_to,
+        }
+        if user_metadata:
+            payload["data"] = user_metadata
+        r = _supabase_http_request(
+            "POST",
+            f"{supabase_url}/auth/v1/admin/generate_link",
+            json=payload,
+            headers=headers,
+            timeout=12,
+        )
+        last_status = r.status_code
+        last_body = (r.text or "")[:400]
+        if r.status_code < 400:
+            body = r.json() if r.text else {}
+            return _magic_link_url_from_generate_body(body, redirect_to, email)
+        if link_type == "magiclink" and r.status_code in (400, 404, 422):
+            logging.info(
+                "generate_link magiclink HTTP %s; retrying as signup email=%s",
+                r.status_code,
+                email,
+            )
+            continue
+        break
+    logging.warning(
+        "generate_link failed HTTP %s email=%s body=%s",
+        last_status,
+        email,
+        last_body,
+    )
+    raise RuntimeError("Could not create sign-in link")
+
+
 @app.route('/api/auth/send-magic-link', methods=['POST'])
 def api_auth_send_magic_link():
     """Create a magic link via Supabase Admin and send it with Zoho SMTP.
 
-    Used when Supabase Auth's own mailer fails (common for Yahoo).
+    Primary send path: emails a site URL with token_hash so Yahoo/Outlook
+    prefetch cannot consume GoTrue's one-time /auth/v1/verify GET.
     """
     try:
         data = request.get_json(silent=True) or {}

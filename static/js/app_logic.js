@@ -2345,23 +2345,24 @@ async function qsTrySetSessionFromImplicitHash() {
 
 async function qsHandleEmailMagicLinkIfNeeded() {
     let tokenHash = '';
-    let typeRaw = 'magiclink';
+    let typeRaw = 'email';
     try {
         const params = new URLSearchParams(window.location.search || '');
-        tokenHash = String(params.get('qs_token_hash') || '').trim();
-        typeRaw = String(params.get('qs_type') || 'magiclink').trim().toLowerCase();
+        tokenHash = String(params.get('qs_token_hash') || params.get('token_hash') || '').trim();
+        typeRaw = String(params.get('qs_type') || params.get('type') || 'email').trim().toLowerCase();
     } catch (_) {
         return false;
     }
     if (!tokenHash) return false;
     const type = ['signup', 'magiclink', 'invite', 'recovery', 'email'].includes(typeRaw)
         ? typeRaw
-        : 'magiclink';
+        : 'email';
     try {
         const tryTypes = [type];
         if (type === 'magiclink') tryTypes.push('signup', 'email');
         else if (type === 'signup') tryTypes.push('magiclink', 'email');
-        else tryTypes.push('magiclink');
+        else if (type === 'email') tryTypes.push('magiclink', 'signup');
+        else tryTypes.push('email', 'magiclink');
         let data = null;
         let error = null;
         for (const t of tryTypes) {
@@ -5661,7 +5662,7 @@ function qsCurrentUrlLooksLikeAuthCallback() {
     try {
         const search = new URLSearchParams(window.location.search || '');
         if (search.has('code') || search.has('error') || search.has('error_description')) return true;
-        if (search.has('qs_token_hash')) return true;
+        if (search.has('qs_token_hash') || search.has('token_hash')) return true;
     } catch (_) {}
     try {
         const hash = String(window.location.hash || '');
@@ -12343,31 +12344,22 @@ if (authSubmitBtn) {
             } catch (riskErr) {
                 console.warn('[auth] email risk check failed; continuing signup', riskErr);
             }
-            const { data, error } = await supabase.auth.signInWithOtp({
-                email,
-                options: {
-                    emailRedirectTo: qsOAuthRedirectTo(),
-                    data: (isSignUpMode && fullName) ? {
-                        full_name: fullName,
-                        ...(isMedical ? {
-                            professional_specialty: professionalSpecialty,
-                            product: 'medical',
-                        } : {}),
-                    } : undefined
-                }
-            });
-
-            if (error) {
-                const sendFailed = /sending magic link email/i.test(String(error.message || ''));
-                if (!sendFailed) throw error;
-                const meta = (isSignUpMode && fullName) ? {
-                    full_name: fullName,
-                    ...(isMedical ? {
-                        professional_specialty: professionalSpecialty,
-                        product: 'medical',
-                    } : {}),
-                } : undefined;
-                const fallbackRes = await fetch('/api/auth/send-magic-link', {
+            const meta = (isSignUpMode && fullName) ? {
+                full_name: fullName,
+                ...(isMedical ? {
+                    professional_specialty: professionalSpecialty,
+                    product: 'medical',
+                } : {}),
+            } : undefined;
+            const otpOptions = {
+                emailRedirectTo: qsOAuthRedirectTo(),
+                data: meta,
+            };
+            // Prefer our hashed-token email (site URL). Native Supabase emails use
+            // /auth/v1/verify, which Yahoo/Outlook prefetch consume before the user clicks.
+            let sentViaServer = false;
+            try {
+                const serverRes = await fetch('/api/auth/send-magic-link', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -12377,13 +12369,26 @@ if (authSubmitBtn) {
                         data: meta,
                     }),
                 });
-                const fallback = await fallbackRes.json().catch(() => ({}));
-                if (!fallbackRes.ok) {
-                    const fallbackErr = new Error(fallback.error || error.message || 'Error sending magic link email');
-                    fallbackErr.status = fallbackRes.status;
-                    throw fallbackErr;
+                const serverBody = await serverRes.json().catch(() => ({}));
+                if (serverRes.ok) {
+                    sentViaServer = true;
+                } else if (serverRes.status === 400 || serverRes.status === 429) {
+                    const blocked = new Error(serverBody.error || 'Error sending magic link email');
+                    blocked.status = serverRes.status;
+                    throw blocked;
+                } else {
+                    console.warn('[auth] server magic link send failed; trying Supabase OTP', serverRes.status);
                 }
-                console.warn('[auth] magic link sent via Zoho fallback after Supabase mailer 500');
+            } catch (serverErr) {
+                if (serverErr && (serverErr.status === 400 || serverErr.status === 429)) throw serverErr;
+                console.warn('[auth] server magic link send error; trying Supabase OTP', serverErr);
+            }
+            if (!sentViaServer) {
+                const { error } = await supabase.auth.signInWithOtp({
+                    email,
+                    options: otpOptions,
+                });
+                if (error) throw error;
             }
 
             console.log("✅ Magic link sent to:", email);
