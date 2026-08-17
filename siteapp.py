@@ -7563,6 +7563,17 @@ def _magic_link_email_copy(locale: str, action_link: str) -> tuple[str, str, str
     return subject, text, html
 
 
+def _append_query_params(url: str, extra: dict) -> str:
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+    parsed = urlparse(str(url or ''))
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in (extra or {}).items():
+        text = str(value or '').strip()
+        if text:
+            query[key] = text
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 def _supabase_generate_magic_link(email: str, redirect_to: str, user_metadata=None) -> str:
     supabase_url, service_key, headers = _supabase_rest_config()
     payload = {
@@ -7591,13 +7602,39 @@ def _supabase_generate_magic_link(email: str, redirect_to: str, user_metadata=No
     if not isinstance(body, dict):
         raise RuntimeError("Could not create sign-in link")
     props = body.get("properties") if isinstance(body.get("properties"), dict) else {}
+    token_hash = str(
+        body.get("hashed_token")
+        or props.get("hashed_token")
+        or body.get("token_hash")
+        or props.get("token_hash")
+        or ""
+    ).strip()
     action_link = str(
         body.get("action_link")
         or props.get("action_link")
         or ""
     ).strip()
+    if not token_hash and action_link:
+        try:
+            from urllib.parse import parse_qs, urlparse
+            token_hash = str((parse_qs(urlparse(action_link).query).get("token") or [""])[0]).strip()
+        except Exception:
+            token_hash = ""
+    verify_type = str(
+        body.get("verification_type")
+        or props.get("verification_type")
+        or "magiclink"
+    ).strip().lower() or "magiclink"
+    if verify_type not in ("magiclink", "signup", "invite", "recovery", "email"):
+        verify_type = "magiclink"
+    if token_hash:
+        return _append_query_params(redirect_to, {
+            "qs_token_hash": token_hash,
+            "qs_type": verify_type,
+        })
     if not action_link:
         raise RuntimeError("Could not create sign-in link")
+    logging.warning("generate_link missing hashed_token; falling back to action_link email=%s", email)
     return action_link
 
 

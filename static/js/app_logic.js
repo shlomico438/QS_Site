@@ -2310,7 +2310,7 @@ function qsOAuthRedirectTo() {
 function qsCleanOAuthUrlFromHistory() {
     try {
         const u = new URL(window.location.href);
-        ['code', 'error', 'error_description', 'state'].forEach((k) => u.searchParams.delete(k));
+        ['code', 'error', 'error_description', 'state', 'qs_token_hash', 'qs_type'].forEach((k) => u.searchParams.delete(k));
         const q = u.searchParams.toString();
         const clean = u.pathname + (q ? '?' + q : '');
         window.history.replaceState({}, document.title, clean || '/');
@@ -2320,6 +2320,76 @@ function qsCleanOAuthUrlFromHistory() {
                 window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
             }
         } catch (__) {}
+    }
+}
+
+async function qsTrySetSessionFromImplicitHash() {
+    try {
+        const hash = String(window.location.hash || '').replace(/^#/, '');
+        if (!hash || !/(?:access_token|refresh_token)=/.test(hash)) return false;
+        const params = new URLSearchParams(hash);
+        const accessToken = String(params.get('access_token') || '').trim();
+        const refreshToken = String(params.get('refresh_token') || '').trim();
+        if (!accessToken || !refreshToken) return false;
+        const { data, error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+        });
+        if (error || !data || !data.session || !data.session.user) return false;
+        try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function qsHandleEmailMagicLinkIfNeeded() {
+    let tokenHash = '';
+    let typeRaw = 'magiclink';
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        tokenHash = String(params.get('qs_token_hash') || '').trim();
+        typeRaw = String(params.get('qs_type') || 'magiclink').trim().toLowerCase();
+    } catch (_) {
+        return false;
+    }
+    if (!tokenHash) return false;
+    const type = ['signup', 'magiclink', 'invite', 'recovery', 'email'].includes(typeRaw)
+        ? typeRaw
+        : 'magiclink';
+    try {
+        const tryTypes = [type];
+        if (type === 'magiclink') tryTypes.push('signup', 'email');
+        else if (type === 'signup') tryTypes.push('magiclink', 'email');
+        else tryTypes.push('magiclink');
+        let data = null;
+        let error = null;
+        for (const t of tryTypes) {
+            const res = await supabase.auth.verifyOtp({
+                token_hash: tokenHash,
+                type: t,
+            });
+            data = res.data;
+            error = res.error;
+            if (!error && data && data.session && data.session.user) break;
+        }
+        qsCleanOAuthUrlFromHistory();
+        if (error || !data || !data.session || !data.session.user) {
+            console.error('[auth] magic link verifyOtp failed', error);
+            qsShowOAuthCallbackFailedMessage(false);
+            return true;
+        }
+        try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
+        if (typeof window.toggleModal === 'function') window.toggleModal(false);
+        if (typeof setupNavbarAuth === 'function') {
+            try { await setupNavbarAuth(data.session.user); } catch (_) {}
+        }
+        return true;
+    } catch (err) {
+        console.error('[auth] magic link verify failed', err);
+        qsCleanOAuthUrlFromHistory();
+        qsShowOAuthCallbackFailedMessage(false);
+        return true;
     }
 }
 
@@ -2403,6 +2473,7 @@ async function qsCompleteAuthIfAlreadySignedIn() {
 }
 
 async function qsHandleOAuthReturnIfNeeded() {
+    if (await qsHandleEmailMagicLinkIfNeeded()) return;
     if (!qsCurrentUrlLooksLikeAuthCallback()) return;
     let oauthErr = '';
     try {
@@ -2437,6 +2508,11 @@ async function qsHandleOAuthReturnIfNeeded() {
     };
 
     if (await qsTryExchangeOAuthCodeFromUrl()) {
+        await finishOAuthSuccess();
+        return;
+    }
+
+    if (await qsTrySetSessionFromImplicitHash()) {
         await finishOAuthSuccess();
         return;
     }
@@ -5585,6 +5661,7 @@ function qsCurrentUrlLooksLikeAuthCallback() {
     try {
         const search = new URLSearchParams(window.location.search || '');
         if (search.has('code') || search.has('error') || search.has('error_description')) return true;
+        if (search.has('qs_token_hash')) return true;
     } catch (_) {}
     try {
         const hash = String(window.location.hash || '');
