@@ -2642,6 +2642,7 @@ function qsApplyTranscriptPayloadFromJson(tr) {
     if (trFmt) {
         window.currentFormattedDoc = trFmt;
         window._qsDocPreferSegmentsAfterEdit = false;
+        if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
     }
     if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
         window.currentWords = tr.words;
@@ -4412,20 +4413,19 @@ async function qsRestorePendingGuestSessionAfterAuth(options = {}) {
             // 1) Instant transcript from snapshot when available.
             let hasTranscript = false;
             if (snap) {
-                if (Array.isArray(snap.words) && Array.isArray(snap.captions) && snap.words.length && snap.captions.length) {
-                    window.currentWords = snap.words;
-                    window.currentCaptions = snap.captions;
-                    window.currentSegments = (typeof _captionsToCues === 'function')
-                        ? _captionsToCues(snap.words, snap.captions)
-                        : (Array.isArray(snap.segments) ? snap.segments : []);
-                    hasTranscript = true;
-                } else if (Array.isArray(snap.segments) && snap.segments.length) {
-                    window.currentSegments = snap.segments;
+                const applied = typeof qsApplyTranscriptPayloadFromJson === 'function'
+                    ? qsApplyTranscriptPayloadFromJson(snap)
+                    : [];
+                hasTranscript = !!(applied && applied.length);
+                if (!hasTranscript && Array.isArray(snap.segments) && snap.segments.length) {
                     window.currentWords = null;
                     window.currentCaptions = null;
+                    window.currentSegments = typeof splitLongSegments === 'function'
+                        ? splitLongSegments(snap.segments, 40)
+                        : snap.segments;
                     hasTranscript = true;
                 }
-                if (snap.formatted && typeof snap.formatted === 'object') {
+                if (snap.formatted && typeof snap.formatted === 'object' && !window.currentFormattedDoc) {
                     window.currentFormattedDoc = snap.formatted;
                     window._qsDocPreferSegmentsAfterEdit = false;
                     if (String(snap.formatted.clean_transcript || '').trim()) window._qsCleanupDone = true;
@@ -4524,23 +4524,19 @@ async function qsRestorePendingGuestSessionAfterAuth(options = {}) {
                 if (jsonUrl) {
                     const tr = await fetch(jsonUrl).then((r) => r.json()).catch(() => null);
                     if (tr && typeof tr === 'object') {
-                        const trFmt = typeof pickFormattedFromObject === 'function' ? pickFormattedFromObject(tr) : null;
-                        if (trFmt) {
-                            window.currentFormattedDoc = trFmt;
-                            window._qsDocPreferSegmentsAfterEdit = false;
-                            if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
-                        }
-                        if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length && tr.captions.length) {
-                            window.currentWords = tr.words;
-                            window.currentCaptions = typeof reflowCaptionsByMaxChars === 'function'
-                                ? reflowCaptionsByMaxChars(tr.words, tr.captions, 54)
-                                : tr.captions;
-                            window.currentSegments = typeof _captionsToCues === 'function'
-                                ? _captionsToCues(window.currentWords, window.currentCaptions)
-                                : [];
+                        const applied = typeof qsApplyTranscriptPayloadFromJson === 'function'
+                            ? qsApplyTranscriptPayloadFromJson(tr)
+                            : [];
+                        if (applied && applied.length) {
                             hasTranscript = true;
                         } else if (Array.isArray(tr.segments) && tr.segments.length) {
-                            window.currentSegments = tr.segments;
+                            window.currentWords = null;
+                            window.currentCaptions = null;
+                            window.currentSegments = typeof splitLongSegments === 'function'
+                                ? splitLongSegments(tr.segments, 40)
+                                : tr.segments;
+                            hasTranscript = true;
+                        } else if (window.currentFormattedDoc) {
                             hasTranscript = true;
                         }
                     }
@@ -7660,6 +7656,9 @@ async function initOpenInAppImpl(jobIdStr) {
     if (!hasWordModel) {
         window.currentWords = null;
         window.currentCaptions = null;
+        if (segments.length && typeof splitLongSegments === 'function') {
+            segments = splitLongSegments(segments, 40);
+        }
     }
     window.currentSegments = segments;
     try {
@@ -13917,35 +13916,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!file) return false;
         const text = await file.text();
         const tr = JSON.parse(text || '{}');
-        const words = Array.isArray(tr.words) ? tr.words : null;
-        const captions = Array.isArray(tr.captions) ? tr.captions : null;
-        const segments = Array.isArray(tr.segments) ? tr.segments : [];
-        const trFmt = pickFormattedFromObject(tr);
-        window.currentFormattedDoc = trFmt || null;
-        window._qsDocPreferSegmentsAfterEdit = false;
+        const applied = typeof qsApplyTranscriptPayloadFromJson === 'function'
+            ? qsApplyTranscriptPayloadFromJson(tr)
+            : [];
+        const trFmt = window.currentFormattedDoc || pickFormattedFromObject(tr);
         try { qsResetCleanupState(); window._qsCleanupDone = true; } catch (_) {}
 
-        if (words && captions && words.length > 0 && captions.length > 0) {
-            window.currentWords = words;
-            window.currentCaptions = captions;
-            window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-        } else if (segments.length > 0) {
-            const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
-            if (model) {
-                window.currentWords = model.words;
-                window.currentCaptions = model.captions;
-                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-            } else {
-                window.currentWords = null;
-                window.currentCaptions = null;
-                window.currentSegments = segments;
-            }
-        } else if (trFmt) {
+        if (!(applied && applied.length) && !trFmt) {
+            throw new Error('JSON must include segments[], words[]+captions[], or formatted medical fields');
+        }
+        if (!(applied && applied.length)) {
             window.currentWords = null;
             window.currentCaptions = null;
             window.currentSegments = [];
-        } else {
-            throw new Error('JSON must include segments[], words[]+captions[], or formatted medical fields');
         }
 
         window.uploadWasVideo = false;
@@ -13968,6 +13951,8 @@ document.addEventListener('DOMContentLoaded', () => {
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = true; } catch (_) {}
             // Keep export / format toolbar hidden until local video or audio is attached.
             setTranscriptActionButtonsVisible(false);
+            // JSON jobs store long Whisper spans; show chopped cues, not GPT document paragraphs.
+            if (typeof setFormatViewMode === 'function') setFormatViewMode('subtitle');
             const transcriptWindow = document.getElementById('transcript-window');
             if (transcriptWindow) {
                 if (Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) && window.currentWords.length > 0 && window.currentCaptions.length > 0) {
