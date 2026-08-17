@@ -7,6 +7,7 @@ import {
     pickTimingSegmentation,
     mapLinesToWordRanges,
     tokenizeWords,
+    segmentTextIntoSubtitleLines,
 } from './qs_subtitle_semantic.js';
 import { allocateLineTimes } from './qs_subtitle_timing.js';
 import { buildLayoutConfig, layoutTimedCueText, layoutCuePages } from './qs_subtitle_layout.js';
@@ -111,8 +112,7 @@ export function processWhisperSegments(segments) {
         if (!Number.isFinite(start)) continue;
         if (!Number.isFinite(end) || end <= start) end = start + 5;
 
-        const candidates = generateSplitCandidates(text);
-        const lines = pickTimingSegmentation(candidates);
+        const lines = segmentTextIntoSubtitleLines(text);
         const timed = allocateLineTimes(start, end, lines.length ? lines : [text]);
         for (const row of timed) {
             result.push({
@@ -136,12 +136,11 @@ export function reflowCaptionsSemantic(words, captions) {
     const out = [];
     for (const cap of captions) {
         const text = captionTextFromWords(words, cap);
-        const candidates = generateSplitCandidates(text);
-        const lines = pickTimingSegmentation(candidates);
+        const lines = segmentTextIntoSubtitleLines(text);
         if (lines.length <= 1) {
             out.push({
                 ...cap,
-                semanticCandidates: candidates,
+                semanticCandidates: generateSplitCandidates(text),
             });
             continue;
         }

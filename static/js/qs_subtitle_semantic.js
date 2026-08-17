@@ -165,33 +165,103 @@ export function generateSplitCandidates(text, maxCandidates = 8) {
     return candidates.slice(0, maxCandidates);
 }
 
+const TARGET_MAX_CHARS = 54;
+const TARGET_MAX_WORDS = 12;
+const TARGET_MIN_CHARS = 12;
+
+function wordRangesFromSplits(words, splitIndices) {
+    const sorted = [...splitIndices].filter((i) => i >= 0 && i < words.length - 1).sort((a, b) => a - b);
+    const ranges = [];
+    let start = 0;
+    for (const idx of sorted) {
+        if (idx < start) continue;
+        ranges.push([start, idx]);
+        start = idx + 1;
+    }
+    if (start <= words.length - 1) ranges.push([start, words.length - 1]);
+    return ranges;
+}
+
+function spanTooLong(words, from, to) {
+    const n = to - from + 1;
+    if (n > TARGET_MAX_WORDS) return true;
+    return words.slice(from, to + 1).join(' ').length > TARGET_MAX_CHARS;
+}
+
+function spanCharLen(words, from, to) {
+    return words.slice(from, to + 1).join(' ').length;
+}
+
+/**
+ * Split a Whisper/ASR span into subtitle-sized lines.
+ * Always cut on sentence endings; then commas/conjunctions; then ~54-char wrap.
+ */
+export function segmentTextIntoSubtitleLines(text) {
+    const normalized = normalizeText(text);
+    if (!normalized) return [];
+    const words = tokenizeWords(normalized);
+    if (!words.length) return [];
+    if (words.length === 1 || (normalized.length <= TARGET_MAX_CHARS && words.length <= TARGET_MAX_WORDS)) {
+        return [normalized];
+    }
+
+    const splits = new Set();
+    for (let i = 0; i < words.length - 1; i++) {
+        if (isProtectedSpan(words, Math.max(0, i - 1), Math.min(words.length - 1, i + 1))) continue;
+        if (isStrongBoundaryAfter(words, i)) splits.add(i);
+    }
+
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const [from, to] of wordRangesFromSplits(words, splits)) {
+            if (!spanTooLong(words, from, to)) continue;
+            let added = false;
+            for (let i = from; i < to; i++) {
+                if (splits.has(i)) continue;
+                if (isProtectedSpan(words, Math.max(from, i - 1), Math.min(to, i + 1))) continue;
+                if (!isMediumBoundaryAfter(words, i) && !isPhraseBoundaryAfter(words, i)) continue;
+                const leftLen = spanCharLen(words, from, i);
+                const rightLen = spanCharLen(words, i + 1, to);
+                if (leftLen < TARGET_MIN_CHARS || rightLen < TARGET_MIN_CHARS) continue;
+                splits.add(i);
+                added = true;
+                break;
+            }
+            if (added) changed = true;
+        }
+    }
+
+    for (const [from, to] of wordRangesFromSplits(words, splits)) {
+        if (!spanTooLong(words, from, to)) continue;
+        let acc = '';
+        for (let i = from; i <= to; i++) {
+            const next = acc ? `${acc} ${words[i]}` : words[i];
+            if (acc && next.length > TARGET_MAX_CHARS && i - 1 >= from && i - 1 < to) {
+                splits.add(i - 1);
+                acc = words[i];
+            } else {
+                acc = next;
+            }
+        }
+    }
+
+    return wordsToLines(words, [...splits]);
+}
+
 /**
  * Pick one segmentation for the timing stage (semantic only — not pixel-based).
  * @param {string[][]} candidates
  * @returns {string[]}
  */
 export function pickTimingSegmentation(candidates) {
+    const joined = Array.isArray(candidates) && candidates[0]
+        ? candidates[0].join(' ')
+        : '';
+    const fromText = segmentTextIntoSubtitleLines(joined);
+    if (fromText.length) return fromText;
     if (!Array.isArray(candidates) || !candidates.length) return [];
-    const multis = candidates.filter((c) => c.length > 1);
-    if (!multis.length) return candidates[0];
-
-    let best = multis[0];
-    let bestScore = -Infinity;
-    for (const lines of multis) {
-        let score = 0;
-        for (let i = 0; i < lines.length - 1; i++) {
-            if (STRONG_END_RE.test(lines[i])) score += 10;
-            else if (COMMA_END_RE.test(lines[i])) score += 4;
-            else if (MEDIUM_CONJUNCTIONS.has(tokenizeWords(lines[i + 1] || '')[0] || '')) score += 3;
-        }
-        // Prefer fewer lines only as a tie-breaker — never drop content.
-        score -= lines.length * 0.25;
-        if (score > bestScore) {
-            bestScore = score;
-            best = lines;
-        }
-    }
-    return best;
+    return candidates[0];
 }
 
 function normalizeMatchText(s) {
