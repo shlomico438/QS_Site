@@ -852,13 +852,17 @@ function qsMedicalMarkGuestTryAccepted() {
     try { sessionStorage.setItem('qs_medical_guest_try', '1'); } catch (_) {}
 }
 
-function qsShowMedicalGuestTryModal() {
+function qsShowMedicalGuestTryModal(options) {
+    const onTryInGesture = options && typeof options.onTryInGesture === 'function'
+        ? options.onTryInGesture
+        : null;
     return new Promise((resolve) => {
         const modal = document.getElementById('medical-guest-try-modal');
         const registerBtn = document.getElementById('medical-guest-try-register');
         const tryBtn = document.getElementById('medical-guest-try-continue');
         const cancelBtn = document.getElementById('medical-guest-try-cancel');
         if (!modal || !registerBtn || !tryBtn) {
+            try { if (onTryInGesture) onTryInGesture(); } catch (_) {}
             resolve('try');
             return;
         }
@@ -888,7 +892,11 @@ function qsShowMedicalGuestTryModal() {
             resolve(choice);
         };
         const onRegister = () => cleanup('register');
-        const onTry = () => cleanup('try');
+        const onTry = () => {
+            cleanup('try');
+            // Open the file picker in this tap — iOS drops .click() after an awaited Promise.
+            try { if (onTryInGesture) onTryInGesture(); } catch (_) {}
+        };
         const onCancel = () => cleanup(null);
         const onBackdrop = (e) => { if (e.target === modal) cleanup(null); };
         const onEsc = (e) => { if (e.key === 'Escape') cleanup(null); };
@@ -926,12 +934,19 @@ async function qsMedicalEnsureGuestTryOrRegister() {
 window.qsMedicalEnsureGuestTryOrRegister = qsMedicalEnsureGuestTryOrRegister;
 
 /** Regular guest start gate: account holders continue; guests choose register or view-only. */
-async function qsRegularEnsureGuestStartChoice() {
-    let token = '';
-    try { token = await qsSupabaseAccessToken(); } catch (_) { token = ''; }
-    if (token) return true;
+function qsLooksSignedInSync() {
+    try {
+        if (window.__QS_UX_USER_SIGNED_IN === true) return true;
+        if (document.body && document.body.classList.contains('qs-user-signed-in')) return true;
+        if (_qsHasSupabaseAuthStorageHint()) return true;
+    } catch (_) {}
+    return false;
+}
 
-    const choice = await qsShowMedicalGuestTryModal();
+async function qsRegularEnsureGuestStartChoice(options) {
+    if (qsLooksSignedInSync()) return true;
+
+    const choice = await qsShowMedicalGuestTryModal(options);
     if (choice === 'try') {
         return true;
     }
@@ -16833,7 +16848,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 void confirmAndStartNewSession();
                 return;
             }
-            if (!(await qsRegularEnsureGuestStartChoice())) return;
+            // iOS Safari only opens the file picker in the same tap as the user gesture.
+            // Do not await auth before fileInput.click().
+            if (qsLooksSignedInSync()) {
+                openFilePickerAfterDisclaimer();
+                return;
+            }
+            let openedPicker = false;
+            const allowed = await qsRegularEnsureGuestStartChoice({
+                onTryInGesture: () => {
+                    openedPicker = true;
+                    openFilePickerAfterDisclaimer();
+                },
+            });
+            if (!allowed || openedPicker) return;
             openFilePickerAfterDisclaimer();
         });
     }

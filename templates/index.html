@@ -156,9 +156,6 @@ try {
                         <h3 id="seo-pricing-enterprise-title">
                             {% if qs_is_en %}Enterprise / Medical{% else %}ארגוני / רפואי{% endif %}
                         </h3>
-                        <div class="seo-price">
-                            {% if qs_is_en %}Custom Pricing{% else %}מחיר מותאם אישית{% endif %}
-                        </div>
                         <ul>
                             <li>
                                 {% if qs_is_en %}<strong>HIPAA-Compliant Environment:</strong> Fully sandboxed data architecture.{% else %}<strong>סביבה תואמת HIPAA:</strong> ארכיטקטורת נתונים במרחב מבודד לחלוטין.{% endif %}
@@ -170,9 +167,9 @@ try {
                                 {% if qs_is_en %}<strong>No Data Logging:</strong> Zero-retention policy for strict medical and legal confidentiality.{% else %}<strong>ללא שמירת נתונים:</strong> מדיניות אפס-שמירה לסודיות רפואית ומשפטית מחמירה.{% endif %}
                             </li>
                         </ul>
-                        <button type="button" id="seo-contact-sales-btn" class="seo-btn seo-btn-medical">
-                            {% if qs_is_en %}Contact Sales{% else %}צור קשר למכירות{% endif %}
-                        </button>
+                        <a href="/medical" id="seo-go-medical-btn" class="seo-btn seo-btn-medical">
+                            {% if qs_is_en %}Go to Medical{% else %}מעבר לרפואי{% endif %}
+                        </a>
                     </article>
                 </div>
                 </div>
@@ -789,7 +786,7 @@ try {
 
         <div class="upload-zone">
             <div class="upload-controls-row">
-                <input type="file" id="fileInput" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" hidden>
+                <input type="file" id="fileInput" class="qs-visually-hidden-file" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" aria-hidden="true" tabindex="-1">
                 <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
                 <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
             </div>
@@ -1289,14 +1286,22 @@ try {
             const card = planCards[planId];
             if (!card) return;
             const activate = (e) => {
-                if (e && e.target && e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-contact-sales-btn')) return;
+                if (e && e.target && e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn')) return;
+                if (planId === 'enterprise') {
+                    window.location.href = '/medical';
+                    return;
+                }
                 setSelectedPlan(planId);
             };
             card.addEventListener('click', activate);
             card.addEventListener('keydown', (e) => {
                 if (e.key !== 'Enter' && e.key !== ' ') return;
-                if (e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-contact-sales-btn')) return;
+                if (e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn')) return;
                 e.preventDefault();
+                if (planId === 'enterprise') {
+                    window.location.href = '/medical';
+                    return;
+                }
                 setSelectedPlan(planId);
             });
         };

@@ -4515,6 +4515,22 @@ html[dir="rtl"] .main-app-container.medical-mode #transcript-window .qs-medical-
     text-align: center;
     background: #f8f9fa;
     border-top: 1px solid #eee;
+    position: relative;
+}
+
+/* iOS Safari ignores input[type=file].click() when the input is display:none / [hidden]. */
+input#fileInput.qs-visually-hidden-file {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0.01;
+    overflow: hidden;
+    z-index: 0;
 }
 
 /* Reserve height while processing — absolute overlay does not expand the flex parent */
