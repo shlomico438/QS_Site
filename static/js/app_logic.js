@@ -12359,29 +12359,37 @@ if (authSubmitBtn) {
             // /auth/v1/verify, which Yahoo/Outlook prefetch consume before the user clicks.
             let sentViaServer = false;
             try {
-                const serverRes = await fetch('/api/auth/send-magic-link', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        email,
-                        redirectTo: qsOAuthRedirectTo(),
-                        locale: document.documentElement.lang || 'he',
-                        data: meta,
-                    }),
-                });
+                const ac = new AbortController();
+                const abortTimer = setTimeout(() => ac.abort(), 12000);
+                let serverRes;
+                try {
+                    serverRes = await fetch('/api/auth/send-magic-link', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email,
+                            redirectTo: qsOAuthRedirectTo(),
+                            locale: document.documentElement.lang || 'he',
+                            data: meta,
+                        }),
+                        signal: ac.signal,
+                    });
+                } finally {
+                    clearTimeout(abortTimer);
+                }
                 const serverBody = await serverRes.json().catch(() => ({}));
                 if (serverRes.ok) {
                     sentViaServer = true;
-                } else if (serverRes.status === 400 || serverRes.status === 429) {
+                } else if (serverRes.status === 400) {
                     const blocked = new Error(serverBody.error || 'Error sending magic link email');
-                    blocked.status = serverRes.status;
+                    blocked.status = 400;
                     throw blocked;
                 } else {
-                    console.warn('[auth] server magic link send failed; trying Supabase OTP', serverRes.status);
+                    console.error('[auth] server magic link send failed; trying Supabase OTP', serverRes.status, serverBody.error || '');
                 }
             } catch (serverErr) {
-                if (serverErr && (serverErr.status === 400 || serverErr.status === 429)) throw serverErr;
-                console.warn('[auth] server magic link send error; trying Supabase OTP', serverErr);
+                if (serverErr && serverErr.status === 400) throw serverErr;
+                console.error('[auth] server magic link send error; trying Supabase OTP', serverErr);
             }
             if (!sentViaServer) {
                 const { error } = await supabase.auth.signInWithOtp({
@@ -12391,10 +12399,9 @@ if (authSubmitBtn) {
                 if (error) throw error;
             }
 
-            console.log("✅ Magic link sent to:", email);
-            if (isMedical) {
-                qsClearAuthError();
-            } else {
+            console.error('[auth] magic link sent to', email, sentViaServer ? '(site link)' : '(supabase otp)');
+            qsClearAuthError();
+            if (typeof showStatus === 'function') {
                 showStatus(typeof window.t === 'function' ? window.t('check_email_link') : "Check your email for the login link.", false);
             }
             authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('link_sent') : "Link sent! Check your email.";

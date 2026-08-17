@@ -7663,6 +7663,7 @@ def api_auth_send_magic_link():
             return jsonify({"error": "Valid email required"}), 400
         ip = str(request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip()
         if not _magic_link_rate_allow(email, ip):
+            logging.warning("magic link rate-limited email=%s ip=%s", email, ip)
             return jsonify({"error": "Please wait a few minutes before requesting another link."}), 429
 
         risk = assess_email_risk(email)
@@ -7676,7 +7677,9 @@ def api_auth_send_magic_link():
         action_link = _supabase_generate_magic_link(email, redirect_to, meta)
         locale = str(data.get("locale") or request.headers.get("Accept-Language") or "he")
         subject, text, html = _magic_link_email_copy(locale, action_link)
-        sent = _send_email_via_zoho(email, subject, text, body_html=html)
+        sent = _send_email_via_zoho(
+            email, subject, text, body_html=html, timeout_sec=8, attempts=1
+        )
         if not sent:
             logging.warning("magic link Zoho send failed email=%s", email)
             return jsonify({"error": "Error sending magic link email"}), 502
@@ -15201,7 +15204,15 @@ def _build_ass(segments, style='tiktok', portrait=False, subtitle_color=None):
         lines.append(f"Dialogue: 0,{_ass_ts(start)},{_ass_ts(end)},Default,,0,0,0,,{text}")
     return "\r\n".join(lines) + "\r\n"
 
-def _send_email_via_zoho(to_email, subject, body_text, body_html=None, reply_to=None):
+def _send_email_via_zoho(
+    to_email,
+    subject,
+    body_text,
+    body_html=None,
+    reply_to=None,
+    timeout_sec=20,
+    attempts=3,
+):
     """Send email through Zoho SMTP (plain text; optional HTML alternative). Returns True on success."""
     smtp_host = 'smtp.zoho.com'
     smtp_port = 465
@@ -15209,6 +15220,8 @@ def _send_email_via_zoho(to_email, subject, body_text, body_html=None, reply_to=
     smtp_pass = (os.environ.get('ZOHO_SMTP_PASS') or '').strip()
     from_email = smtp_user
     from_name = 'QuickScribe'
+    smtp_timeout = max(3, int(timeout_sec or 20))
+    max_attempts = max(1, int(attempts or 1))
     if isinstance(to_email, (list, tuple, set)):
         recipients = [str(x).strip() for x in to_email if str(x).strip()]
     else:
@@ -15230,16 +15243,15 @@ def _send_email_via_zoho(to_email, subject, body_text, body_html=None, reply_to=
     if body_html:
         msg.add_alternative(body_html, subtype='html', charset='utf-8')
 
-    attempts = 3
-    for attempt in range(1, attempts + 1):
+    for attempt in range(1, max_attempts + 1):
         try:
             if smtp_port == 465:
                 context = ssl.create_default_context()
-                with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=20) as server:
+                with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=smtp_timeout) as server:
                     server.login(smtp_user, smtp_pass)
                     server.send_message(msg)
             else:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=smtp_timeout) as server:
                     server.ehlo()
                     server.starttls(context=ssl.create_default_context())
                     server.ehlo()
@@ -15250,12 +15262,12 @@ def _send_email_via_zoho(to_email, subject, body_text, body_html=None, reply_to=
             logging.warning(
                 "Zoho SMTP send failed (attempt %s/%s) to=%s subject=%s: %s",
                 attempt,
-                attempts,
+                max_attempts,
                 recipients,
                 subject,
                 e,
             )
-            if attempt < attempts:
+            if attempt < max_attempts:
                 time.sleep(1.5 * attempt)
     return False
 
