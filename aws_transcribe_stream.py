@@ -394,6 +394,63 @@ def _strip_transcript_overlap(new_text: str, committed: str) -> str:
     return _drop_leading_tokens(new, overlap)
 
 
+_HEBREW_LETTER_RE = re.compile(r'[\u0590-\u05FF]')
+_LATIN_LETTER_RE = re.compile(r'[A-Za-z]')
+_NEW_LANG_STARTERS = {
+    'if', 'i', 'we', 'you', 'he', 'she', 'they', 'it', 'this', 'that',
+    'what', 'when', 'why', 'how', 'and', 'but', 'so', 'yes', 'no',
+    'ok', 'okay', 'please', 'my', 'me', 'in', 'on', 'for',
+}
+
+
+def _script_kind(text: str) -> str:
+    he = len(_HEBREW_LETTER_RE.findall(text or ''))
+    la = len(_LATIN_LETTER_RE.findall(text or ''))
+    if he == 0 and la == 0:
+        return ''
+    if he and not la:
+        return 'he'
+    if la and not he:
+        return 'en'
+    return 'he' if he >= la else 'en'
+
+
+def _is_full_script_rewrite(prev_text: str, new_text: str) -> bool:
+    """True when AWS re-decodes a finished language span in the other language."""
+    prev = str(prev_text or '').strip()
+    new = str(new_text or '').strip()
+    if not prev or not new:
+        return False
+    prev_k = _script_kind(prev)
+    new_k = _script_kind(new)
+    if prev_k == 'he' and new_k == 'en' and not _HEBREW_LETTER_RE.search(new):
+        return True
+    if prev_k == 'en' and new_k == 'he' and not _LATIN_LETTER_RE.search(new):
+        return True
+    return False
+
+
+def _keep_new_language_suffix(old_text: str, new_text: str) -> str:
+    """Keep speech after a language switch; drop the phonetic rewrite of the old span."""
+    new = _collapse_repeated_sentences(new_text)
+    old_n = len(_transcript_tokens(old_text))
+    new_toks = _transcript_tokens(new)
+    new_n = len(new_toks)
+    if not new or old_n <= 0:
+        return new
+    if new_n <= old_n:
+        return ''
+    preferred = min(new_n - 1, old_n + 1)
+    drop_n = preferred
+    for extra in range(0, 4):
+        cand = min(new_n - 1, old_n + extra)
+        rest0 = new_toks[cand].lower().strip('.,;:!?-') if cand < new_n else ''
+        if rest0 in _NEW_LANG_STARTERS:
+            drop_n = cand
+            break
+    return _drop_leading_tokens(new, drop_n)
+
+
 def _is_transcribe_audio_timeout(err: Optional[BaseException]) -> bool:
     msg = str(err or '').lower()
     return 'timed out' in msg and 'no new audio' in msg
@@ -417,6 +474,11 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         self._results: dict = {}
         self._result_order: List[str] = []
         self._frozen_ids = set()
+        self._result_langs: dict = {}
+        self._result_starts: dict = {}
+        self._result_ends: dict = {}
+        self._rewrite_anchor: dict = {}
+        self._fork_seq = 0
 
     def _frozen_text(self) -> str:
         parts = [
@@ -437,6 +499,119 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         except Exception:
             logger.debug('partial callback failed', exc_info=True)
 
+    def _fork_previous_language(self, rid: str, prev_text: str, prev_lang: str) -> None:
+        self._fork_seq += 1
+        clone_id = f'{rid}__keep{self._fork_seq}'
+        if rid in self._result_order:
+            idx = self._result_order.index(rid)
+            self._result_order.insert(idx, clone_id)
+        else:
+            self._result_order.append(clone_id)
+        self._results[clone_id] = prev_text
+        self._result_langs[clone_id] = prev_lang
+        self._result_starts[clone_id] = self._result_starts.get(rid)
+        self._result_ends[clone_id] = self._result_ends.get(rid)
+        self._frozen_ids.add(clone_id)
+
+    def _overlapping_other_language_text(self, rid: str, start: Optional[float], new_text: str) -> str:
+        if start is None:
+            return ''
+        new_k = _script_kind(new_text)
+        if new_k not in ('he', 'en'):
+            return ''
+        for other in self._result_order:
+            if other == rid:
+                continue
+            other_text = str(self._results.get(other) or '').strip()
+            if not other_text:
+                continue
+            other_k = _script_kind(other_text)
+            if other_k != ('he' if new_k == 'en' else 'en'):
+                continue
+            ost = self._result_starts.get(other)
+            oet = self._result_ends.get(other)
+            if ost is None:
+                continue
+            other_end = oet if oet is not None else (ost + 8.0)
+            if start <= other_end + 0.2:
+                return other_text
+        return ''
+
+    def ingest_aws_result(
+        self,
+        *,
+        rid: str,
+        text: str,
+        is_partial: bool,
+        language_code: str = '',
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> None:
+        """Apply one AWS Result. Frozen IDs never change; language flips keep the old script."""
+        text = str(text or '').strip()
+        if not text:
+            return
+        self._event_count += 1
+        rid = str(rid or '').strip() or f'anon-{self._event_count}'
+        if rid not in self._results and rid not in self._result_order:
+            self._result_order.append(rid)
+        if rid in self._frozen_ids:
+            return
+        if start_time is not None:
+            self._result_starts[rid] = start_time
+        if end_time is not None:
+            self._result_ends[rid] = end_time
+
+        prev = str(self._results.get(rid) or '').strip()
+        prev_lang = str(self._result_langs.get(rid) or '')
+        lang = str(language_code or '').strip()
+        incoming = text
+
+        if rid in self._rewrite_anchor:
+            incoming = _keep_new_language_suffix(self._rewrite_anchor[rid], text)
+        elif prev and _is_full_script_rewrite(prev, text):
+            self._fork_previous_language(rid, prev, prev_lang)
+            self._rewrite_anchor[rid] = prev
+            incoming = _keep_new_language_suffix(prev, text)
+            logger.info(
+                'transcribe kept previous language span lang=%s→%s rid=%s',
+                prev_lang or _script_kind(prev),
+                lang or _script_kind(text),
+                rid,
+            )
+        else:
+            overlap_src = self._overlapping_other_language_text(rid, start_time, text)
+            if overlap_src and _is_full_script_rewrite(overlap_src, text):
+                self._rewrite_anchor[rid] = overlap_src
+                incoming = _keep_new_language_suffix(overlap_src, text)
+                logger.info(
+                    'transcribe dropped overlapping re-decode rid=%s lang=%s',
+                    rid,
+                    lang or _script_kind(text),
+                )
+
+        cleaned = _strip_transcript_overlap(incoming, self._frozen_text())
+        if lang:
+            self._result_langs[rid] = lang
+        elif prev_lang and rid not in self._result_langs:
+            self._result_langs[rid] = prev_lang
+
+        if is_partial:
+            self._results[rid] = cleaned
+            self._current_partial = cleaned
+        else:
+            if cleaned:
+                self._results[rid] = cleaned
+            elif rid in self._results and not self._results.get(rid):
+                self._results[rid] = ''
+            self._frozen_ids.add(rid)
+            self._current_partial = ''
+            self._final_parts = [
+                str(self._results.get(i) or '').strip()
+                for i in self._result_order
+                if i in self._frozen_ids and str(self._results.get(i) or '').strip()
+            ]
+
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
         results = transcript_event.transcript.results
         for result in results:
@@ -449,34 +624,21 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
                     break
             if not text:
                 continue
-            self._event_count += 1
-            rid = str(getattr(result, 'result_id', '') or '').strip() or f'anon-{self._event_count}'
-            if rid not in self._results:
-                self._result_order.append(rid)
-            committed = self._frozen_text()
-            cleaned = _strip_transcript_overlap(text, committed)
-            if result.is_partial:
-                if rid in self._frozen_ids:
-                    continue
-                self._results[rid] = cleaned
-                self._current_partial = cleaned
-            else:
-                if cleaned:
-                    self._results[rid] = cleaned
-                elif rid in self._results and not self._results.get(rid):
-                    self._results[rid] = ''
-                self._frozen_ids.add(rid)
-                self._current_partial = ''
-                self._final_parts = [
-                    str(self._results.get(i) or '').strip()
-                    for i in self._result_order
-                    if i in self._frozen_ids and str(self._results.get(i) or '').strip()
-                ]
+            rid = str(getattr(result, 'result_id', '') or '').strip()
+            self.ingest_aws_result(
+                rid=rid,
+                text=text,
+                is_partial=bool(result.is_partial),
+                language_code=str(getattr(result, 'language_code', '') or ''),
+                start_time=getattr(result, 'start_time', None),
+                end_time=getattr(result, 'end_time', None),
+            )
             if self._event_count <= 3 or self._event_count % 10 == 0 or not result.is_partial:
                 logger.info(
-                    'AWS transcript event count=%d partial=%s text_len=%d full_len=%d',
+                    'AWS transcript event count=%d partial=%s lang=%s text_len=%d full_len=%d',
                     self._event_count,
                     bool(result.is_partial),
+                    str(getattr(result, 'language_code', '') or '') or '-',
                     len(text),
                     len(self.full_transcript),
                 )
