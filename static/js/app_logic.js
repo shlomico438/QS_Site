@@ -9746,7 +9746,7 @@ function qsMedicalParagraphsFromPlainText(text) {
     if (!cleaned) return [];
     return cleaned
         .split(/(?:\r?\n\s*){2,}/)
-        .map((block) => String(block || '').replace(/\s*\r?\n\s*/g, ' ').replace(/ {2,}/g, ' ').trim())
+        .map((block) => String(block || '').replace(/\r\n/g, '\n').trim())
         .filter(Boolean);
 }
 
@@ -12380,9 +12380,15 @@ if (authSubmitBtn) {
                 const serverBody = await serverRes.json().catch(() => ({}));
                 if (serverRes.ok) {
                     sentViaServer = true;
-                } else if (serverRes.status === 400) {
+                    const devLink = String(serverBody.devLink || '').trim();
+                    if (devLink && serverBody.emailed === false) {
+                        console.error('[auth] Zoho SMTP failed locally; opening magic link. Set ZOHO_SMTP_PASS to send mail.');
+                        window.location.assign(devLink);
+                        return;
+                    }
+                } else if (serverRes.status === 400 || serverRes.status === 429) {
                     const blocked = new Error(serverBody.error || 'Error sending magic link email');
-                    blocked.status = 400;
+                    blocked.status = serverRes.status;
                     throw blocked;
                 } else {
                     console.error('[auth] server magic link send failed; trying Supabase OTP', serverRes.status, serverBody.error || '');
@@ -12419,9 +12425,12 @@ if (authSubmitBtn) {
             }
             const rawErr = String(err.message || err.error_description || err.msg || '');
             const T = typeof window.t === 'function' ? window.t : (k) => k;
-            const errMsg = /sending magic link email/i.test(rawErr)
-                ? (T('magic_link_send_failed') || rawErr)
-                : (rawErr || 'Login failed');
+            const waitMatch = rawErr.match(/after\s+(\d+)\s+seconds/i);
+            const errMsg = waitMatch
+                ? (T('magic_link_wait') || `Please wait ${waitMatch[1]} seconds before requesting another link.`)
+                : (/sending magic link email/i.test(rawErr)
+                    ? (T('magic_link_send_failed') || rawErr)
+                    : (rawErr || 'Login failed'));
             qsShowAuthError(errMsg);
         } finally {
             authSubmitBtn.disabled = false;
@@ -16537,7 +16546,8 @@ document.addEventListener('DOMContentLoaded', () => {
             toggleMedicalRecording();
         });
         medicalRecordBtn.addEventListener('keydown', (e) => {
-            if (e.key !== 'Enter' || !isMedicalModeEnabled()) return;
+            if (!isMedicalModeEnabled()) return;
+            if (e.key !== 'Enter') return;
             const rec = window._medicalRecorder;
             if (!rec || (rec.state !== 'recording' && rec.state !== 'paused')) return;
             const tw = document.getElementById('transcript-window');
@@ -16548,7 +16558,8 @@ document.addEventListener('DOMContentLoaded', () => {
             e.stopPropagation();
             const end = String(last.value || '').length;
             qsSetCaretInElement(last, end);
-            qsSplitMedicalTranscriptBoxAtCaret(last);
+            if (e.shiftKey) qsSplitMedicalTranscriptBoxAtCaret(last);
+            else qsInsertNewlineInMedicalTranscriptBox(last);
         });
     }
     const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
@@ -20777,7 +20788,7 @@ function renderMedicalPlainStreamTranscript(text) {
 }
 
 /**
- * Medical "תמלול" tab: editable text boxes. Enter splits into another box for easy copy.
+ * Medical "תמלול" tab: editable text boxes. Shift+Enter splits into another box; Enter inserts a newline.
  */
 function renderMedicalTranscriptMainView() {
     const transcriptWindow = document.getElementById('transcript-window');
@@ -20989,6 +21000,24 @@ function qsSetCaretInElement(el, offset) {
     } catch (_) {}
 }
 
+function qsInsertNewlineInMedicalTranscriptBox(bodyEl) {
+    if (!bodyEl || !bodyEl.classList.contains('qs-medical-edit-box-body')) return;
+    if (bodyEl.tagName === 'TEXTAREA') {
+        const start = Math.max(0, Number(bodyEl.selectionStart || 0));
+        const end = Math.max(start, Number(bodyEl.selectionEnd || start));
+        const v = String(bodyEl.value || '');
+        bodyEl.value = v.slice(0, start) + '\n' + v.slice(end);
+        const pos = start + 1;
+        bodyEl.selectionStart = bodyEl.selectionEnd = pos;
+        qsAutosizeMedicalEditTextarea(bodyEl);
+        bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+    }
+    try {
+        document.execCommand('insertText', false, '\n');
+    } catch (_) {}
+}
+
 function qsSplitMedicalTranscriptBoxAtCaret(bodyEl) {
     if (!bodyEl || !bodyEl.classList.contains('qs-medical-edit-box-body')) return;
     const wrap = bodyEl.closest('[data-medical-edit-box]');
@@ -21004,7 +21033,7 @@ function qsSplitMedicalTranscriptBoxAtCaret(bodyEl) {
     const next = qsCreateMedicalTranscriptEditBox(after, layout);
     wrap.parentNode.insertBefore(next, wrap.nextSibling);
     const nextBody = next.querySelector('.qs-medical-edit-box-body');
-    // After Enter-split during live ASR, new last box resumes stream sync.
+    // After Shift+Enter split during live ASR, new last box resumes stream sync.
     window._medicalLiveLastBoxDirty = false;
     qsSetCaretInElement(nextBody, 0);
     qsPersistMedicalTranscriptBoxesFromDom();
@@ -21072,7 +21101,7 @@ function qsWireMedicalTranscriptEditorOnce() {
         if (String(window.medicalActiveTab || 'transcript') !== 'transcript') return;
         const body = e.target && e.target.closest ? e.target.closest('.qs-medical-edit-box-body') : null;
         if (!body || !win.contains(body)) return;
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && e.shiftKey) {
             e.preventDefault();
             e.stopPropagation();
             qsSplitMedicalTranscriptBoxAtCaret(body);
@@ -21224,10 +21253,17 @@ function renderTranscriptFromCues(cues) {
             const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
             const medicalEmptyTitle = T('medical_secure_clinical_session') || 'Secure clinical session';
             const medicalEmptyHint = T('medical_start_recording_hint') || 'Start recording with the button below. The transcript will appear as you speak.';
+            const medicalEnterTip = T('medical_enter_newline_tip')
+                || 'Tip — press Enter for a new line, Shift+Enter to open a new box.';
+            const medicalLangTip = T('medical_language_pause_tip')
+                || 'When switching languages, pause about 2 seconds.';
             container.innerHTML = `
                 <div style="color:#64748b; text-align:center; margin-top:32px; line-height:1.75; font-size:0.95rem; direction:${textDirection};">
                     <div style="font-weight:600; color:#0f766e;">${medicalEmptyTitle}</div>
                     <div style="margin-top:12px;">${medicalEmptyHint}</div>
+                    <div class="qs-medical-enter-tip" style="margin-top:18px; font-size:0.88rem; color:#475569;">
+                        ${medicalEnterTip}<br>${medicalLangTip}
+                    </div>
                 </div>
             `;
         } else {

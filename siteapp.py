@@ -7607,6 +7607,11 @@ def _magic_link_rate_allow(email: str, ip: str) -> bool:
     return True
 
 
+def _magic_link_request_is_local_dev() -> bool:
+    host = str((request.host or "").split(":")[0] or "").strip().lower()
+    return host in ("localhost", "127.0.0.1")
+
+
 def _sanitize_magic_link_redirect(raw: str) -> str:
     fallback = QS_CANONICAL_ORIGIN.rstrip('/') + '/'
     text = str(raw or '').strip()
@@ -7636,36 +7641,32 @@ def _magic_link_email_copy(locale: str, action_link: str) -> tuple[str, str, str
     is_he = str(locale or '').lower().startswith('he')
     safe_link = html_module.escape(action_link, quote=True)
     if is_he:
-        subject = 'קישור התחברות ל-QuickScribe'
+        subject = 'התחברות לחשבון QuickScribe'
         text = (
-            "שלום,\n\n"
-            "לחצו על הקישור כדי להתחבר ל-QuickScribe:\n"
+            "זוהי הודעת התחברות לחשבון QuickScribe שלכם.\n\n"
+            "לחצו על הקישור הבא כדי להיכנס:\n"
             f"{action_link}\n\n"
-            "אם לא ביקשתם קישור זה, אפשר להתעלם מהמייל.\n\n"
-            "— QuickScribe"
+            "הקישור חד-פעמי. אם לא ביקשתם להתחבר, התעלמו מההודעה.\n"
         )
         html = (
-            "<p>שלום,</p>"
-            "<p>לחצו על הקישור כדי להתחבר ל-QuickScribe:</p>"
-            f'<p><a href="{safe_link}">התחברות ל-QuickScribe</a></p>'
-            "<p>אם לא ביקשתם קישור זה, אפשר להתעלם מהמייל.</p>"
-            "<p>— QuickScribe</p>"
+            "<p>זוהי הודעת התחברות לחשבון QuickScribe שלכם.</p>"
+            "<p>לחצו על הקישור הבא כדי להיכנס:</p>"
+            f"<p><a href=\"{safe_link}\">{safe_link}</a></p>"
+            "<p>הקישור חד-פעמי. אם לא ביקשתם להתחבר, התעלמו מההודעה.</p>"
         )
         return subject, text, html
-    subject = 'Your QuickScribe sign-in link'
+    subject = 'Sign in to your QuickScribe account'
     text = (
-        "Hi,\n\n"
-        "Use this link to sign in to QuickScribe:\n"
+        "This is a sign-in email for your QuickScribe account.\n\n"
+        "Open this link to continue:\n"
         f"{action_link}\n\n"
-        "If you did not request this, you can ignore the email.\n\n"
-        "— QuickScribe"
+        "This link can be used once. If you did not try to sign in, ignore this message.\n"
     )
     html = (
-        "<p>Hi,</p>"
-        "<p>Use this link to sign in to QuickScribe:</p>"
-        f'<p><a href="{safe_link}">Sign in to QuickScribe</a></p>'
-        "<p>If you did not request this, you can ignore the email.</p>"
-        "<p>— QuickScribe</p>"
+        "<p>This is a sign-in email for your QuickScribe account.</p>"
+        "<p>Open this link to continue:</p>"
+        f"<p><a href=\"{safe_link}\">{safe_link}</a></p>"
+        "<p>This link can be used once. If you did not try to sign in, ignore this message.</p>"
     )
     return subject, text, html
 
@@ -7788,6 +7789,17 @@ def api_auth_send_magic_link():
             email, subject, text, body_html=html, timeout_sec=8, attempts=1
         )
         if not sent:
+            if _magic_link_request_is_local_dev():
+                logging.warning(
+                    "magic link Zoho failed on localhost; returning devLink email=%s",
+                    email,
+                )
+                return jsonify({
+                    "ok": True,
+                    "emailed": False,
+                    "devLink": action_link,
+                    "error": "Zoho SMTP failed locally (check ZOHO_SMTP_PASS). Opening the sign-in link instead.",
+                }), 200
             logging.warning("magic link Zoho send failed email=%s", email)
             return jsonify({"error": "Error sending magic link email"}), 502
         logging.info("magic link emailed via Zoho email=%s", email)
@@ -15371,6 +15383,7 @@ def _send_email_via_zoho(
     msg['Subject'] = subject
     msg['From'] = f"{from_name} <{from_email}>"
     msg['To'] = ', '.join(recipients)
+    msg['Message-ID'] = f"<{uuid.uuid4().hex}@getquickscribe.com>"
     if reply_to and '@' in str(reply_to):
         msg['Reply-To'] = str(reply_to).strip()
     msg.set_content(body_text or "", charset='utf-8')
