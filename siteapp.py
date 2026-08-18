@@ -5141,6 +5141,81 @@ def _schedule_meta_capi_purchase(**kwargs):
         logging.warning('schedule Meta CAPI Purchase failed: %s', e)
 
 
+def _auth_user_email(user):
+    """Best-effort email from an Auth user JSON payload."""
+    if not isinstance(user, dict):
+        return ""
+    email = str(user.get("email") or "").strip()
+    if email:
+        return email
+    nested = user.get("user")
+    if isinstance(nested, dict):
+        email = str(nested.get("email") or "").strip()
+        if email:
+            return email
+    identities = user.get("identities")
+    if isinstance(identities, list):
+        for item in identities:
+            if not isinstance(item, dict):
+                continue
+            ident_data = item.get("identity_data") if isinstance(item.get("identity_data"), dict) else {}
+            email = str(item.get("email") or ident_data.get("email") or "").strip()
+            if email:
+                return email
+    return ""
+
+
+def _entitlement_ledger_table_missing(status_code, body):
+    text = str(body or "").lower()
+    return int(status_code or 0) in (400, 404, 406) and (
+        "entitlement_ledger" in text
+        or "could not find the table" in text
+        or "schema cache" in text
+    )
+
+
+def _entitlement_ledger_get(email_key):
+    email_key = str(email_key or "").strip()
+    if not email_key:
+        return None
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    key = quote(email_key, safe="")
+    r = _supabase_http_request(
+        "GET",
+        f"{supabase_url}/rest/v1/entitlement_ledger?email_key=eq.{key}&select=*&limit=1",
+        headers=headers,
+        timeout=8,
+    )
+    if _entitlement_ledger_table_missing(r.status_code, r.text):
+        return None
+    if r.status_code != 200:
+        raise RuntimeError(r.text or f"entitlement_ledger lookup HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if isinstance(rows, list) and rows else None
+
+
+def _entitlement_ledger_upsert(payload):
+    payload = {k: v for k, v in (payload or {}).items() if v is not None}
+    if not payload.get("email_key"):
+        return None
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    r = _supabase_http_request(
+        "POST",
+        f"{supabase_url}/rest/v1/entitlement_ledger?on_conflict=email_key",
+        headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+        json=payload,
+        timeout=10,
+    )
+    if _entitlement_ledger_table_missing(r.status_code, r.text):
+        logging.warning("entitlement_ledger table missing; run migrations/add_entitlement_ledger.sql")
+        return None
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"entitlement_ledger upsert HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if isinstance(rows, list) and rows else payload
+
+
 def _user_credits_get(user_id):
     user_id = str(user_id or '').strip()
     if not user_id:
@@ -5198,7 +5273,18 @@ def _user_credits_sync_user_name(user_id, user_name):
 
 
 def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_name=None):
-    """Idempotent welcome pack grant (matches DB trigger/backfill logic)."""
+    """Idempotent welcome pack grant (matches DB trigger/backfill logic).
+
+    Returning emails restore leftover minutes from entitlement_ledger instead
+    of receiving another 60.
+    """
+    from entitlement_ledger import (
+        is_returning_welcome,
+        ledger_mark_welcome_payload,
+        normalize_entitlement_email,
+        welcome_minutes_for_ledger,
+    )
+
     user_id = str(user_id or '').strip()
     if not user_id:
         raise ValueError("userId required")
@@ -5208,11 +5294,24 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_n
         if user_name:
             return _user_credits_sync_user_name(user_id, user_name) or existing
         return existing
+
+    email_key = ""
+    ledger = None
+    try:
+        email_key = normalize_entitlement_email(_auth_user_email(_supabase_admin_get_user(user_id)))
+        ledger = _entitlement_ledger_get(email_key) if email_key else None
+    except Exception as e:
+        logging.warning("welcome ledger lookup failed user=%s: %s", user_id[:8], e)
+        ledger = None
+
+    restoring = is_returning_welcome(ledger)
+    grant_minutes = welcome_minutes_for_ledger(ledger, minutes)
+
     supabase_url, _service_key, headers = _supabase_rest_config()
     if not existing:
         payload = {
             "user_id": user_id,
-            "credit_minutes": int(minutes),
+            "credit_minutes": int(grant_minutes),
             "welcome_granted": True,
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
@@ -5228,7 +5327,7 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_n
     else:
         from urllib.parse import quote
         uid = quote(user_id, safe='')
-        new_balance = int(existing.get('credit_minutes') or 0) + int(minutes)
+        new_balance = int(existing.get('credit_minutes') or 0) + int(grant_minutes)
         payload = {
             "credit_minutes": new_balance,
             "welcome_granted": True,
@@ -5246,7 +5345,15 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_n
     if r.status_code not in (200, 201):
         raise RuntimeError(r.text or f"Supabase user_credits upsert HTTP {r.status_code}")
     rows = r.json() if r.text else []
-    return rows[0] if rows else payload
+    row = rows[0] if rows else payload
+    if email_key:
+        try:
+            _entitlement_ledger_upsert(
+                ledger_mark_welcome_payload(email_key, user_id, grant_minutes, restoring)
+            )
+        except Exception as e:
+            logging.warning("welcome ledger upsert failed user=%s: %s", user_id[:8], e)
+    return row
 
 
 def _normalize_invoice_tax_id(raw):
@@ -7976,6 +8083,33 @@ def delete_account():
             return jsonify({"error": "Invalid user response"}), 401
         if not user_id:
             return jsonify({"error": "User id not found"}), 401
+        email = _auth_user_email(user_data)
+        from entitlement_ledger import ledger_delete_snapshot_payload, normalize_entitlement_email
+        email_key = normalize_entitlement_email(email)
+        if email_key:
+            try:
+                from medical_saas import _medical_account_get
+                wallet = None
+                medical = None
+                try:
+                    wallet = _user_credits_get(user_id)
+                except Exception as e:
+                    logging.warning("delete_account wallet lookup failed: %s", e)
+                try:
+                    medical = _medical_account_get(user_id)
+                except Exception as e:
+                    logging.warning("delete_account medical lookup failed: %s", e)
+                snap = _entitlement_ledger_upsert(
+                    ledger_delete_snapshot_payload(email_key, user_id, wallet, medical)
+                )
+                if snap is None:
+                    logging.warning(
+                        "delete_account ledger snapshot skipped (table missing) email_key=%s",
+                        email_key,
+                    )
+            except Exception:
+                logging.exception("delete_account entitlement snapshot failed user=%s", user_id[:8])
+                return jsonify({"error": "Could not close the account. Please try again."}), 500
         # Delete all jobs for this user
         jobs_url = f"{supabase_url}/rest/v1/jobs?user_id=eq.{user_id}"
         _supabase_http_request(

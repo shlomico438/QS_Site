@@ -85,19 +85,30 @@ def _medical_account_get(user_id: str) -> Optional[dict]:
     return rows[0] if isinstance(rows, list) and rows else None
 
 
-def _medical_account_create(user_id: str, full_name: str, specialty: str) -> dict:
+def _medical_account_create(user_id: str, full_name: str, specialty: str, email: str = "") -> dict:
+    from entitlement_ledger import (
+        ledger_mark_medical_payload,
+        medical_account_insert_payload,
+        normalize_entitlement_email,
+    )
+
     sa = _sa()
     supabase_url, _, headers = sa._supabase_rest_config()
-    payload = {
-        "user_id": user_id,
-        "full_name": full_name,
-        "professional_specialty": specialty,
-        "subscription_plan": "trial",
-        "subscription_status": "trialing",
-        "included_seconds": MEDICAL_PLANS["trial"]["included_seconds"],
-        "seat_limit": 1,
-        "overage_rate_agorot_per_hour": OVERAGE_ILS_PER_HOUR * 100,
-    }
+    email_key = normalize_entitlement_email(email)
+    ledger = None
+    if email_key:
+        try:
+            ledger = sa._entitlement_ledger_get(email_key)
+        except Exception as exc:
+            logging.warning("medical ledger lookup failed user=%s: %s", user_id[:8], exc)
+    payload = medical_account_insert_payload(
+        user_id,
+        full_name,
+        specialty,
+        ledger,
+        trial_included_seconds=int(MEDICAL_PLANS["trial"]["included_seconds"]),
+        overage_rate_agorot_per_hour=OVERAGE_ILS_PER_HOUR * 100,
+    )
     h = dict(headers)
     h["Prefer"] = "resolution=ignore-duplicates,return=representation"
     r = sa._supabase_http_request(
@@ -110,12 +121,15 @@ def _medical_account_create(user_id: str, full_name: str, specialty: str) -> dic
     if r.status_code not in (200, 201):
         raise RuntimeError(r.text or f"medical account create HTTP {r.status_code}")
     rows = r.json() if r.text else []
-    if isinstance(rows, list) and rows:
-        return rows[0]
-    existing = _medical_account_get(user_id)
-    if not existing:
+    account = rows[0] if isinstance(rows, list) and rows else _medical_account_get(user_id)
+    if not account:
         raise RuntimeError("medical account was not created")
-    return existing
+    if email_key:
+        try:
+            sa._entitlement_ledger_upsert(ledger_mark_medical_payload(email_key, user_id, account))
+        except Exception as exc:
+            logging.warning("medical ledger upsert failed user=%s: %s", user_id[:8], exc)
+    return account
 
 
 def _medical_account_update_profile(user_id: str, full_name: str, specialty: str) -> dict:
@@ -741,7 +755,12 @@ def register_medical_saas_routes(app) -> None:
             account = (
                 _medical_account_update_profile(user_id, full_name, specialty)
                 if existing
-                else _medical_account_create(user_id, full_name, specialty)
+                else _medical_account_create(
+                    user_id,
+                    full_name,
+                    specialty,
+                    sa._auth_user_email(auth_user),
+                )
             )
             # Never restart an expired/consumed trial through this endpoint.
             return jsonify(
