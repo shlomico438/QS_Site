@@ -294,6 +294,7 @@ _GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE = (
 )
 
 # Medical "התאמה רפואית" button: ungarble phonetic terms; never translate English speech to Hebrew.
+_GPT_MEDICAL_TYPO_FIX_BOX_MARK = '<<<QS_BOX>>>'
 _GPT_MEDICAL_TYPO_FIX_SYSTEM_PROMPT = (
     "Edit a mixed-language medical ASR transcript (Hebrew and/or English). "
     "Return plain text only (no markdown/JSON). "
@@ -304,7 +305,10 @@ _GPT_MEDICAL_TYPO_FIX_SYSTEM_PROMPT = (
     "2) Rewrite clear drug names and Latin/English medical terms that were written in Hebrew letters "
     "into English spelling (e.g. אמוקסיצילין → amoxicillin). Leave native Hebrew clinical phrases in Hebrew.\n"
     "3) Convert Hebrew number-words to digits; do not change numeric values.\n"
-    "Do not convert English sentences, questions, or answers into Hebrew."
+    "Do not convert English sentences, questions, or answers into Hebrew.\n"
+    "Do not insert blank lines between sentences. Keep each section as continuous text.\n"
+    "If the input contains the exact token <<<QS_BOX>>>, copy that token unchanged. "
+    "It marks doctor-created sections — do not add or remove those markers."
 )
 
 _GPT_MUSIC_CLEAN_TRANSCRIPT_PROMPT = (
@@ -9830,6 +9834,26 @@ def _format_summary_focused_openai(
     }
 
 
+def _finalize_medical_typo_fix_text(text):
+    """Keep התאמה רפואית output in doctor sections; do not sentence-paragraphize.
+
+    GPT often returns a blank line after every sentence. Those must stay inside the
+    same section (single newlines), except where the doctor marked <<<QS_BOX>>>.
+    """
+    clean = str(text or '').replace('\r\n', '\n').strip()
+    if not clean:
+        return ''
+    clean = re.sub(r'^```(?:text|plaintext)?\s*', '', clean, flags=re.I)
+    clean = re.sub(r'\s*```$', '', clean).strip()
+    mark = _GPT_MEDICAL_TYPO_FIX_BOX_MARK
+    if mark in clean:
+        parts = [p.strip() for p in re.split(r'\s*' + re.escape(mark) + r'\s*', clean)]
+        parts = [re.sub(r'\n{2,}', '\n', p).strip() for p in parts]
+        return ('\n\n' + mark + '\n\n').join(parts).strip()
+    # No markers: collapse extra blank lines so the UI does not create a box per sentence.
+    return re.sub(r'\n{2,}', '\n', clean).strip()
+
+
 def _format_transcript_cleanup_openai(
     transcript_text,
     target_lang='he',
@@ -9949,18 +9973,10 @@ def _format_transcript_cleanup_openai(
         system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
     )
     clean = str(clean or "").strip()
-    # Medical typo/adaptation: keep one continuous dialogue block — do not soft-wrap.
-    # Wrapping inserts single \n that the medical UI used to treat as separate sections.
+    # Medical typo/adaptation: keep the doctor's sections. GPT often inserts a blank
+    # line per sentence; that must not become a new UI box.
     if typo_fix and is_medical:
-        clean = _normalize_clean_transcript_storage(clean)
-        # Collapse soft wraps; preserve intentional blank-line paragraphs only.
-        parts = []
-        for block in re.split(r'(?:\r?\n\s*){2,}', clean):
-            line = re.sub(r'\s*\r?\n\s*', ' ', block)
-            line = re.sub(r' {2,}', ' ', line).strip()
-            if line:
-                parts.append(line)
-        clean = '\n\n'.join(parts).strip()
+        clean = _finalize_medical_typo_fix_text(clean)
     else:
         clean = _wrap_text_to_max_chars(clean)
     return {"clean_transcript": clean}

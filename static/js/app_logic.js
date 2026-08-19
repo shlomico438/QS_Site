@@ -9813,6 +9813,72 @@ function qsMedicalParagraphsFromPlainText(text) {
         .filter(Boolean);
 }
 
+const QS_MEDICAL_BOX_MARK = '<<<QS_BOX>>>';
+
+function qsMedicalReadTranscriptBoxesFromDom() {
+    const tw = document.getElementById('transcript-window');
+    if (!tw) return [];
+    const boxes = tw.querySelectorAll('textarea.qs-medical-edit-box-body');
+    if (!boxes.length) return [];
+    return Array.from(boxes).map((el) => String(el.value || ''));
+}
+
+function qsMedicalApplyTranscriptBoxes(blocks) {
+    const list = Array.isArray(blocks)
+        ? blocks.map((p) => String(p == null ? '' : p))
+        : [String(blocks || '')];
+    const usable = list.length ? list : [''];
+    const clean = usable.map((p) => String(p).replace(/\s+$/g, '').replace(/^\s+/g, '')).join('\n\n').trim();
+    const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+        ? window.currentFormattedDoc
+        : {};
+    window.currentFormattedDoc = { ...prev, clean_transcript: clean };
+    window._qsDocPreferSegmentsAfterEdit = false;
+    const segs = usable.map((text) => String(text || '').trim()).filter(Boolean);
+    window.currentSegments = segs.map((text, i) => ({
+        start: i,
+        end: i + 1,
+        text,
+        speaker: 'SPEAKER_00',
+    }));
+    window._medicalLiveStreamText = clean;
+    window._medicalUnsavedBoxes = usable;
+    window.medicalActiveTab = 'transcript';
+    if (typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
+        qsRenderMedicalEditableTranscriptBoxes(usable);
+    }
+    try { qsSnapshotMedicalTranscriptBoxesFromDom({ force: true }); } catch (_) {}
+    try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+    return clean;
+}
+
+function qsMedicalPackTypoFixIntoBoxes(cleaned, priorBoxes) {
+    const n = Math.max(1, Array.isArray(priorBoxes) && priorBoxes.length ? priorBoxes.length : 1);
+    let text = String(cleaned || '').replace(/\r\n/g, '\n').trim();
+    text = text.replace(/^```(?:text|plaintext)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    let blocks;
+    if (text.indexOf(QS_MEDICAL_BOX_MARK) >= 0) {
+        blocks = text.split(QS_MEDICAL_BOX_MARK).map((p) => String(p || '').trim());
+    } else {
+        blocks = typeof qsMedicalParagraphsFromPlainText === 'function'
+            ? qsMedicalParagraphsFromPlainText(text)
+            : [text];
+        if (!blocks.length && text) blocks = [text];
+    }
+    // GPT often uses a blank line per sentence — never create more sections than the doctor had.
+    if (n === 1) {
+        return [(blocks.length ? blocks.join('\n') : text).trim()];
+    }
+    if (blocks.length === n) return blocks.map((p) => String(p || '').trim());
+    if (blocks.length < n) {
+        const out = blocks.map((p) => String(p || '').trim());
+        while (out.length < n) out.push('');
+        return out;
+    }
+    return blocks.slice(0, n - 1).map((p) => String(p || '').trim())
+        .concat([blocks.slice(n - 1).join('\n').trim()]);
+}
+
 function qsJoinMedicalTranscriptSegments(segments) {
     const segs = Array.isArray(segments) ? segments : [];
     return segs
@@ -9825,6 +9891,11 @@ function qsJoinMedicalTranscriptSegments(segments) {
 
 function qsMedicalApplyTranscriptPlainText(text) {
     const cleaned = String(text || '').trim();
+    const prior = qsMedicalReadTranscriptBoxesFromDom();
+    const n = prior.length;
+    if (n >= 1 && typeof qsMedicalPackTypoFixIntoBoxes === 'function') {
+        return qsMedicalApplyTranscriptBoxes(qsMedicalPackTypoFixIntoBoxes(cleaned, prior));
+    }
     const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
         ? window.currentFormattedDoc
         : {};
@@ -9859,8 +9930,16 @@ async function qsMedicalFixTypos() {
         throw new Error('Medical mode required');
     }
     try { if (typeof qsPersistMedicalTranscriptBoxesFromDom === 'function') qsPersistMedicalTranscriptBoxesFromDom(); } catch (_) {}
+    const priorBoxes = qsMedicalReadTranscriptBoxesFromDom();
+    const boxSnap = priorBoxes.length
+        ? priorBoxes
+        : (Array.isArray(window._medicalUnsavedBoxes) ? window._medicalUnsavedBoxes.slice() : []);
+    const fromBoxes = boxSnap.length > 1
+        ? boxSnap.join(`\n\n${QS_MEDICAL_BOX_MARK}\n\n`)
+        : String((boxSnap[0] != null ? boxSnap[0] : '') || '').trim();
     const fullText = String(
-        (window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript)
+        fromBoxes
+        || (window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript)
         || (typeof buildTranscriptTextForGptFormat === 'function' ? buildTranscriptTextForGptFormat() : '')
         || window._medicalLiveStreamText
         || ''
@@ -9892,9 +9971,10 @@ async function qsMedicalFixTypos() {
         gpt_sec: fmt.cleanup_generation_time || fmt.gpt_format_sec,
     });
     if (changed) {
-        window._qsMedicalTypoFixUndo = { text: fullText };
+        window._qsMedicalTypoFixUndo = { text: fullText, boxes: boxSnap.slice() };
     }
-    qsMedicalApplyTranscriptPlainText(cleaned);
+    const packed = qsMedicalPackTypoFixIntoBoxes(cleaned, boxSnap.length ? boxSnap : ['']);
+    qsMedicalApplyTranscriptBoxes(packed);
     try {
         if (typeof qsPersistFormattedDocToS3 === 'function') {
             await qsPersistFormattedDocToS3();
@@ -9908,12 +9988,17 @@ window.qsMedicalFixTypos = qsMedicalFixTypos;
 async function qsMedicalUndoTypoFix() {
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     const snapshot = window._qsMedicalTypoFixUndo;
+    const prevBoxes = snapshot && Array.isArray(snapshot.boxes) ? snapshot.boxes : null;
     const prevText = String((snapshot && snapshot.text) || '').trim();
-    if (!prevText) {
+    if (!prevText && !(prevBoxes && prevBoxes.length)) {
         throw new Error(T('medical_typos_fix_failed') || 'Nothing to undo.');
     }
     qsMedicalClearTypoFixUndo();
-    qsMedicalApplyTranscriptPlainText(prevText);
+    if (prevBoxes && prevBoxes.length) {
+        qsMedicalApplyTranscriptBoxes(prevBoxes);
+    } else {
+        qsMedicalApplyTranscriptPlainText(prevText);
+    }
     try {
         if (typeof qsPersistFormattedDocToS3 === 'function') {
             await qsPersistFormattedDocToS3();
