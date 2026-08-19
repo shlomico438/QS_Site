@@ -293,6 +293,20 @@ _GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE = (
     "content, clean_transcript must stay faithful to those exact words—never invent dialogue, symptoms, or exam Q&A.\n\n"
 )
 
+# Medical "התאמה רפואית" button: ungarble phonetic terms; never translate English speech to Hebrew.
+_GPT_MEDICAL_TYPO_FIX_SYSTEM_PROMPT = (
+    "Edit a mixed-language medical ASR transcript (Hebrew and/or English). "
+    "Return plain text only (no markdown/JSON). "
+    "Keep meaning, order, and spoken clinical style. Do not summarize or invent.\n"
+    "NEVER translate. English stays English. Hebrew stays Hebrew. Mixed passages stay mixed.\n"
+    "1) Fix ASR typos in the language they appear in "
+    "(Hebrew letter confusions ט/ת, ש/ס, ע/א, כ/ק; English spelling).\n"
+    "2) Rewrite clear drug names and Latin/English medical terms that were written in Hebrew letters "
+    "into English spelling (e.g. אמוקסיצילין → amoxicillin). Leave native Hebrew clinical phrases in Hebrew.\n"
+    "3) Convert Hebrew number-words to digits; do not change numeric values.\n"
+    "Do not convert English sentences, questions, or answers into Hebrew."
+)
+
 _GPT_MUSIC_CLEAN_TRANSCRIPT_PROMPT = (
     "You are an expert Hebrew linguistic editor and cultural archivist. Your task is to correct garbled "
     "Automatic Speech Recognition (ASR) outputs while strictly preserving the original timestamps.\n\n"
@@ -9828,8 +9842,8 @@ def _format_transcript_cleanup_openai(
 ):
     """One OpenAI call: light punctuation/STT cleanup; plain text only.
 
-    typo_fix=True + is_medical: Hebrew ASR typos + high-confidence English/Latin
-    medical-term ungarbling (button: תקן שגיאות). Still forbids rewrite/summary.
+    typo_fix=True + is_medical: ASR typos + phonetic English/Latin medical-term
+    ungarbling (button: התאמה רפואית). Never translate; still forbids rewrite/summary.
     """
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
@@ -9838,6 +9852,9 @@ def _format_transcript_cleanup_openai(
         timeout_sec = int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '180') or 180)
     if read_retries is None:
         read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
+    if typo_fix and is_medical:
+        # UI locale is Hebrew; spoken English must stay English.
+        target_lang = 'preserve'
     output_lang_label, lang_hint, _want_hebrew = _format_output_lang_label(target_lang)
     preserve_source_languages = str(target_lang or '').strip().lower() in (
         'preserve', 'original', 'mixed'
@@ -9865,15 +9882,14 @@ def _format_transcript_cleanup_openai(
     elif typo_fix:
         if is_medical:
             # Keep this prompt short — latency is dominated by the model call.
-            system_prompt = (
-                "Edit a Hebrew medical ASR transcript. Return plain text only (no markdown/JSON). "
-                "Keep meaning, order, and spoken clinical style. Do not summarize or invent.\n"
-                "1) Fix Hebrew ASR typos.\n"
-                "2) Rewrite clear drug names and Latin/English medical terms that appear in Hebrew letters "
-                "into English spelling; leave native Hebrew clinical phrases in Hebrew.\n"
-                "3) Convert Hebrew number-words to digits; do not change numeric values."
+            system_prompt = _GPT_MEDICAL_TYPO_FIX_SYSTEM_PROMPT
+            user_prompt = (
+                f"{language_rule}"
+                f"Output language: {output_lang_label}.\n\n"
+                f"Language hint: {lang_hint}\n\n"
+                "Transcript:\n\n"
+                f"{transcript_text}"
             )
-            user_prompt = f"Transcript:\n\n{transcript_text}"
             if not gpt_model:
                 # Faster default for this interactive button (override with MEDICAL_TYPO_FIX_MODEL).
                 gpt_model = (

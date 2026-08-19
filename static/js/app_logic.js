@@ -9795,16 +9795,12 @@ async function qsMedicalFixTypos() {
     if (!fullText) {
         throw new Error(T('medical_no_text_to_fix') || 'No transcript to clean.');
     }
-    const targetLang = String(
-        (typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : null)
-        || window.currentLocale
-        || 'he'
-    ).toLowerCase().split('-')[0] || 'he';
+    // Do not send the UI locale (usually Hebrew) — English speech must stay English.
     const jobId = String(localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
     console.log('[medical] typo fix start', { chars: fullText.length, jobId: jobId || null });
     const { ok, fmt } = await runFormatTranscriptCleanupRequest(
         fullText,
-        targetLang,
+        'preserve',
         jobId || undefined,
         { mode: 'typo_fix', typoFix: true }
     );
