@@ -96,6 +96,7 @@
       html.qs-medical-entry #regular-record-btn { display: none !important; }
       html.qs-medical-entry #medical-session-header,
       html.qs-medical-entry #medical-recording-wrap { display: block !important; }
+      html.qs-medical-entry body.medical-onboarding-pending .medical-header-tools { display: none !important; }
     </style>
     {% endif %}
     <title>{% block page_title %}{% if is_medical_head %}QuickScribe Medical | תיעוד רפואי חכם{% else %}תמלול AI שמבין אתכם - בכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה | QuickScribe{% endif %}{% endblock %}</title>
@@ -182,6 +183,7 @@
         <div class="navbar-utility" aria-label="Utility navigation">
             <div class="navbar-utility-inner" dir="ltr">
                 <div class="navbar-utility-start">
+                    <div class="navbar-utility-locale-tools">
                     <div class="lang-switcher-wrap" id="lang-switcher-wrap">
                         <div class="lang-switcher-trigger" id="lang-switcher-trigger" title="Language" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false">
                             <svg class="lang-globe" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
@@ -191,6 +193,38 @@
                             <button type="button" class="lang-option" data-lang="he">עברית</button>
                             <button type="button" class="lang-option" data-lang="en">English</button>
                         </div>
+                    </div>
+                    <div class="medical-header-tools">
+                        <div class="medical-settings-menu" id="medical-settings-menu">
+                            <button type="button" id="medical-settings-btn" class="medical-settings-btn" aria-haspopup="true" aria-expanded="false" aria-controls="medical-settings-panel" data-i18n-aria-label="medical_settings" data-i18n-title="medical_settings" title="Settings" aria-label="Settings">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                                </svg>
+                            </button>
+                            <div class="medical-settings-panel" id="medical-settings-panel" hidden>
+                                <div class="medical-stream-lang-wrap" id="medical-stream-lang-wrap">
+                                    <span class="medical-stream-lang-label" data-i18n="medical_stream_lang_label">שפת תמלול</span>
+                                    <div class="medical-stream-lang-toggle" id="medical-stream-lang-toggle" role="radiogroup" data-i18n-aria-label="medical_stream_lang_aria" aria-label="שפת תמלול חי">
+                                        <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="he" aria-checked="true" data-i18n="medical_stream_lang_he">עברית</button>
+                                        <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="en" aria-checked="false" data-i18n="medical_stream_lang_en">English</button>
+                                        <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="auto" aria-checked="false" data-i18n="medical_stream_lang_auto" data-i18n-title="medical_language_pause_tip" title="במעבר בין שפות — עצרו כשתי שניות.">אוטומטי</button>
+                                    </div>
+                                </div>
+                                <div class="medical-mic-test-entry-wrap" id="medical-mic-test-entry-wrap">
+                                    <button type="button" id="medical-mic-test-entry-btn" class="medical-mic-test-entry-btn" data-i18n-aria-label="medical_settings_test_mic" aria-label="Mic test">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <rect x="9" y="2" width="6" height="11" rx="3"></rect>
+                                            <path d="M5 11a7 7 0 0 0 14 0"></path>
+                                            <line x1="12" y1="18" x2="12" y2="22"></line>
+                                            <line x1="8" y1="22" x2="16" y2="22"></line>
+                                        </svg>
+                                        <span data-i18n="medical_settings_test_mic">Mic test</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     </div>
                     <span id="nav-credit-balance" class="nav-credit-balance" style="display: none;" aria-live="polite">
                         <span class="nav-credit-label" data-i18n="nav_minutes_balance">Minutes balance</span>:

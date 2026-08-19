@@ -15016,6 +15016,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function qsOpenMedicalMicTestModal() {
+        qsSetMedicalSettingsOpen(false);
         const modal = document.getElementById('medical-mic-test-modal');
         if (!modal) return;
         modal.style.display = 'flex';
@@ -15121,6 +15122,53 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function qsIsMedicalSettingsOpen() {
+        const panel = document.getElementById('medical-settings-panel');
+        return !!(panel && !panel.hidden);
+    }
+
+    function qsSetMedicalSettingsOpen(open) {
+        const btn = document.getElementById('medical-settings-btn');
+        const panel = document.getElementById('medical-settings-panel');
+        if (!panel) return;
+        const next = !!open;
+        panel.hidden = !next;
+        if (btn) {
+            btn.setAttribute('aria-expanded', next ? 'true' : 'false');
+            btn.classList.toggle('is-open', next);
+        }
+        if (next) {
+            const langMenu = document.getElementById('lang-switcher-menu');
+            const langTrigger = document.getElementById('lang-switcher-trigger');
+            if (langMenu) langMenu.classList.remove('open');
+            if (langTrigger) langTrigger.setAttribute('aria-expanded', 'false');
+        }
+    }
+
+    function qsWireMedicalSettingsMenu() {
+        const btn = document.getElementById('medical-settings-btn');
+        const menu = document.getElementById('medical-settings-menu');
+        if (!btn || btn.dataset.qsWired === '1') return;
+        btn.dataset.qsWired = '1';
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            qsSetMedicalSettingsOpen(!qsIsMedicalSettingsOpen());
+        });
+        document.addEventListener('pointerdown', (event) => {
+            if (!qsIsMedicalSettingsOpen()) return;
+            const target = event.target;
+            if (menu && target && typeof menu.contains === 'function' && menu.contains(target)) return;
+            qsSetMedicalSettingsOpen(false);
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape' || !qsIsMedicalSettingsOpen()) return;
+            const modalEl = document.getElementById('medical-mic-test-modal');
+            if (modalEl && modalEl.style.display !== 'none' && modalEl.getAttribute('aria-hidden') !== 'true') return;
+            qsSetMedicalSettingsOpen(false);
+        });
+    }
+
     function qsSyncMedicalStreamLangUi() {
         const mode = qsGetMedicalStreamLangMode();
         const wrap = document.getElementById('medical-stream-lang-wrap');
@@ -15171,13 +15219,17 @@ document.addEventListener('DOMContentLoaded', () => {
     window.qsCloseMedicalMicTestModal = qsCloseMedicalMicTestModal;
     qsWireMedicalMicSettingsUi();
     qsWireMedicalStreamLangUi();
+    qsWireMedicalSettingsMenu();
 
     function setMedicalRecordingVisualState(mode) {
         const isRecording = mode === 'recording';
         const isPaused = mode === 'paused';
         const isIdle = mode === 'idle';
         const isActive = isRecording || isPaused;
-        if (isActive && typeof qsStopMedicalMicTest === 'function') qsStopMedicalMicTest();
+        if (isActive) {
+            if (typeof qsStopMedicalMicTest === 'function') qsStopMedicalMicTest();
+            qsSetMedicalSettingsOpen(false);
+        }
         if (medicalRecordShape) {
             medicalRecordShape.classList.toggle('medical-record-shape-pause', isActive);
         }
