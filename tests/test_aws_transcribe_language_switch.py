@@ -1,4 +1,5 @@
 from aws_transcribe_stream import (
+    TranscribeStreamBridge,
     _CollectingTranscriptHandler,
     _is_full_script_rewrite,
     _keep_new_language_suffix,
@@ -69,3 +70,28 @@ def test_handler_does_not_overwrite_frozen_hebrew_final():
         end_time=3.0,
     )
     assert handler.full_transcript == 'בנוסף רציתי לבדוק'
+
+
+class _FakeParkedSession:
+    best_transcript = 'hello parked transcript after pause'
+    language_code = 'he-IL'
+    sample_rate_hz = 16000
+    partial_history = ['hello parked transcript after pause']
+    _closed = True
+    _chunks_fed_to_aws = 12
+
+
+def test_finish_returns_committed_transcript_after_audio_timeout_park():
+    import time
+
+    bridge = TranscribeStreamBridge(lambda payload: None)
+    sess = _FakeParkedSession()
+    bridge.session = sess
+    bridge._last_client_audio_at = time.time() - 20.0
+    bridge._on_partial(sess.best_transcript)
+    bridge._on_session_finished(sess, 'audio_timeout')
+    assert bridge.session is None
+    result = bridge.finish()
+    assert result['error'] is None
+    assert result['transcript'] == 'hello parked transcript after pause'
+    assert result['partials'][-1] == 'hello parked transcript after pause'

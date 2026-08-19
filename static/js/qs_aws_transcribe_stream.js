@@ -192,17 +192,26 @@ export class MedicalAwsTranscribeStream {
             return;
         }
         if (msg.type === 'transcript') {
-            this._finalTranscript = String(msg.transcript || '').trim();
-            if (Array.isArray(msg.partials)) {
+            const incoming = String(msg.transcript || '').trim();
+            if (incoming) this._finalTranscript = incoming;
+            if (Array.isArray(msg.partials) && msg.partials.length) {
                 this._partials = msg.partials.map((p) => String(p || '')).filter(Boolean);
             }
             if (!this._finalTranscript && this._partials.length) {
                 this._finalTranscript = String(this._partials[this._partials.length - 1] || '').trim();
             }
             if (msg.error && !this._finalTranscript) {
-                if (this._stopReject) this._stopReject(new Error(String(msg.error)));
+                if (this._stopReject) {
+                    const reject = this._stopReject;
+                    this._stopReject = null;
+                    this._stopResolve = null;
+                    reject(new Error(String(msg.error)));
+                }
             } else if (this._stopResolve) {
-                this._stopResolve({
+                const resolve = this._stopResolve;
+                this._stopResolve = null;
+                this._stopReject = null;
+                resolve({
                     transcript: this._finalTranscript,
                     partials: this._partials.slice(),
                     warning: msg.error ? String(msg.error) : null,
@@ -383,12 +392,28 @@ export class MedicalAwsTranscribeStream {
                 void this._audioCtx.resume().catch(() => {});
             }
         }, 2000);
+        if (!this._visibilityBound) {
+            this._visibilityBound = true;
+            this._onVisibility = () => {
+                if (document.visibilityState !== 'visible') return;
+                if (this._feedPaused) return;
+                if (this._audioCtx && this._audioCtx.state === 'suspended') {
+                    void this._audioCtx.resume().catch(() => {});
+                }
+            };
+            document.addEventListener('visibilitychange', this._onVisibility);
+        }
     }
 
     _teardownAudioGraph() {
         if (this._audioWatchdog) {
             clearInterval(this._audioWatchdog);
             this._audioWatchdog = null;
+        }
+        if (this._visibilityBound && this._onVisibility) {
+            try { document.removeEventListener('visibilitychange', this._onVisibility); } catch (_) {}
+            this._visibilityBound = false;
+            this._onVisibility = null;
         }
         try {
             if (this._processor) this._processor.disconnect();
@@ -552,6 +577,15 @@ export class MedicalAwsTranscribeStream {
     pause() {
         this._feedPaused = true;
         console.info('[transcribe-stream] feed paused');
+    }
+
+    isLive() {
+        if (this._feedPaused) return false;
+        if (!this._ready || !this._transportArmed) return false;
+        if (this._audioCtx && this._audioCtx.state === 'closed') return false;
+        if (this._socket) return !!this._socket.connected;
+        if (this._ws) return this._ws.readyState === 1;
+        return false;
     }
 
     resume() {

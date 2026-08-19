@@ -1433,33 +1433,39 @@ class TranscribeStreamBridge:
 
     def finish(self, stop_timeout_sec: float = 8.0) -> dict:
         """Return the live transcript immediately; drain AWS session in the background."""
-        result_payload = {
-            'type': 'transcript',
-            'transcript': '',
-            'partials': [],
-            'language_code': self.language_code,
-            'sample_rate_hz': self.sample_rate_hz,
-            'error': None,
-        }
         self.close()
         sess = self.session
-        if not sess:
-            return result_payload
-
-        transcript = self._combined_transcript(sess.best_transcript or '')
-        if not transcript and self._combined_partials:
-            transcript = str(self._combined_partials[-1] or '').strip()
-        partials = list(self._combined_partials) if self._combined_partials else list(sess.partial_history or [])
-        result_payload['transcript'] = transcript
-        result_payload['partials'] = partials
-        result_payload['language_code'] = sess.language_code
-        result_payload['sample_rate_hz'] = sess.sample_rate_hz
+        if sess:
+            self._commit_session_transcript(sess)
+            transcript = self._combined_transcript(sess.best_transcript or '')
+            language_code = sess.language_code
+            sample_rate_hz = sess.sample_rate_hz
+            partials = list(self._combined_partials) if self._combined_partials else list(sess.partial_history or [])
+        else:
+            # Parked after AWS audio timeout (user pause): committed text stays on the bridge.
+            transcript = self._combined_transcript('')
+            language_code = self.language_code
+            sample_rate_hz = self.sample_rate_hz
+            partials = list(self._combined_partials)
+        if not transcript and partials:
+            transcript = str(partials[-1] or '').strip()
+        result_payload = {
+            'type': 'transcript',
+            'transcript': transcript,
+            'partials': partials,
+            'language_code': language_code,
+            'sample_rate_hz': sample_rate_hz,
+            'error': None,
+        }
         logger.info(
-            'transcribe finish fast path transcript_len=%d partials=%d fed=%d (aws drain async)',
+            'transcribe finish fast path transcript_len=%d partials=%d fed=%d parked=%s (aws drain async)',
             len(transcript or ''),
             len(partials),
-            getattr(sess, '_chunks_fed_to_aws', 0),
+            getattr(sess, '_chunks_fed_to_aws', 0) if sess else 0,
+            sess is None,
         )
+        if not sess:
+            return result_payload
 
         def _drain_aws() -> None:
             try:

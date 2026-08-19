@@ -16487,8 +16487,90 @@ document.addEventListener('DOMContentLoaded', () => {
     function pauseMedicalRecordingForInterruption(reason) {
         const rec = window._medicalRecorder;
         if (!rec || rec.state !== 'recording') return;
+        if (window._medicalUserPaused) return;
         markMedicalRecorderInterrupted(reason);
         try { rec.pause(); } catch (_) {}
+    }
+
+    function qsPauseReasonIsTabHide(reason) {
+        const r = String(reason || '');
+        return r === 'visibility_hidden' || r === 'window_blur' || r === 'tab_hide';
+    }
+
+    function qsMedicalLiveStreamIsLive() {
+        const live = window._medicalAwsTranscribeStream;
+        if (!live) return false;
+        try {
+            if (typeof live.isLive === 'function') return !!live.isLive();
+        } catch (_) {}
+        return false;
+    }
+
+    function qsResumeMedicalAudioGraphs() {
+        try {
+            const live = window._medicalAwsTranscribeStream;
+            if (live && typeof live.resume === 'function') live.resume();
+        } catch (_) {}
+        try {
+            const wf = window._medicalWave;
+            if (wf && wf.audioCtx && wf.audioCtx.state === 'suspended') {
+                void wf.audioCtx.resume().catch(() => {});
+            }
+        } catch (_) {}
+    }
+
+    function qsResumeMedicalRecordingAfterTabForeground() {
+        if (window._medicalUserPaused) return;
+        const rec = window._medicalRecorder;
+        if (!rec || rec.state === 'inactive') return;
+        // Phone-call / dead-track: leave paused until the OS restart path re-acquires the mic.
+        if (window._medicalSystemRecordingInterrupted && !qsPauseReasonIsTabHide(window._medicalPauseReason)) {
+            qsResumeMedicalAudioGraphs();
+            return;
+        }
+        qsResumeMedicalAudioGraphs();
+        if (rec.state === 'paused') {
+            try { rec.resume(); } catch (_) {}
+            window._medicalRecorderPaused = false;
+            window._medicalSystemRecordingInterrupted = false;
+            window._medicalPauseReason = '';
+            window._medicalRecordingStartedAt = Date.now();
+            setMedicalRecordingVisualState('recording');
+            renderMedicalRecordingTimer();
+            const media = rec.stream;
+            if (media && !qsMedicalStreamOnlyMode()) startMedicalWaveform(media);
+        } else if (rec.state === 'recording') {
+            window._medicalRecorderPaused = false;
+            if (window._medicalSystemRecordingInterrupted) {
+                window._medicalSystemRecordingInterrupted = false;
+                window._medicalPauseReason = '';
+                stopMedicalResumeRetryLoop();
+            }
+            setMedicalRecordingVisualState('recording');
+        }
+        const mediaStream = rec.stream;
+        if (!mediaStream || !isMedicalModeEnabled() || !qsMedicalUseAwsTranscribeStream()) return;
+        const hiddenAt = Number(window._medicalTabHiddenAt || 0);
+        const hiddenMs = hiddenAt ? Math.max(0, Date.now() - hiddenAt) : 0;
+        window._medicalTabHiddenAt = 0;
+        if (qsMedicalLiveStreamIsLive() && hiddenMs < 8000) {
+            qsResumeMedicalAudioGraphs();
+            return;
+        }
+        if (window._medicalForegroundStreamRestart) return;
+        window._medicalForegroundStreamRestart = true;
+        try { qsSyncMedicalLiveStreamTextFromDom(); } catch (_) {}
+        const transcriptPrefix = String(window._medicalLiveStreamText || '').trim();
+        void startMedicalAwsTranscribeStream(mediaStream, { transcriptPrefix }).catch((err) => {
+            console.warn('[medical] AWS Transcribe restart after tab return failed', err);
+            try {
+                if (window._medicalAwsTranscribeStream && typeof window._medicalAwsTranscribeStream.resume === 'function') {
+                    window._medicalAwsTranscribeStream.resume();
+                }
+            } catch (_) {}
+        }).finally(() => {
+            window._medicalForegroundStreamRestart = false;
+        });
     }
 
     async function restartMedicalRecorderAfterInterruption() {
@@ -16535,13 +16617,20 @@ document.addEventListener('DOMContentLoaded', () => {
         // Resume after real OS interrupts (phone call, mic revoked) — not tab switches.
         const onReturnToApp = () => {
             if (document.visibilityState !== 'visible') return;
+            if (window._medicalUserPaused) return;
+            const rec = window._medicalRecorder;
+            if (rec && rec.state !== 'inactive') {
+                qsResumeMedicalRecordingAfterTabForeground();
+            }
             if (!window._medicalSystemRecordingInterrupted) return;
             const reason = String(window._medicalPauseReason || '');
-            if (reason === 'visibility_hidden' || reason === 'window_blur') return;
+            if (qsPauseReasonIsTabHide(reason)) return;
+            // Real OS interrupt (phone call / dead track): re-acquire the mic.
             setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 50);
         };
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
+                window._medicalTabHiddenAt = Date.now();
                 try { qsSyncMedicalLiveStreamTextFromDom(); } catch (_) {}
                 try { qsSnapshotMedicalTranscriptBoxesFromDom({ force: true }); } catch (_) {}
                 return;
@@ -16560,8 +16649,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('focus', onReturnToApp);
         window.addEventListener('pageshow', () => {
             try { qsRestoreMedicalTranscriptBoxesIfNeeded(); } catch (_) {}
-            if (!window._medicalSystemRecordingInterrupted) return;
-            setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
+            onReturnToApp();
         });
         try {
             document.addEventListener('freeze', () => {
@@ -16570,6 +16658,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             document.addEventListener('resume', () => {
                 try { qsRestoreMedicalTranscriptBoxesIfNeeded(); } catch (_) {}
+                onReturnToApp();
             });
         } catch (_) {}
     }
@@ -16703,7 +16792,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalPauseUserIntent = false;
                 return;
             }
-            markMedicalRecorderInterrupted('recorder_pause_event');
+            if (window._medicalUserPaused) return;
+            const pausedRec = rec;
+            setTimeout(() => {
+                if (window._medicalUserPaused) return;
+                if (pausedRec !== window._medicalRecorder) return;
+                if (pausedRec.state !== 'paused') return;
+                // Chrome often auto-pauses MediaRecorder on tab hide. Keep the
+                // session recording and resume when the tab is visible again.
+                if (document.visibilityState === 'hidden') {
+                    window._medicalPauseReason = 'tab_hide';
+                    try { pausedRec.resume(); } catch (_) {}
+                    return;
+                }
+                markMedicalRecorderInterrupted('recorder_pause_event');
+            }, 80);
         });
         rec.addEventListener('resume', () => {
             if (!window._medicalSystemRecordingInterrupted) return;
@@ -16712,12 +16815,26 @@ document.addEventListener('DOMContentLoaded', () => {
         (stream.getAudioTracks ? stream.getAudioTracks() : []).forEach((track) => {
             try {
                 track.addEventListener('mute', () => {
-                    // Browsers may briefly mute on tab blur; keep recording unless track is dead.
-                    if (document.visibilityState === 'hidden') return;
-                    pauseMedicalRecordingForInterruption('track_mute');
+                    setTimeout(() => {
+                        if (window._medicalUserPaused) return;
+                        if (document.visibilityState === 'hidden') return;
+                        const liveRec = window._medicalRecorder;
+                        if (!liveRec || liveRec.state !== 'recording') return;
+                        pauseMedicalRecordingForInterruption('track_mute');
+                    }, 80);
                 });
                 track.addEventListener('unmute', () => {
-                    setTimeout(() => { try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {} }, 80);
+                    setTimeout(() => {
+                        if (window._medicalUserPaused) return;
+                        if (document.visibilityState !== 'visible') return;
+                        qsResumeMedicalRecordingAfterTabForeground();
+                        if (
+                            window._medicalSystemRecordingInterrupted
+                            && !qsPauseReasonIsTabHide(window._medicalPauseReason)
+                        ) {
+                            try { tryResumeMedicalRecordingAfterOsInterrupt(); } catch (_) {}
+                        }
+                    }, 80);
                 });
                 track.addEventListener('ended', () => {
                     markMedicalRecorderInterrupted('track_ended');
@@ -16761,7 +16878,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (hadLiveTranscribe) {
                     try {
                         streamResult = await window._medicalAwsTranscribeStream.stop();
-                        const tx = String((streamResult && streamResult.transcript) || '').trim()
+                        const tx = (typeof resolveMedicalStreamTranscript === 'function'
+                            ? resolveMedicalStreamTranscript(streamResult)
+                            : '')
+                            || String((streamResult && streamResult.transcript) || '').trim()
                             || (Array.isArray(streamResult && streamResult.partials)
                                 ? streamResult.partials.map((p) => String(p || '').trim()).filter(Boolean).join(' ')
                                 : '');
