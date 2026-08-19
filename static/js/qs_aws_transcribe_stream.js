@@ -83,7 +83,7 @@ export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
         this.languageCode = options.languageCode || 'he-IL';
         this.sampleRateHz = Number(options.sampleRateHz) || 16000;
-        this.identifyMultipleLanguages = options.identifyMultipleLanguages !== false;
+        this.identifyMultipleLanguages = options.identifyMultipleLanguages === true;
         const opts = Array.isArray(options.languageOptions) ? options.languageOptions : null;
         this.languageOptions = (opts && opts.length >= 2)
             ? opts.map((x) => String(x || '').trim()).filter(Boolean)

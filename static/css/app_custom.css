@@ -3217,33 +3217,81 @@ body.has-transcript-actions:not(.qs-app-busy) #qs-pipeline-phase-wrap {
   background: #0f766e;
 }
 
+.medical-header-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 10px 0 0;
+}
 .medical-mic-test-entry-wrap {
   display: flex;
   justify-content: center;
-  margin: 0 0 10px;
+  margin: 0;
+}
+.medical-stream-lang-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.medical-stream-lang-wrap[hidden] {
+  display: none !important;
+}
+.medical-stream-lang-toggle {
+  display: inline-flex;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  background: #f0fdfa;
+  overflow: hidden;
+}
+.medical-stream-lang-btn {
+  margin: 0;
+  padding: 5px 10px;
+  border: 0;
+  background: transparent;
+  color: #0f766e;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.medical-stream-lang-btn + .medical-stream-lang-btn {
+  border-inline-start: 1px solid #99f6e4;
+}
+.medical-stream-lang-btn[aria-checked="true"] {
+  background: #0f766e;
+  color: #fff;
+}
+.medical-stream-lang-btn:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: -2px;
+  z-index: 1;
+}
+body.medical-mode:not(.medical-onboarding-pending) .main-app-container.medical-has-session-result .medical-header-tools,
+body.qs-app-busy .medical-header-tools,
+.main-app-container.medical-mode:has(.medical-record-outer.is-recording) .medical-header-tools,
+.main-app-container.medical-mode:has(.medical-record-outer.is-paused) .medical-header-tools {
+  display: none;
 }
 .medical-mic-test-entry-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 6px;
+  padding: 5px 10px;
   border: 1px solid #99f6e4;
   border-radius: 999px;
   background: #f0fdfa;
   color: #0f766e;
   font: inherit;
-  font-size: 0.88rem;
+  font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
 }
 .medical-mic-test-entry-btn:hover {
   background: #ccfbf1;
-}
-body.medical-mode:not(.medical-onboarding-pending) .main-app-container.medical-has-session-result .medical-mic-test-entry-wrap,
-body.qs-app-busy .medical-mic-test-entry-wrap,
-.main-app-container.medical-mode:has(.medical-record-outer.is-recording) .medical-mic-test-entry-wrap,
-.main-app-container.medical-mode:has(.medical-record-outer.is-paused) .medical-mic-test-entry-wrap {
-  display: none;
 }
 .medical-mic-test-card {
   max-width: 420px;
@@ -3506,6 +3554,9 @@ body.qs-app-busy .medical-mic-test-entry-wrap,
   background: #0f766e;
   color: #ffffff;
   font-weight: 700;
+}
+#medical-result-tabs .format-ab-option.is-disabled {
+  opacity: 0.55;
 }
 
 .medical-transcript-top-actions {

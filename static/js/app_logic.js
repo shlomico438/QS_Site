@@ -187,6 +187,59 @@ const QS_MEDICAL_REASSERT_AFTER_LOGOUT = 'qs_reassert_medical_after_logout';
 /** Cached: last /api/medical/account said allowed — skip pricing flash for registered doctors. */
 const QS_MEDICAL_ACCOUNT_ALLOWED_KEY = 'qs_medical_account_allowed';
 const QS_IOS_SAFARI_HINT_TS_KEY = 'qs_ios_safari_hint_ts';
+/** Live AWS Transcribe language: he | en | auto. Default Hebrew-only (Auto flickers). */
+const QS_MEDICAL_STREAM_LANG_KEY = 'qs_medical_transcribe_lang';
+
+function qsNormalizeMedicalStreamLangMode(raw) {
+    const v = String(raw || '').trim().toLowerCase();
+    if (v === 'en' || v === 'en-us' || v === 'english') return 'en';
+    if (v === 'auto' || v === 'mixed' || v === 'both') return 'auto';
+    return 'he';
+}
+
+function qsGetMedicalStreamLangMode() {
+    try {
+        return qsNormalizeMedicalStreamLangMode(localStorage.getItem(QS_MEDICAL_STREAM_LANG_KEY));
+    } catch (_) {
+        return 'he';
+    }
+}
+
+function qsSetMedicalStreamLangMode(mode) {
+    const next = qsNormalizeMedicalStreamLangMode(mode);
+    try { localStorage.setItem(QS_MEDICAL_STREAM_LANG_KEY, next); } catch (_) {}
+    return next;
+}
+
+function qsMedicalStreamOptionsForMode(mode, cfg) {
+    const resolved = qsNormalizeMedicalStreamLangMode(mode);
+    const options = Array.isArray(cfg && cfg.transcribe_stream_language_options)
+        ? cfg.transcribe_stream_language_options.filter(Boolean)
+        : ['he-IL', 'en-US'];
+    const langOptions = options.length >= 2 ? options : ['he-IL', 'en-US'];
+    if (resolved === 'en') {
+        return {
+            languageCode: 'en-US',
+            identifyMultipleLanguages: false,
+            languageOptions: langOptions,
+            preferredLanguage: 'en-US',
+        };
+    }
+    if (resolved === 'auto') {
+        return {
+            languageCode: String((cfg && cfg.transcribe_stream_language) || 'he-IL'),
+            identifyMultipleLanguages: true,
+            languageOptions: langOptions,
+            preferredLanguage: String((cfg && cfg.transcribe_stream_preferred_language) || 'he-IL'),
+        };
+    }
+    return {
+        languageCode: 'he-IL',
+        identifyMultipleLanguages: false,
+        languageOptions: langOptions,
+        preferredLanguage: 'he-IL',
+    };
+}
 
 function _qsHasSupabaseAuthStorageHint() {
     try {
@@ -13972,6 +14025,30 @@ document.addEventListener('DOMContentLoaded', () => {
     window._qsRegularRecordVisible = false;
     if (medicalRecordTimer) medicalRecordTimer.style.display = 'none';
 
+    function qsMedicalRecordingUnsavedForSummary() {
+        const rec = window._medicalRecorder;
+        const recState = rec ? String(rec.state || '') : '';
+        if (rec && (recState === 'recording' || recState === 'paused')) return true;
+        if (window._medicalRecorderPaused === true) return true;
+        const outer = document.querySelector('.medical-record-outer');
+        if (outer && (outer.classList.contains('is-recording') || outer.classList.contains('is-paused'))) {
+            return true;
+        }
+        const confirmStack = document.getElementById('medical-confirm-stack');
+        if (confirmStack) {
+            const shown = window.getComputedStyle(confirmStack).display !== 'none';
+            if (shown) return true;
+        }
+        const hasLive = !!String(window._medicalLiveStreamText || '').trim();
+        const saved = window._medicalHasResult === true
+            || !!window._qsMedicalStreamAwaitingSummary
+            || !!(window.currentFormattedDoc && (
+                String(window.currentFormattedDoc.overview || '').trim()
+                || String(window.currentFormattedDoc.medical_chief_complaint || '').trim()
+            ));
+        return hasLive && !saved;
+    }
+
     function updateMedicalTabUi() {
         if (!medicalTabsWrap) return;
         const hasSegments = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
@@ -14020,7 +14097,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const isSummary = String(window.medicalActiveTab || 'transcript') === 'summary';
         if (medicalTabTranscript) medicalTabTranscript.classList.toggle('is-active', !isSummary);
-        if (medicalTabSummary) medicalTabSummary.classList.toggle('is-active', isSummary);
+        if (medicalTabSummary) {
+            medicalTabSummary.classList.toggle('is-active', isSummary);
+            const blockSummary = qsMedicalRecordingUnsavedForSummary();
+            medicalTabSummary.setAttribute('aria-disabled', blockSummary ? 'true' : 'false');
+            medicalTabSummary.classList.toggle('is-disabled', blockSummary);
+        }
         if (medicalTypoFixBtn) {
             const T = typeof window.t === 'function' ? window.t : (k) => k;
             // Hide only while actively recording (live ASR). Show when paused (שמור/מחק) or idle.
@@ -14359,6 +14441,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? 'none'
                 : ((on || showRegularRecWrap) ? '' : 'none');
         }
+        try { qsSyncMedicalStreamLangUi(); } catch (_) {}
         const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
         if (medicalUploadNewSessionBtn) {
             const rec = window._medicalRecorder;
@@ -15038,10 +15121,56 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function qsSyncMedicalStreamLangUi() {
+        const mode = qsGetMedicalStreamLangMode();
+        const wrap = document.getElementById('medical-stream-lang-wrap');
+        const toggle = document.getElementById('medical-stream-lang-toggle');
+        const hint = document.getElementById('medical-stream-lang-hint');
+        if (toggle) {
+            toggle.querySelectorAll('[data-medical-stream-lang]').forEach((btn) => {
+                const selected = String(btn.getAttribute('data-medical-stream-lang') || '') === mode;
+                btn.setAttribute('aria-checked', selected ? 'true' : 'false');
+            });
+        }
+        if (hint) hint.hidden = mode !== 'auto';
+        if (wrap) wrap.hidden = !isMedicalModeEnabled();
+    }
+
+    function qsWireMedicalStreamLangUi() {
+        const toggle = document.getElementById('medical-stream-lang-toggle');
+        if (!toggle || toggle.dataset.qsWired === '1') {
+            qsSyncMedicalStreamLangUi();
+            return;
+        }
+        toggle.dataset.qsWired = '1';
+        toggle.addEventListener('click', (event) => {
+            const btn = event.target && event.target.closest
+                ? event.target.closest('[data-medical-stream-lang]')
+                : null;
+            if (!btn || !toggle.contains(btn)) return;
+            event.preventDefault();
+            qsSetMedicalStreamLangMode(btn.getAttribute('data-medical-stream-lang'));
+            qsSyncMedicalStreamLangUi();
+            try {
+                const tw = document.getElementById('transcript-window');
+                if (
+                    tw
+                    && typeof window.renderTranscriptFromCues === 'function'
+                    && !String(window._medicalLiveStreamText || '').trim()
+                    && !(Array.isArray(window.currentSegments) && window.currentSegments.length)
+                ) {
+                    window.renderTranscriptFromCues([]);
+                }
+            } catch (_) {}
+        });
+        qsSyncMedicalStreamLangUi();
+    }
+
     window.qsGetPreferredMedicalMicDeviceId = qsGetPreferredMedicalMicDeviceId;
     window.qsStopMedicalMicTest = qsStopMedicalMicTest;
     window.qsCloseMedicalMicTestModal = qsCloseMedicalMicTestModal;
     qsWireMedicalMicSettingsUi();
+    qsWireMedicalStreamLangUi();
 
     function setMedicalRecordingVisualState(mode) {
         const isRecording = mode === 'recording';
@@ -15577,16 +15706,19 @@ document.addEventListener('DOMContentLoaded', () => {
             void qsFetchMedicalTranscriptionConfig();
         }
         if (!cfg || !cfg.use_aws_transcribe_stream) return null;
-        const languageCode = String(cfg.transcribe_stream_language || 'he-IL');
+        const langOpts = qsMedicalStreamOptionsForMode(qsGetMedicalStreamLangMode(), cfg);
+        console.info('[medical] transcribe language', {
+            mode: qsGetMedicalStreamLangMode(),
+            languageCode: langOpts.languageCode,
+            identifyMultipleLanguages: langOpts.identifyMultipleLanguages,
+            preferredLanguage: langOpts.preferredLanguage,
+        });
         const transport = String(cfg.transcribe_stream_transport || 'socketio').toLowerCase();
-        const languageOptions = Array.isArray(cfg.transcribe_stream_language_options)
-            ? cfg.transcribe_stream_language_options
-            : ['he-IL', 'en-US'];
         const stream = new MedicalAwsTranscribeStream({
-            languageCode,
-            identifyMultipleLanguages: cfg.transcribe_stream_identify_multiple_languages !== false,
-            languageOptions,
-            preferredLanguage: String(cfg.transcribe_stream_preferred_language || languageCode || 'he-IL'),
+            languageCode: langOpts.languageCode,
+            identifyMultipleLanguages: langOpts.identifyMultipleLanguages,
+            languageOptions: langOpts.languageOptions,
+            preferredLanguage: langOpts.preferredLanguage,
             sampleRateHz: Number(cfg.transcribe_stream_sample_rate_hz) || 16000,
             transport,
             accessToken: '',
@@ -16674,7 +16806,22 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     if (medicalTabSummary) {
-        medicalTabSummary.addEventListener('click', async () => {
+        medicalTabSummary.addEventListener('click', async (e) => {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            if (qsMedicalRecordingUnsavedForSummary()) {
+                const T = typeof window.t === 'function' ? window.t : (k) => k;
+                if (typeof showStatus === 'function') {
+                    showStatus(
+                        T('medical_summary_save_first') || 'Save the recording first to generate a medical summary.',
+                        false,
+                        { duration: 4500 },
+                    );
+                }
+                return;
+            }
             window.medicalActiveTab = 'summary';
             updateMedicalTabUi();
             const jobId = localStorage.getItem('lastJobId') || '';
@@ -21251,14 +21398,16 @@ function renderTranscriptFromCues(cues) {
             const medicalEmptyHint = T('medical_start_recording_hint') || 'Start recording with the button below. The transcript will appear as you speak.';
             const medicalEnterTip = T('medical_enter_newline_tip')
                 || 'Tip — press Enter for a new line, Shift+Enter to open a new box.';
-            const medicalLangTip = T('medical_language_pause_tip')
-                || 'When switching languages, pause about 2 seconds.';
+            const showLangTip = qsGetMedicalStreamLangMode() === 'auto';
+            const medicalLangTip = showLangTip
+                ? (T('medical_language_pause_tip') || 'When switching languages, pause about 2 seconds.')
+                : '';
             container.innerHTML = `
                 <div style="color:#64748b; text-align:center; margin-top:32px; line-height:1.75; font-size:0.95rem; direction:${textDirection};">
                     <div style="font-weight:600; color:#0f766e;">${medicalEmptyTitle}</div>
                     <div style="margin-top:12px;">${medicalEmptyHint}</div>
                     <div class="qs-medical-enter-tip" style="margin-top:18px; font-size:0.88rem; color:#475569;">
-                        ${medicalEnterTip}<br>${medicalLangTip}
+                        ${medicalEnterTip}${medicalLangTip ? `<br>${medicalLangTip}` : ''}
                     </div>
                 </div>
             `;

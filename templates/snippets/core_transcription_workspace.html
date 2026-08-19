@@ -364,16 +364,25 @@
                 <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
             </div>
             <div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
-                <div class="medical-mic-test-entry-wrap" id="medical-mic-test-entry-wrap">
-                    <button type="button" id="medical-mic-test-entry-btn" class="medical-mic-test-entry-btn" data-i18n-aria-label="medical_settings_test_mic" aria-label="Mic test">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <rect x="9" y="2" width="6" height="11" rx="3"></rect>
-                            <path d="M5 11a7 7 0 0 0 14 0"></path>
-                            <line x1="12" y1="18" x2="12" y2="22"></line>
-                            <line x1="8" y1="22" x2="16" y2="22"></line>
-                        </svg>
-                        <span data-i18n="medical_settings_test_mic">Mic test</span>
-                    </button>
+                <div class="medical-header-tools">
+                    <div class="medical-stream-lang-wrap" id="medical-stream-lang-wrap">
+                        <div class="medical-stream-lang-toggle" id="medical-stream-lang-toggle" role="radiogroup" data-i18n-aria-label="medical_stream_lang_aria" aria-label="שפת תמלול חי">
+                            <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="he" aria-checked="true" data-i18n="medical_stream_lang_he">עברית</button>
+                            <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="en" aria-checked="false" data-i18n="medical_stream_lang_en">English</button>
+                            <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="auto" aria-checked="false" data-i18n="medical_stream_lang_auto" data-i18n-title="medical_language_pause_tip" title="במעבר בין שפות — עצרו כשתי שניות.">אוטומטי</button>
+                        </div>
+                    </div>
+                    <div class="medical-mic-test-entry-wrap" id="medical-mic-test-entry-wrap">
+                        <button type="button" id="medical-mic-test-entry-btn" class="medical-mic-test-entry-btn" data-i18n-aria-label="medical_settings_test_mic" aria-label="Mic test">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <rect x="9" y="2" width="6" height="11" rx="3"></rect>
+                                <path d="M5 11a7 7 0 0 0 14 0"></path>
+                                <line x1="12" y1="18" x2="12" y2="22"></line>
+                                <line x1="8" y1="22" x2="16" y2="22"></line>
+                            </svg>
+                            <span data-i18n="medical_settings_test_mic">Mic test</span>
+                        </button>
+                    </div>
                 </div>
                 <div class="medical-record-controls" dir="ltr">
                     <div id="medical-cancel-stack" class="medical-side-action-stack" style="display:none;">
