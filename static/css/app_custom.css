@@ -3372,7 +3372,7 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
 .medical-mic-device-select {
   width: 100%;
   box-sizing: border-box;
-  margin: 0 0 14px;
+  margin: 0 0 6px;
   padding: 10px 12px;
   border: 1px solid #cbd5e1;
   border-radius: 10px;
@@ -3380,6 +3380,15 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
   font: inherit;
   font-size: 0.92rem;
   color: #0f172a;
+}
+.medical-mic-default-hint {
+  margin: 0 0 14px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: #0f766e;
+}
+.medical-mic-default-hint[hidden] {
+  display: none !important;
 }
 .medical-mic-test-row {
   display: flex;

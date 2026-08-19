@@ -189,6 +189,9 @@ const QS_MEDICAL_ACCOUNT_ALLOWED_KEY = 'qs_medical_account_allowed';
 const QS_IOS_SAFARI_HINT_TS_KEY = 'qs_ios_safari_hint_ts';
 /** Live AWS Transcribe language: he | en | auto. Default Hebrew-only (Auto flickers). */
 const QS_MEDICAL_STREAM_LANG_KEY = 'qs_medical_transcribe_lang';
+/** Workstation mic default (device id + label). Not PHI. */
+const QS_MEDICAL_MIC_DEVICE_KEY = 'qs_medical_mic_device_id';
+const QS_MEDICAL_MIC_PREF_KEY = 'qs_medical_mic_pref';
 
 function qsNormalizeMedicalStreamLangMode(raw) {
     const v = String(raw || '').trim().toLowerCase();
@@ -600,6 +603,8 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     if (k === 'qs_reg_prompt_dismissed') return true;
     // Prompt-training UI flag only (no transcript/PHI); must persist in medical mode or enable from summary CTA is a no-op.
     if (k === 'qs_medical_training_mode') return true;
+    if (k === QS_MEDICAL_STREAM_LANG_KEY) return true;
+    if (k === QS_MEDICAL_MIC_DEVICE_KEY || k === QS_MEDICAL_MIC_PREF_KEY) return true;
     // Session GPU warmup markers (no PHI) — must persist or every auth tick re-POSTs /api/medical_session_warmup.
     if (k === QS_MEDICAL_SESSION_WARMUP_SUBMITTED_KEY || k === QS_MEDICAL_ENDPOINT_WARMUP_SUBMITTED_KEY) return true;
     // Current job pointers only (not cached transcript text): required so jobs row + result_s3_key updates work; Personal list reads jobs table.
@@ -14689,7 +14694,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    const QS_MEDICAL_MIC_DEVICE_KEY = 'qs_medical_mic_device_id';
     let _medicalMicTestStream = null;
     let _medicalMicTestCtx = null;
     let _medicalMicTestRaf = 0;
@@ -14709,33 +14713,150 @@ document.addEventListener('DOMContentLoaded', () => {
         return fallback || key;
     }
 
-    function qsGetPreferredMedicalMicDeviceId() {
+    function qsReadMedicalMicPref() {
+        let deviceId = '';
+        let label = '';
+        let groupId = '';
         try {
-            return String(localStorage.getItem(QS_MEDICAL_MIC_DEVICE_KEY) || '').trim();
-        } catch (_) {
-            return '';
+            const raw = String(localStorage.getItem(QS_MEDICAL_MIC_PREF_KEY) || '').trim();
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object') {
+                    deviceId = String(parsed.deviceId || '').trim();
+                    label = String(parsed.label || '').trim();
+                    groupId = String(parsed.groupId || '').trim();
+                }
+            }
+        } catch (_) {}
+        if (!deviceId) {
+            try { deviceId = String(localStorage.getItem(QS_MEDICAL_MIC_DEVICE_KEY) || '').trim(); } catch (_) {}
         }
+        return { deviceId, label, groupId };
+    }
+
+    function qsGetPreferredMedicalMicDeviceId() {
+        return String(qsReadMedicalMicPref().deviceId || '').trim();
+    }
+
+    function qsSetPreferredMedicalMicPref(pref) {
+        const deviceId = String((pref && pref.deviceId) || '').trim();
+        const label = String((pref && pref.label) || '').trim();
+        const groupId = String((pref && pref.groupId) || '').trim();
+        try {
+            if (!deviceId) {
+                localStorage.removeItem(QS_MEDICAL_MIC_DEVICE_KEY);
+                localStorage.removeItem(QS_MEDICAL_MIC_PREF_KEY);
+                return;
+            }
+            localStorage.setItem(QS_MEDICAL_MIC_DEVICE_KEY, deviceId);
+            localStorage.setItem(QS_MEDICAL_MIC_PREF_KEY, JSON.stringify({ deviceId, label, groupId }));
+        } catch (_) {}
+        qsSyncMedicalMicDefaultHint();
     }
 
     function qsSetPreferredMedicalMicDeviceId(deviceId) {
         const id = String(deviceId || '').trim();
-        try {
-            if (id) localStorage.setItem(QS_MEDICAL_MIC_DEVICE_KEY, id);
-            else localStorage.removeItem(QS_MEDICAL_MIC_DEVICE_KEY);
-        } catch (_) {}
+        if (!id) {
+            qsSetPreferredMedicalMicPref({});
+            return;
+        }
+        const prev = qsReadMedicalMicPref();
+        qsSetPreferredMedicalMicPref({
+            deviceId: id,
+            label: prev.deviceId === id ? prev.label : '',
+            groupId: prev.deviceId === id ? prev.groupId : '',
+        });
     }
 
-    function qsMedicalMicAudioConstraints(deviceId) {
-        const audio = {
+    function qsMatchPreferredMedicalMic(mics) {
+        const list = Array.isArray(mics) ? mics : [];
+        const pref = qsReadMedicalMicPref();
+        if (pref.deviceId) {
+            const byId = list.find((d) => String(d.deviceId || '') === pref.deviceId);
+            if (byId) return byId;
+        }
+        if (pref.groupId) {
+            const byGroup = list.find((d) => {
+                const id = String(d.deviceId || '');
+                return String(d.groupId || '') === pref.groupId
+                    && id
+                    && id !== 'default'
+                    && id !== 'communications';
+            });
+            if (byGroup) return byGroup;
+        }
+        const wantLabel = String(pref.label || '').trim().toLowerCase();
+        if (wantLabel) {
+            const byLabel = list.find((d) => String(d.label || '').trim().toLowerCase() === wantLabel);
+            if (byLabel) return byLabel;
+        }
+        return null;
+    }
+
+    function qsSyncMedicalMicDefaultHint() {
+        const hint = document.getElementById('medical-mic-default-hint');
+        if (!hint) return;
+        const hasDefault = !!qsGetPreferredMedicalMicDeviceId();
+        hint.hidden = !hasDefault;
+    }
+
+    function qsMedicalMicBaseAudio() {
+        return {
             echoCancellation: { ideal: true },
             noiseSuppression: { ideal: true },
             autoGainControl: { ideal: true },
             channelCount: { ideal: 1 },
             sampleRate: { ideal: 48000 },
         };
+    }
+
+    function qsMedicalMicAudioConstraints(deviceId) {
+        const audio = qsMedicalMicBaseAudio();
         const id = String(deviceId || '').trim();
-        if (id) audio.deviceId = { ideal: id };
+        if (id) audio.deviceId = { exact: id };
         return { audio };
+    }
+
+    async function qsOpenMedicalMicStream(deviceId, options) {
+        if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+            throw new Error('media_devices_unavailable');
+        }
+        const id = String(deviceId || '').trim();
+        const allowDefaultFallback = !!(options && options.allowDefaultFallback);
+        const attempts = [];
+        if (id) {
+            attempts.push({ audio: { ...qsMedicalMicBaseAudio(), deviceId: { exact: id } } });
+            attempts.push({ audio: { ...qsMedicalMicBaseAudio(), deviceId: id } });
+        } else {
+            attempts.push({ audio: qsMedicalMicBaseAudio() });
+            attempts.push({ audio: true });
+        }
+        let lastErr = null;
+        for (const constraints of attempts) {
+            try {
+                return await navigator.mediaDevices.getUserMedia(constraints);
+            } catch (err) {
+                lastErr = err;
+            }
+        }
+        if (id && allowDefaultFallback) {
+            try {
+                return await navigator.mediaDevices.getUserMedia({ audio: qsMedicalMicBaseAudio() });
+            } catch (err) {
+                lastErr = err;
+            }
+        }
+        throw lastErr || new Error('getUserMedia_failed');
+    }
+
+    function qsOpenedMedicalMicDeviceId(stream) {
+        try {
+            const track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+            if (!track || typeof track.getSettings !== 'function') return '';
+            return String((track.getSettings() || {}).deviceId || '').trim();
+        } catch (_) {
+            return '';
+        }
     }
 
     function qsPinMedicalMicFromStream(stream) {
@@ -14743,9 +14864,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
             if (!track || typeof track.getSettings !== 'function') return '';
             const settings = track.getSettings() || {};
-            const id = String(settings.deviceId || '').trim();
+            const id = String(settings.deviceId || qsOpenedMedicalMicDeviceId(stream) || '').trim();
             if (!id) return '';
-            qsSetPreferredMedicalMicDeviceId(id);
+            qsSetPreferredMedicalMicPref({
+                deviceId: id,
+                label: String(track.label || '').trim(),
+                groupId: String(settings.groupId || '').trim(),
+            });
             const select = document.getElementById('medical-mic-device-select');
             if (select) {
                 const hasOpt = Array.from(select.options || []).some((opt) => opt.value === id);
@@ -14923,14 +15048,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!select || !navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
             return;
         }
-        const preferred = qsGetPreferredMedicalMicDeviceId();
         let devices = [];
         try {
             devices = await navigator.mediaDevices.enumerateDevices();
         } catch (_) {
             devices = [];
         }
-        const mics = (devices || []).filter((d) => d && d.kind === 'audioinput');
+        const mics = (devices || []).filter((d) => d && d.kind === 'audioinput' && String(d.deviceId || '').trim());
         select.innerHTML = '';
         if (!mics.length) {
             const opt = document.createElement('option');
@@ -14938,6 +15062,7 @@ document.addEventListener('DOMContentLoaded', () => {
             opt.textContent = qsMedicalMicT('medical_mic_no_devices', 'No microphones found.');
             select.appendChild(opt);
             qsSetMedicalMicTestStatus(qsMedicalMicT('medical_mic_no_devices', 'No microphones found.'), true);
+            qsSyncMedicalMicDefaultHint();
             return;
         }
         qsSetMedicalMicTestStatus('', false);
@@ -14945,25 +15070,35 @@ document.addEventListener('DOMContentLoaded', () => {
         defaultOpt.value = '';
         defaultOpt.textContent = qsMedicalMicT('medical_mic_default_device', 'System default');
         select.appendChild(defaultOpt);
-        let matched = false;
+        const matchedDev = qsMatchPreferredMedicalMic(mics);
         mics.forEach((d, idx) => {
             const opt = document.createElement('option');
             opt.value = String(d.deviceId || '');
             opt.textContent = String(d.label || '').trim() || (`Microphone ${idx + 1}`);
-            if (preferred && opt.value === preferred) {
+            if (d.groupId) opt.setAttribute('data-group-id', String(d.groupId));
+            if (matchedDev && String(d.deviceId || '') === String(matchedDev.deviceId || '')) {
                 opt.selected = true;
-                matched = true;
             }
             select.appendChild(opt);
         });
-        if (!matched) select.value = '';
+        if (matchedDev) {
+            select.value = String(matchedDev.deviceId || '');
+            qsSetPreferredMedicalMicPref({
+                deviceId: String(matchedDev.deviceId || ''),
+                label: String(matchedDev.label || '').trim(),
+                groupId: String(matchedDev.groupId || '').trim(),
+            });
+        } else {
+            select.value = '';
+        }
+        qsSyncMedicalMicDefaultHint();
     }
 
     async function qsEnsureMedicalMicPermission() {
         if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
             throw new Error('media_devices_unavailable');
         }
-        const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const probe = await qsOpenMedicalMicStream(qsGetPreferredMedicalMicDeviceId(), { allowDefaultFallback: true });
         try {
             (probe.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
         } catch (_) {}
@@ -14971,22 +15106,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function qsStartMedicalMicTest() {
         const select = document.getElementById('medical-mic-device-select');
-        const deviceId = String((select && select.value) || qsGetPreferredMedicalMicDeviceId() || '').trim();
+        const deviceId = select
+            ? String(select.value || '').trim()
+            : qsGetPreferredMedicalMicDeviceId();
         qsStopMedicalMicTest();
+        await new Promise((resolve) => setTimeout(resolve, 120));
         qsSetMedicalMicTestStatus(qsMedicalMicT('medical_mic_testing', 'Testing…'), false);
-        const constraints = qsMedicalMicAudioConstraints(deviceId);
         let stream;
         try {
-            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            stream = await qsOpenMedicalMicStream(deviceId, { allowDefaultFallback: false });
         } catch (err) {
-            if (deviceId) {
-                stream = await navigator.mediaDevices.getUserMedia(qsMedicalMicAudioConstraints(''));
-            } else {
-                throw err;
-            }
+            qsSetMedicalMicTestStatus(
+                qsMedicalMicT('medical_mic_device_failed', 'Could not open that microphone. Choose another and try again.'),
+                true
+            );
+            throw err;
         }
         _medicalMicTestStream = stream;
-        qsPinMedicalMicFromStream(stream);
+        if (!deviceId) {
+            qsPinMedicalMicFromStream(stream);
+        } else {
+            const opt = select && select.selectedOptions && select.selectedOptions[0];
+            let groupId = opt ? String(opt.getAttribute('data-group-id') || '').trim() : '';
+            let label = opt ? String(opt.textContent || '').trim() : '';
+            try {
+                const track = stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+                const settings = track && typeof track.getSettings === 'function' ? (track.getSettings() || {}) : {};
+                if (!label) label = String((track && track.label) || '').trim();
+                if (!groupId) groupId = String(settings.groupId || '').trim();
+            } catch (_) {}
+            qsSetPreferredMedicalMicPref({ deviceId, label, groupId });
+        }
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) throw new Error('audio_context_unavailable');
         const ctx = new AudioCtx();
@@ -15106,7 +15256,16 @@ document.addEventListener('DOMContentLoaded', () => {
             select.dataset.qsWired = '1';
             select.addEventListener('change', () => {
                 const id = String(select.value || '').trim();
-                if (id) qsSetPreferredMedicalMicDeviceId(id);
+                if (!id) {
+                    qsSetPreferredMedicalMicPref({});
+                } else {
+                    const opt = select.selectedOptions && select.selectedOptions[0];
+                    qsSetPreferredMedicalMicPref({
+                        deviceId: id,
+                        label: opt ? String(opt.textContent || '').trim() : '',
+                        groupId: opt ? String(opt.getAttribute('data-group-id') || '').trim() : '',
+                    });
+                }
                 if (_medicalMicTestActive) {
                     void qsStartMedicalMicTest().catch(() => {});
                 }
@@ -16361,27 +16520,20 @@ document.addEventListener('DOMContentLoaded', () => {
         let stream = null;
         try {
             await qsReleaseMedicalMicTestForRecording();
-            const audioConstraints = qsMedicalMicAudioConstraints(
-                typeof qsGetPreferredMedicalMicDeviceId === 'function'
-                    ? qsGetPreferredMedicalMicDeviceId()
-                    : ''
-            ).audio;
+            const preferredMicId = typeof qsGetPreferredMedicalMicDeviceId === 'function'
+                ? qsGetPreferredMedicalMicDeviceId()
+                : '';
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+                stream = await qsOpenMedicalMicStream(preferredMicId, { allowDefaultFallback: true });
             } catch (deviceErr) {
-                if (audioConstraints.deviceId) {
-                    delete audioConstraints.deviceId;
-                    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
-                } else {
-                    throw deviceErr;
-                }
+                throw deviceErr;
             }
             try {
                 const track = stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
                 if (track && typeof track.getSettings === 'function') {
                     console.info('[medical] app mic settings', track.getSettings());
                 }
-                qsPinMedicalMicFromStream(stream);
+                if (!preferredMicId) qsPinMedicalMicFromStream(stream);
             } catch (_) {}
             if (resumeFromInterruption) {
                 // iOS can hand back a stream while the phone call still owns the mic. Do not accept muted/ended tracks.
