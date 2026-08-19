@@ -8726,6 +8726,11 @@ function buildTranscriptPlainBodyForExport() {
         .replace(/\s+/g, ' ')
         .trim();
     if (!full) return '';
+    // Medical live/session view is one running block. Do not inject \n\n paragraph
+    // breaks here — that turns a single editor box into many after save.
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        return full;
+    }
     // Heuristic paragraphizer: split by sentence endings, then pack into larger paragraph chunks.
     const sentenceSplit = full
         .split(/(?<=[\.\!\?\u05C3])\s+/)
@@ -9801,6 +9806,16 @@ function qsMedicalParagraphsFromPlainText(text) {
         .split(/(?:\r?\n\s*){2,}/)
         .map((block) => String(block || '').replace(/\r\n/g, '\n').trim())
         .filter(Boolean);
+}
+
+function qsJoinMedicalTranscriptSegments(segments) {
+    const segs = Array.isArray(segments) ? segments : [];
+    return segs
+        .map((s) => String((s && (s.translated_text || s.text)) || '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 
 function qsMedicalApplyTranscriptPlainText(text) {
@@ -15954,7 +15969,7 @@ document.addEventListener('DOMContentLoaded', () => {
         qsSetProgressBarPct(100);
         hideProgressBar();
         setDiarizationBusyState(false);
-        window._medicalLiveStreamText = '';
+        if (transcript) window._medicalLiveStreamText = transcript;
         window._medicalWarmupSession = null;
         window._medicalWarmupPromise = null;
         return true;
@@ -17468,7 +17483,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const output = rawResult.result || rawResult.output || rawResult;
         let segments = incomingSegs.length ? incomingSegs.slice() : [];
         const flatWordSegments = (output && output.word_segments) || rawResult.word_segments || (rawResult.result && rawResult.result.word_segments);
-        const wordModel = _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
+        const isMedicalStreamJob = qsJobEngineFromPayload(rawResult) === 'aws_transcribe_stream' ||
+            !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
+        const wordModel = isMedicalStreamJob
+            ? null
+            : _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
         if (wordModel) {
             window.currentWords = wordModel.words;
             window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, wordModel.captions, 54);
@@ -17476,7 +17495,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             window.currentWords = null;
             window.currentCaptions = null;
-            segments = splitLongSegments(segments, 40);
+            if (!isMedicalStreamJob) {
+                segments = splitLongSegments(segments, 40);
+            }
             window.currentSegments = segments;
         }
         window._qsShowEmptyTranscriptNotice = !(window.currentSegments && window.currentSegments.length);
@@ -17822,7 +17843,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const isMedicalStreamJob = qsJobEngineFromPayload(rawResult) === 'aws_transcribe_stream' ||
             !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
         // Real word timestamps → word/caption model (coerces numeric strings; optional flat `word_segments`).
-        const wordModel = _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
+        // Medical live stream stays one running block — do not reflow into caption cues.
+        const wordModel = isMedicalStreamJob
+            ? null
+            : _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments);
         if (wordModel) {
             window.currentWords = wordModel.words;
             // Keep caption line width consistent with file-open/import flow.
@@ -17855,8 +17879,12 @@ document.addEventListener('DOMContentLoaded', () => {
             setTranscriptActionButtonsVisible(true);
             qsEnsureTranscriptToolbarVisible('medical_stream_transcript_ready', { force: true });
             if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
-            const plainText = String((window.currentSegments[0] && window.currentSegments[0].text) || '').trim()
-                || String(buildTranscriptPlainBodyForExport() || '').trim();
+            const liveText = String(window._medicalLiveStreamText || '').trim();
+            const plainText = liveText
+                || (typeof qsJoinMedicalTranscriptSegments === 'function'
+                    ? qsJoinMedicalTranscriptSegments(window.currentSegments)
+                    : '')
+                || String((window.currentSegments[0] && window.currentSegments[0].text) || '').trim();
             if (plainText && typeof renderMedicalPlainStreamTranscript === 'function') {
                 renderMedicalPlainStreamTranscript(plainText);
             } else if (typeof renderMedicalTranscriptMainView === 'function') {
@@ -20990,29 +21018,19 @@ function renderMedicalTranscriptMainView() {
     if (!transcriptWindow) return;
     if (!isMedicalModeEnabled()) return;
     if (String(window.medicalActiveTab || 'transcript') !== 'transcript') return;
-    const clean = qsPickExportTranscriptText(
-        (window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '',
-        buildTranscriptPlainBodyForExport(),
-        ''
-    ).trim();
+    const fromFmt = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+    const live = String(window._medicalLiveStreamText || '').trim();
+    const joined = typeof qsJoinMedicalTranscriptSegments === 'function'
+        ? qsJoinMedicalTranscriptSegments(window.currentSegments)
+        : '';
+    // Prefer GPT/user paragraph text (real \n\n splits). Never use the export
+    // sentence-packer — that is what turned one live box into many after save.
+    const clean = fromFmt || live || joined;
     if (clean) {
         const paragraphs = typeof qsMedicalParagraphsFromPlainText === 'function'
             ? qsMedicalParagraphsFromPlainText(clean)
-            : clean.split(/(?:\r?\n\s*){2,}/).map((l) => String(l || '').trim()).filter(Boolean);
+            : [clean];
         qsRenderMedicalEditableTranscriptBoxes(paragraphs.length ? paragraphs : [clean]);
-        return;
-    }
-    const timedCues = Array.isArray(window.currentSegments)
-        ? window.currentSegments.filter((c) => String((c && (c.translated_text || c.text)) || '').trim())
-        : [];
-    if (timedCues.length > 0) {
-        const paras = timedCues.map((c) => String(c.translated_text || c.text || '').trim()).filter(Boolean);
-        qsRenderMedicalEditableTranscriptBoxes(paras);
-        return;
-    }
-    const live = String(window._medicalLiveStreamText || '').trim();
-    if (live) {
-        qsRenderMedicalEditableTranscriptBoxes([live]);
         return;
     }
     if (typeof renderTranscriptFromCues === 'function') {
