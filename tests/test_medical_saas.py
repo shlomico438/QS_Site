@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from medical_saas import _cardcom_token_info, medical_entitlement
+from medical_saas import _cardcom_token_info, medical_account_public, medical_entitlement
 
 
 NOW = datetime(2026, 7, 28, 10, 0, tzinfo=timezone.utc)
@@ -91,3 +91,12 @@ def test_cardcom_token_fields_are_normalized():
         "validity_mmyy": "0729",
         "last_four": "1234",
     }
+
+
+def test_trial_account_public_exposes_period_usage():
+    public = medical_account_public(_account(current_period_usage_seconds=90 * 60))
+    assert public["allowed"] is True
+    assert public["subscriptionPlan"] == "trial"
+    assert public["usageSeconds"] == 90 * 60
+    assert public["usageHours"] == 1.5
+    assert public["remainingHours"] == 28.5

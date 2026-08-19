@@ -5634,17 +5634,24 @@ def _resolve_claim_credit_duration_sec(
             )
 
     if bucket and input_s3_key:
-        probed = float(
-            _file_duration_seconds_for_credits(
-                bucket,
-                input_s3_key,
-                pending_info=pending_info,
-                client_duration_sec=client_duration,
+        try:
+            probed = float(
+                _file_duration_seconds_for_credits(
+                    bucket,
+                    input_s3_key,
+                    pending_info=pending_info,
+                    client_duration_sec=client_duration,
+                )
+                or 0
             )
-            or 0
-        )
-        if probed > 0:
-            return probed
+            if probed > 0:
+                return probed
+        except Exception:
+            logging.warning(
+                "claim duration: S3/ffprobe failed job=%s key=%s",
+                job_id,
+                str(input_s3_key)[-80:],
+            )
 
     seg_dur = _segments_duration_seconds_for_credits(segments)
     return seg_dur if seg_dur > 0 else 0.0
@@ -11687,10 +11694,81 @@ def _schedule_post_summary_formatting(
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def _record_completed_medical_usage(
+    user_id,
+    job_id,
+    *,
+    duration_sec=0,
+    segments=None,
+    pending_info=None,
+    input_s3_key=None,
+    bucket=None,
+    result_s3_key=None,
+):
+    """Meter completed medical jobs into current_period_usage_seconds for trial and paid plans.
+
+    Idempotent per (user_id, job_id). Does not wait for S3 persist or GPT formatting.
+    """
+    if _is_medical_session_warmup_job(job_id):
+        return None
+    user_id = str(user_id or '').strip()
+    job_id = str(job_id or '').strip()
+    if not user_id or user_id == 'anonymous' or not job_id:
+        return None
+    if not _job_is_medical_for_credits(input_s3_key, pending_info):
+        return None
+    billed = 0.0
+    try:
+        billed = float(duration_sec or 0)
+    except (TypeError, ValueError):
+        billed = 0.0
+    if billed <= 0:
+        billed = float(_segments_duration_seconds_for_credits(segments) or 0)
+    if billed <= 0:
+        try:
+            medical_bucket = str(bucket or '').strip()
+            if not medical_bucket and isinstance(pending_info, dict):
+                medical_bucket = str(pending_info.get('bucket') or '').strip()
+            if not medical_bucket:
+                medical_bucket = _resolve_storage_profile(
+                    user_id,
+                    input_s3_key=input_s3_key,
+                    is_medical=True,
+                ).get('bucket')
+            billed = float(
+                _resolve_claim_credit_duration_sec(
+                    job_id=job_id,
+                    bucket=medical_bucket,
+                    input_s3_key=input_s3_key,
+                    client_duration=(
+                        (pending_info or {}).get('credit_file_duration_sec')
+                        if isinstance(pending_info, dict)
+                        else 0
+                    ) or 0,
+                    segments=segments,
+                    pending_info=pending_info,
+                    result_s3_key=result_s3_key,
+                ) or 0
+            )
+        except Exception:
+            logging.warning("medical usage duration resolve failed job=%s", job_id)
+            billed = 0.0
+    try:
+        from medical_saas import record_medical_usage
+        return record_medical_usage(user_id, job_id, billed)
+    except Exception:
+        logging.exception(
+            "medical usage metering failed user=%s job=%s",
+            user_id[:8],
+            job_id,
+        )
+        return None
+
+
 def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_key, user_id, t0, public_base, pending_info=None):
     """S3 persist, DB timings, email — runs after HTTP 200 ack so the worker is not blocked."""
     result_s3_key = None
-    is_medical_job = _is_medical_s3_key(input_s3_key)
+    is_medical_job = _job_is_medical_for_credits(input_s3_key, pending_info)
     server_gpt_sec = None
     schedule_post_summary_formatting = False
     plain = ""
@@ -11741,6 +11819,20 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                     job_id,
                     early_put_err,
                 )
+            _record_completed_medical_usage(
+                user_id,
+                job_id,
+                duration_sec=(
+                    (pending_info or {}).get('credit_file_duration_sec')
+                    if isinstance(pending_info, dict)
+                    else 0
+                ),
+                segments=segments,
+                pending_info=pending_info,
+                input_s3_key=input_s3_key,
+                bucket=str((pending_info or {}).get('bucket') or '').strip() if isinstance(pending_info, dict) else None,
+                result_s3_key=result_s3_key,
+            )
 
             if (not preserved_fmt) and _gpu_callback_server_format_enabled(is_medical_job):
                 plain = _segments_to_plain_text(segments)
@@ -11818,31 +11910,6 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                     early_emit_err,
                 )
             _mark_job_transcript_ready_on_gpu_callback(job_id, user_id, result_s3_key, input_s3_key)
-            if is_medical_job and user_id:
-                medical_bucket = str((pending_info or {}).get('bucket') or '').strip()
-                if not medical_bucket:
-                    medical_bucket = _resolve_storage_profile(
-                        user_id,
-                        input_s3_key=input_s3_key,
-                        is_medical=True,
-                    ).get('bucket')
-                medical_duration_sec = _resolve_claim_credit_duration_sec(
-                    job_id=job_id,
-                    bucket=medical_bucket,
-                    input_s3_key=input_s3_key,
-                    client_duration=(pending_info or {}).get('credit_file_duration_sec') or 0,
-                    segments=segments,
-                    pending_info=pending_info,
-                    result_s3_key=result_s3_key,
-                )
-                try:
-                    record_medical_usage(user_id, job_id, medical_duration_sec)
-                except Exception:
-                    logging.exception(
-                        "medical usage metering failed user=%s job=%s",
-                        str(user_id)[:8],
-                        job_id,
-                    )
             _schedule_runpod_min_workers(0)
             if schedule_post_summary_formatting:
                 _schedule_post_summary_formatting(
@@ -11905,7 +11972,7 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             notify = _get_job_notification_info(job_id, user_id=user_id)
             to_email = (notify.get("user_email") or "").strip()
             open_job_id = (notify.get("job_id") or job_id)
-            is_medical_job = _is_medical_s3_key(input_s3_key)
+            is_medical_job = _job_is_medical_for_credits(input_s3_key, pending_info)
             if to_email and open_job_id:
                 from urllib.parse import quote
                 if is_medical_job:
@@ -12518,7 +12585,6 @@ def sign_s3():
     )
     if is_medical:
         transcription_options = _apply_medical_audio_transcription_options(transcription_options)
-    user_prefix = f"users/{user_id}"
     try:
         validated_kms_arn = _require_medical_kms_or_raise(is_medical)
     except Exception as e:
@@ -12526,10 +12592,11 @@ def sign_s3():
 
     if _simulation_should_mock_upload():
         job_id = f"job_sim_{int(time.time())}"
-        s3_key = f"{user_prefix}/simulation_audio"
+        sim_profile = _resolve_storage_profile(user_id, is_medical=is_medical)
+        s3_key = f"{sim_profile['input_prefix']}/simulation_audio"
 
         is_diarization_requested = data.get('diarization', False)
-        sim_bucket = _resolve_storage_profile(user_id, is_medical=is_medical)["bucket"]
+        sim_bucket = sim_profile["bucket"]
         public_base = _public_base_url(request)
         Thread(
             target=_submit_simulation_job,
@@ -12706,10 +12773,10 @@ def sign_s3_multipart_init():
 
     if _simulation_should_mock_upload():
         job_id = f"job_sim_{int(time.time())}"
-        user_prefix = f"users/{user_id}"
-        s3_key = f"{user_prefix}/simulation_audio"
+        sim_profile = _resolve_storage_profile(user_id, is_medical=is_medical)
+        s3_key = f"{sim_profile['input_prefix']}/simulation_audio"
         is_diarization_requested = data.get('diarization', False)
-        sim_bucket = _resolve_storage_profile(user_id, is_medical=is_medical)["bucket"]
+        sim_bucket = sim_profile["bucket"]
         public_base = _public_base_url(request)
         Thread(
             target=_submit_simulation_job,
@@ -13294,6 +13361,15 @@ def api_medical_complete_stream_transcription():
         'engine': 'aws_transcribe_stream',
         'credit_file_duration_sec': duration_sec,
     }
+    _record_completed_medical_usage(
+        user_id,
+        job_id,
+        duration_sec=duration_sec,
+        segments=segments,
+        pending_info=pending_job_info.get(job_id),
+        input_s3_key=s3_key,
+        bucket=bucket,
+    )
 
     payload = {
         'jobId': job_id,

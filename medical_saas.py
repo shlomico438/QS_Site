@@ -287,7 +287,10 @@ def medical_entitlement_for_access_token(access_token: str) -> Tuple[bool, Optio
 
 
 def record_medical_usage(user_id: str, runpod_job_id: str, duration_seconds: float) -> Optional[dict]:
-    """Idempotently meter one completed medical job through the DB function."""
+    """Idempotently meter one completed medical job into current_period_usage_seconds.
+
+    Applies to trial and paid plans. The SQL function has no plan gate.
+    """
     try:
         seconds = float(duration_seconds or 0)
     except (TypeError, ValueError):
