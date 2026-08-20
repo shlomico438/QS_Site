@@ -1766,13 +1766,18 @@ window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
 };
 
 window.qsJoinMedicalEndpointScaleEvents = function qsJoinMedicalEndpointScaleEvents() {
-    if (typeof socket === 'undefined') return;
+    if (typeof socket === 'undefined' || !socket) return;
     const room = QS_MEDICAL_ENDPOINT_EVENTS_ROOM;
-    if (window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED === room) return;
-    window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = room;
+    if (!socket.connected) {
+        window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = null;
+        return;
+    }
+    // Always re-emit join after reconnect — server room membership is lost on disconnect.
     try {
         socket.emit('join', { room });
+        window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = room;
     } catch (e) {
+        window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = null;
         console.warn('[medical] endpoint scale socket join failed', e);
     }
 };
@@ -5427,6 +5432,8 @@ if (socket) {
 
     socket.on('disconnect', () => {
         window.__QS_MEDICAL_WARMUP_SOCKET_ROOM = null;
+        // Force re-join of medical_endpoint_events on the next connect.
+        window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = null;
     });
 
     const qsPollMedicalEndpointFromAws = () => {
@@ -16144,11 +16151,20 @@ document.addEventListener('DOMContentLoaded', () => {
             return stream;
         } catch (e) {
             const msg = String((e && e.message) || e || 'transcribe_stream_start_failed');
+            // connectAndAwaitReady already tries /ws/transcribe after Socket.IO failure.
+            // If both failed, surface a clearer network hint.
             console.error('[medical] AWS Transcribe stream start failed', e);
             try { stream.abort(); } catch (_) {}
             abortMedicalAwsTranscribeStream();
             if (typeof showStatus === 'function') {
-                showStatus(`AWS Transcribe stream: ${msg}`, true);
+                const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
+                const networkHint = /socket|ws_|websocket|connect/i.test(msg)
+                    ? T(
+                        'medical_stream_network_blocked',
+                        'Live connection was blocked on this network. Try another network, or ask IT to allow WebSocket/polling to getquickscribe.com.'
+                    )
+                    : '';
+                showStatus(networkHint || `AWS Transcribe stream: ${msg}`, true);
             }
             throw e;
         }

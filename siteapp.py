@@ -3664,8 +3664,8 @@ def _force_docx_rtl_bytes(docx_bytes):
 socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
-    # Allow polling + websocket so live updates work behind proxies/CDNs that block WSS.
-    transports=['websocket', 'polling'],
+    # Polling + websocket: clients that cannot keep WSS (hospital proxies) stay on long-polling.
+    transports=['polling', 'websocket'],
     ping_timeout=600,
     ping_interval=20,
     manage_session=False
@@ -13326,7 +13326,9 @@ def api_medical_transcription_config():
         'transcribe_stream_preferred_language': _medical_transcribe_preferred_language(),
         'transcribe_stream_region': _medical_transcribe_stream_region(),
         'transcribe_stream_sample_rate_hz': 16000,
+        # Primary: Socket.IO (polling/websocket). Client auto-falls back to /ws/transcribe.
         'transcribe_stream_transport': 'socketio',
+        'transcribe_stream_ws_fallback': True,
         'sagemaker_fallback': True,
         'medical_transcription_engine': (
             'aws_transcribe_stream' if use_stream else (

@@ -445,7 +445,14 @@ export class MedicalAwsTranscribeStream {
     async _startSocketIo() {
         const sock = qsGetGlobalSocket();
         if (!sock) throw new Error('socket_unavailable');
-        await qsWaitForSocketConnected(sock);
+        if (!sock.connected) {
+            // Prefer waiting briefly; if Socket.IO is dead on this network, fall back to raw WS.
+            try {
+                await qsWaitForSocketConnected(sock, 8000);
+            } catch (e) {
+                throw new Error('socket_connect_timeout');
+            }
+        }
 
         this._socket = sock;
         this._ready = false;
@@ -457,6 +464,11 @@ export class MedicalAwsTranscribeStream {
             this._startResolve = resolve;
             this._startReject = reject;
         });
+
+        const onSockDisconnect = () => {
+            this._rejectStart(new Error('socket_disconnected_during_start'));
+        };
+        try { sock.once('disconnect', onSockDisconnect); } catch (_) {}
 
         console.info('[transcribe-stream] connecting via socket.io');
         this._emitStatus('connecting');
@@ -479,6 +491,7 @@ export class MedicalAwsTranscribeStream {
             await readyPromise;
         } finally {
             clearTimeout(readyTimer);
+            try { sock.off('disconnect', onSockDisconnect); } catch (_) {}
             this._startResolve = null;
             this._startReject = null;
         }
@@ -561,12 +574,27 @@ export class MedicalAwsTranscribeStream {
     async connectAndAwaitReady() {
         this._transportArmed = false;
         this._ready = false;
-        const useSocketIo = this.transport !== 'websocket' && Boolean(qsGetGlobalSocket());
-        if (useSocketIo) {
-            await this._startSocketIo();
-        } else {
-            await this._startWebSocket();
+        const forceWs = String(this.transport || '').toLowerCase() === 'websocket';
+        const sock = qsGetGlobalSocket();
+        const trySocketIo = !forceWs && Boolean(sock);
+        if (trySocketIo) {
+            try {
+                await this._startSocketIo();
+                return;
+            } catch (err) {
+                console.warn(
+                    '[transcribe-stream] Socket.IO start failed; falling back to /ws/transcribe',
+                    err
+                );
+                try { this._teardownSocketIo(); } catch (_) {}
+                this._ready = false;
+                this._transportArmed = false;
+                this._startResolve = null;
+                this._startReject = null;
+                this._finalTranscript = this._finalTranscript || '';
+            }
         }
+        await this._startWebSocket();
     }
 
     async start(mediaStream) {

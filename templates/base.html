@@ -348,24 +348,49 @@
                 return;
             }
             const socketOrigin = `${window.location.protocol}//${window.location.host}`;
+            // Polling first: some hospital/corporate networks kill WebSocket right after
+            // handshake (looks like "site blocked"). Long-polling still works; upgrade later.
             const socket = io(socketOrigin, {
-                // Prefer websocket, but keep polling fallback for stricter mobile networks/proxies.
-                transports: ['websocket', 'polling'],
+                transports: ['polling', 'websocket'],
                 upgrade: true,
                 secure: window.location.protocol === 'https:',
                 reconnection: true,
-                reconnectionAttempts: 10,
-                reconnectionDelay: 2000,
-                reconnectionDelayMax: 10000
+                reconnectionAttempts: 20,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 10000,
+                timeout: 20000
             });
             window.socket = socket;
             let socketWarned = false;
+            let wsUpgradeFails = 0;
             socket.on('connect_error', (err) => {
                 if (!socketWarned) {
                     socketWarned = true;
                     const detail = (err && (err.message || err.description)) ? String(err.message || err.description) : '';
                     console.warn('QuickScribe: Socket.IO could not connect (live job updates disabled).' + (detail ? ' ' + detail : '') + ' Deploy with Socket.IO reachable on the same origin, or allow WebSocket/long-polling through your proxy.');
                 }
+            });
+            socket.on('disconnect', (reason) => {
+                const r = String(reason || '');
+                if (r === 'transport close' || r === 'transport error' || r === 'ping timeout') {
+                    wsUpgradeFails += 1;
+                    // After a few WS kills, stay on polling so the session survives.
+                    if (wsUpgradeFails >= 2) {
+                        try {
+                            socket.io.opts.transports = ['polling'];
+                            socket.io.opts.upgrade = false;
+                            console.warn('QuickScribe: Socket.IO staying on polling (WebSocket unstable on this network).');
+                        } catch (_) {}
+                    }
+                }
+            });
+            socket.on('connect', () => {
+                try {
+                    const t = socket.io && socket.io.engine && socket.io.engine.transport
+                        ? socket.io.engine.transport.name
+                        : '';
+                    if (t) console.info('QuickScribe: Socket.IO connected via', t);
+                } catch (_) {}
             });
         })();
     </script>
