@@ -4880,6 +4880,42 @@ async function qsCleanupUploadedInputAfterCreditFailure(payload) {
     }
 }
 
+/** Guest try is capped at the welcome pack (charged only after signup). */
+const QS_GUEST_TRIAL_CREDIT_MINUTES = 60;
+
+function qsGuestTrialCreditMinutes() {
+    try {
+        const n = Number(window.__QS_GUEST_TRIAL_CREDIT_MINUTES);
+        if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    } catch (_) {}
+    return QS_GUEST_TRIAL_CREDIT_MINUTES;
+}
+
+function qsCreditMinutesFromDurationSec(durationSec) {
+    const d = Number(durationSec);
+    if (!Number.isFinite(d) || d <= 0) return 0;
+    return Math.max(1, Math.ceil(d / 60));
+}
+
+function qsGuestTrialBlocksDuration(durationSec) {
+    const needed = qsCreditMinutesFromDurationSec(durationSec);
+    return needed > qsGuestTrialCreditMinutes();
+}
+
+function qsGuestTrialInsufficientMessage(durationSec) {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const needed = qsCreditMinutesFromDurationSec(durationSec);
+    const bal = qsGuestTrialCreditMinutes();
+    const tpl = T('guest_trial_insufficient_msg');
+    if (tpl && String(tpl).includes('{required}')) {
+        return String(tpl)
+            .replace('{required}', String(needed))
+            .replace('{balance}', String(bal));
+    }
+    return tpl
+        || `Guest try is limited to ${bal} minutes. This file needs ${needed} minutes. Upload a shorter file, or sign up and buy minutes.`;
+}
+
 /** Block upload when signed-in user lacks minutes for file length (check before S3 upload). */
 async function qsEnsureCreditsForUpload(durationSec, opts) {
     opts = opts || {};
@@ -4891,9 +4927,33 @@ async function qsEnsureCreditsForUpload(durationSec, opts) {
         const { data: { user: u } } = await supabase.auth.getUser();
         user = u;
     } catch (_) {}
-    if (!user || !user.id) return true;
-
     const d = Number(durationSec);
+    // Guests: enforce the welcome-minute cap locally (server also blocks at multipart/trigger).
+    if (!user || !user.id) {
+        if (!Number.isFinite(d) || d <= 0) {
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            if (typeof showStatus === 'function') {
+                showStatus(
+                    T('credits_duration_unknown') || 'Could not determine the file length. Try again or upload a different file.',
+                    true,
+                    { duration: 10000, toastPosition: 'above', toastAnchorId: 'main-btn' }
+                );
+            }
+            return false;
+        }
+        if (qsGuestTrialBlocksDuration(d)) {
+            if (typeof showStatus === 'function') {
+                showStatus(
+                    qsGuestTrialInsufficientMessage(d),
+                    true,
+                    { duration: 12000, toastPosition: 'above', toastAnchorId: 'main-btn' }
+                );
+            }
+            return false;
+        }
+        return true;
+    }
+
     if (!Number.isFinite(d) || d <= 0) {
         const T = typeof window.t === 'function' ? window.t : (k) => k;
         if (typeof showStatus === 'function') {

@@ -5504,9 +5504,9 @@ def _job_is_medical_for_credits(input_s3_key, pending_info=None):
 
 
 def _credit_minutes_from_duration(duration_sec):
-    """Bill whole minutes, truncating leftover seconds (2:03 → 2, 4:19 → 4).
+    """Bill whole minutes, rounding up any leftover seconds (39s → 1, 2:03 → 3).
 
-    Clips shorter than 60 seconds still cost 1 minute.
+    Any positive clip shorter than 60 seconds still costs 1 minute.
     """
     try:
         duration = float(duration_sec or 0)
@@ -5514,7 +5514,7 @@ def _credit_minutes_from_duration(duration_sec):
         return 0
     if duration <= 0:
         return 0
-    return max(1, int(duration // 60.0))
+    return max(1, int(math.ceil(duration / 60.0)))
 
 
 def _segments_duration_seconds_for_credits(segments):
@@ -5959,10 +5959,33 @@ def _credits_prefer_hebrew_from_request():
         return True
 
 
+def _is_anonymous_credit_user(user_id):
+    return str(user_id or '').strip().lower() == 'anonymous'
+
+
+def _guest_trial_credit_minutes():
+    """Anonymous uploads are capped at the welcome pack (charged on signup/claim)."""
+    return max(1, int(WELCOME_CREDIT_MINUTES or 60))
+
+
+def _wallet_minutes_for_credit_check(user_id):
+    """Balance for pre-GPU gates. Guests are treated as having the welcome pack only."""
+    uid = str(user_id or '').strip()
+    if not uid:
+        return None
+    if _is_anonymous_credit_user(uid):
+        return _guest_trial_credit_minutes()
+    wallet = _user_credits_get(uid)
+    return int((wallet or {}).get('credit_minutes') or 0)
+
+
 def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
-    """Verify wallet balance for file length; does not deduct."""
+    """Verify wallet balance for file length; does not deduct.
+
+    Anonymous guests are limited to WELCOME_CREDIT_MINUTES (same as the signup grant).
+    """
     user_id = str(user_id or '').strip()
-    if not user_id or user_id == 'anonymous':
+    if not user_id:
         return {"ok": True, "skipped": True}
     try:
         duration_sec = float(duration_sec or 0)
@@ -5980,30 +6003,39 @@ def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
             "message": msg,
             "http_status": 400,
         }
-    wallet = _user_credits_get(user_id)
-    balance = int((wallet or {}).get('credit_minutes') or 0)
+    balance = _wallet_minutes_for_credit_check(user_id)
+    if balance is None:
+        return {"ok": True, "skipped": True}
     if balance < minutes:
         return {
             "ok": False,
             "error": "insufficient_credits",
-            "message": _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew),
+            "message": _credits_insufficient_message(
+                balance,
+                minutes,
+                duration_sec,
+                prefer_hebrew,
+                guest=_is_anonymous_credit_user(user_id),
+            ),
             "http_status": 402,
             "credit_minutes": balance,
             "required_minutes": minutes,
             "file_duration_seconds": duration_sec,
+            "guest_trial": _is_anonymous_credit_user(user_id),
         }
     return {
         "ok": True,
         "credit_minutes": balance,
         "required_minutes": minutes,
         "file_duration_seconds": duration_sec,
+        "guest_trial": _is_anonymous_credit_user(user_id),
     }
 
 
 def _check_credits_for_multipart_init(user_id, duration_sec, prefer_hebrew=True):
     """Upload-first gate: full duration check when known; otherwise require minimum wallet balance."""
     user_id = str(user_id or '').strip()
-    if not user_id or user_id == 'anonymous':
+    if not user_id:
         return {"ok": True, "skipped": True}
     try:
         duration_sec = float(duration_sec or 0)
@@ -6011,6 +6043,15 @@ def _check_credits_for_multipart_init(user_id, duration_sec, prefer_hebrew=True)
         duration_sec = 0.0
     if duration_sec > 0:
         return _check_credits_for_duration(user_id, duration_sec, prefer_hebrew)
+    # Guests: allow starting upload only when duration is still unknown; trigger enforces the
+    # welcome-minute cap once the file length is known.
+    if _is_anonymous_credit_user(user_id):
+        return {
+            "ok": True,
+            "credit_minutes": _guest_trial_credit_minutes(),
+            "guest_trial": True,
+            "deferred_duration_check": True,
+        }
     wallet = _user_credits_get(user_id)
     balance = int((wallet or {}).get('credit_minutes') or 0)
     min_m = _min_credit_minutes_for_upload()
@@ -6034,7 +6075,18 @@ def _check_credits_for_multipart_init(user_id, duration_sec, prefer_hebrew=True)
     }
 
 
-def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=True):
+def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=True, guest=False):
+    if guest:
+        cap = _guest_trial_credit_minutes()
+        if prefer_hebrew:
+            return (
+                f"ניסיון אורח מוגבל ל-{cap} דקות. הקובץ דורש {minutes} דקות "
+                f"(אורך {int(round(duration_sec))} שניות). העלו קובץ קצר יותר, או הירשמו ורכשו דקות."
+            )
+        return (
+            f"Guest try is limited to {cap} minutes. This file needs {minutes} minutes "
+            f"({int(round(duration_sec))} seconds). Upload a shorter file, or sign up and buy minutes."
+        )
     if prefer_hebrew:
         return (
             f"אין מספיק דקות בחשבון. הקובץ דורש {minutes} דקות (אורך {int(round(duration_sec))} שניות) "
@@ -6051,13 +6103,15 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
     Probe uploaded file length and verify wallet balance before GPU work.
     Does not deduct — minutes are charged via /api/charge_job_credits after the client shows GPT summary.
     Idempotent per job_id (skips re-check if credit_minutes_used already set on job).
+
+    Anonymous guests are capped at WELCOME_CREDIT_MINUTES (same as signup grant).
     """
     if not _credits_gate_applies(is_medical):
         return {"ok": True, "skipped": True}
     user_id = str(user_id or '').strip()
     job_id = str(job_id or '').strip()
     s3_key = str(s3_key or '').strip()
-    if not user_id or user_id == 'anonymous' or not job_id or not s3_key:
+    if not user_id or not job_id or not s3_key:
         return {"ok": True, "skipped": True}
     if _job_is_medical_for_credits(s3_key):
         return {"ok": True, "skipped": True}
@@ -6066,12 +6120,12 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
     if isinstance(row, dict) and row.get('credit_minutes_used') is not None:
         try:
             if float(row.get('credit_minutes_used') or 0) > 0:
-                wallet = _user_credits_get(user_id)
+                balance = _wallet_minutes_for_credit_check(user_id)
                 return {
                     "ok": True,
                     "already_charged": True,
                     "credit_minutes_used": float(row.get('credit_minutes_used')),
-                    "credit_minutes": int((wallet or {}).get('credit_minutes') or 0),
+                    "credit_minutes": int(balance if balance is not None else 0),
                 }
         except (TypeError, ValueError):
             pass
@@ -6115,7 +6169,14 @@ def _credit_fields_for_api(credit_result):
     if not isinstance(credit_result, dict):
         return {}
     out = {}
-    for key in ('credit_minutes', 'credit_minutes_used', 'file_duration_seconds', 'transcription_duration_seconds', 'required_minutes'):
+    for key in (
+        'credit_minutes',
+        'credit_minutes_used',
+        'file_duration_seconds',
+        'transcription_duration_seconds',
+        'required_minutes',
+        'guest_trial',
+    ):
         if key in credit_result and credit_result[key] is not None:
             out[key] = credit_result[key]
     return out
