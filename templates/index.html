@@ -67,113 +67,7 @@ try {
                 </div>
             </section>
 
-            <section id="pricing-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="pricing-section-title">
-                <div class="seo-landing-inner">
-                <h2 id="pricing-section-title">
-                    {% if qs_is_en %}Simple, Transparent Pricing{% else %}תמחור פשוט ושקוף{% endif %}
-                </h2>
-                <div class="seo-pricing-grid">
-                    <article class="seo-card seo-pricing-card seo-pricing-card--starter seo-pricing-card--selectable" id="seo-pricing-starter" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-starter-title">
-                        <h3 id="seo-pricing-starter-title">
-                            {% if qs_is_en %}Starter Plan{% else %}תוכנית Starter{% endif %}
-                        </h3>
-                        <div class="seo-price">
-                            {% if qs_is_en %}$0{% else %}₪0{% endif %}
-                            <small>{% if qs_is_en %}/ first month free{% else %}/ חודש ראשון מתנה{% endif %}</small>
-                        </div>
-                        <ul class="seo-pricing-features">
-                            <li>
-                                {% if qs_is_en %}60 minutes of transcription (a full hour) free for your first month!{% else %}60 דקות תמלול (שעה שלמה) מתנה לחודש הראשון!{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}Full access to all AI features{% else %}גישה מלאה לכל הפיצ'רים של ה-AI{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}Advanced vocal separation and noise filtering{% else %}הפרדת קול מתקדמת וסינון רעשים{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}Standard SRT and text export{% else %}ייצוא SRT וטקסט סטנדרטי{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}No credit card required{% else %}ללא צורך בכרטיס אשראי{% endif %}
-                            </li>
-                        </ul>
-                        <div class="seo-plan-auto-badge" aria-label="פעיל אוטומטית ברישום">
-                            {% if qs_is_en %}Active automatically on signup{% else %}פעיל אוטומטית ברישום{% endif %}
-                        </div>
-                    </article>
-                    <article class="seo-card seo-pricing-card seo-pricing-popular seo-pricing-card--selectable seo-pricing-card--credits" id="seo-pricing-pro" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-pro-title">
-                        <div class="seo-popular-badge">
-                            {% if qs_is_en %}Prepaid{% else %}תשלום מראש{% endif %}
-                        </div>
-                        <h3 id="seo-pricing-pro-title">
-                            {% if qs_is_en %}Prepaid bundles{% else %}חבילות דקות בתשלום מראש{% endif %}
-                        </h3>
-                        <div class="seo-price" id="seo-credit-bundle-price">
-                            {% if qs_is_en %}<span data-bundle-price="standard">$13</span>{% else %}<span data-bundle-price="standard">₪39</span>{% endif %}
-                            <small>{% if qs_is_en %}<span data-bundle-price-note="standard"> / 300 min</span>{% else %}<span data-bundle-price-note="standard"> / 300 דקות</span>{% endif %}</small>
-                        </div>
-                        <div class="seo-credit-bundle-picker">
-                            <div class="seo-credit-bundle-tabs" role="tablist" aria-label="חבילות קרדיט">
-                                <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="light" role="tab" aria-selected="false" id="seo-credit-tab-light">
-                                    Light
-                                </button>
-                                <button type="button" class="seo-credit-bundle-item seo-credit-bundle-item--recommended seo-credit-bundle-tab is-selected" data-bundle="standard" role="tab" aria-selected="true" id="seo-credit-tab-standard">
-                                    Standard
-                                </button>
-                                <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="plus" role="tab" aria-selected="false" id="seo-credit-tab-plus">
-                                    Plus
-                                </button>
-                            </div>
-                            <div class="seo-credit-bundle-detail" id="seo-credit-bundle-detail" role="tabpanel" aria-live="polite">
-                                <div class="seo-credit-bundle-pane" data-bundle-pane="light" hidden aria-hidden="true">
-                                    {% if qs_is_en %}Light · $7 · 90 min{% else %}Light · ₪19 · 90 דקות{% endif %}
-                                </div>
-                                <div class="seo-credit-bundle-pane is-active" data-bundle-pane="standard" aria-hidden="true">
-                                    {% if qs_is_en %}Standard · $13 · 300 min{% else %}Standard · ₪39 · 300 דקות{% endif %}
-                                </div>
-                                <div class="seo-credit-bundle-pane" data-bundle-pane="plus" hidden aria-hidden="true">
-                                    {% if qs_is_en %}Plus · $27 · 720 min{% else %}Plus · ₪79 · 720 דקות{% endif %}
-                                </div>
-                            </div>
-                        </div>
-                        <ul class="seo-pricing-features">
-                            <li>
-                                {% if qs_is_en %}Minutes never expire in your wallet{% else %}הדקות שלך בארנק ולא פוקעות לעולם{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}Priority AI queue{% else %}תור AI בעדיפות גבוהה{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}Advanced vocal separation &amp; noise cleanup{% else %}הפרדת קול וניקוי רעשי רקע מתקדם{% endif %}
-                            </li>
-                        </ul>
-                        <button type="button" class="seo-btn seo-btn-primary seo-bridge-action" id="seo-buy-credits-btn" data-bundle="standard">
-                            {% if qs_is_en %}Buy Credits{% else %}רכישת קרדיטים{% endif %}
-                        </button>
-                    </article>
-                    <article class="seo-card seo-pricing-card seo-pricing-card--selectable" id="seo-pricing-enterprise" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-enterprise-title">
-                        <h3 id="seo-pricing-enterprise-title">
-                            {% if qs_is_en %}Enterprise / Medical{% else %}ארגוני / רפואי{% endif %}
-                        </h3>
-                        <ul>
-                            <li>
-                                {% if qs_is_en %}<strong>HIPAA-Compliant Environment:</strong> Fully sandboxed data architecture.{% else %}<strong>סביבה תואמת HIPAA:</strong> ארכיטקטורת נתונים במרחב מבודד לחלוטין.{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}<strong>Dedicated Infrastructure:</strong> Segmented server instances and fully isolated Amazon S3 buckets.{% else %}<strong>תשתית ייעודית:</strong> מופעי שרת מפולגים ודלי Amazon S3 מבודדים לחלוטין.{% endif %}
-                            </li>
-                            <li>
-                                {% if qs_is_en %}<strong>No Data Logging:</strong> Zero-retention policy for strict medical and legal confidentiality.{% else %}<strong>ללא שמירת נתונים:</strong> מדיניות אפס-שמירה לסודיות רפואית ומשפטית מחמירה.{% endif %}
-                            </li>
-                        </ul>
-                        <a href="/medical" id="seo-go-medical-btn" class="seo-btn seo-btn-medical">
-                            {% if qs_is_en %}Go to Medical{% else %}מעבר לרפואי{% endif %}
-                        </a>
-                    </article>
-                </div>
-                </div>
-            </section>
+            {% include 'snippets/regular_pricing_section.html' %}
 
             <section id="metrics-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="metrics-section-title">
                 <div class="seo-landing-inner">
@@ -387,43 +281,9 @@ try {
                 </div>
             </div>
 
-            <section class="medical-pricing-section" id="medical-pricing-section" aria-labelledby="medical-pricing-title">
-                <h2 id="medical-pricing-title" data-i18n="medical_pricing_title">Simple plans by transcription hours</h2>
-                <div class="medical-pricing-grid">
-                    <article class="medical-pricing-card">
-                        <h3>Starter</h3>
-                        <div class="medical-plan-price"><span data-i18n="medical_plan_price_starter">$75</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
-                        <strong data-i18n="medical_plan_hours_starter">30 transcription hours per month</strong>
-                        <button type="button" data-medical-plan="starter" data-i18n="medical_plan_select_starter">Choose Starter</button>
-                    </article>
-                    <article class="medical-pricing-card is-recommended">
-                        <span class="medical-recommended-badge" data-i18n="medical_plan_recommended">Recommended</span>
-                        <h3>Professional</h3>
-                        <div class="medical-plan-price"><span data-i18n="medical_plan_price_professional">$125</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
-                        <strong data-i18n="medical_plan_hours_professional">60 transcription hours per month</strong>
-                        <button type="button" data-medical-plan="professional" data-i18n="medical_plan_select_professional">Choose Professional</button>
-                    </article>
-                    <article class="medical-pricing-card">
-                        <h3>Clinic</h3>
-                        <div class="medical-plan-price"><span data-i18n="medical_plan_price_clinic">$350</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
-                        <strong data-i18n="medical_plan_hours_clinic">180 transcription hours per month</strong>
-                        <span data-i18n="medical_plan_seats_clinic">Up to 5 professionals</span>
-                        <button type="button" data-medical-plan="clinic" data-i18n="medical_plan_select_clinic">Choose Clinic</button>
-                    </article>
-                </div>
-                <p class="medical-overage-note" data-i18n="medical_overage_note">Additional transcription beyond quota: $3 per hour.</p>
-            </section>
+            {% include 'snippets/medical_pricing_section.html' %}
             <p class="medical-aws-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</p>
         </section>
-
-        <div id="medical-pricing-modal" class="medical-pricing-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="medical-pricing-modal-title">
-            <div class="medical-pricing-modal-card" dir="auto">
-                <button type="button" id="medical-pricing-modal-close" class="medical-pricing-modal-close" data-i18n-aria-label="medical_mic_close" aria-label="Close">×</button>
-                <h2 id="medical-pricing-modal-title" data-i18n="medical_pricing_modal_title">Choose a medical plan</h2>
-                <p id="medical-pricing-modal-message" class="medical-pricing-modal-intro" role="status" aria-live="polite" data-i18n="medical_pricing_modal_intro">Choose the transcription hour quota that fits your practice.</p>
-                <div id="medical-pricing-modal-content"></div>
-            </div>
-        </div>
 
         <section id="medical-session-header" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:14px; text-align:center;">
             <h2 id="medical-session-title" style="margin:0; color:#0f766e;" data-i18n="medical_session_secure_recording">Secure medical recording session</h2>
@@ -1318,7 +1178,8 @@ try {
             const activate = (e) => {
                 if (e && e.target && e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn')) return;
                 if (planId === 'enterprise') {
-                    window.location.href = '/medical';
+                    const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
+                    window.location.href = isEn ? '/en/medical/pricing' : '/medical/pricing';
                     return;
                 }
                 setSelectedPlan(planId);
@@ -1329,7 +1190,8 @@ try {
                 if (e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn')) return;
                 e.preventDefault();
                 if (planId === 'enterprise') {
-                    window.location.href = '/medical';
+                    const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
+                    window.location.href = isEn ? '/en/medical/pricing' : '/medical/pricing';
                     return;
                 }
                 setSelectedPlan(planId);

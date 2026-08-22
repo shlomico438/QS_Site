@@ -901,11 +901,68 @@ function qsMedicalWirePlanButtons(root = document) {
     });
 }
 
+function qsMedicalPricingUrl() {
+    const isEn = String(window.currentLocale || document.documentElement.lang || 'he')
+        .toLowerCase()
+        .startsWith('en');
+    return isEn ? '/en/medical/pricing' : '/medical/pricing';
+}
+window.qsMedicalPricingUrl = qsMedicalPricingUrl;
+
+function qsMedicalPricingPagePath() {
+    return String(window.location.pathname || '').replace(/\/+$/, '') || '/';
+}
+
+function qsIsMedicalPricingPagePath(path) {
+    const p = path != null ? String(path).replace(/\/+$/, '') || '/' : qsMedicalPricingPagePath();
+    return p === '/medical/pricing' || p === '/en/medical/pricing';
+}
+
+function qsIsMedicalContextPath(path) {
+    const p = path != null ? String(path).replace(/\/+$/, '') || '/' : qsMedicalPricingPagePath();
+    return p === '/medical' || p.startsWith('/medical/') || p === '/en/medical' || p.startsWith('/en/medical/');
+}
+
+function qsRegularPricingUrl() {
+    const isEn = String(window.currentLocale || document.documentElement.lang || 'he')
+        .toLowerCase()
+        .startsWith('en');
+    return isEn ? '/en/pricing' : '/pricing';
+}
+window.qsRegularPricingUrl = qsRegularPricingUrl;
+
+function qsNavPricingTargetPath() {
+    if (qsIsMedicalContextPath()) return qsMedicalPricingUrl();
+    if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
+        return qsMedicalPricingUrl();
+    }
+    return qsRegularPricingUrl();
+}
+window.qsNavPricingTargetPath = qsNavPricingTargetPath;
+
+function qsSyncNavPricingLink() {
+    const href = qsNavPricingTargetPath();
+    document.querySelectorAll('.nav-pricing-link').forEach((el) => {
+        if (el.getAttribute('href') !== href) el.setAttribute('href', href);
+    });
+}
+window.qsSyncNavPricingLink = qsSyncNavPricingLink;
+window.qsSyncMedicalNavPricingLinks = qsSyncNavPricingLink;
+
 function qsOpenMedicalPricingModal() {
     const modal = document.getElementById('medical-pricing-modal');
     const content = document.getElementById('medical-pricing-modal-content');
     const source = document.getElementById('medical-pricing-section');
-    if (!modal || !content || !source) return;
+    if (qsIsMedicalPricingPagePath()) {
+        if (source) {
+            try { source.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+            return;
+        }
+    }
+    if (!modal || !content || !source) {
+        window.location.assign(qsMedicalPricingUrl());
+        return;
+    }
     const pricing = source.cloneNode(true);
     pricing.removeAttribute('id');
     pricing.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
@@ -1335,7 +1392,47 @@ async function qsInitializeMedicalSaasFlow() {
 }
 window.qsInitializeMedicalSaasFlow = qsInitializeMedicalSaasFlow;
 
+function qsWireMedicalPricingUi() {
+    if (window.__QS_MEDICAL_PRICING_UI_WIRED) return;
+    const hasPricingSection = !!document.getElementById('medical-pricing-section');
+    const hasPricingModal = !!document.getElementById('medical-pricing-modal');
+    if (!hasPricingSection && !hasPricingModal) return;
+    window.__QS_MEDICAL_PRICING_UI_WIRED = true;
+
+    if (hasPricingSection) qsMedicalWirePlanButtons(document);
+
+    const openPricingButton = document.getElementById('medical-open-pricing-btn');
+    if (openPricingButton && openPricingButton.dataset.qsPricingWired !== '1') {
+        openPricingButton.dataset.qsPricingWired = '1';
+        openPricingButton.addEventListener('click', qsOpenMedicalPricingModal);
+    }
+    const billingButton = document.getElementById('user-menu-medical-billing');
+    if (billingButton && billingButton.dataset.qsPricingWired !== '1') {
+        billingButton.dataset.qsPricingWired = '1';
+        billingButton.addEventListener('click', () => {
+            if (typeof closeUserMenu === 'function') closeUserMenu();
+            qsOpenMedicalPricingModal();
+        });
+    }
+    const modal = document.getElementById('medical-pricing-modal');
+    const closeBtn = document.getElementById('medical-pricing-modal-close');
+    if (modal && modal.dataset.qsPricingWired !== '1') {
+        modal.dataset.qsPricingWired = '1';
+        closeBtn?.addEventListener('click', qsCloseMedicalPricingModal);
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) qsCloseMedicalPricingModal();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !modal.hidden) qsCloseMedicalPricingModal();
+        });
+    }
+    if (typeof qsSyncMedicalNavPricingLinks === 'function') qsSyncMedicalNavPricingLinks();
+}
+window.qsWireMedicalPricingUi = qsWireMedicalPricingUi;
+
 function qsWireMedicalSaasOnboarding() {
+    qsWireMedicalPricingUi();
+
     const openAuthBtn = document.getElementById('medical-open-auth-btn');
     if (!openAuthBtn || openAuthBtn.dataset.qsWired === '1') return;
     openAuthBtn.dataset.qsWired = '1';
@@ -1376,26 +1473,6 @@ function qsWireMedicalSaasOnboarding() {
             if (typeof window.toggleModal === 'function') window.toggleModal(true);
         });
     }
-
-    qsMedicalWirePlanButtons(document);
-
-    const openPricingButton = document.getElementById('medical-open-pricing-btn');
-    if (openPricingButton) openPricingButton.addEventListener('click', qsOpenMedicalPricingModal);
-    const billingButton = document.getElementById('user-menu-medical-billing');
-    if (billingButton) {
-        billingButton.addEventListener('click', () => {
-            if (typeof closeUserMenu === 'function') closeUserMenu();
-            qsOpenMedicalPricingModal();
-        });
-    }
-    const modal = document.getElementById('medical-pricing-modal');
-    document.getElementById('medical-pricing-modal-close')?.addEventListener('click', qsCloseMedicalPricingModal);
-    modal?.addEventListener('click', (event) => {
-        if (event.target === modal) qsCloseMedicalPricingModal();
-    });
-    document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && modal && !modal.hidden) qsCloseMedicalPricingModal();
-    });
 }
 
 if (document.readyState === 'loading') {
@@ -3393,8 +3470,8 @@ function qsNavLogoTargetPath() {
 
 function qsSyncNavLogoHref() {
     const logoLink = document.getElementById('nav-logo-link');
-    if (!logoLink) return;
-    logoLink.setAttribute('href', qsNavLogoTargetPath());
+    if (logoLink) logoLink.setAttribute('href', qsNavLogoTargetPath());
+    try { qsSyncNavPricingLink(); } catch (_) {}
 }
 window.qsSyncNavLogoHref = qsSyncNavLogoHref;
 
@@ -6803,6 +6880,7 @@ async function loadUserMenuProfile(user) {
     if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi();
     if (medicalModeInput) {
         medicalModeInput.onchange = () => {
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
             const on = !!medicalModeInput.checked;
             let path = '/';
             try {
@@ -6816,7 +6894,7 @@ async function loadUserMenuProfile(user) {
                 }
                 if (messageEl) {
                     messageEl.style.display = 'block';
-                    messageEl.textContent = 'מצב רפואי (HIPAA) פעיל — אימון סיכום זמין מתחת לסיכום הרפואי.';
+                    messageEl.textContent = T('medical_mode_enabled_message');
                     messageEl.style.color = '#059669';
                 }
             } else {
@@ -6828,7 +6906,7 @@ async function loadUserMenuProfile(user) {
                 }
                 if (messageEl) {
                     messageEl.style.display = 'block';
-                    messageEl.textContent = 'מצב רפואי כבוי.';
+                    messageEl.textContent = T('medical_mode_disabled_message');
                     messageEl.style.color = '#059669';
                 }
             }
@@ -6837,7 +6915,8 @@ async function loadUserMenuProfile(user) {
     }
     if (medicalTrainingResetBtn) {
         medicalTrainingResetBtn.onclick = async () => {
-            if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'מאפס אימון...';
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            if (medicalTrainingStatus) medicalTrainingStatus.textContent = T('medical_training_resetting');
             try {
                 await medicalTrainingApi('/api/medical_training/reset', {});
                 window._medicalTrainingCandidatePrompt = '';
@@ -6848,10 +6927,13 @@ async function loadUserMenuProfile(user) {
                 window._medicalTrainingPanelExpanded = false;
                 window._medicalTrainingBaselineForRetry = '';
                 window._medicalTrainingApprovedCandidatePrompt = '';
-                if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'האימון אופס והפרומפט האישי הושבת.';
+                if (medicalTrainingStatus) medicalTrainingStatus.textContent = T('medical_training_reset_done');
                 if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
             } catch (e) {
-                if (medicalTrainingStatus) medicalTrainingStatus.textContent = 'איפוס נכשל: ' + String((e && e.message) || e).slice(0, 160);
+                const err = String((e && e.message) || e).slice(0, 160);
+                if (medicalTrainingStatus) {
+                    medicalTrainingStatus.textContent = String(T('medical_training_reset_failed')).replace('{error}', err);
+                }
             }
         };
     }
@@ -9537,16 +9619,17 @@ async function medicalTrainingPreview(payload) {
 /** Ensure server-side training session exists (used when doctor uses the training panel). */
 async function activateMedicalTrainingFlow() {
     const medicalTrainingStatus = document.getElementById('user-menu-medical-training-status');
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
     if (!isMedicalModeEnabled()) {
         if (medicalTrainingStatus) {
-            medicalTrainingStatus.textContent = 'יש להפעיל תחילה מצב רפואי (HIPAA).';
+            medicalTrainingStatus.textContent = T('medical_training_requires_mode');
         }
         throw new Error('Medical mode required for training');
     }
     try {
         await medicalTrainingApi('/api/medical_training/start', {});
         if (medicalTrainingStatus) {
-            medicalTrainingStatus.textContent = 'אימון סיכום זמין מתחת לסיכום הרפואי.';
+            medicalTrainingStatus.textContent = T('medical_training_available_hint');
         }
         if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
     } catch (e) {
@@ -14756,6 +14839,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.classList.toggle('medical-mode', on);
             document.documentElement.classList.toggle('qs-medical-entry', on);
         } catch (_) {}
+        if (typeof qsSyncMedicalNavPricingLinks === 'function') qsSyncMedicalNavPricingLinks();
         if (medicalHeader) medicalHeader.style.display = on ? '' : 'none';
         if (medicalTitle) medicalTitle.textContent = T('medical_session_secure_recording') || 'Secure medical recording session';
         if (medicalSubtitle) medicalSubtitle.textContent = T('medical_session_hipaa_active') || 'Clinical transcription with HIPAA mode active';

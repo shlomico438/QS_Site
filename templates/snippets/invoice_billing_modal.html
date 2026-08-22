@@ -1,0 +1,15 @@
+<div id="invoice-billing-modal" class="seo-sales-modal-backdrop" style="display:none;" aria-hidden="true">
+    <div class="seo-sales-modal" role="dialog" aria-modal="true" aria-labelledby="invoice-billing-title">
+        <button type="button" class="seo-sales-modal-close" id="invoice-billing-close" aria-label="Close">✕</button>
+        <h3 id="invoice-billing-title" data-i18n="invoice_billing_title">Invoice details</h3>
+        <p class="seo-sales-modal-sub" data-i18n="invoice_billing_sub">Required for tax invoice/receipt (saved on this device for future purchases).</p>
+        <label class="seo-sales-label" for="invoice-tax-id-input" data-i18n="invoice_billing_tax_id">ID / company no.</label>
+        <input type="text" id="invoice-tax-id-input" class="seo-sales-input" inputmode="numeric" autocomplete="off" maxlength="9" required>
+        <label class="seo-sales-label" for="invoice-city-input" data-i18n="invoice_billing_city">City</label>
+        <input type="text" id="invoice-city-input" class="seo-sales-input" autocomplete="address-level2" required>
+        <div class="seo-sales-modal-actions">
+            <button type="button" id="invoice-billing-continue-btn" class="seo-btn seo-btn-medical" data-i18n="invoice_billing_continue">Continue to payment</button>
+            <button type="button" id="invoice-billing-cancel-btn" class="seo-btn seo-btn-secondary" data-i18n="cancel">Cancel</button>
+        </div>
+    </div>
+</div>

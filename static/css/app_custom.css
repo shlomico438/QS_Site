@@ -1900,6 +1900,38 @@ body.medical-onboarding-pending .main-app-container {
     .medical-onboarding-hero { padding: 26px 16px; }
 }
 
+.pricing-page-wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 28px 16px 48px;
+}
+.pricing-page-lead {
+    text-align: center;
+    color: #64748b;
+    margin: 0 0 8px;
+    font-size: 1.05rem;
+    line-height: 1.55;
+}
+.pricing-page-cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 28px;
+}
+.pricing-page-footnote {
+    text-align: center;
+    margin-top: 12px;
+}
+.pricing-page-secondary-link {
+    background: #fff;
+    color: #0f766e;
+    border: 1px solid #99f6e4;
+}
+.medical-pricing-page-wrap .medical-pricing-section {
+    margin-top: 12px;
+}
+
 /* Burn video progress overlay */
 #burn-progress-overlay {
     position: fixed;

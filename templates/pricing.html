@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block page_title %}{% if qs_is_en %}Pricing | QuickScribe{% else %}תמחור | QuickScribe{% endif %}{% endblock %}
+{% block page_description %}{% if qs_is_en %}Simple, transparent pricing for QuickScribe transcription — free starter month, prepaid minute bundles, and medical plans.{% else %}תמחור פשוט ושקוף לתמלול QuickScribe — חודש ראשון חינם, חבילות דקות ומסלולים רפואיים.{% endif %}{% endblock %}
+
+{% block head_extra %}
+<script src="{{ url_for('static', filename='js/regular_pricing.js') }}?v={{ static_asset_version }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="pricing-page-wrap">
+    <p class="pricing-page-lead" data-i18n="pricing_page_lead">Choose the plan that fits how you transcribe.</p>
+    {% include 'snippets/regular_pricing_section.html' %}
+    <p class="pricing-page-cta">
+        <a href="{% if qs_is_en %}/en{% else %}/{% endif %}" class="seo-btn seo-btn-primary" data-i18n="pricing_start_transcribing">Start transcribing</a>
+    </p>
+</div>
+{% include 'snippets/invoice_billing_modal.html' %}
+{% endblock %}

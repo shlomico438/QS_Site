@@ -697,6 +697,7 @@ def _resolve_static_asset_version():
         os.path.join(static_root, 'js', 'app_logic.js'),
         os.path.join(static_root, 'js', 'feature_showcase.js'),
         os.path.join(static_root, 'js', 'translations.js'),
+        os.path.join(static_root, 'js', 'regular_pricing.js'),
         os.path.join(static_root, 'js', 'qs_auth_shell.js'),
         # ES module graph imported by app_logic.js (relative imports need hash churn too)
         os.path.join(static_root, 'js', 'qs_aws_transcribe_stream.js'),
@@ -8494,6 +8495,30 @@ def sitemap_xml():
         'sitemap.xml',
         mimetype='application/xml',
     )
+
+
+@app.route('/pricing')
+@app.route('/pricing/')
+def pricing():
+    return render_template('pricing.html')
+
+
+@app.route('/en/pricing')
+@app.route('/en/pricing/')
+def pricing_en():
+    return render_template('pricing.html')
+
+
+@app.route('/medical/pricing')
+@app.route('/medical/pricing/')
+def medical_pricing():
+    return render_template('medical_pricing.html')
+
+
+@app.route('/en/medical/pricing')
+@app.route('/en/medical/pricing/')
+def medical_pricing_en():
+    return render_template('medical_pricing.html')
 
 
 @app.route('/about')

@@ -245,11 +245,18 @@
         <!-- Tier 2: main navigation bar -->
         <div class="navbar-main">
             <div class="navbar-main-inner" dir="ltr">
+                {% set _nav_on_medical_path = request.path.startswith('/medical') or request.path.startswith('/en/medical') %}
+                {% if qs_is_en %}
+                    {% set nav_pricing_href = '/en/medical/pricing' if (medical_entry | default(false) or _nav_on_medical_path) else '/en/pricing' %}
+                {% else %}
+                    {% set nav_pricing_href = '/medical/pricing' if (medical_entry | default(false) or _nav_on_medical_path) else '/pricing' %}
+                {% endif %}
                 <a href="{% if medical_entry | default(false) %}/medical{% else %}/{% endif %}" class="nav-logo" id="nav-logo-link">
                     <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="nav-logo-image" width="48" height="48">
                 </a>
 
                 <nav class="nav-menu nav-menu-desktop" id="nav-menu-desktop" aria-label="Primary navigation">
+                    <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
                     <a href="/products" class="nav-item nav-products-link" id="nav-products-link" data-i18n="nav_products">Products</a>
                     <a href="/accuracy" class="nav-item" data-i18n="nav_accuracy">Accuracy</a>
                     <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
@@ -269,6 +276,7 @@
 
             <!-- Mobile navigation drawer -->
             <nav class="nav-menu nav-menu-mobile" id="nav-menu" aria-label="Mobile navigation" hidden>
+                <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
                 <a href="/products" class="nav-item nav-products-link nav-products-link-mobile" data-i18n="nav_products">Products</a>
                 <a href="/accuracy" class="nav-item" data-i18n="nav_accuracy">Accuracy</a>
                 <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
@@ -301,16 +309,16 @@
             <div class="user-menu-profile-medical" style="margin-bottom:10px;">
                 <label for="user-menu-medical-mode" style="display:flex; align-items:center; gap:8px; font-weight:600;">
                     <input type="checkbox" id="user-menu-medical-mode">
-                    <span>מצב רפואי (HIPAA)</span>
+                    <span data-i18n="medical_mode_label">Medical mode (HIPAA)</span>
                 </label>
                 <button type="button" id="user-menu-medical-billing" class="user-menu-medical-billing-btn" hidden data-i18n="medical_plan_billing">
                     Plan & billing
                 </button>
             </div>
             <div class="user-menu-profile-medical-training" style="display:none; margin-bottom:12px; padding:10px; border:1px solid #d1fae5; border-radius:10px; background:#f0fdfa;">
-                <div style="font-weight:600; color:#0f766e; margin-bottom:6px;">התאמת סגנון סיכום</div>
-                <div style="font-size:0.85rem; color:#115e59; line-height:1.45; margin-bottom:8px;">זמין אוטומטית במצב רפואי — ניתן לאמן סגנון סיכום מתחת לסיכום הרפואי, או לאפס כאן.</div>
-                <button type="button" id="user-menu-medical-training-reset" style="width:100%; padding:8px; border:1px solid #99f6e4; background:#ffffff; color:#0f766e; border-radius:8px; cursor:pointer; font-weight:600;">אפס אימון סיכום</button>
+                <div style="font-weight:600; color:#0f766e; margin-bottom:6px;" data-i18n="medical_training_style_title">Summary style adaptation</div>
+                <div style="font-size:0.85rem; color:#115e59; line-height:1.45; margin-bottom:8px;" data-i18n="medical_training_style_hint">Available automatically in medical mode — train summary style below the clinical summary, or reset here.</div>
+                <button type="button" id="user-menu-medical-training-reset" style="width:100%; padding:8px; border:1px solid #99f6e4; background:#ffffff; color:#0f766e; border-radius:8px; cursor:pointer; font-weight:600;" data-i18n="medical_training_reset_btn">Reset summary training</button>
                 <div id="user-menu-medical-training-status" style="margin-top:6px; font-size:0.8rem; color:#0f766e;"></div>
             </div>
             <label class="user-menu-profile-label" for="user-menu-name" data-i18n="display_name">Display name</label>
@@ -328,6 +336,8 @@
             </div>
         </div>
     </div>
+
+    {% include 'snippets/medical_pricing_modal.html' %}
 
     <main class="main-content" style="flex:1; min-height:0;">
         {% block content %}{% endblock %}

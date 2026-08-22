@@ -1,0 +1,107 @@
+<section id="pricing-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="pricing-section-title">
+    <div class="seo-landing-inner">
+    <h2 id="pricing-section-title">
+        {% if qs_is_en %}Simple, Transparent Pricing{% else %}תמחור פשוט ושקוף{% endif %}
+    </h2>
+    <div class="seo-pricing-grid">
+        <article class="seo-card seo-pricing-card seo-pricing-card--starter seo-pricing-card--selectable" id="seo-pricing-starter" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-starter-title">
+            <h3 id="seo-pricing-starter-title">
+                {% if qs_is_en %}Starter Plan{% else %}תוכנית Starter{% endif %}
+            </h3>
+            <div class="seo-price">
+                {% if qs_is_en %}$0{% else %}₪0{% endif %}
+                <small>{% if qs_is_en %}/ first month free{% else %}/ חודש ראשון מתנה{% endif %}</small>
+            </div>
+            <ul class="seo-pricing-features">
+                <li>
+                    {% if qs_is_en %}60 minutes of transcription (a full hour) free for your first month!{% else %}60 דקות תמלול (שעה שלמה) מתנה לחודש הראשון!{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}Full access to all AI features{% else %}גישה מלאה לכל הפיצ'רים של ה-AI{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}Advanced vocal separation and noise filtering{% else %}הפרדת קול מתקדמת וסינון רעשים{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}Standard SRT and text export{% else %}ייצוא SRT וטקסט סטנדרטי{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}No credit card required{% else %}ללא צורך בכרטיס אשראי{% endif %}
+                </li>
+            </ul>
+            <div class="seo-plan-auto-badge" aria-label="{% if qs_is_en %}Active automatically on signup{% else %}פעיל אוטומטית ברישום{% endif %}">
+                {% if qs_is_en %}Active automatically on signup{% else %}פעיל אוטומטית ברישום{% endif %}
+            </div>
+        </article>
+        <article class="seo-card seo-pricing-card seo-pricing-popular seo-pricing-card--selectable seo-pricing-card--credits" id="seo-pricing-pro" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-pro-title">
+            <div class="seo-popular-badge">
+                {% if qs_is_en %}Prepaid{% else %}תשלום מראש{% endif %}
+            </div>
+            <h3 id="seo-pricing-pro-title">
+                {% if qs_is_en %}Prepaid bundles{% else %}חבילות דקות בתשלום מראש{% endif %}
+            </h3>
+            <div class="seo-price" id="seo-credit-bundle-price">
+                {% if qs_is_en %}<span data-bundle-price="standard">$13</span>{% else %}<span data-bundle-price="standard">₪39</span>{% endif %}
+                <small>{% if qs_is_en %}<span data-bundle-price-note="standard"> / 300 min</span>{% else %}<span data-bundle-price-note="standard"> / 300 דקות</span>{% endif %}</small>
+            </div>
+            <div class="seo-credit-bundle-picker">
+                <div class="seo-credit-bundle-tabs" role="tablist" aria-label="{% if qs_is_en %}Credit bundles{% else %}חבילות קרדיט{% endif %}">
+                    <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="light" role="tab" aria-selected="false" id="seo-credit-tab-light">
+                        Light
+                    </button>
+                    <button type="button" class="seo-credit-bundle-item seo-credit-bundle-item--recommended seo-credit-bundle-tab is-selected" data-bundle="standard" role="tab" aria-selected="true" id="seo-credit-tab-standard">
+                        Standard
+                    </button>
+                    <button type="button" class="seo-credit-bundle-item seo-credit-bundle-tab" data-bundle="plus" role="tab" aria-selected="false" id="seo-credit-tab-plus">
+                        Plus
+                    </button>
+                </div>
+                <div class="seo-credit-bundle-detail" id="seo-credit-bundle-detail" role="tabpanel" aria-live="polite">
+                    <div class="seo-credit-bundle-pane" data-bundle-pane="light" hidden aria-hidden="true">
+                        {% if qs_is_en %}Light · $7 · 90 min{% else %}Light · ₪19 · 90 דקות{% endif %}
+                    </div>
+                    <div class="seo-credit-bundle-pane is-active" data-bundle-pane="standard" aria-hidden="true">
+                        {% if qs_is_en %}Standard · $13 · 300 min{% else %}Standard · ₪39 · 300 דקות{% endif %}
+                    </div>
+                    <div class="seo-credit-bundle-pane" data-bundle-pane="plus" hidden aria-hidden="true">
+                        {% if qs_is_en %}Plus · $27 · 720 min{% else %}Plus · ₪79 · 720 דקות{% endif %}
+                    </div>
+                </div>
+            </div>
+            <ul class="seo-pricing-features">
+                <li>
+                    {% if qs_is_en %}Minutes never expire in your wallet{% else %}הדקות שלך בארנק ולא פוקעות לעולם{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}Priority AI queue{% else %}תור AI בעדיפות גבוהה{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}Advanced vocal separation &amp; noise cleanup{% else %}הפרדת קול וניקוי רעשי רקע מתקדם{% endif %}
+                </li>
+            </ul>
+            <button type="button" class="seo-btn seo-btn-primary seo-bridge-action" id="seo-buy-credits-btn" data-bundle="standard">
+                {% if qs_is_en %}Buy Credits{% else %}רכישת קרדיטים{% endif %}
+            </button>
+        </article>
+        <article class="seo-card seo-pricing-card seo-pricing-card--selectable" id="seo-pricing-enterprise" role="button" tabindex="0" aria-pressed="false" aria-labelledby="seo-pricing-enterprise-title">
+            <h3 id="seo-pricing-enterprise-title">
+                {% if qs_is_en %}Enterprise / Medical{% else %}ארגוני / רפואי{% endif %}
+            </h3>
+            <ul>
+                <li>
+                    {% if qs_is_en %}<strong>HIPAA-Compliant Environment:</strong> Fully sandboxed data architecture.{% else %}<strong>סביבה תואמת HIPAA:</strong> ארכיטקטורת נתונים במרחב מבודד לחלוטין.{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}<strong>Dedicated Infrastructure:</strong> Segmented server instances and fully isolated Amazon S3 buckets.{% else %}<strong>תשתית ייעודית:</strong> מופעי שרת מפולגים ודלי Amazon S3 מבודדים לחלוטין.{% endif %}
+                </li>
+                <li>
+                    {% if qs_is_en %}<strong>No Data Logging:</strong> Zero-retention policy for strict medical and legal confidentiality.{% else %}<strong>ללא שמירת נתונים:</strong> מדיניות אפס-שמירה לסודיות רפואית ומשפטית מחמירה.{% endif %}
+                </li>
+            </ul>
+            <a href="{% if qs_is_en %}/en/medical/pricing{% else %}/medical/pricing{% endif %}" id="seo-go-medical-btn" class="seo-btn seo-btn-medical">
+                {% if qs_is_en %}View medical pricing{% else %}לתמחור הרפואי{% endif %}
+            </a>
+        </article>
+    </div>
+    </div>
+</section>

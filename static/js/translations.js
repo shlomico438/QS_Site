@@ -6,6 +6,8 @@ window.translations = {
     he: {
         // Nav (base)
         nav_products: "מוצרים",
+        nav_pricing: "תמחור",
+        nav_medical_pricing: "תמחור רפואי",
         nav_about: "אודות",
         nav_blog: "בלוג",
         nav_accuracy: "דיוק",
@@ -145,6 +147,17 @@ window.translations = {
         upload_prompt_video_or_audio: "בחר וידאו או אודיו כדי להתחיל",
         medical_session_secure_recording: "סשן הקלטה רפואי מאובטח",
         medical_session_hipaa_active: "תמלול קליני בתקן HIPAA פעיל",
+        medical_mode_label: "מצב רפואי (HIPAA)",
+        medical_mode_enabled_message: "מצב רפואי (HIPAA) פעיל — אימון סיכום זמין מתחת לסיכום הרפואי.",
+        medical_mode_disabled_message: "מצב רפואי כבוי.",
+        medical_training_style_title: "התאמת סגנון סיכום",
+        medical_training_style_hint: "זמין אוטומטית במצב רפואי — ניתן לאמן סגנון סיכום מתחת לסיכום הרפואי, או לאפס כאן.",
+        medical_training_reset_btn: "אפס אימון סיכום",
+        medical_training_resetting: "מאפס אימון...",
+        medical_training_reset_done: "האימון אופס והפרומפט האישי הושבת.",
+        medical_training_reset_failed: "איפוס נכשל: {error}",
+        medical_training_requires_mode: "יש להפעיל תחילה מצב רפואי (HIPAA).",
+        medical_training_available_hint: "אימון סיכום זמין מתחת לסיכום הרפואי.",
         medical_aws_footnote: "מבוסס על תשתית \u200fAWS",
         medical_settings: "הגדרות",
         medical_settings_test_mic: "בדיקת מיקרופון",
@@ -211,6 +224,18 @@ window.translations = {
         medical_pricing_activate_trial_first: "תחילה יש להפעיל את תקופת הניסיון.",
         medical_pricing_trial_end_warning: "המסלול יופעל והחיוב יתחיל מיד. תקופת הניסיון תסתיים עם השלמת התשלום.",
         medical_pricing_continue_payment: "המשך לתשלום",
+        pricing_page_lead: "בחרו את המסלול שמתאים לאופן שבו אתם מתמללים.",
+        pricing_start_transcribing: "התחילו לתמלל",
+        pricing_view_general: "תמחור תמלול כללי",
+        invoice_billing_title: "פרטים לחשבונית",
+        invoice_billing_sub: "נדרש לצורך הפקת חשבונית מס קבלה (נשמר במכשיר זה לרכישות הבאות).",
+        invoice_billing_tax_id: "ת.ז. / ח.פ.",
+        invoice_billing_city: "ישוב (עיר)",
+        invoice_billing_continue: "המשך לתשלום",
+        invoice_billing_tax_invalid: "נא להזין ת.ז. / ח.פ. תקין.",
+        invoice_billing_city_required: "נא להזין ישוב (עיר).",
+        medical_pricing_page_lead: "מסלולים חודשיים לתיעוד קליני מאובטח.",
+        medical_pricing_start_cta: "התחילו ניסיון רפואי",
         medical_recording: "הקלטה",
         medical_save_recording: "שמור הקלטה",
         medical_delete_recording: "מחק הקלטה",
@@ -406,6 +431,8 @@ window.translations = {
     },
     en: {
         nav_products: "Products",
+        nav_pricing: "Pricing",
+        nav_medical_pricing: "Medical pricing",
         nav_about: "About Us",
         nav_blog: "Blog",
         nav_accuracy: "Accuracy",
@@ -538,6 +565,17 @@ window.translations = {
         upload_prompt_video_or_audio: "Choose video or audio to get started",
         medical_session_secure_recording: "Secure medical recording session",
         medical_session_hipaa_active: "Clinical transcription with HIPAA mode active",
+        medical_mode_label: "Medical mode (HIPAA)",
+        medical_mode_enabled_message: "Medical mode (HIPAA) is on — summary training is available below the clinical summary.",
+        medical_mode_disabled_message: "Medical mode is off.",
+        medical_training_style_title: "Summary style adaptation",
+        medical_training_style_hint: "Available automatically in medical mode — train summary style below the clinical summary, or reset here.",
+        medical_training_reset_btn: "Reset summary training",
+        medical_training_resetting: "Resetting training…",
+        medical_training_reset_done: "Training was reset and your personal prompt was cleared.",
+        medical_training_reset_failed: "Reset failed: {error}",
+        medical_training_requires_mode: "Turn on medical mode (HIPAA) first.",
+        medical_training_available_hint: "Summary training is available below the clinical summary.",
         medical_aws_footnote: "Built on AWS infrastructure",
         medical_settings: "Settings",
         medical_settings_test_mic: "Mic test",
@@ -604,6 +642,18 @@ window.translations = {
         medical_pricing_activate_trial_first: "Start your trial period first.",
         medical_pricing_trial_end_warning: "Your plan will activate and billing will start immediately. The trial ends when payment is completed.",
         medical_pricing_continue_payment: "Continue to payment",
+        pricing_page_lead: "Choose the plan that fits how you transcribe.",
+        pricing_start_transcribing: "Start transcribing",
+        pricing_view_general: "General transcription pricing",
+        invoice_billing_title: "Invoice details",
+        invoice_billing_sub: "Required for tax invoice/receipt (saved on this device for future purchases).",
+        invoice_billing_tax_id: "ID / company no.",
+        invoice_billing_city: "City",
+        invoice_billing_continue: "Continue to payment",
+        invoice_billing_tax_invalid: "Enter a valid ID / company number.",
+        invoice_billing_city_required: "Enter a city.",
+        medical_pricing_page_lead: "Monthly plans for secure clinical documentation.",
+        medical_pricing_start_cta: "Start medical trial",
         medical_recording: "Recording",
         medical_save_recording: "Save recording",
         medical_delete_recording: "Delete recording",
@@ -880,6 +930,7 @@ window.setLocale = async function(code) {
     const initialsEl = document.getElementById('lang-initials');
     if (initialsEl) initialsEl.textContent = code === 'he' ? 'He' : 'En';
     if (typeof window.qsSyncNavLogoHref === 'function') window.qsSyncNavLogoHref();
+    if (typeof window.qsSyncMedicalNavPricingLinks === 'function') window.qsSyncMedicalNavPricingLinks();
 };
 
 /** Apply translations to all elements with data-i18n. Run after DOM ready and on language change. */
@@ -953,5 +1004,8 @@ window.applyTranslations = function() {
         if (typeof window.qsMedicalRefreshPricingUi === 'function') {
             window.qsMedicalRefreshPricingUi();
         }
+    } catch (_) {}
+    try {
+        if (typeof window.qsSyncMedicalNavPricingLinks === 'function') window.qsSyncMedicalNavPricingLinks();
     } catch (_) {}
 };

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block page_title %}{% if qs_is_en %}Medical pricing | QuickScribe{% else %}תמחור רפואי | QuickScribe{% endif %}{% endblock %}
+{% block page_description %}{% if qs_is_en %}HIPAA-aligned clinical transcription plans by monthly hour quota — Starter, Professional, and Clinic.{% else %}מסלולי תמלול קליני תואמי HIPAA לפי מכסת שעות חודשית — Starter, Professional ו-Clinic.{% endif %}{% endblock %}
+
+{% block content %}
+<div class="pricing-page-wrap medical-pricing-page-wrap">
+    <p class="pricing-page-lead" data-i18n="medical_pricing_page_lead">Monthly plans for secure clinical documentation.</p>
+    {% include 'snippets/medical_pricing_section.html' %}
+    <p class="medical-aws-footnote pricing-page-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</p>
+    <p class="pricing-page-cta">
+        <a href="{% if qs_is_en %}/en/medical{% else %}/medical{% endif %}" class="seo-btn seo-btn-medical" data-i18n="medical_pricing_start_cta">Start medical trial</a>
+        <a href="{% if qs_is_en %}/en/pricing{% else %}/pricing{% endif %}" class="seo-btn pricing-page-secondary-link" data-i18n="pricing_view_general">General transcription pricing</a>
+    </p>
+</div>
+{% endblock %}
