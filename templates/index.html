@@ -388,39 +388,39 @@ try {
             </div>
 
             <section class="medical-pricing-section" id="medical-pricing-section" aria-labelledby="medical-pricing-title">
-                <h2 id="medical-pricing-title">מסלולים פשוטים לפי שעות תמלול</h2>
+                <h2 id="medical-pricing-title" data-i18n="medical_pricing_title">Simple plans by transcription hours</h2>
                 <div class="medical-pricing-grid">
                     <article class="medical-pricing-card">
                         <h3>Starter</h3>
-                        <div class="medical-plan-price">₪149 <small>/ חודש</small></div>
-                        <strong>30 שעות תמלול בחודש</strong>
-                        <button type="button" data-medical-plan="starter">בחירת Starter</button>
+                        <div class="medical-plan-price"><span data-i18n="medical_plan_price_starter">$75</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
+                        <strong data-i18n="medical_plan_hours_starter">30 transcription hours per month</strong>
+                        <button type="button" data-medical-plan="starter" data-i18n="medical_plan_select_starter">Choose Starter</button>
                     </article>
                     <article class="medical-pricing-card is-recommended">
-                        <span class="medical-recommended-badge">מומלץ</span>
+                        <span class="medical-recommended-badge" data-i18n="medical_plan_recommended">Recommended</span>
                         <h3>Professional</h3>
-                        <div class="medical-plan-price">₪249 <small>/ חודש</small></div>
-                        <strong>60 שעות תמלול בחודש</strong>
-                        <button type="button" data-medical-plan="professional">בחירת Professional</button>
+                        <div class="medical-plan-price"><span data-i18n="medical_plan_price_professional">$125</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
+                        <strong data-i18n="medical_plan_hours_professional">60 transcription hours per month</strong>
+                        <button type="button" data-medical-plan="professional" data-i18n="medical_plan_select_professional">Choose Professional</button>
                     </article>
                     <article class="medical-pricing-card">
                         <h3>Clinic</h3>
-                        <div class="medical-plan-price">₪699 <small>/ חודש</small></div>
-                        <strong>180 שעות תמלול בחודש</strong>
-                        <span>עד 5 אנשי מקצוע</span>
-                        <button type="button" data-medical-plan="clinic">בחירת Clinic</button>
+                        <div class="medical-plan-price"><span data-i18n="medical_plan_price_clinic">$350</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
+                        <strong data-i18n="medical_plan_hours_clinic">180 transcription hours per month</strong>
+                        <span data-i18n="medical_plan_seats_clinic">Up to 5 professionals</span>
+                        <button type="button" data-medical-plan="clinic" data-i18n="medical_plan_select_clinic">Choose Clinic</button>
                     </article>
                 </div>
-                <p class="medical-overage-note">תמלול נוסף מעבר למכסה: ₪6 לשעה.</p>
+                <p class="medical-overage-note" data-i18n="medical_overage_note">Additional transcription beyond quota: $3 per hour.</p>
             </section>
             <p class="medical-aws-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</p>
         </section>
 
         <div id="medical-pricing-modal" class="medical-pricing-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="medical-pricing-modal-title">
-            <div class="medical-pricing-modal-card" dir="rtl">
-                <button type="button" id="medical-pricing-modal-close" class="medical-pricing-modal-close" aria-label="סגירה">×</button>
-                <h2 id="medical-pricing-modal-title">בחירת מסלול רפואי</h2>
-                <p id="medical-pricing-modal-message" class="medical-pricing-modal-intro" role="status" aria-live="polite">בחרו את מכסת שעות התמלול המתאימה לכם.</p>
+            <div class="medical-pricing-modal-card" dir="auto">
+                <button type="button" id="medical-pricing-modal-close" class="medical-pricing-modal-close" data-i18n-aria-label="medical_mic_close" aria-label="Close">×</button>
+                <h2 id="medical-pricing-modal-title" data-i18n="medical_pricing_modal_title">Choose a medical plan</h2>
+                <p id="medical-pricing-modal-message" class="medical-pricing-modal-intro" role="status" aria-live="polite" data-i18n="medical_pricing_modal_intro">Choose the transcription hour quota that fits your practice.</p>
                 <div id="medical-pricing-modal-content"></div>
             </div>
         </div>
@@ -429,8 +429,8 @@ try {
             <h2 id="medical-session-title" style="margin:0; color:#0f766e;" data-i18n="medical_session_secure_recording">Secure medical recording session</h2>
             <p id="medical-session-subtitle" style="margin:4px 0 0; color:#0f766e;" data-i18n="medical_session_hipaa_active">Clinical transcription with HIPAA mode active</p>
             <div id="medical-usage-status" class="medical-usage-status" aria-live="polite"></div>
-            <button type="button" id="medical-open-pricing-btn" class="medical-open-pricing-btn" hidden>
-                בחירת מסלול
+            <button type="button" id="medical-open-pricing-btn" class="medical-open-pricing-btn" hidden data-i18n="medical_choose_plan">
+                Choose plan
             </button>
         </section>
         <div id="medical-warmup-banner" class="medical-warmup-banner" style="display:none;" role="status" aria-live="polite" dir="rtl">

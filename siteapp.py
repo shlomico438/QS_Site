@@ -468,7 +468,46 @@ def _resolve_medical_task2_prompt(output_lang_label, lang_hint, user_id=None, pr
     env_prompt = _render_medical_task2_prompt_override(output_lang_label, lang_hint)
     if env_prompt:
         return env_prompt
+    specialty = _medical_professional_specialty(user_id)
+    if _is_psychology_specialty(specialty):
+        return (
+            _default_medical_task2_prompt_psychology_single_shot()
+            if single_shot
+            else _default_medical_task2_prompt_psychology_summary_only()
+        )
     return _default_medical_task2_prompt_single_shot() if single_shot else _default_medical_task2_prompt_summary_only()
+
+
+def _medical_professional_specialty(user_id):
+    uid = str(user_id or '').strip()
+    if not uid:
+        return ''
+    try:
+        from medical_saas import _medical_account_get
+        account = _medical_account_get(uid)
+        return str((account or {}).get('professional_specialty') or '').strip()
+    except Exception as e:
+        logging.warning("medical specialty lookup error: %s", e)
+        return ''
+
+
+def _is_psychology_specialty(specialty):
+    s = str(specialty or '').strip().lower()
+    return s in ('psychologist', 'psychology', 'פסיכולוגיה')
+
+
+def _medical_summary_section_labels(specialty=None):
+    if _is_psychology_specialty(specialty):
+        return {
+            'chief': 'תכנים מרכזיים',
+            'exam': 'התרשמות רגשית',
+            'rec': 'דגשים להמשך',
+        }
+    return {
+        'chief': 'תלונה',
+        'exam': 'ממצאים',
+        'rec': 'המלצות למטופל',
+    }
 
 
 def _default_medical_task2_prompt_single_shot():
@@ -508,6 +547,99 @@ def _default_medical_task2_prompt_summary_only():
         "End patient_recommendations with one short line that the text must be verified against the recording "
         "and the responsible clinician.\n\n"
     )
+
+
+# Psychology Task 2: style + per-field prompts (override individually later via env or specialty config).
+# JSON output keys stay chief_complaint / examination_transcript / patient_recommendations for storage;
+# semantic names: central_themes / emotional_impression / future_focus.
+_GPT_PSYCHOLOGY_WRITTEN_STYLE_NOTE = (
+    "Clinical psychology written style for Task 2 ONLY "
+    "(chief_complaint / central_themes, examination_transcript / emotional_impression, "
+    "patient_recommendations / future_focus)—never for clean_transcript: "
+    "Use formal clinical psychology chart/protocol prose—clear, compact sentences suitable for a chart—"
+    "not spoken Hebrew transcribed verbatim. "
+    "In Hebrew, rewrite clinician->patient speech into passive/third person "
+    "(המטופל / המטופלת / שיתף כי... / עלה בטיפול). "
+    "Avoid bedside אתה/אותך in the first two sections (central_themes and emotional_impression) "
+    "except for a necessary direct quote. "
+    "Drop oral fillers like אז, כאילו, אממ, and similar unless they are a required direct quote. "
+    "Never change facts, described events, or emotional states.\n\n"
+)
+
+# Per-field psychology prompts — ready to replace independently.
+_PSYCHOLOGY_TASK2_FIELD_PROMPTS = {
+    # Maps to JSON key chief_complaint → medical_chief_complaint
+    "central_themes": (
+        "chief_complaint (central_themes) — \"תכנים מרכזיים\": main topics, life events, conflicts, "
+        "and subjective experiences shared by the patient; third person; factual and brief. "
+        "If unclear or not in the transcript, use an explicit not-stated phrase in the output language.\n\n"
+    ),
+    # Maps to JSON key examination_transcript → medical_examination_transcript
+    "emotional_impression": (
+        "examination_transcript (emotional_impression) — \"התרשמות רגשית\": patient's emotional state, "
+        "affect, and therapeutic interventions/observations in chart voice "
+        "(e.g. \"המטופל נראה מתוח\", not \"אתה נראה מתוח\"). "
+        "Light edits only; invent nothing. "
+        "If nothing appears in the transcript for this section, use an explicit not-stated phrase "
+        "in the output language.\n\n"
+    ),
+    # Maps to JSON key patient_recommendations → medical_patient_recommendations
+    "future_focus": (
+        "patient_recommendations (future_focus) — \"דגשים להמשך\": goals for next session, "
+        "unresolved themes, or homework/tasks given to the patient only if stated. "
+        "If none, not-stated in the output language. "
+        "End this field with one short line that the text must be verified against the recording "
+        "and the responsible clinician.\n\n"
+    ),
+}
+
+# Stable JSON key → semantic psychology field id (for future per-field overrides).
+_PSYCHOLOGY_JSON_KEY_TO_FIELD = {
+    "chief_complaint": "central_themes",
+    "examination_transcript": "emotional_impression",
+    "patient_recommendations": "future_focus",
+}
+
+
+def _psychology_task2_field_prompt(field_id):
+    """Resolve one psychology field prompt; env override MEDICAL_PSYCHOLOGY_PROMPT_<FIELD> wins."""
+    fid = str(field_id or "").strip().lower()
+    env_map = {
+        "central_themes": "MEDICAL_PSYCHOLOGY_PROMPT_CENTRAL_THEMES",
+        "emotional_impression": "MEDICAL_PSYCHOLOGY_PROMPT_EMOTIONAL_IMPRESSION",
+        "future_focus": "MEDICAL_PSYCHOLOGY_PROMPT_FUTURE_FOCUS",
+    }
+    env_name = env_map.get(fid)
+    if env_name:
+        override = _env_prompt_override(env_name)
+        if override:
+            return override if override.endswith("\n") else (override + "\n")
+    text = str(_PSYCHOLOGY_TASK2_FIELD_PROMPTS.get(fid) or "").strip()
+    if not text:
+        return ""
+    return text if text.endswith("\n") else (text + "\n")
+
+
+def _compose_psychology_task2_prompt():
+    """Compose psychology Task 2 from style note + per-field prompts."""
+    style = _env_prompt_override("MEDICAL_PSYCHOLOGY_STYLE_NOTE") or _GPT_PSYCHOLOGY_WRITTEN_STYLE_NOTE
+    if style and not style.endswith("\n"):
+        style += "\n"
+    parts = [style]
+    for field_id in ("central_themes", "emotional_impression", "future_focus"):
+        parts.append(_psychology_task2_field_prompt(field_id))
+    return "".join(parts)
+
+
+def _default_medical_task2_prompt_psychology_single_shot():
+    return (
+        "Task 2 – Psychology session summary (documentation support only; not a substitute for clinical judgment).\n"
+        + _compose_psychology_task2_prompt()
+    )
+
+
+def _default_medical_task2_prompt_psychology_summary_only():
+    return _compose_psychology_task2_prompt()
 
 
 def _safe_rsid(value, fallback):
@@ -3118,14 +3250,26 @@ def _is_medical_s3_key(s3_key):
 
 
 def _require_medical_kms_or_raise(is_medical):
-    if SIMULATION_MODE:
-        return 'simulated-kms-key'
+    """Return KMS key id for medical uploads, or '' when SSE-KMS should be omitted.
+
+    In SIMULATION_MODE with mock uploads, returns a placeholder that must never be
+    sent to AWS. When simulation uses real S3/R2 multipart, use the configured
+    key — or omit SSE-KMS if none is set (do not send 'simulated-kms-key').
+    """
     if not is_medical:
         return ''
+    if SIMULATION_MODE and _simulation_should_mock_upload():
+        return 'simulated-kms-key'
     kms_arn = _kms_key_arn()
-    if not kms_arn:
-        raise ValueError("Medical mode requires KMS key env (KMS_ARN_ENV or MEDICAL_KMS_KEY_ARN)")
-    return kms_arn
+    if kms_arn:
+        return kms_arn
+    if SIMULATION_MODE:
+        logging.warning(
+            "SIMULATION_MODE medical storage without KMS_ARN_ENV/MEDICAL_KMS_KEY_ARN; "
+            "omitting SSE-KMS (refusing fake keyId simulated-kms-key)"
+        )
+        return ''
+    raise ValueError("Medical mode requires KMS key env (KMS_ARN_ENV or MEDICAL_KMS_KEY_ARN)")
 
 
 def _resolve_storage_profile(user_id, input_s3_key=None, is_medical=None):
@@ -7245,6 +7389,8 @@ def _doctor_prompt_current_base(user_id, candidate_prompt=None):
     env_prompt = _env_prompt_override("MEDICAL_TASK2_PROMPT_OVERRIDE")
     if env_prompt:
         return env_prompt
+    if _is_psychology_specialty(_medical_professional_specialty(user_id)):
+        return _default_medical_task2_prompt_psychology_summary_only()
     return _default_medical_task2_prompt_summary_only()
 
 
@@ -9661,9 +9807,9 @@ def _strip_leading_exam_trace_legacy_prefix(exam_text):
 
 
 _MEDICAL_SECTION_HEADER_LABELS = {
-    "chief": ("תלונה עיקרית", "תלונה", "תלונות"),
-    "exam": ("ממצאים", "בדיקה"),
-    "rec": ("המלצות למטופל", "המלצות"),
+    "chief": ("תלונה עיקרית", "תלונה", "תלונות", "תכנים מרכזיים"),
+    "exam": ("ממצאים", "בדיקה", "התרשמות רגשית"),
+    "rec": ("המלצות למטופל", "המלצות", "דגשים להמשך"),
 }
 
 
@@ -9710,14 +9856,22 @@ def _strip_leading_medical_section_header(text, section_key=None):
 
 def _medical_summary_from_parsed(parsed, want_hebrew):
     """Map OpenAI three-part clinical JSON (+ legacy overview/key_points) to stored formatted fields."""
-    chief = str((parsed or {}).get("chief_complaint") or "").strip()
-    exam = str((parsed or {}).get("examination_transcript") or "").strip()
-    rec = str((parsed or {}).get("patient_recommendations") or "").strip()
+    p = parsed or {}
+    # Standard medical JSON keys, plus psychology semantic aliases (central_themes / …).
+    chief = str(
+        p.get("chief_complaint") or p.get("central_themes") or ""
+    ).strip()
+    exam = str(
+        p.get("examination_transcript") or p.get("emotional_impression") or ""
+    ).strip()
+    rec = str(
+        p.get("patient_recommendations") or p.get("future_focus") or ""
+    ).strip()
     if not chief and not exam and not rec:
-        chief = str((parsed or {}).get("overview") or "").strip()
-        kps = (parsed or {}).get("key_points")
+        chief = str(p.get("overview") or "").strip()
+        kps = p.get("key_points")
         if isinstance(kps, list):
-            kps = [str(p).strip() for p in kps if str(p).strip()]
+            kps = [str(x).strip() for x in kps if str(x).strip()]
             if len(kps) >= 1:
                 exam = kps[0]
             if len(kps) >= 2:
@@ -9737,7 +9891,7 @@ def _medical_summary_from_parsed(parsed, want_hebrew):
     rec_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(rec_t))
     exam_t = _strip_leading_exam_trace_legacy_prefix(exam_t)
     exam_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(exam_t))
-    kp_out = [p for p in (exam_t, rec_t) if p]
+    kp_out = [x for x in (exam_t, rec_t) if x]
     return {
         "overview": chief_t,
         "key_points": kp_out,
@@ -10066,13 +10220,21 @@ def _format_unified_transcript_openai(
     want_hebrew = lang_hint.startswith('he')
     output_lang_label = 'Hebrew' if want_hebrew else target_lang
     if is_medical:
+        specialty = _medical_professional_specialty(user_id)
+        psych = _is_psychology_specialty(specialty)
+        forbidden_labels = (
+            "'תכנים מרכזיים:', 'התרשמות רגשית:', 'דגשים להמשך:', "
+            "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+            if psych
+            else "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+        )
         system_prompt = (
             "You are an expert transcript editor for clinical encounters. "
             "Return ONLY valid JSON with exactly these keys: "
             "{\"clean_transcript\":string,\"chief_complaint\":string,\"examination_transcript\":string,\"patient_recommendations\":string} . "
             "Do not include markdown fences. Keep original language and directionality for clean_transcript. "
             "clean_transcript must read as spoken encounter dialogue; chart/protocol style applies only to the three summary fields. "
-            "CRITICAL: Do NOT include any section title or label (such as 'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+            f"CRITICAL: Do NOT include any section title or label (such as {forbidden_labels}"
             "or any English equivalent) inside the JSON string values. "
             "Start each summary field value directly with the clinical content, without any heading prefix. "
             "CRITICAL: Never invent symptoms, exam findings, dialogue, or recommendations that are not supported by the transcript. "
@@ -11616,14 +11778,16 @@ def api_export_docx():
             me = str(fmt.get('medical_examination_transcript') or '').strip()
             mr = str(fmt.get('medical_patient_recommendations') or '').strip()
             if mc or me or mr:
+                specialty = str(data.get('professionalSpecialty') or data.get('professional_specialty') or '').strip()
+                labels = _medical_summary_section_labels(specialty)
                 lines = []
-                lines.append('תלונה עיקרית:')
+                lines.append(f"{labels['chief']}:")
                 lines.append(mc or 'לא צוין.')
                 lines.append('')
-                lines.append('ממצאים:')
+                lines.append(f"{labels['exam']}:")
                 lines.append(me or 'לא צוין.')
                 lines.append('')
-                lines.append('המלצות למטופל:')
+                lines.append(f"{labels['rec']}:")
                 lines.append(mr or 'לא צוין.')
             else:
                 overview   = str(fmt.get('overview') or '').strip()
@@ -12733,7 +12897,7 @@ def sign_s3():
             'Key': s3_key,
             'ContentType': file_type
         }
-        if is_medical:
+        if is_medical and kms_arn:
             params['ServerSideEncryption'] = 'aws:kms'
             params['SSEKMSKeyId'] = kms_arn
 
@@ -12782,7 +12946,7 @@ def sign_s3():
                     {
                         'x-amz-server-side-encryption': 'aws:kms',
                         'x-amz-server-side-encryption-aws-kms-key-id': kms_arn
-                    } if is_medical else {}
+                    } if (is_medical and kms_arn) else {}
                 )
             },
             'isMedical': is_medical
@@ -12917,7 +13081,7 @@ def sign_s3_multipart_init():
         'Key': s3_key,
         'ContentType': file_type,
     }
-    if is_medical:
+    if is_medical and kms_arn:
         create_params['ServerSideEncryption'] = 'aws:kms'
         create_params['SSEKMSKeyId'] = kms_arn
 

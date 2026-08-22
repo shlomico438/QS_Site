@@ -780,6 +780,17 @@ function qsMedicalPendingOnboardingClear() {
     try { sessionStorage.removeItem(QS_MEDICAL_PENDING_ONBOARDING_KEY); } catch (_) {}
 }
 
+function qsMedicalFormatUsageText(key, vars) {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    let text = String(T(key) || '');
+    if (vars && typeof vars === 'object') {
+        Object.keys(vars).forEach((name) => {
+            text = text.replace(new RegExp(`\\{${name}\\}`, 'g'), String(vars[name]));
+        });
+    }
+    return text;
+}
+
 function qsMedicalRenderUsage(account) {
     const el = document.getElementById('medical-usage-status');
     if (!el || !account) return;
@@ -789,20 +800,66 @@ function qsMedicalRenderUsage(account) {
     const plan = String(account.subscriptionPlan || 'trial');
     const trialDays = account.trialDaysRemaining;
     const prefix = plan === 'trial'
-        ? `ניסיון: ${Math.max(0, Number(trialDays || 0))} ימים נותרו`
+        ? qsMedicalFormatUsageText('medical_usage_trial_days', {
+            days: Math.max(0, Number(trialDays || 0)),
+        })
         : `${plan}`;
     const overage = Number(account.overageHours || 0);
     el.textContent = overage > 0
-        ? `${prefix} · ${used.toFixed(1)} שעות נוצלו · ${overage.toFixed(1)} שעות נוספות`
-        : `${prefix} · ${remaining.toFixed(1)} מתוך ${included.toFixed(0)} שעות נותרו`;
+        ? `${prefix} · ${qsMedicalFormatUsageText('medical_usage_overage', {
+            used: used.toFixed(1),
+            overage: overage.toFixed(1),
+        })}`
+        : `${prefix} · ${qsMedicalFormatUsageText('medical_usage_hours_remaining', {
+            remaining: remaining.toFixed(1),
+            included: included.toFixed(0),
+        })}`;
 }
+window.qsMedicalRenderUsage = qsMedicalRenderUsage;
 
 function qsMedicalSetPricingMessage(message, isError = false) {
     const el = document.getElementById('medical-pricing-modal-message');
     if (!el) return;
-    el.textContent = String(message || 'בחרו את מכסת שעות התמלול המתאימה לכם.');
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    el.textContent = String(message || T('medical_pricing_modal_intro'));
     el.classList.toggle('is-error', !!isError);
 }
+
+function qsMedicalApplyPricingTranslations(root) {
+    if (!root) return;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    root.querySelectorAll('[data-i18n]').forEach((el) => {
+        const key = el.getAttribute('data-i18n');
+        if (key) el.textContent = T(key);
+    });
+    root.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+        const key = el.getAttribute('data-i18n-aria-label');
+        if (key) el.setAttribute('aria-label', T(key));
+    });
+}
+
+function qsMedicalRefreshPricingUi() {
+    const isEn = String(window.currentLocale || document.documentElement.lang || 'he')
+        .toLowerCase()
+        .startsWith('en');
+    const modalCard = document.querySelector('#medical-pricing-modal .medical-pricing-modal-card');
+    if (modalCard) modalCard.dir = isEn ? 'ltr' : 'rtl';
+    qsMedicalApplyPricingTranslations(document.getElementById('medical-pricing-section'));
+    qsMedicalApplyPricingTranslations(document.getElementById('medical-pricing-modal'));
+    qsMedicalApplyPricingTranslations(document.getElementById('medical-pricing-modal-content'));
+    const msgEl = document.getElementById('medical-pricing-modal-message');
+    if (msgEl && !msgEl.classList.contains('is-error')) {
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        msgEl.textContent = T('medical_pricing_modal_intro');
+    }
+    if (typeof qsMedicalRefreshPricingButtonLabels === 'function') {
+        qsMedicalRefreshPricingButtonLabels(window.__QS_MEDICAL_ACCOUNT);
+    }
+    if (typeof qsMedicalRenderUsage === 'function' && window.__QS_MEDICAL_ACCOUNT) {
+        qsMedicalRenderUsage(window.__QS_MEDICAL_ACCOUNT);
+    }
+}
+window.qsMedicalRefreshPricingUi = qsMedicalRefreshPricingUi;
 
 function qsMedicalWirePlanButtons(root = document) {
     const cards = Array.from(root.querySelectorAll('.medical-pricing-card'));
@@ -855,6 +912,7 @@ function qsOpenMedicalPricingModal() {
     content.replaceChildren(pricing);
     qsMedicalWirePlanButtons(content);
     qsMedicalSetPricingMessage();
+    qsMedicalRefreshPricingUi();
     try { document.body.appendChild(modal); } catch (_) {}
     modal.hidden = false;
     modal.setAttribute('aria-hidden', 'false');
@@ -1018,6 +1076,24 @@ async function qsRegularEnsureGuestStartChoice(options) {
 }
 window.qsRegularEnsureGuestStartChoice = qsRegularEnsureGuestStartChoice;
 
+function qsMedicalPricingButtonLabel(subscriptionPlan) {
+    const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
+    const isTrial = String(subscriptionPlan || 'trial') === 'trial';
+    return isTrial
+        ? T('medical_choose_plan', 'Choose plan')
+        : T('medical_plan_billing', 'Plan & billing');
+}
+
+function qsMedicalRefreshPricingButtonLabels(account) {
+    const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
+    const label = qsMedicalPricingButtonLabel(account?.subscriptionPlan);
+    const pricingButton = document.getElementById('medical-open-pricing-btn');
+    const billingButton = document.getElementById('user-menu-medical-billing');
+    if (pricingButton) pricingButton.textContent = label;
+    if (billingButton) billingButton.textContent = T('medical_plan_billing', 'Plan & billing');
+}
+window.qsMedicalRefreshPricingButtonLabels = qsMedicalRefreshPricingButtonLabels;
+
 function qsMedicalApplyAccessState(account) {
     window.__QS_MEDICAL_ACCOUNT = account || null;
     const onboarding = document.getElementById('medical-onboarding-screen');
@@ -1034,10 +1110,8 @@ function qsMedicalApplyAccessState(account) {
     if (onboarding) onboarding.hidden = !pending;
     if (pricingButton) {
         pricingButton.hidden = pending;
-        pricingButton.textContent = String(account?.subscriptionPlan || 'trial') === 'trial'
-            ? 'בחירת מסלול'
-            : 'מסלול וחיוב';
     }
+    qsMedicalRefreshPricingButtonLabels(account);
     if (billingButton) billingButton.hidden = !account || account.onboardingRequired === true;
     if (!pending) {
         qsMedicalRenderUsage(account);
@@ -1072,19 +1146,23 @@ async function qsMedicalAccountFetch() {
 async function qsStartMedicalPlanCheckout(plan) {
     const normalized = String(plan || '').trim().toLowerCase();
     if (!['starter', 'professional', 'clinic'].includes(normalized)) return;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
     try {
-        qsMedicalSetPricingMessage('בודקים את פרטי המסלול…');
+        qsMedicalSetPricingMessage(T('medical_pricing_checking_plan'));
         const account = await qsMedicalAccountFetch();
         if (!account || account.onboardingRequired) {
-            qsMedicalSetOnboardingMessage('תחילה יש להפעיל את תקופת הניסיון.', true);
+            qsMedicalSetOnboardingMessage(T('medical_pricing_activate_trial_first'), true);
             document.getElementById('medical-activation-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             return;
         }
         if (String(account.subscriptionPlan || 'trial') === 'trial') {
-            const warning = 'המסלול יופעל והחיוב יתחיל מיד. תקופת הניסיון תסתיים עם השלמת התשלום.';
+            const warning = T('medical_pricing_trial_end_warning');
             qsCloseMedicalPricingModal();
             const approved = typeof showGlobalConfirm === 'function'
-                ? await showGlobalConfirm(warning, { confirmText: 'המשך לתשלום', cancelText: 'ביטול' })
+                ? await showGlobalConfirm(warning, {
+                    confirmText: T('medical_pricing_continue_payment'),
+                    cancelText: T('cancel'),
+                })
                 : window.confirm(warning);
             if (!approved) {
                 qsOpenMedicalPricingModal();
@@ -2805,7 +2883,8 @@ function qsApplyTranscriptPayloadFromJson(tr) {
     let segments = Array.isArray(tr.segments) ? tr.segments : [];
     if (segments.length) {
         const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
-        if (model) {
+        const medicalBoxes = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+        if (model && !medicalBoxes) {
             window.currentWords = model.words;
             window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 54);
             window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
@@ -2813,7 +2892,8 @@ function qsApplyTranscriptPayloadFromJson(tr) {
         }
         window.currentWords = null;
         window.currentCaptions = null;
-        window.currentSegments = splitLongSegments(segments, 40);
+        // Medical stream JSON is often one long dialogue segment — do not chop into subtitle boxes.
+        window.currentSegments = medicalBoxes ? segments : splitLongSegments(segments, 40);
         return window.currentSegments;
     }
     return [];
@@ -8466,8 +8546,11 @@ function _stripLeadingMedicalExamLegacyPrefix(s) {
 /** All known Hebrew section header labels across all sections. */
 const _MEDICAL_SECTION_ALL_LABELS = [
     'תלונה עיקרית', 'תלונה', 'תלונות',
+    'תכנים מרכזיים',
     'ממצאים', 'בדיקה',
-    'המלצות למטופל', 'המלצות'
+    'התרשמות רגשית',
+    'המלצות למטופל', 'המלצות',
+    'דגשים להמשך'
 ];
 
 /** Strip any leading section header (from any section) from the field value.
@@ -8869,13 +8952,13 @@ function getMedicalActiveTabTextForCopy() {
         const mr = String(fmt.medical_patient_recommendations || '').trim();
         if (mc || me || mr) {
             const lines = [];
-            lines.push('תלונה:');
+            lines.push(`${_medicalSummarySectionLabel('chief')}:`);
             lines.push(mc || 'לא צוין.');
             lines.push('');
-            lines.push('ממצאים:');
+            lines.push(`${_medicalSummarySectionLabel('exam')}:`);
             lines.push(me || 'לא צוין.');
             lines.push('');
-            lines.push('המלצות למטופל:');
+            lines.push(`${_medicalSummarySectionLabel('rec')}:`);
             lines.push(mr || 'לא צוין.');
             return lines.join('\n').trim();
         }
@@ -9347,9 +9430,9 @@ function medicalTrainingSummaryText(fmt) {
     const exam = _medicalSummaryFieldBody(f.medical_examination_transcript, 'exam');
     const rec = _medicalSummaryFieldBody(f.medical_patient_recommendations, 'rec');
     if (chief || exam || rec) {
-        parts.push(`תלונה:\n${chief}`);
-        parts.push(`ממצאים:\n${exam}`);
-        parts.push(`המלצות למטופל:\n${rec}`);
+        parts.push(`${_medicalSummarySectionLabel('chief')}:\n${chief}`);
+        parts.push(`${_medicalSummarySectionLabel('exam')}:\n${exam}`);
+        parts.push(`${_medicalSummarySectionLabel('rec')}:\n${rec}`);
         return parts.join('\n\n').trim();
     }
     const overview = String(f.overview || '').trim();
@@ -11425,13 +11508,13 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             if (kind === 'summary') {
                 if (payload.mc || payload.me || payload.mr) {
                     const lines = [];
-                    lines.push('תלונה:');
+                    lines.push(`${_medicalSummarySectionLabel('chief')}:`);
                     lines.push(payload.mc || 'לא צוין.');
                     lines.push('');
-                    lines.push('ממצאים:');
+                    lines.push(`${_medicalSummarySectionLabel('exam')}:`);
                     lines.push(payload.me || 'לא צוין.');
                     lines.push('');
-                    lines.push('המלצות למטופל:');
+                    lines.push(`${_medicalSummarySectionLabel('rec')}:`);
                     lines.push(payload.mr || 'לא צוין.');
                     return lines.join('\n').trim();
                 }
@@ -11506,7 +11589,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     formatted: formattedForServer,
                     allow_gpt_fallback: false,
                     filename: docBase,
-                    isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
+                    isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false,
+                    professionalSpecialty: typeof qsMedicalProfessionalSpecialty === 'function'
+                        ? qsMedicalProfessionalSpecialty()
+                        : ''
                 })
             });
             if (!res.ok) {
@@ -21400,6 +21486,25 @@ const QS_MEDICAL_SUMMARY_SECTION_LABELS = {
     rec: 'המלצות למטופל'
 };
 
+const QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY = {
+    chief: 'תכנים מרכזיים',
+    exam: 'התרשמות רגשית',
+    rec: 'דגשים להמשך'
+};
+
+function qsMedicalProfessionalSpecialty() {
+    const fromAccount = String(window.__QS_MEDICAL_ACCOUNT?.professionalSpecialty || '').trim();
+    if (fromAccount) return fromAccount;
+    return String(document.getElementById('auth-medical-specialty')?.value || '').trim();
+}
+
+function qsIsMedicalPsychologySpecialty(specialty) {
+    const s = String(specialty != null ? specialty : qsMedicalProfessionalSpecialty())
+        .trim()
+        .toLowerCase();
+    return s === 'psychologist' || s === 'psychology' || s === 'פסיכולוגיה';
+}
+
 function _medicalText(key, fallback) {
     if (typeof window.t === 'function') {
         const value = window.t(key);
@@ -21409,6 +21514,17 @@ function _medicalText(key, fallback) {
 }
 
 function _medicalSummarySectionLabel(sectionKey) {
+    if (qsIsMedicalPsychologySpecialty()) {
+        const psychKeyMap = {
+            chief: 'medical_summary_chief_psychology',
+            exam: 'medical_summary_exam_psychology',
+            rec: 'medical_summary_recommendations_psychology'
+        };
+        return _medicalText(
+            psychKeyMap[sectionKey],
+            QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY[sectionKey] || sectionKey
+        );
+    }
     const keyMap = {
         chief: 'medical_summary_chief',
         exam: 'medical_summary_exam',
