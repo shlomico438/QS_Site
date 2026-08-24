@@ -854,8 +854,8 @@ function resolveLocale() {
     } catch (_) {}
     try {
         const path = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
-        if (path === '/en') return 'en';
-        if (path === '/he' || path === '/') return 'he';
+        if (path === '/en' || path.startsWith('/en/')) return 'en';
+        if (path === '/he' || path.startsWith('/he/') || path === '/') return 'he';
     } catch (_) {}
     try {
         const stored = String(localStorage.getItem('locale') || '').toLowerCase().split('-')[0];
@@ -886,10 +886,23 @@ window.setLocale = async function(code) {
     try {
         if (typeof window !== 'undefined' && window.location) {
             const u = new URL(window.location.href);
-            const path = String(u.pathname || '/');
-            const isHomePath = (path === '/' || path === '/he' || path === '/he/' || path === '/en' || path === '/en/');
-            if (isHomePath) {
-                u.pathname = (code === 'en') ? '/en' : '/';
+            const path = String(u.pathname || '/').replace(/\/+$/, '') || '/';
+            const isHomePath = (path === '/' || path === '/he' || path === '/en');
+            const localizedPathMap = {
+                '/': { he: '/', en: '/en' },
+                '/he': { he: '/', en: '/en' },
+                '/en': { he: '/', en: '/en' },
+                '/medical': { he: '/medical', en: '/en/medical' },
+                '/en/medical': { he: '/medical', en: '/en/medical' },
+                '/he/medical': { he: '/medical', en: '/en/medical' },
+                '/pricing': { he: '/pricing', en: '/en/pricing' },
+                '/en/pricing': { he: '/pricing', en: '/en/pricing' },
+                '/medical/pricing': { he: '/medical/pricing', en: '/en/medical/pricing' },
+                '/en/medical/pricing': { he: '/medical/pricing', en: '/en/medical/pricing' },
+            };
+            const mapped = localizedPathMap[path];
+            if (mapped || isHomePath) {
+                u.pathname = (mapped && mapped[code]) || (code === 'en' ? '/en' : '/');
                 // Never use ?lang= URLs; locale homes use / (Hebrew) and /en.
                 u.searchParams.delete('lang');
                 const next = u.pathname + u.search + u.hash;

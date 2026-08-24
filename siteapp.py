@@ -8472,6 +8472,28 @@ def medical_app():
     return render_template('index.html', medical_entry=True)
 
 
+@app.route('/en/medical')
+def medical_app_en():
+    """English medical marketing / app shell (locale from /en prefix)."""
+    return render_template('index.html', medical_entry=True)
+
+
+@app.route('/en/medical/')
+def medical_app_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/medical' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
+
+
+@app.route('/he/medical')
+@app.route('/he/medical/')
+def medical_app_he():
+    # Legacy Hebrew prefix; Hebrew medical home is /medical (same as /he → /).
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/medical' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
+
+
 @app.route('/favicon.ico')
 def favicon_ico():
     """Browsers request /favicon.ico by default; base.html uses images/favicon.png."""

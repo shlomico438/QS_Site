@@ -303,14 +303,46 @@ function qsShouldPreferMedicalAppShell() {
     return false;
 }
 
+/** Normalize pathname (no trailing slash except root). */
+function qsNormalizePathname(pathname) {
+    return String(pathname != null ? pathname : ((window.location && window.location.pathname) || '/'))
+        .replace(/\/+$/, '') || '/';
+}
+
+/** True for medical app/marketing homes: /medical, /en/medical (and legacy /he/medical). */
+function qsIsMedicalAppPath(pathname) {
+    const p = qsNormalizePathname(pathname);
+    return p === '/medical' || p === '/en/medical' || p === '/he/medical';
+}
+
+/** Locale-aware medical home path (/medical vs /en/medical). */
+function qsMedicalHomePath(locale) {
+    let loc = locale;
+    if (loc == null || loc === '') {
+        try {
+            loc = typeof qsResolveAppLocale === 'function'
+                ? qsResolveAppLocale()
+                : (window.currentLocale || localStorage.getItem('locale') || 'he');
+        } catch (_) {
+            loc = 'he';
+        }
+    }
+    loc = String(loc || 'he').toLowerCase().split('-')[0];
+    return loc === 'en' ? '/en/medical' : '/medical';
+}
+window.qsNormalizePathname = qsNormalizePathname;
+window.qsIsMedicalAppPath = qsIsMedicalAppPath;
+window.qsMedicalHomePath = qsMedicalHomePath;
+
 /**
  * Build in-app open URL. Medical sessions (or clinical S3 keys) always use /medical?open=
  * so boot does not clear HIPAA mode (unlike /?open= on Core).
  */
 function qsOpenJobInAppUrl(jobId, s3KeyHint) {
     const id = String(jobId || '').trim();
+    const medicalHome = (typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical');
     if (!id) {
-        return qsShouldPreferMedicalAppShell() ? '/medical' : '/';
+        return qsShouldPreferMedicalAppShell() ? medicalHome : '/';
     }
     let medical = qsShouldPreferMedicalAppShell();
     if (!medical && s3KeyHint && typeof isMedicalLayoutS3Key === 'function') {
@@ -319,7 +351,7 @@ function qsOpenJobInAppUrl(jobId, s3KeyHint) {
     if (!medical && s3KeyHint && typeof isMedicalLayoutRawAudioKey === 'function') {
         try { medical = !!isMedicalLayoutRawAudioKey(s3KeyHint); } catch (_) {}
     }
-    const base = medical ? '/medical' : '/';
+    const base = medical ? medicalHome : '/';
     return base + '?open=' + encodeURIComponent(id);
 }
 window.qsOpenJobInAppUrl = qsOpenJobInAppUrl;
@@ -334,8 +366,8 @@ function qsResolveAppLocale() {
     } catch (_) {}
     try {
         const path = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
-        if (path === '/en') return 'en';
-        if (path === '/he' || path === '/') return 'he';
+        if (path === '/en' || path.startsWith('/en/')) return 'en';
+        if (path === '/he' || path.startsWith('/he/') || path === '/') return 'he';
     } catch (_) {}
     const win = String(window.currentLocale || '').toLowerCase().split('-')[0];
     const dom = String((document.documentElement && document.documentElement.lang) || '').toLowerCase().split('-')[0];
@@ -496,7 +528,7 @@ function _qsWantsPostLogoutMedical() {
         const p = (window.location && window.location.pathname)
             ? String(window.location.pathname).replace(/\/+$/, '') || '/'
             : '/';
-        if (p === '/medical') return true;
+        if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(p) : p === '/medical') return true;
         if (_qsIsMedicalAdjacentPath(p) && _qsReadMedicalLanding()) return true;
     } catch (_) {}
     try {
@@ -528,7 +560,9 @@ async function _qsSignOutThenMedicalOrReload() {
         (typeof localStorage !== 'undefined' && localStorage.getItem('locale')) ||
         'he'
     ).toLowerCase().split('-')[0];
-    const home = returnToMedical ? '/medical' : (locale === 'en' ? '/en' : '/');
+    const home = returnToMedical
+        ? (typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath(locale) : '/medical')
+        : (locale === 'en' ? '/en' : '/');
     try {
         window.location.assign(home);
     } catch (_) {
@@ -551,15 +585,16 @@ function qsApplyMedicalPreferenceAfterAuth(user) {
     const openId = openMatch ? decodeURIComponent(openMatch[1] || '').trim() : '';
 
     if (user) {
-        if (path === '/medical') {
+        if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(path) : path === '/medical') {
             try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
             try { if (typeof _qsSetMedicalLanding === 'function') _qsSetMedicalLanding(); } catch (_) {}
             return;
         }
         if ((path === '/' || path === '/en') && preferMedical) {
+            const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
             const dest = openId
-                ? ('/medical?open=' + encodeURIComponent(openId))
-                : '/medical';
+                ? (medicalHome + '?open=' + encodeURIComponent(openId))
+                : medicalHome;
             try { window.location.replace(dest); } catch (_) { window.location.href = dest; }
             return;
         }
@@ -567,7 +602,7 @@ function qsApplyMedicalPreferenceAfterAuth(user) {
     }
 
     // Guest
-    if (path === '/medical') {
+    if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(path) : path === '/medical') {
         // Path-only medical UI; do not sticky-write preference for guests.
         try { window.__QS_MEDICAL_URL_ENTRY = true; } catch (_) {}
         window.isMedicalMode = true;
@@ -2180,7 +2215,7 @@ function qsMedicalHardResetToEntry() {
     }
     try { sessionStorage.removeItem(QS_MEDICAL_ENDPOINT_WARMUP_SUBMITTED_KEY); } catch (_) {}
     try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
-    window.location.assign('/medical');
+    window.location.assign(typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical');
 }
 
 function qsLogMedicalSessionWarmup(msg, detail) {
@@ -2511,12 +2546,16 @@ function qsOAuthRedirectTo() {
         const origin = String(loc.origin || '').trim();
         let path = String(loc.pathname || '/');
         if (!path.startsWith('/')) path = '/' + path;
-        // Keep medical users on /medical after Google/Apple (not Core / or /personal).
+        // Keep medical users on medical home after Google/Apple (not Core / or /personal).
         try {
+            const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
             if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
-                path = '/medical';
-            } else if (path === '/medical' || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())) {
-                path = '/medical';
+                path = medicalHome;
+            } else if (
+                (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(path) : path === '/medical')
+                || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())
+            ) {
+                path = medicalHome;
             }
         } catch (_) {}
         return origin ? (origin + path) : path;
@@ -3329,7 +3368,7 @@ try {
     const openMatch = /(?:\?|&)open=([^&]+)/i.exec(search);
     const openId = openMatch ? decodeURIComponent(openMatch[1] || '').trim() : '';
     const preferMedical = String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1';
-    if (p === '/medical') {
+    if (p === '/medical' || p === '/en/medical' || p === '/he/medical') {
         // Path entry: medical UI for this page only. Sticky preference is set after signed-in auth.
         window.__QS_MEDICAL_URL_ENTRY = true;
         window.isMedicalMode = true;
@@ -3456,14 +3495,15 @@ function qsNavLogoTargetPath() {
     const coreHome = locale === 'en' ? '/en' : '/';
     // Guests always use Core home — never trap signed-out users on /medical.
     if (!window.__QS_UX_USER_SIGNED_IN) return coreHome;
+    const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath(locale) : '/medical';
     try {
-        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return '/medical';
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return medicalHome;
     } catch (_) {}
     try {
-        if (window.__QS_MEDICAL_URL_ENTRY === true) return '/medical';
+        if (window.__QS_MEDICAL_URL_ENTRY === true) return medicalHome;
     } catch (_) {}
     try {
-        if (String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1') return '/medical';
+        if (String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1') return medicalHome;
     } catch (_) {}
     return coreHome;
 }
@@ -3471,6 +3511,12 @@ function qsNavLogoTargetPath() {
 function qsSyncNavLogoHref() {
     const logoLink = document.getElementById('nav-logo-link');
     if (logoLink) logoLink.setAttribute('href', qsNavLogoTargetPath());
+    try {
+        const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
+        document.querySelectorAll('[data-qs-medical-home]').forEach((el) => {
+            try { el.setAttribute('href', medicalHome); } catch (_) {}
+        });
+    } catch (_) {}
     try { qsSyncNavPricingLink(); } catch (_) {}
 }
 window.qsSyncNavLogoHref = qsSyncNavLogoHref;
@@ -3507,7 +3553,7 @@ if (document.readyState === 'loading') {
             window.isMedicalMode = false;
         } else {
             const p = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
-            if (p === '/medical') {
+            if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(p) : p === '/medical') {
                 window.isMedicalMode = true;
             } else if (_qsIsMedicalAdjacentPath(p) && String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1') {
                 window.isMedicalMode = true;
@@ -3530,7 +3576,9 @@ try {
     if (typeof window !== 'undefined' && (
         window.__QS_BOOTSTRAP_MEDICAL_FROM_PATH ||
         window.__QS_MEDICAL_URL_ENTRY === true ||
-        (window.location && String(window.location.pathname || '').replace(/\/+$/, '') === '/medical')
+        (window.location && (typeof qsIsMedicalAppPath === 'function'
+            ? qsIsMedicalAppPath(window.location.pathname)
+            : String(window.location.pathname || '').replace(/\/+$/, '') === '/medical'))
     )) {
         window.__QS_MEDICAL_URL_ENTRY = true;
         window.isMedicalMode = true;
@@ -3759,11 +3807,11 @@ supabase.auth.onAuthStateChange((event, session) => {
         try { window.__QS_UX_USER_SIGNED_IN = false; } catch (_) {}
         try { document.body.classList.remove('qs-user-signed-in'); } catch (_) {}
         try {
-            // Logout navigation clears sticky medical; if this fires in-place, keep medical only on /medical path.
+            // Logout navigation clears sticky medical; if this fires in-place, keep medical only on medical path.
             const p = (window.location && window.location.pathname)
                 ? String(window.location.pathname).replace(/\/+$/, '') || '/'
                 : '/';
-            if (p === '/medical') {
+            if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(p) : p === '/medical') {
                 window.__QS_MEDICAL_URL_ENTRY = true;
                 window.isMedicalMode = true;
             } else {
@@ -6158,7 +6206,7 @@ function qsShouldShowCreditBalance() {
         const p = (window.location && window.location.pathname)
             ? String(window.location.pathname).replace(/\/+$/, '') || '/'
             : '/';
-        if (p === '/medical') return false;
+        if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(p) : p === '/medical') return false;
     } catch (_) {}
     return true;
 }
@@ -6733,10 +6781,10 @@ async function setupNavbarAuth(userOverride) {
         qsSetNavAuthVisible(mobileSignedInWrap, true);
         if (signInMobile) signInMobile.removeAttribute('data-i18n');
     } else {
-        // Guests: medical UI only when URL is /medical (handled in qsApplyMedicalPreferenceAfterAuth).
+        // Guests: medical UI only when URL is a medical home (handled in qsApplyMedicalPreferenceAfterAuth).
         try {
             const p = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
-            if (p === '/medical') {
+            if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(p) : p === '/medical') {
                 window.__QS_MEDICAL_URL_ENTRY = true;
                 if (!isMedicalModeEnabled()) setMedicalMode(true, { bypassMedicalUrlLock: true });
             }
@@ -6888,8 +6936,9 @@ async function loadUserMenuProfile(user) {
             } catch (_) {}
             if (on) {
                 setMedicalMode(true, { bypassMedicalUrlLock: true, persistMedicalPreference: true });
-                if (path !== '/medical') {
-                    window.location.assign('/medical');
+                const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
+                if (!(typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(path) : path === '/medical')) {
+                    window.location.assign(medicalHome);
                     return;
                 }
                 if (messageEl) {
@@ -6899,7 +6948,7 @@ async function loadUserMenuProfile(user) {
                 }
             } else {
                 setMedicalMode(false, { bypassMedicalUrlLock: true, persistMedicalPreference: true });
-                if (path === '/medical') {
+                if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(path) : path === '/medical') {
                     const locale = String(window.currentLocale || localStorage.getItem('locale') || 'he').toLowerCase().split('-')[0];
                     window.location.assign(locale === 'en' ? '/en' : '/');
                     return;
@@ -7951,8 +8000,9 @@ async function initOpenInAppImpl(jobIdStr) {
             (typeof isMedicalLayoutS3Key === 'function' && isMedicalLayoutS3Key(job.input_s3_key))
             || (typeof isMedicalLayoutRawAudioKey === 'function' && isMedicalLayoutRawAudioKey(job.input_s3_key))
         );
-        if (clinical && path !== '/medical') {
-            window.location.replace('/medical?open=' + encodeURIComponent(resolvedJobId));
+        if (clinical && !(typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(path) : path === '/medical')) {
+            const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
+            window.location.replace(medicalHome + '?open=' + encodeURIComponent(resolvedJobId));
             return;
         }
     } catch (_) {}
@@ -8284,7 +8334,8 @@ async function initOpenInAppImpl(jobIdStr) {
 async function runOpenQueryIfPresent() {
     try {
         const p = (window.location && window.location.pathname) ? String(window.location.pathname).replace(/\/+$/, '') || '/' : '/';
-        if (p !== '/' && p !== '/he' && p !== '/en' && p !== '/free' && p !== '/medical') return;
+        if (p !== '/' && p !== '/he' && p !== '/en' && p !== '/free'
+            && !(typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(p) : p === '/medical')) return;
         const search = (window.location && window.location.search) || '';
         const m = search.match(/[?&]open=([^&]+)/);
         if (!m || !m[1]) return;
@@ -11983,7 +12034,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Home page: "Open in app" — load job by ?open=jobId (retried from SIGNED_IN if session is not ready yet)
     const pathname = typeof window.location !== 'undefined' ? String(window.location.pathname || '').replace(/\/+$/, '') || '/' : '/';
     const isMainAppHome = pathname === '/' || pathname === '/he' || pathname === '/en' || pathname === '/free';
-    const isMedicalEntry = pathname === '/medical';
+    const isMedicalEntry = typeof qsIsMedicalAppPath === 'function'
+        ? qsIsMedicalAppPath(pathname)
+        : pathname === '/medical';
     if (isMainAppHome || isMedicalEntry) {
         const openMatch = (window.location.search || '').match(/[?&]open=([^&]+)/);
         const hasOpenQuery = !!(openMatch && decodeURIComponent(openMatch[1] || '').trim());
