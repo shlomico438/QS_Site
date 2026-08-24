@@ -78,6 +78,9 @@ function qsWaitForSocketConnected(sock, timeoutMs = 15000) {
 
 /** Max PCM held before transport is armed (~45s @ 16 kHz mono int16). */
 const QS_PRE_READY_BUFFER_MAX_BYTES = 16000 * 2 * 45;
+/** When Socket.IO is stuck on HTTP polling, batch PCM to avoid Engine.IO "Too many packets". */
+const QS_POLLING_BATCH_MAX_BYTES = 16000; // ~0.5s @ 16 kHz mono int16
+const QS_POLLING_BATCH_MAX_MS = 250;
 
 export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
@@ -121,6 +124,10 @@ export class MedicalAwsTranscribeStream {
         this._preReadyBuffer = [];
         this._preReadyBufferBytes = 0;
         this._preReadyChunksBuffered = 0;
+        this._pollingBatch = [];
+        this._pollingBatchBytes = 0;
+        this._pollingBatchTimer = null;
+        this._pollingBatchLogged = false;
     }
 
     _emitStatus(text) {
@@ -240,8 +247,92 @@ export class MedicalAwsTranscribeStream {
         console.info('[transcribe-stream] transport armed; sending buffered PCM to server');
     }
 
+    _socketTransportName() {
+        try {
+            return String(
+                (this._socket && this._socket.io && this._socket.io.engine && this._socket.io.engine.transport
+                    && this._socket.io.engine.transport.name)
+                || ''
+            ).toLowerCase();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    _isSocketPolling() {
+        if (!this._socket) return false;
+        const name = this._socketTransportName();
+        return !name || name === 'polling';
+    }
+
+    _clearPollingBatchTimer() {
+        if (this._pollingBatchTimer) {
+            clearTimeout(this._pollingBatchTimer);
+            this._pollingBatchTimer = null;
+        }
+    }
+
+    _clearPollingBatch() {
+        this._clearPollingBatchTimer();
+        this._pollingBatch = [];
+        this._pollingBatchBytes = 0;
+    }
+
+    _flushPollingBatch() {
+        this._clearPollingBatchTimer();
+        if (!this._pollingBatch.length || !this._socket) return;
+        if (!this._socket.connected) {
+            this._clearPollingBatch();
+            return;
+        }
+        let total = 0;
+        for (const part of this._pollingBatch) total += part.byteLength || part.length || 0;
+        const merged = new Uint8Array(total);
+        let offset = 0;
+        for (const part of this._pollingBatch) {
+            const view = part instanceof Uint8Array ? part : new Uint8Array(part);
+            merged.set(view, offset);
+            offset += view.byteLength;
+        }
+        this._pollingBatch = [];
+        this._pollingBatchBytes = 0;
+        try {
+            this._socket.emit('medical_transcribe_audio', merged);
+            this._chunksSent += 1;
+        } catch (_) {}
+    }
+
     _emitAudioPayload(payload) {
         if (this._socket) {
+            // WebSocket can take many small emits. Polling batches them into one packet
+            // so Engine.IO does not hit "Too many packets in payload".
+            if (this._isSocketPolling()) {
+                const view = payload instanceof Uint8Array
+                    ? payload
+                    : new Uint8Array(payload instanceof ArrayBuffer ? payload : payload);
+                if (!view.byteLength) return;
+                if (!this._pollingBatchLogged) {
+                    this._pollingBatchLogged = true;
+                    console.warn(
+                        '[transcribe-stream] Socket.IO on polling — batching PCM audio'
+                        + ' (hospital/proxy WebSocket likely blocked)'
+                    );
+                }
+                this._pollingBatch.push(view);
+                this._pollingBatchBytes += view.byteLength;
+                if (this._pollingBatchBytes >= QS_POLLING_BATCH_MAX_BYTES) {
+                    this._flushPollingBatch();
+                    return;
+                }
+                if (!this._pollingBatchTimer) {
+                    this._pollingBatchTimer = setTimeout(() => {
+                        this._pollingBatchTimer = null;
+                        this._flushPollingBatch();
+                    }, QS_POLLING_BATCH_MAX_MS);
+                }
+                return;
+            }
+            this._flushPollingBatch();
             this._socket.emit('medical_transcribe_audio', payload);
         } else if (this._ws) {
             this._ws.send(payload);
@@ -604,6 +695,7 @@ export class MedicalAwsTranscribeStream {
 
     pause() {
         this._feedPaused = true;
+        try { this._flushPollingBatch(); } catch (_) {}
         console.info('[transcribe-stream] feed paused');
     }
 
@@ -643,6 +735,7 @@ export class MedicalAwsTranscribeStream {
 
     async stop() {
         this._feedPaused = true;
+        try { this._flushPollingBatch(); } catch (_) {}
         this._clearPreReadyBuffer();
         const chunksSent = this._chunksSent;
         if (this._socket) {
@@ -664,6 +757,7 @@ export class MedicalAwsTranscribeStream {
             } catch (_) {}
             const result = await resultPromise;
             this._teardownSocketIo();
+            this._clearPollingBatch();
             await this._closeAudioContext();
             console.info(
                 '[transcribe-stream] stopped; chunks sent:',
@@ -727,6 +821,7 @@ export class MedicalAwsTranscribeStream {
         this._transportArmed = false;
         this._ready = false;
         this._clearPreReadyBuffer();
+        this._clearPollingBatch();
         try {
             if (this._socket && this._socket.connected) {
                 this._socket.emit('medical_transcribe_stop');

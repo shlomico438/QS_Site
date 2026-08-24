@@ -1064,16 +1064,29 @@ def _coerce_audio_chunk(data) -> Optional[bytes]:
             return bytes(data)
         except (TypeError, ValueError):
             return None
+    if isinstance(data, str):
+        # Socket.IO polling often base64-encodes binary as a string.
+        text = data.strip()
+        if not text:
+            return None
+        try:
+            import base64
+            import binascii
+            padded = text + ('=' * ((4 - (len(text) % 4)) % 4))
+            decoded = base64.b64decode(padded, validate=False)
+            if decoded and len(decoded) >= 2:
+                return decoded
+        except (ValueError, binascii.Error, TypeError):
+            return None
+        return None
     if isinstance(data, dict):
         for key in ('data', 'buffer', 'audio', 'chunk'):
             val = data.get(key)
-            if isinstance(val, (bytes, bytearray, memoryview)):
-                return bytes(val)
-            if isinstance(val, list):
-                try:
-                    return bytes(val)
-                except (TypeError, ValueError):
-                    pass
+            if val is None:
+                continue
+            coerced = _coerce_audio_chunk(val)
+            if coerced:
+                return coerced
     return None
 
 

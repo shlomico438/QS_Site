@@ -3805,6 +3805,18 @@ def _force_docx_rtl_bytes(docx_bytes):
 
 
 
+# Hospital/corporate proxies often kill Socket.IO WebSocket (upgrade 400).
+# Clients then stay on HTTP long-polling and batch many audio packets per POST.
+# python-engineio defaults to max_decode_packets=16 and rejects the rest.
+try:
+    import engineio.payload as _engineio_payload
+    _engineio_payload.Payload.max_decode_packets = max(
+        int(getattr(_engineio_payload.Payload, 'max_decode_packets', 16) or 16),
+        1000,
+    )
+except Exception:
+    pass
+
 # Strict settings to keep connections alive
 socketio = SocketIO(app,
     cors_allowed_origins="*",
@@ -3813,7 +3825,8 @@ socketio = SocketIO(app,
     transports=['polling', 'websocket'],
     ping_timeout=600,
     ping_interval=20,
-    manage_session=False
+    manage_session=False,
+    max_http_buffer_size=20 * 1024 * 1024,
 )
 
 # --- GLOBAL CACHE ---
