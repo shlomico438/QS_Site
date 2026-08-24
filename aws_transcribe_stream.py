@@ -161,6 +161,21 @@ def medical_transcribe_preferred_language() -> str:
         or os.environ.get('MEDICAL_TRANSCRIBE_STREAM_LANGUAGE')
         or DEFAULT_LANGUAGE
     ).strip() or DEFAULT_LANGUAGE
+
+
+def medical_transcribe_partial_results_stabilization() -> bool:
+    """Stabilize live partials so earlier words flicker less (AWS EnablePartialResultsStabilization)."""
+    return _env_truthy('MEDICAL_TRANSCRIBE_PARTIAL_RESULTS_STABILIZATION', True)
+
+
+def medical_transcribe_partial_results_stability() -> str:
+    """low | medium | high — higher = less flicker, can trade some accuracy. AWS default is high."""
+    raw = (
+        os.environ.get('MEDICAL_TRANSCRIBE_PARTIAL_RESULTS_STABILITY') or 'high'
+    ).strip().lower()
+    if raw not in ('low', 'medium', 'high'):
+        return 'high'
+    return raw
 _TRANSCRIBE_STREAM_REGION_FALLBACK = 'eu-west-1'
 # Amazon Transcribe Streaming is not available in every AWS/SageMaker region.
 # Keep this allowlist separate from AWS_REGION because medical SageMaker runs in eu-north-1.
@@ -905,33 +920,44 @@ class AwsTranscribeStreamSession:
 
     async def _async_run(self) -> str:
         client = TranscribeStreamingClient(region=self.region)
+        stabilize = medical_transcribe_partial_results_stabilization()
+        stability = medical_transcribe_partial_results_stability() if stabilize else None
+        stream_kwargs = {
+            'media_sample_rate_hz': self.sample_rate_hz,
+            'media_encoding': 'pcm',
+        }
+        if stabilize:
+            stream_kwargs['enable_partial_results_stabilization'] = True
+            stream_kwargs['partial_results_stability'] = stability
         if self.identify_multiple_languages:
             # Must omit language_code; AWS picks per segment from LanguageOptions.
             logger.info(
                 'AWS Transcribe stream connecting region=%s identify_multiple_languages=True '
-                'language_options=%s preferred_language=%s',
+                'language_options=%s preferred_language=omitted '
+                'partial_stabilize=%s stability=%s',
                 self.region,
                 ','.join(self.language_options),
-                self.preferred_language,
+                stabilize,
+                stability,
             )
             stream = await client.start_stream_transcription(
                 language_code=None,  # type: ignore[arg-type]
-                media_sample_rate_hz=self.sample_rate_hz,
-                media_encoding='pcm',
                 identify_multiple_languages=True,
                 language_options=list(self.language_options),
-                preferred_language=self.preferred_language,
+                **stream_kwargs,
             )
         else:
             logger.info(
-                'AWS Transcribe stream connecting region=%s lang=%s',
+                'AWS Transcribe stream connecting region=%s lang=%s '
+                'partial_stabilize=%s stability=%s',
                 self.region,
                 self.language_code,
+                stabilize,
+                stability,
             )
             stream = await client.start_stream_transcription(
                 language_code=self.language_code,
-                media_sample_rate_hz=self.sample_rate_hz,
-                media_encoding='pcm',
+                **stream_kwargs,
             )
         logger.info('AWS Transcribe stream accepted by AWS')
         self._aws_accepted = True
