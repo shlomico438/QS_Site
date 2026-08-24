@@ -8557,7 +8557,26 @@ def medical_pricing_en():
 
 
 @app.route('/about')
-def about(): return render_template('about.html')
+def about():
+    return render_template('about.html')
+
+
+@app.route('/medical/about')
+@app.route('/medical/about/')
+def medical_about():
+    return render_template('about.html')
+
+
+@app.route('/en/medical/about')
+def medical_about_en():
+    return render_template('about.html')
+
+
+@app.route('/en/medical/about/')
+def medical_about_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/medical/about' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
 
 
 @app.route('/free')
@@ -8574,7 +8593,34 @@ def products():
     return render_template('products.html')
 
 @app.route('/blog')
-def blog(): return render_template('blog.html')
+def blog():
+    return render_template('blog.html')
+
+
+@app.route('/medical/blog')
+@app.route('/medical/blog/')
+def medical_blog():
+    return render_template('medical_blog.html')
+
+
+@app.route('/en/medical/blog')
+def medical_blog_en():
+    return render_template('medical_blog.html')
+
+
+@app.route('/en/medical/blog/')
+def medical_blog_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/medical/blog' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
+
+
+@app.route('/he/medical/blog')
+@app.route('/he/medical/blog/')
+def medical_blog_he():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/medical/blog' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
 
 
 @app.route('/accuracy')
@@ -8584,6 +8630,24 @@ def accuracy():
 @app.route('/contact')
 def contact():
     return render_template('contact.html')
+
+
+@app.route('/medical/contact')
+@app.route('/medical/contact/')
+def medical_contact():
+    return render_template('contact.html')
+
+
+@app.route('/en/medical/contact')
+def medical_contact_en():
+    return render_template('contact.html')
+
+
+@app.route('/en/medical/contact/')
+def medical_contact_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/medical/contact' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
 
 
 @app.route('/history')

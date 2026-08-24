@@ -248,8 +248,14 @@
                 {% set _nav_on_medical_path = request.path.startswith('/medical') or request.path.startswith('/en/medical') %}
                 {% if qs_is_en %}
                     {% set nav_pricing_href = '/en/medical/pricing' if (medical_entry | default(false) or _nav_on_medical_path) else '/en/pricing' %}
+                    {% set nav_blog_href = '/en/medical/blog' if (medical_entry | default(false) or _nav_on_medical_path) else '/blog' %}
+                    {% set nav_about_href = '/en/medical/about' if (medical_entry | default(false) or _nav_on_medical_path) else '/about' %}
+                    {% set nav_contact_href = '/en/medical/contact' if (medical_entry | default(false) or _nav_on_medical_path) else '/contact' %}
                 {% else %}
                     {% set nav_pricing_href = '/medical/pricing' if (medical_entry | default(false) or _nav_on_medical_path) else '/pricing' %}
+                    {% set nav_blog_href = '/medical/blog' if (medical_entry | default(false) or _nav_on_medical_path) else '/blog' %}
+                    {% set nav_about_href = '/medical/about' if (medical_entry | default(false) or _nav_on_medical_path) else '/about' %}
+                    {% set nav_contact_href = '/medical/contact' if (medical_entry | default(false) or _nav_on_medical_path) else '/contact' %}
                 {% endif %}
                 <a href="{% if medical_entry | default(false) %}{% if qs_is_en %}/en/medical{% else %}/medical{% endif %}{% else %}{% if qs_is_en %}/en{% else %}/{% endif %}{% endif %}" class="nav-logo" id="nav-logo-link">
                     <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="nav-logo-image" width="48" height="48">
@@ -257,11 +263,13 @@
 
                 <nav class="nav-menu nav-menu-desktop" id="nav-menu-desktop" aria-label="Primary navigation">
                     <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
+                    {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                     <a href="/products" class="nav-item nav-products-link" id="nav-products-link" data-i18n="nav_products">Products</a>
-                    <a href="/accuracy" class="nav-item" data-i18n="nav_accuracy">Accuracy</a>
-                    <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
-                    <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
-                    <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
+                    <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">Accuracy</a>
+                    {% endif %}
+                    <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">About Us</a>
+                    <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">Blog</a>
+                    <a href="{{ nav_contact_href }}" class="nav-item nav-contact-link" data-i18n="nav_contact">Contact</a>
                 </nav>
 
                 <div class="navbar-main-actions">
@@ -277,11 +285,13 @@
             <!-- Mobile navigation drawer -->
             <nav class="nav-menu nav-menu-mobile" id="nav-menu" aria-label="Mobile navigation" hidden>
                 <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
+                {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                 <a href="/products" class="nav-item nav-products-link nav-products-link-mobile" data-i18n="nav_products">Products</a>
-                <a href="/accuracy" class="nav-item" data-i18n="nav_accuracy">Accuracy</a>
-                <a href="/about" class="nav-item" data-i18n="nav_about">About Us</a>
-                <a href="/blog" class="nav-item" data-i18n="nav_blog">Blog</a>
-                <a href="/contact" class="nav-item" data-i18n="nav_contact">Contact</a>
+                <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">Accuracy</a>
+                {% endif %}
+                <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">About Us</a>
+                <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">Blog</a>
+                <a href="{{ nav_contact_href }}" class="nav-item nav-contact-link" data-i18n="nav_contact">Contact</a>
                 <a href="/personal" class="nav-item nav-cta-btn nav-cta-btn--mobile" id="nav-new-session-btn" data-i18n="nav_personal" hidden style="display:none;">Personal Area</a>
                 <span id="nav-credit-balance-mobile" class="nav-credit-balance nav-credit-balance--mobile" style="display: none;" aria-live="polite">
                     <span data-i18n="nav_minutes_balance">Minutes balance</span>:

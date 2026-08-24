@@ -966,6 +966,27 @@ function qsRegularPricingUrl() {
 }
 window.qsRegularPricingUrl = qsRegularPricingUrl;
 
+function qsMedicalBlogUrl() {
+    const isEn = String(window.currentLocale || document.documentElement.lang || 'he')
+        .toLowerCase()
+        .startsWith('en');
+    return isEn ? '/en/medical/blog' : '/medical/blog';
+}
+window.qsMedicalBlogUrl = qsMedicalBlogUrl;
+
+function qsRegularBlogUrl() {
+    return '/blog';
+}
+
+function qsNavBlogTargetPath() {
+    if (qsIsMedicalContextPath()) return qsMedicalBlogUrl();
+    if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
+        return qsMedicalBlogUrl();
+    }
+    return qsRegularBlogUrl();
+}
+window.qsNavBlogTargetPath = qsNavBlogTargetPath;
+
 function qsNavPricingTargetPath() {
     if (qsIsMedicalContextPath()) return qsMedicalPricingUrl();
     if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
@@ -975,10 +996,52 @@ function qsNavPricingTargetPath() {
 }
 window.qsNavPricingTargetPath = qsNavPricingTargetPath;
 
+function qsMedicalAboutUrl() {
+    const isEn = String(window.currentLocale || document.documentElement.lang || 'he')
+        .toLowerCase()
+        .startsWith('en');
+    return isEn ? '/en/medical/about' : '/medical/about';
+}
+
+function qsMedicalContactUrl() {
+    const isEn = String(window.currentLocale || document.documentElement.lang || 'he')
+        .toLowerCase()
+        .startsWith('en');
+    return isEn ? '/en/medical/contact' : '/medical/contact';
+}
+
+function qsNavAboutTargetPath() {
+    if (qsIsMedicalContextPath()) return qsMedicalAboutUrl();
+    if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
+        return qsMedicalAboutUrl();
+    }
+    return '/about';
+}
+
+function qsNavContactTargetPath() {
+    if (qsIsMedicalContextPath()) return qsMedicalContactUrl();
+    if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
+        return qsMedicalContactUrl();
+    }
+    return '/contact';
+}
+
 function qsSyncNavPricingLink() {
-    const href = qsNavPricingTargetPath();
+    const pricingHref = qsNavPricingTargetPath();
     document.querySelectorAll('.nav-pricing-link').forEach((el) => {
-        if (el.getAttribute('href') !== href) el.setAttribute('href', href);
+        if (el.getAttribute('href') !== pricingHref) el.setAttribute('href', pricingHref);
+    });
+    const blogHref = qsNavBlogTargetPath();
+    document.querySelectorAll('.nav-blog-link').forEach((el) => {
+        if (el.getAttribute('href') !== blogHref) el.setAttribute('href', blogHref);
+    });
+    const aboutHref = qsNavAboutTargetPath();
+    document.querySelectorAll('.nav-about-link').forEach((el) => {
+        if (el.getAttribute('href') !== aboutHref) el.setAttribute('href', aboutHref);
+    });
+    const contactHref = qsNavContactTargetPath();
+    document.querySelectorAll('.nav-contact-link').forEach((el) => {
+        if (el.getAttribute('href') !== contactHref) el.setAttribute('href', contactHref);
     });
 }
 window.qsSyncNavPricingLink = qsSyncNavPricingLink;

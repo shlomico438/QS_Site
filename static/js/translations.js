@@ -404,6 +404,26 @@ window.translations = {
         // Blog page
         blog_title: "תובנות והנדסה",
         blog_subtitle: "חוקרים את חזית התמלול המקצועי ב-AI.",
+        blog_post0_meta: "2 באוגוסט 2026 | מוצר",
+        blog_post0_title: "תמלול הוא רק ההתחלה - כל מה שקורה אחרי שהאודיו הופך לטקסט",
+        blog_post0_intro: "כשאנשים חושבים על \"תמלול\", הם בדרך כלל מדמיינים תוצאה אחת: קובץ טקסט. אבל תמלול איכותי הוא רק הצעד הראשון בתהליך ארוך יותר - מה שקורה אחרי שהמילים הופכות לטקסט הוא מה שבאמת קובע אם התוצאה שימושית או לא. הנה מה ש-QuickScribe עושה מעבר להמרה הבסיסית של קול לטקסט.",
+        blog_post0_h_format: "פורמט נכון לכל סוג תוכן",
+        blog_post0_p_format: "לא כל תמלול צריך להיראות אותו דבר. ראיון עומק דורש חלוקה ברורה בין שאלה לתשובה, הרצאה אקדמית נהנית מחלוקה לפי נושאים ופסקאות, ופודקאסט זקוק לחותמות זמן מדויקות לצורך עריכה. QuickScribe מזהה את אופי ההקלטה ומתאים את מבנה הפלט בהתאם - כך שהתוצאה הסופית כבר קריאה ומאורגנת, ולא רק גוש טקסט רציף שדורש עבודת עריכה נוספת לפני שאפשר להשתמש בו.",
+        blog_post0_h_typos: "תיקון שגיאות כתיב אוטומטי",
+        blog_post0_p_typos: "גם המודלים המתקדמים ביותר טועים - בשמות פרטיים, במונחים מקצועיים, בסלנג ובראשי תיבות שלא נמצאים במאגר האימון שלהם. הבדל מהותי בין מנוע תמלול גנרי לבין מערכת שמותאמת לעברית הוא שכבת תיקון נוספת שרצה אחרי התמלול הראשוני, מזהה טעויות נפוצות ומתקנת אותן אוטומטית - במיוחד במונחים עבריים ספציפיים לתחום שמנועים גלובליים נוטים לפספס. זו אחת הסיבות המרכזיות שתמלול מותאם-עברית מייצר פחות עבודת תיקון ידנית בהשוואה למנועים כלליים.",
+        blog_post0_h_snr: "שיפור יחס אות-רעש (SNR)",
+        blog_post0_p_snr: "רעש רקע הוא האויב הגדול ביותר של תמלול איכותי - מוזיקה, הדי חדר, רעשי רחוב או כמה דוברים שמדברים יחד יכולים להוריד דיוק תמלול רגיל בעשרות אחוזים. הפתרון האמיתי הוא לא לתקן את הטקסט אחרי שהוא כבר שגוי, אלא לנקות את האודיו לפני שהתמלול מתחיל בכלל. QuickScribe משתמשת בעיבוד אות דיגיטלי (DSP) ובידוד קולי מתקדם כדי להפריד את הדיבור האנושי מרעשי רקע, מוזיקה וכלים - עוד לפני שהמנוע הראשי מתחיל לעבוד. התוצאה: תמלול מדויק גם בהקלטות שצולמו בתנאי שטח לא אידיאליים.",
+        blog_post0_h_summary: "סיכומי דיון שבאמת עוזרים",
+        blog_post0_p_summary: "\"סיכום קצר יותר\" הוא לא סיכום טוב. סיכום פגישה שימושי צריך לענות על שלוש שאלות: אילו החלטות התקבלו, אילו משימות נגזרות מהן, ומי אחראי על כל אחת מהן. QuickScribe מייצרת סיכום מובנה שמפריד בין הדיון עצמו לבין המסקנות הפרקטיות שלו - כך שבמקום לקרוא מחדש שעה של פגישה, אפשר לראות תוך שניות מה סוכם ומה נשאר לעשות. זה ההבדל בין תמלול לבין כלי שבאמת חוסך זמן.",
+        blog_post0_h_translate: "תרגום לשפות נוספות",
+        blog_post0_p_translate: "התהליך לא נעצר בעברית. אחרי שהתוכן תומלל, ניתן לתרגם אותו לשפות נוספות - שימושי במיוחד ליוצרי תוכן שרוצים להגיע לקהל בינלאומי, לחוקרים שצריכים לשתף ממצאים עם עמיתים דוברי אנגלית, או לעסקים שעובדים מול שווקים גלובליים. השילוב של תמלול עברי מדויק ותרגום איכותי הופך הקלטה מקומית לתוכן שנגיש לקהל הרבה יותר רחב.",
+        blog_post0_h_subs: "סנכרון כתוביות שמותאם לתצוגה",
+        blog_post0_p_subs: "כתוביות טובות הן לא רק עניין של תזמון - הן עניין של אורך. שורת כתובית שארוכה מדי לרוחב המסך נחתכת או גולשת, ופונט גדול מדי על טקסט ארוך פשוט לא נכנס למסך. QuickScribe מחשבת את כמות המילים המקסימלית לכל שורת כתובית בהתאם לגודל הפונט ולפלטפורמת היעד - כך שכתוביות ליוטיוב, טיקטוק או עריכה בפרימייר פרו יוצאות מוכנות לשימוש, בלי שהעורך יצטרך לחתוך ידנית כל שורה שלא נכנסת למסגרת.",
+        blog_post0_h_stems: "אלגוריתמים להפרדת קול ממוזיקה",
+        blog_post0_p_stems: "מאחורי בידוד הקול המתקדם עומדת טכניקה שנקראת הפרדת מקורות שמע עצבית (Neural Source Separation, או Stem Splitting) - שיטה שמפרקת קובץ אודיו לערוצים נפרדים (קול, כלי נגינה, רעשי רקע) לפני שהתמלול מתחיל. כך המערכת יכולה להתמקד אך ורק בקול האנושי, גם כשהוא מוקלט על רקע מוזיקה, רעש סביבתי או כלים מנוגנים בו-זמנית. זו הסיבה שהקלטות שדה, ראיונות רחוב או תוכן עם רקע מוזיקלי מקבלים תוצאה נקייה משמעותית לעומת מנועי תמלול סטנדרטיים.",
+        blog_post0_cta_lead: "רוצים לראות את זה בפעולה?",
+        blog_post0_cta_link: "נסו את QuickScribe בחינם",
+        blog_post0_cta_tail: "- בלי צורך בכרטיס אשראי.",
         blog_post1_meta: "14 בפברואר 2026 | ציוני ביצועים",
         blog_post1_title: "שוברים את הביצועים: 94.36% דיוק",
         blog_post1_p1: "בתמלול, המבדל החשוב ביותר הוא דיוק. לאחרונה השווינו את QuickScribe למודלים הגנריים המובילים בתעשייה, והתוצאות מדברות בעד עצמן. לא רק שהשגנו 94.36% דיוק, אלא ששונות המילים נשארה מיושרת כמעט באופן מושלם לבסיס האנושי.",
@@ -819,6 +839,26 @@ window.translations = {
         // Blog page
         blog_title: "Insights & Engineering",
         blog_subtitle: "Exploring the frontier of specialized AI transcription.",
+        blog_post0_meta: "August 2, 2026 | Product",
+        blog_post0_title: "Transcription is only the start — what happens after audio becomes text",
+        blog_post0_intro: "When people think of “transcription,” they usually picture one result: a text file. But a quality transcript is only the first step in a longer process — what happens after the words become text is what actually decides whether the result is useful. Here’s what QuickScribe does beyond the basic conversion of voice to text.",
+        blog_post0_h_format: "The right format for every kind of content",
+        blog_post0_p_format: "Not every transcript should look the same. A deep interview needs a clear split between question and answer, an academic lecture benefits from topic and paragraph structure, and a podcast needs accurate timestamps for editing. QuickScribe identifies the nature of the recording and shapes the output accordingly — so the final result is already readable and organized, not a continuous block of text that still needs editing before you can use it.",
+        blog_post0_h_typos: "Automatic spelling correction",
+        blog_post0_p_typos: "Even the most advanced models make mistakes — on names, professional terms, slang, and acronyms that weren’t in their training data. A real difference between a generic transcription engine and a Hebrew-tuned system is an extra correction layer that runs after the first pass, finds common errors, and fixes them automatically — especially domain-specific Hebrew terms that global engines tend to miss. That’s a main reason Hebrew-adapted transcription needs less manual cleanup than general-purpose engines.",
+        blog_post0_h_snr: "Signal-to-noise improvement (SNR)",
+        blog_post0_p_snr: "Background noise is the biggest enemy of quality transcription — music, room echo, street noise, or several speakers talking at once can drop ordinary accuracy by tens of percent. The real fix is not to patch the text after it’s already wrong, but to clean the audio before transcription starts. QuickScribe uses digital signal processing (DSP) and advanced vocal isolation to separate human speech from background noise, music, and instruments — before the main engine even starts. The result: accurate transcripts even from recordings made in imperfect field conditions.",
+        blog_post0_h_summary: "Discussion summaries that actually help",
+        blog_post0_p_summary: "“A shorter summary” is not a good summary. A useful meeting summary should answer three questions: which decisions were made, which tasks follow from them, and who owns each one. QuickScribe produces a structured summary that separates the discussion itself from its practical conclusions — so instead of re-reading an hour of meeting, you can see in seconds what was agreed and what’s left to do. That’s the difference between a transcript and a tool that actually saves time.",
+        blog_post0_h_translate: "Translation into additional languages",
+        blog_post0_p_translate: "The process doesn’t stop at Hebrew. After the content is transcribed, it can be translated into other languages — especially useful for creators who want an international audience, researchers sharing findings with English-speaking colleagues, or businesses working with global markets. Accurate Hebrew transcription plus quality translation turns a local recording into content that’s accessible to a much wider audience.",
+        blog_post0_h_subs: "Subtitle timing that fits the screen",
+        blog_post0_p_subs: "Good subtitles are not only about timing — they’re about length. A caption line that’s too long for the screen width gets cut or overflows, and a large font on a long line simply doesn’t fit. QuickScribe calculates the maximum words per caption line based on font size and target platform — so subtitles for YouTube, TikTok, or Premiere Pro come out ready to use, without the editor having to cut every line that doesn’t fit the frame.",
+        blog_post0_h_stems: "Algorithms that separate voice from music",
+        blog_post0_p_stems: "Behind advanced vocal isolation is a technique called neural source separation (stem splitting) — a method that splits an audio file into separate channels (voice, instruments, background noise) before transcription starts. That lets the system focus only on the human voice, even when it’s recorded over music, environmental noise, or instruments playing at the same time. That’s why field recordings, street interviews, or content with a musical bed come out significantly cleaner than with standard transcription engines.",
+        blog_post0_cta_lead: "Want to see it in action?",
+        blog_post0_cta_link: "Try QuickScribe for free",
+        blog_post0_cta_tail: "— no credit card required.",
         blog_post1_meta: "February 14, 2026 | Performance Benchmarks",
         blog_post1_title: "Breaking the Benchmark: 94.36% Accuracy",
         blog_post1_p1: "When it comes to transcription, the most important differentiator is accuracy. We recently benchmarked QuickScribe against the industry's leading generic models, and the results speak for themselves. Not only did we achieve a staggering 94.36% accuracy, but our word variance stayed almost perfectly aligned with the human baseline.",
@@ -899,6 +939,13 @@ window.setLocale = async function(code) {
                 '/en/pricing': { he: '/pricing', en: '/en/pricing' },
                 '/medical/pricing': { he: '/medical/pricing', en: '/en/medical/pricing' },
                 '/en/medical/pricing': { he: '/medical/pricing', en: '/en/medical/pricing' },
+                '/medical/blog': { he: '/medical/blog', en: '/en/medical/blog' },
+                '/en/medical/blog': { he: '/medical/blog', en: '/en/medical/blog' },
+                '/he/medical/blog': { he: '/medical/blog', en: '/en/medical/blog' },
+                '/medical/about': { he: '/medical/about', en: '/en/medical/about' },
+                '/en/medical/about': { he: '/medical/about', en: '/en/medical/about' },
+                '/medical/contact': { he: '/medical/contact', en: '/en/medical/contact' },
+                '/en/medical/contact': { he: '/medical/contact', en: '/en/medical/contact' },
             };
             const mapped = localizedPathMap[path];
             if (mapped || isHomePath) {
@@ -1009,6 +1056,12 @@ window.applyTranslations = function() {
     document.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
         const key = el.getAttribute('data-i18n-aria-label');
         if (key) el.setAttribute('aria-label', window.t(key));
+    });
+    const loc = String(window.currentLocale || document.documentElement.lang || 'he').toLowerCase();
+    const isEn = loc.startsWith('en');
+    document.querySelectorAll('[data-qs-locale-dir]').forEach((el) => {
+        el.dir = isEn ? 'ltr' : 'rtl';
+        el.lang = isEn ? 'en' : 'he';
     });
     try {
         if (typeof window.qsRefreshFeatureShowcaseI18n === 'function') window.qsRefreshFeatureShowcaseI18n();

@@ -31,16 +31,34 @@
     <loc>https://www.getquickscribe.com/about</loc>
   </url>
   <url>
+    <loc>https://www.getquickscribe.com/medical/about</loc>
+  </url>
+  <url>
+    <loc>https://www.getquickscribe.com/en/medical/about</loc>
+  </url>
+  <url>
     <loc>https://www.getquickscribe.com/products</loc>
   </url>
   <url>
     <loc>https://www.getquickscribe.com/blog</loc>
   </url>
   <url>
+    <loc>https://www.getquickscribe.com/medical/blog</loc>
+  </url>
+  <url>
+    <loc>https://www.getquickscribe.com/en/medical/blog</loc>
+  </url>
+  <url>
     <loc>https://www.getquickscribe.com/accuracy</loc>
   </url>
   <url>
     <loc>https://www.getquickscribe.com/contact</loc>
+  </url>
+  <url>
+    <loc>https://www.getquickscribe.com/medical/contact</loc>
+  </url>
+  <url>
+    <loc>https://www.getquickscribe.com/en/medical/contact</loc>
   </url>
   <url>
     <loc>https://www.getquickscribe.com/legal</loc>
