@@ -6259,7 +6259,8 @@ def _credits_insufficient_message(balance, minutes, duration_sec, prefer_hebrew=
 def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=False, request_data=None):
     """
     Probe uploaded file length and verify wallet balance before GPU work.
-    Does not deduct — minutes are charged via /api/charge_job_credits after the client shows GPT summary.
+    Does not deduct — minutes are charged on GPU finalize (server-side).
+    Client /api/charge_job_credits remains an idempotent fallback.
     Idempotent per job_id (skips re-check if credit_minutes_used already set on job).
 
     Anonymous guests are capped at WELCOME_CREDIT_MINUTES (same as signup grant).
@@ -6505,12 +6506,106 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         "credit_minutes": balance,
         "file_duration_seconds": duration_sec,
         "duration_seconds": duration_sec,
-        "charged_at": "post_gpt_delivery",
+        "charged_at": "job_success",
     }
 
 
+def _charge_credits_on_gpu_finalize(user_id, job_id, segments, input_s3_key, pending_info=None):
+    """
+    Deduct wallet minutes when GPU transcription is finalized on the server.
+    Idempotent via jobs.credit_minutes_used. Skips medical / anonymous / billing-off.
+    """
+    jid = str(job_id or '').strip()
+    uid = str(user_id or '').strip()
+    key = str(input_s3_key or '').strip()
+    try:
+        pending = dict(pending_info) if isinstance(pending_info, dict) else {}
+        file_duration = None
+        try:
+            stored = float(pending.get('credit_file_duration_sec') or 0)
+            if stored > 0:
+                file_duration = stored
+        except (TypeError, ValueError):
+            file_duration = None
+        if file_duration is None and jid:
+            ctx = pending_credit_charge_context.get(jid) or {}
+            if isinstance(ctx, dict):
+                try:
+                    stored = float(ctx.get('credit_file_duration_sec') or 0)
+                    if stored > 0:
+                        file_duration = stored
+                        pending.setdefault('credit_file_duration_sec', stored)
+                except (TypeError, ValueError):
+                    pass
+                if ctx.get('bucket') and not pending.get('bucket'):
+                    pending['bucket'] = ctx.get('bucket')
+                if not key:
+                    key = str(ctx.get('input_s3_key') or '').strip()
+        if file_duration is None and jid:
+            try:
+                row = _get_job_row_by_runpod_job_id(jid, select="metadata,input_s3_key")
+                if isinstance(row, dict):
+                    if not key:
+                        key = str(row.get('input_s3_key') or '').strip()
+                    persisted = _duration_from_job_metadata_dict(row.get('metadata'))
+                    if persisted > 0:
+                        file_duration = persisted
+                        pending.setdefault('credit_file_duration_sec', float(persisted))
+            except Exception:
+                logging.debug(
+                    "credit_charge_on_gpu_finalize metadata duration lookup failed job=%s",
+                    jid,
+                    exc_info=True,
+                )
+        if not pending.get('credit_file_duration_sec') and file_duration:
+            pending['credit_file_duration_sec'] = float(file_duration)
+        if key and not pending.get('input_s3_key'):
+            pending['input_s3_key'] = key
+
+        credit_info = _charge_job_credits(
+            uid,
+            jid,
+            segments,
+            key,
+            pending_info=pending or None,
+            file_duration_sec=file_duration,
+        )
+        if isinstance(credit_info, dict):
+            if credit_info.get('already_charged'):
+                logging.info(
+                    "credit_charge_on_gpu_finalize already_charged job=%s used=%s",
+                    jid,
+                    credit_info.get('credit_minutes_used'),
+                )
+            elif credit_info.get('error'):
+                logging.warning(
+                    "credit_charge_on_gpu_finalize job=%s error=%s detail=%s",
+                    jid,
+                    credit_info.get('error'),
+                    {k: credit_info.get(k) for k in (
+                        'required_minutes', 'credit_minutes', 'file_duration_seconds',
+                    )},
+                )
+            else:
+                logging.info(
+                    "credit_charge_on_gpu_finalize job=%s used=%s balance=%s duration_sec=%s",
+                    jid,
+                    credit_info.get('credit_minutes_used'),
+                    credit_info.get('credit_minutes'),
+                    credit_info.get('file_duration_seconds'),
+                )
+            try:
+                pending_credit_charge_context.pop(jid, None)
+            except Exception:
+                pass
+        return credit_info
+    except Exception:
+        logging.exception("credit_charge_on_gpu_finalize failed job=%s", jid)
+        return None
+
+
 def _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=None):
-    """Keep file-duration billing hints until the client calls /api/charge_job_credits."""
+    """Keep file-duration billing hints for GPU finalize / client charge fallback."""
     jid = str(job_id or '').strip()
     uid = str(user_id or '').strip()
     key = str(input_s3_key or '').strip()
@@ -6536,7 +6631,7 @@ def _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=N
 
 @app.route('/api/charge_job_credits', methods=['POST'])
 def api_charge_job_credits():
-    """Deduct wallet minutes after transcript + GPT summary are shown (idempotent per job)."""
+    """Idempotent credit charge fallback (primary charge is on GPU finalize)."""
     try:
         data = request.json or {}
         user_id = str(data.get('userId') or data.get('user_id') or '').strip()
@@ -8689,7 +8784,7 @@ pending_trigger_at = {}  # job_id -> time when set to "queued" (for stale detect
 STALE_QUEUED_SEC = int(os.environ.get("STALE_QUEUED_SEC", "360") or 360)
 # So gpu_callback can save raw JSON even when RunPod does not echo input: job_id -> { input_s3_key, user_id, task, language }
 pending_job_info = {}  # job_id -> {"input_s3_key": str, "user_id": str | None, "task": str, "language": str}
-# Billing context kept until client finishes GPT + summary (see /api/charge_job_credits).
+# Billing context for GPU finalize charge + client /api/charge_job_credits fallback.
 pending_credit_charge_context = {}  # job_id -> { user_id, input_s3_key, bucket, credit_file_duration_sec, ... }
 vocal_separation_jobs = {}  # job_id -> pending RunPod CPU vocal separation + trigger handoff
 audio_preprocess_jobs = {}  # job_id -> pending RunPod CPU loudnorm preprocessing + GPU handoff
@@ -12314,6 +12409,15 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
         socketio.emit('job_status_update', fail_payload, room=job_id)
         _cleanup_audio_preprocess_intermediate(job_id, pending_info)
         return
+
+    # Regular jobs: charge wallet on server finalize (idempotent). Medical uses usage metering above.
+    _charge_credits_on_gpu_finalize(
+        user_id=user_id,
+        job_id=job_id,
+        segments=segments,
+        input_s3_key=input_s3_key,
+        pending_info=pending_info,
+    )
 
     now = time.time()
     file_timings = _get_trigger_timings(job_id)

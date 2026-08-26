@@ -4444,7 +4444,7 @@ function qsApplyTriggerCreditFields(triggerData) {
     // Reserve/verify responses include balance only — do not refresh nav credits mid-job.
 }
 
-/** Deduct wallet minutes in the background after transcript + GPT summary are on screen. */
+/** Idempotent fallback: server charges on GPU finalize; this catches any miss. */
 function qsDeferJobCreditsAfterDelivery(jobId, inputS3Key) {
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
     const jid = String(jobId || localStorage.getItem('lastJobId') || localStorage.getItem('pendingJobId') || '').trim();
@@ -16454,10 +16454,10 @@ document.addEventListener('DOMContentLoaded', () => {
         tw.innerHTML = `<div class="medical-live-transcript medical-live-status" dir="${dir}" style="text-align:${align};padding:12px 16px;opacity:0.75;font-style:italic;">${esc(label)}</div>`;
     }
 
-    function abortMedicalAwsTranscribeStream() {
+    function abortMedicalAwsTranscribeStream(options = {}) {
         try {
             if (window._medicalAwsTranscribeStream) {
-                window._medicalAwsTranscribeStream.abort();
+                window._medicalAwsTranscribeStream.abort(options);
             }
         } catch (_) {}
         window._medicalAwsTranscribeStream = null;
@@ -16468,8 +16468,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function startMedicalAwsTranscribeStream(mediaStream, options = {}) {
-        abortMedicalAwsTranscribeStream();
-        if (!isMedicalModeEnabled() || !qsMedicalUseAwsTranscribeStream()) return null;
+        // Soft abort: skip medical_transcribe_stop so it cannot race with the new start
+        // on Socket.IO polling and tear down the fresh bridge.
+        abortMedicalAwsTranscribeStream({ emitStop: false });
+        if (!isMedicalModeEnabled() || !qsMedicalUseAwsTranscribeStream()) {
+            try {
+                if (window.socket && window.socket.connected) {
+                    window.socket.emit('medical_transcribe_stop');
+                }
+            } catch (_) {}
+            return null;
+        }
         const transcriptPrefix = String((options && options.transcriptPrefix) || '').trim();
         let cfg = qsGetMedicalTranscriptionConfigCached();
         if (!cfg) {
@@ -16484,7 +16493,14 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             void qsFetchMedicalTranscriptionConfig();
         }
-        if (!cfg || !cfg.use_aws_transcribe_stream) return null;
+        if (!cfg || !cfg.use_aws_transcribe_stream) {
+            try {
+                if (window.socket && window.socket.connected) {
+                    window.socket.emit('medical_transcribe_stop');
+                }
+            } catch (_) {}
+            return null;
+        }
         const langOpts = qsMedicalStreamOptionsForMode(qsGetMedicalStreamLangMode(), cfg);
         console.info('[medical] transcribe language', {
             mode: qsGetMedicalStreamLangMode(),
@@ -16526,7 +16542,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (captureErr) {
             console.error('[medical] AWS Transcribe capture failed to start', captureErr);
-            try { stream.abort(); } catch (_) {}
+            try { stream.abort({ emitStop: true }); } catch (_) {}
+            try {
+                if (window.socket && window.socket.connected) {
+                    window.socket.emit('medical_transcribe_stop');
+                }
+            } catch (_) {}
             throw captureErr;
         }
         window._medicalAwsTranscribeStream = stream;

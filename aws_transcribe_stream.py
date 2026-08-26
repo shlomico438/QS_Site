@@ -1229,6 +1229,9 @@ class TranscribeStreamBridge:
         """Extend AWS once during a thinking pause; never update client-idle clock."""
         if self._silence_keepalive_used or not self.session_live:
             return False
+        # Do not burn keepalive before any client PCM arrived (polling can lag after restart).
+        if self._last_client_audio_at <= 0:
+            return False
         sess = self.session
         if not sess or getattr(sess, '_closed', False):
             return False
@@ -1264,6 +1267,8 @@ class TranscribeStreamBridge:
                 if not self._alive:
                     return
                 if not self.session_live or self._silence_keepalive_used:
+                    continue
+                if self._last_client_audio_at <= 0:
                     continue
                 idle = self._client_audio_idle_sec()
                 if idle < idle_need:
@@ -1556,6 +1561,12 @@ class TranscribeStreamBridge:
                 rms,
                 peak,
             )
+            self._emit({
+                'type': 'audio_rx',
+                'bytes': len(chunk),
+                'rms': rms,
+                'peak': peak,
+            })
         elif self._audio_chunks_received % 50 == 0:
             logger.info(
                 'transcribe audio chunks received: %d rms=%d peak=%d',

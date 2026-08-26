@@ -148,3 +148,30 @@ def test_silence_keepalive_fires_only_once_per_idle_spell():
     assert bridge._silence_keepalive_used is False
     assert bridge.session is sess
     assert len(sess.fed) == 2
+
+
+def test_silence_keepalive_skipped_before_any_client_audio():
+    bridge = TranscribeStreamBridge(lambda payload: None)
+    sess = _FakeLiveSession()
+    bridge.session = sess
+    bridge.session_live = True
+    bridge._last_client_audio_at = 0.0
+    assert bridge._feed_silence_keepalive_once() is False
+    assert bridge._silence_keepalive_used is False
+    assert len(sess.fed) == 0
+
+
+def test_first_audio_emits_audio_rx():
+    events = []
+    bridge = TranscribeStreamBridge(lambda payload: events.append(payload))
+    sess = _FakeLiveSession()
+    bridge.session = sess
+    bridge.session_live = True
+    bridge.handle_audio(b'\x01\x00' * 160)
+    assert any(e.get('type') == 'audio_rx' for e in events)
+    assert bridge._audio_chunks_received == 1
+    # Second chunk should not emit another audio_rx.
+    before = len([e for e in events if e.get('type') == 'audio_rx'])
+    bridge.handle_audio(b'\x02\x00' * 160)
+    after = len([e for e in events if e.get('type') == 'audio_rx'])
+    assert before == 1 and after == 1
