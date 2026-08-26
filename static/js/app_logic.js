@@ -3697,16 +3697,27 @@ async function qsPollCheckStatusOnce(jobId) {
 window.startJobStatusPolling = function(jobId) {
     if (window._checkStatusPollInterval) clearInterval(window._checkStatusPollInterval);
     window._pollingJobId = jobId;
-    // Multi-instance: completion often arrives via R2 on another worker — poll faster than 9s.
-    const pollMs = 3000;
-    const triggerStatusEveryNPolls = 4;
+    // Soft isolation: when Socket.IO is live, completion usually arrives via socket —
+    // poll less often so regular jobs do not starve medical realtime on Site.
+    const socketLive = !!(typeof socket !== 'undefined' && socket && socket.connected);
+    const medicalLive = !!(
+        typeof isMedicalModeEnabled === 'function'
+        && isMedicalModeEnabled()
+        && window._medicalAwsTranscribeStream
+    );
+    const pollMs = medicalLive ? 12000 : (socketLive ? 8000 : 4000);
+    const triggerStatusEveryNPolls = medicalLive ? 6 : (socketLive ? 5 : 4);
     let polls = 0;
     let consecutiveSeverePollFailures = 0;
     // Only check_status (and network errors) count — trigger_status can 503 during proxy blips while check_status still works.
     const maxSevereBeforeStop = 24;
 
     void qsPollCheckStatusOnce(jobId);
-    [800, 1600, 2800, 4500, 7000].forEach((ms) => {
+    // Fewer burst polls when socket/medical already share the Site worker.
+    const burstMs = medicalLive
+        ? [1500, 4000]
+        : (socketLive ? [1000, 2500, 5000] : [800, 1600, 2800, 4500, 7000]);
+    burstMs.forEach((ms) => {
         setTimeout(() => {
             if (window._pollingJobId === jobId) void qsPollCheckStatusOnce(jobId);
         }, ms);

@@ -91,5 +91,51 @@ class ChargeCreditsOnGpuFinalizeTests(unittest.TestCase):
         self.assertEqual(calls[0]["file_duration_sec"], 416.592)
 
 
+class EarlyGpuCreditGateTests(unittest.TestCase):
+    def test_unknown_duration_defers_early_gpu(self):
+        import siteapp
+
+        with patch.object(siteapp, "_credits_gate_applies", return_value=True):
+            allow, reason = siteapp._credits_allow_early_gpu_dispatch(
+                False,
+                {"userId": "u1"},
+                user_id="u1",
+            )
+        self.assertFalse(allow)
+        self.assertEqual(reason, "duration_unknown_defer_gpu")
+
+    def test_known_duration_requires_balance(self):
+        import siteapp
+
+        with patch.object(siteapp, "_credits_gate_applies", return_value=True), patch.object(
+            siteapp,
+            "_check_credits_for_duration",
+            return_value={"ok": False, "error": "insufficient_credits"},
+        ):
+            allow, reason = siteapp._credits_allow_early_gpu_dispatch(
+                False,
+                {"userId": "u1", "mediaDurationSec": 2304},
+                user_id="u1",
+            )
+        self.assertFalse(allow)
+        self.assertEqual(reason, "insufficient_credits")
+
+    def test_known_duration_with_balance_allows(self):
+        import siteapp
+
+        with patch.object(siteapp, "_credits_gate_applies", return_value=True), patch.object(
+            siteapp,
+            "_check_credits_for_duration",
+            return_value={"ok": True, "credit_minutes": 100, "required_minutes": 39},
+        ):
+            allow, reason = siteapp._credits_allow_early_gpu_dispatch(
+                False,
+                {"userId": "u1", "mediaDurationSec": 2304},
+                user_id="u1",
+            )
+        self.assertTrue(allow)
+        self.assertEqual(reason, "credits_ok")
+
+
 if __name__ == "__main__":
     unittest.main()

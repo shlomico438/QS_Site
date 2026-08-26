@@ -176,7 +176,20 @@ def _s3_boto_client(for_upload=False, bucket=None):
     region = _s3_region_for_bucket(bucket)
     if not use_r2:
         region = _sanitize_aws_region(region, 'eu-north-1')
-    config_kw = {'signature_version': 's3v4'}
+    try:
+        connect_to = max(1, int(os.environ.get('S3_CONNECT_TIMEOUT_SEC', '3') or 3))
+    except (TypeError, ValueError):
+        connect_to = 3
+    try:
+        read_to = max(2, int(os.environ.get('S3_READ_TIMEOUT_SEC', '8') or 8))
+    except (TypeError, ValueError):
+        read_to = 8
+    config_kw = {
+        'signature_version': 's3v4',
+        'connect_timeout': connect_to,
+        'read_timeout': read_to,
+        'retries': {'max_attempts': 2, 'mode': 'standard'},
+    }
     if for_upload and bucket and _s3_upload_accelerate_enabled_for_bucket(bucket):
         config_kw['s3'] = {'use_accelerate_endpoint': True}
     client_kw = {
@@ -4677,6 +4690,25 @@ def _supabase_rest_config():
 
 _supabase_http_session = None
 _supabase_http_session_lock = threading.Lock()
+# Cap concurrent Supabase HTTPS so check_status storms cannot exhaust the pool and
+# stall medical Socket.IO / AWS Transcribe emits on the same gevent worker.
+_supabase_http_sema = None
+_supabase_http_sema_lock = threading.Lock()
+
+
+def _supabase_http_max_concurrent():
+    try:
+        return max(2, min(32, int(os.environ.get('SUPABASE_HTTP_MAX_CONCURRENT', '8') or 8)))
+    except (TypeError, ValueError):
+        return 8
+
+
+def _supabase_http_sema_get():
+    global _supabase_http_sema
+    with _supabase_http_sema_lock:
+        if _supabase_http_sema is None:
+            _supabase_http_sema = threading.BoundedSemaphore(_supabase_http_max_concurrent())
+        return _supabase_http_sema
 
 
 def _supabase_http_session_get():
@@ -4684,7 +4716,11 @@ def _supabase_http_session_get():
     with _supabase_http_session_lock:
         if _supabase_http_session is None:
             s = requests.Session()
-            adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=0)
+            try:
+                pool = max(16, _supabase_http_max_concurrent() * 2)
+            except Exception:
+                pool = 16
+            adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=pool, max_retries=0)
             s.mount('https://', adapter)
             s.mount('http://', adapter)
             _supabase_http_session = s
@@ -4694,34 +4730,45 @@ def _supabase_http_session_get():
 def _supabase_http_timeout_sec():
     """Total/read timeout seconds (legacy scalar helper)."""
     try:
-        return max(2.0, float(os.environ.get('SUPABASE_HTTP_TIMEOUT_SEC', '6') or 6))
+        return max(1.5, float(os.environ.get('SUPABASE_HTTP_TIMEOUT_SEC', '4') or 4))
     except (TypeError, ValueError):
-        return 6.0
+        return 4.0
 
 
 def _supabase_http_timeout():
     """(connect, read) timeouts — short connect abort so gevent workers stay responsive."""
     try:
-        connect = max(0.5, float(os.environ.get('SUPABASE_HTTP_CONNECT_TIMEOUT_SEC', '2') or 2))
+        connect = max(0.4, float(os.environ.get('SUPABASE_HTTP_CONNECT_TIMEOUT_SEC', '1.5') or 1.5))
     except (TypeError, ValueError):
-        connect = 2.0
+        connect = 1.5
     read = _supabase_http_timeout_sec()
     return (connect, max(connect, read))
 
 
-def _supabase_http_request(method, url, *, timeout=None, retries=1, **kwargs):
+def _supabase_http_request(method, url, *, timeout=None, retries=1, acquire_timeout_sec=None, **kwargs):
     """Fail-fast Supabase HTTP with short timeouts so gevent workers are not blocked for minutes."""
     if timeout is None:
         req_timeout = _supabase_http_timeout()
     elif isinstance(timeout, (int, float)):
-        # Keep connect short even when callers pass a scalar read budget.
         try:
-            connect = max(0.5, float(os.environ.get('SUPABASE_HTTP_CONNECT_TIMEOUT_SEC', '2') or 2))
+            connect = max(0.4, float(os.environ.get('SUPABASE_HTTP_CONNECT_TIMEOUT_SEC', '1.5') or 1.5))
         except (TypeError, ValueError):
-            connect = 2.0
+            connect = 1.5
         req_timeout = (connect, max(connect, float(timeout)))
     else:
         req_timeout = timeout
+    if acquire_timeout_sec is None:
+        try:
+            acquire_timeout_sec = float(os.environ.get('SUPABASE_HTTP_ACQUIRE_TIMEOUT_SEC', '0.35') or 0.35)
+        except (TypeError, ValueError):
+            acquire_timeout_sec = 0.35
+    acquire_timeout_sec = max(0.05, float(acquire_timeout_sec))
+    sema = _supabase_http_sema_get()
+    got = sema.acquire(timeout=acquire_timeout_sec)
+    if not got:
+        raise requests.exceptions.ConnectionError(
+            f"supabase_busy (max_concurrent={_supabase_http_max_concurrent()})"
+        )
     session = _supabase_http_session_get()
     last_err = None
     attempts = max(1, int(retries if retries is not None else 1))
@@ -4730,18 +4777,24 @@ def _supabase_http_request(method, url, *, timeout=None, retries=1, **kwargs):
         requests.exceptions.Timeout,
         requests.exceptions.SSLError,
     )
-    for attempt in range(attempts):
+    try:
+        for attempt in range(attempts):
+            try:
+                return session.request(method, url, timeout=req_timeout, **kwargs)
+            except transient as e:
+                last_err = e
+                if attempt + 1 < attempts:
+                    time.sleep(0.12 * (attempt + 1))
+                    continue
+                raise
+        if last_err:
+            raise last_err
+        raise RuntimeError("Supabase HTTP request failed")
+    finally:
         try:
-            return session.request(method, url, timeout=req_timeout, **kwargs)
-        except transient as e:
-            last_err = e
-            if attempt + 1 < attempts:
-                time.sleep(0.12 * (attempt + 1))
-                continue
-            raise
-    if last_err:
-        raise last_err
-    raise RuntimeError("Supabase HTTP request failed")
+            sema.release()
+        except Exception:
+            pass
 
 
 WELCOME_CREDIT_MINUTES = 60
@@ -9351,11 +9404,25 @@ def _get_json_object_from_s3_key(s3_key, user_id=None):
         return None
 
 
-def _completed_job_payload_from_db(runpod_job_id):
-    """Recover completed transcript for polling when this process has no in-memory callback cache."""
+def _check_status_budget_sec():
+    try:
+        return max(0.8, float(os.environ.get('CHECK_STATUS_BUDGET_SEC', '2.5') or 2.5))
+    except (TypeError, ValueError):
+        return 2.5
+
+
+def _completed_job_payload_from_db(runpod_job_id, *, light=False, deadline_mono=None):
+    """Recover completed transcript for polling when this process has no in-memory callback cache.
+
+    light=True: skip downloading the full transcript JSON (return result_s3_key only) so
+    check_status stays fast under load and medical Socket.IO is not starved.
+    """
+    if deadline_mono is not None and time.monotonic() > deadline_mono:
+        return None
     row = _get_job_row_by_runpod_job_id(
         runpod_job_id,
         select="id,status,user_id,input_s3_key,result_s3_key,metadata",
+        timeout=2,
     )
     if not isinstance(row, dict):
         return None
@@ -9371,6 +9438,15 @@ def _completed_job_payload_from_db(runpod_job_id):
 
     user_id = str(row.get("user_id") or "").strip()
     input_s3_key = str(row.get("input_s3_key") or "").strip()
+    if light or (deadline_mono is not None and time.monotonic() > deadline_mono):
+        return {
+            "jobId": runpod_job_id,
+            "status": "completed",
+            "result_s3_key": result_s3_key,
+            "result": {"result_s3_key": result_s3_key},
+            "light": True,
+        }
+
     transcript = None
     if user_id and input_s3_key:
         transcript = _get_transcript_json_from_s3(user_id, input_s3_key, stage="gpt")
@@ -9586,6 +9662,12 @@ def trigger_gpu_job(job_id, s3_key, num_speakers, language, task):
 
 @app.route('/api/check_status/<job_id>', methods=['GET'])
 def check_job_status(job_id):
+    # Soft isolation: keep this path under a hard wall-clock budget so regular-job
+    # poll storms cannot stall medical Socket.IO on the same gevent worker.
+    t0 = time.monotonic()
+    budget = _check_status_budget_sec()
+    deadline = t0 + budget
+
     # Never return a hard-coded fake transcript here.
     # check_status should only return actual cached result if available.
     if job_id in job_results_cache:
@@ -9596,27 +9678,54 @@ def check_job_status(job_id):
     miss_until = _job_row_missing_until.get(jid)
     known_missing_row = bool(miss_until and time.monotonic() < miss_until)
 
-    if not known_missing_row:
-        completed_payload = _completed_job_payload_from_db(job_id)
-        if completed_payload:
-            logging.info("check_status recovered completed job from DB/S3 job_id=%s", job_id)
-            return jsonify(completed_payload), 200
+    if not known_missing_row and time.monotonic() < deadline:
+        # Prefer a light DB probe first (no full transcript download).
+        try:
+            light_payload = _completed_job_payload_from_db(job_id, light=True, deadline_mono=deadline)
+        except Exception:
+            light_payload = None
+        if light_payload and light_payload.get('result_s3_key'):
+            # If we still have budget, try to hydrate segments once for the client.
+            if time.monotonic() < (deadline - 0.4):
+                try:
+                    completed_payload = _completed_job_payload_from_db(
+                        job_id, light=False, deadline_mono=deadline,
+                    )
+                    if completed_payload and (
+                        completed_payload.get('segments')
+                        or (completed_payload.get('result') or {}).get('segments')
+                    ):
+                        logging.info("check_status recovered completed job from DB/S3 job_id=%s", job_id)
+                        return jsonify(completed_payload), 200
+                except Exception:
+                    pass
+            return jsonify(light_payload), 200
 
-    # Always probe R2 by convention. Completion may live only in another worker's
-    # memory cache; guest jobs have no DB row until claim.
-    s3_payload = _completed_job_payload_from_s3_convention(job_id)
-    if s3_payload:
-        return jsonify(s3_payload), 200
+    # Always probe R2 by convention when budget remains. Completion may live only in
+    # another worker's memory cache; guest jobs have no DB row until claim.
+    if time.monotonic() < deadline:
+        try:
+            s3_payload = _completed_job_payload_from_s3_convention(job_id)
+            if s3_payload:
+                return jsonify(s3_payload), 200
+        except Exception as s3_err:
+            logging.debug("check_status S3 probe skipped job_id=%s: %s", job_id, s3_err)
 
     # If trigger failed, surface it (merge DB + memory so stale warmup "failed" does not win over retry).
-    status, _ = _resolve_trigger_status_for_poll(job_id)
+    try:
+        status, _ = _resolve_trigger_status_for_poll(job_id)
+    except Exception:
+        status = pending_trigger.get(job_id)
     if status == "failed":
         pinfo = pending_job_info.get(job_id) or {}
         err = (pinfo.get('sagemaker_error') or '').strip() or 'Processing trigger failed'
         return jsonify({"jobId": job_id, "status": "failed", "error": err}), 200
 
     # Guard against endless "processing" when callback is never received.
-    timings = _get_trigger_timings(job_id)
+    try:
+        timings = _get_trigger_timings(job_id, db_timeout=1.5) if time.monotonic() < deadline else {}
+    except Exception:
+        timings = {}
     queued_at = timings.get("queued_at") or pending_trigger_at.get(job_id) or 0
     gpu_started = timings.get("gpu_started_at") or gpu_started_at.get(job_id) or 0
     now = time.time()
@@ -9637,7 +9746,15 @@ def check_job_status(job_id):
             "error": "Processing timed out while waiting for completion"
         }), 200
 
-    # Not complete yet.
+    # Not complete yet (or budget exhausted — client will poll again / rely on socket).
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    if elapsed_ms > int(budget * 1000):
+        logging.info(
+            "check_status budget_exhausted job_id=%s elapsed_ms=%s budget_ms=%s",
+            job_id,
+            elapsed_ms,
+            int(budget * 1000),
+        )
     return jsonify({"jobId": job_id, "status": "processing"}), 202
 
 
@@ -12605,7 +12722,15 @@ def gpu_callback():
     data['segments'] = segments
     data['status'] = 'completed'
 
-    _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=pending)
+    # Soft isolation: never block the GPU ack on Supabase merge (that starved medical
+    # Socket.IO for ~55s under regular-job load). Background finalize still charges.
+    def _stash_credits_bg():
+        try:
+            _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=pending)
+        except Exception:
+            logging.debug("gpu_callback credit stash bg failed job_id=%s", job_id, exc_info=True)
+
+    threading.Thread(target=_stash_credits_bg, daemon=True).start()
 
     # Tell the browser not to start a second GPT pass — server will format in background.
     is_medical_job = _is_medical_s3_key(input_s3_key) or bool(pending and pending.get('is_medical'))
@@ -12615,7 +12740,10 @@ def gpu_callback():
             data['result']['server_gpt_pending'] = True
 
     job_results_cache[job_id] = data
-    socketio.emit('job_status_update', data, room=job_id)
+    try:
+        socketio.emit('job_status_update', data, room=job_id)
+    except Exception as emit_err:
+        logging.warning("gpu_callback emit failed job_id=%s: %s", job_id, emit_err)
     if job_id in pending_trigger and pending_trigger.get(job_id) != "failed":
         pending_trigger[job_id] = "triggered"
 
@@ -12661,15 +12789,8 @@ def on_join(data):
             # Send it to this specific user who just reconnected
             socketio.emit('job_status_update', job_results_cache[room], room=request.sid)
             return
-        # Cross-worker guest jobs: completion may only exist in R2 on this instance.
-        try:
-            s3_payload = _completed_job_payload_from_s3_convention(room)
-            if s3_payload:
-                print(f"Found S3 result for {room}, sending now!")
-                socketio.emit('job_status_update', s3_payload, room=request.sid)
-                return
-        except Exception as join_s3_err:
-            logging.debug("join S3 recovery failed room=%s: %s", room, join_s3_err)
+        # Soft isolation: skip sync S3 recovery on join (can block medical emits).
+        # check_status / finalize paths still recover from R2 when needed.
         # Multi-instance / failed RunPod: no live worker, but trigger status is failed —
         # push failure so the client does not sit forever after "Re-joining room".
         try:
@@ -14030,6 +14151,31 @@ def medical_warmup_status():
     return _medical_endpoint_status_handler()
 
 
+def _credits_allow_early_gpu_dispatch(is_medical=False, request_data=None, user_id=None):
+    """
+    Early RunPod /run is allowed only after a full file-duration credit check passes.
+
+    Returns (allow: bool, reason: str).
+    When duration is unknown, defer GPU to trigger_processing (after upload + duration).
+    """
+    if not _credits_gate_applies(is_medical):
+        return True, "credits_gate_off"
+    data = request_data if isinstance(request_data, dict) else {}
+    uid = str(
+        user_id
+        or data.get('userId')
+        or data.get('user_id')
+        or ''
+    ).strip() or 'anonymous'
+    duration_sec = _client_media_duration_from_request(data)
+    if duration_sec <= 0:
+        return False, "duration_unknown_defer_gpu"
+    check = _check_credits_for_duration(uid, duration_sec, _credits_prefer_hebrew_from_request())
+    if not check.get('ok'):
+        return False, str(check.get('error') or 'insufficient_credits')
+    return True, "credits_ok"
+
+
 def _maybe_start_runpod_at_upload_sign(
     job_id,
     s3_key,
@@ -14060,6 +14206,26 @@ def _maybe_start_runpod_at_upload_sign(
             job_id,
             _upload_file_size_bytes(request_data),
             _runpod_defer_warmup_file_bytes(),
+        )
+        return
+    # Credits: never early-dispatch until a full duration check passes. Unknown duration
+    # (common at multipart-init) previously started GPU, then trigger 402 deleted the
+    # object while the worker waited 300s for S3.
+    early_uid = None
+    if isinstance(request_data, dict):
+        early_uid = str(request_data.get('userId') or request_data.get('user_id') or '').strip() or None
+    if not early_uid and s3_key:
+        early_uid = _extract_user_id_from_s3_key(s3_key)
+    allow_early, early_credit_reason = _credits_allow_early_gpu_dispatch(
+        is_medical,
+        request_data,
+        user_id=early_uid,
+    )
+    if not allow_early:
+        logging.info(
+            "Skipping RunPod upload trigger for %s until credits pass at trigger_processing (%s)",
+            job_id,
+            early_credit_reason,
         )
         return
     if is_medical and _medical_uses_sagemaker_transcription():
