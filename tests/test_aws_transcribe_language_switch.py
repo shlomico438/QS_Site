@@ -95,3 +95,56 @@ def test_finish_returns_committed_transcript_after_audio_timeout_park():
     assert result['error'] is None
     assert result['transcript'] == 'hello parked transcript after pause'
     assert result['partials'][-1] == 'hello parked transcript after pause'
+
+
+def test_park_emits_parked_event_for_client_ux():
+    import time
+
+    events = []
+    bridge = TranscribeStreamBridge(lambda payload: events.append(payload))
+    sess = _FakeParkedSession()
+    bridge.session = sess
+    bridge.session_live = True
+    bridge._ever_ready = True
+    bridge._last_client_audio_at = time.time() - 25.0
+    bridge._on_partial(sess.best_transcript)
+    bridge._on_session_finished(sess, 'audio_timeout')
+    assert bridge.session is None
+    parked = [e for e in events if e.get('type') == 'parked']
+    assert len(parked) == 1
+    assert parked[0]['reason'] == 'audio_timeout'
+
+
+class _FakeLiveSession:
+    def __init__(self):
+        self.fed = []
+        self._closed = False
+        self.best_transcript = ''
+        self.partial_history = []
+        self.language_code = 'he-IL'
+        self.sample_rate_hz = 16000
+        self.session_id = 'fake'
+        self.region = 'eu-west-1'
+
+    def feed_audio(self, chunk):
+        self.fed.append(chunk)
+
+
+def test_silence_keepalive_fires_only_once_per_idle_spell():
+    import time
+
+    bridge = TranscribeStreamBridge(lambda payload: None)
+    sess = _FakeLiveSession()
+    bridge.session = sess
+    bridge.session_live = True
+    bridge._last_client_audio_at = time.time() - 13.0
+    assert bridge._feed_silence_keepalive_once() is True
+    assert bridge._silence_keepalive_used is True
+    assert len(sess.fed) == 1
+    assert bridge._feed_silence_keepalive_once() is False
+    assert len(sess.fed) == 1
+    # Real client audio resets the one-shot allowance for the next pause.
+    bridge.handle_audio(b'\x01\x00' * 160)
+    assert bridge._silence_keepalive_used is False
+    assert bridge.session is sess
+    assert len(sess.fed) == 2

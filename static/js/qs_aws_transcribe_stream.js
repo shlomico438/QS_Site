@@ -53,6 +53,11 @@ function qsApplySpeechGain(float32, rms, peak) {
 }
 
 function qsGetGlobalSocket() {
+    // app_logic / base.html attach Socket.IO on window.socket. This file is an ES
+    // module, so a bare `socket` identifier does not resolve to window.socket.
+    try {
+        if (typeof window !== 'undefined' && window.socket) return window.socket;
+    } catch (_) {}
     try {
         if (typeof socket !== 'undefined' && socket) return socket;
     } catch (_) {}
@@ -168,6 +173,17 @@ export class MedicalAwsTranscribeStream {
             this._emitStatus('starting');
             return;
         }
+        if (msg.type === 'resuming') {
+            console.info('[transcribe-stream] server resuming aws', msg.region ? `region=${msg.region}` : '');
+            this._armTransport();
+            this._emitStatus('resuming');
+            return;
+        }
+        if (msg.type === 'parked') {
+            console.info('[transcribe-stream] aws parked', msg.reason || '', 'committed_len=', msg.committed_len);
+            this._emitStatus('parked');
+            return;
+        }
         if (msg.type === 'error') {
             const err = String(msg.error || msg.message || 'transcribe_stream_error');
             const region = msg.region ? ` (region=${msg.region})` : '';
@@ -176,7 +192,7 @@ export class MedicalAwsTranscribeStream {
             return;
         }
         if (msg.type === 'ready') {
-            console.info('[transcribe-stream] server ready');
+            console.info('[transcribe-stream] server ready', msg.resumed ? '(resumed)' : '');
             this._ready = true;
             this._armTransport();
             this._emitStatus('listening');
@@ -561,7 +577,13 @@ export class MedicalAwsTranscribeStream {
         };
         try { sock.once('disconnect', onSockDisconnect); } catch (_) {}
 
-        console.info('[transcribe-stream] connecting via socket.io');
+        console.info(
+            '[transcribe-stream] connecting via socket.io',
+            'connected=',
+            !!sock.connected,
+            'transport=',
+            (sock.io && sock.io.engine && sock.io.engine.transport && sock.io.engine.transport.name) || 'unknown'
+        );
         this._emitStatus('connecting');
         sock.emit('medical_transcribe_start', {
             action: 'start',
@@ -668,14 +690,18 @@ export class MedicalAwsTranscribeStream {
         const forceWs = String(this.transport || '').toLowerCase() === 'websocket';
         const sock = qsGetGlobalSocket();
         const trySocketIo = !forceWs && Boolean(sock);
+        let socketIoErr = null;
         if (trySocketIo) {
             try {
                 await this._startSocketIo();
                 return;
             } catch (err) {
+                socketIoErr = err;
                 console.warn(
-                    '[transcribe-stream] Socket.IO start failed; falling back to /ws/transcribe',
-                    err
+                    '[transcribe-stream] Socket.IO start failed',
+                    err,
+                    'transport=',
+                    (sock.io && sock.io.engine && sock.io.engine.transport && sock.io.engine.transport.name) || 'unknown'
                 );
                 try { this._teardownSocketIo(); } catch (_) {}
                 this._ready = false;
@@ -683,9 +709,30 @@ export class MedicalAwsTranscribeStream {
                 this._startResolve = null;
                 this._startReject = null;
                 this._finalTranscript = this._finalTranscript || '';
+                // Hospital/corporate nets often allow Socket.IO long-polling but block
+                // raw WebSocket upgrades. If Socket.IO is already connected, retrying
+                // /ws/transcribe usually fails with 400 — surface the Socket.IO error.
+                if (sock.connected) {
+                    const detail = String((err && err.message) || err || 'transcribe_stream_start_failed');
+                    throw new Error(
+                        /not_ready|timeout|disconnect/i.test(detail)
+                            ? `socketio_${detail}`
+                            : detail
+                    );
+                }
             }
         }
-        await this._startWebSocket();
+        try {
+            await this._startWebSocket();
+        } catch (wsErr) {
+            const sio = String((socketIoErr && socketIoErr.message) || socketIoErr || '');
+            const ws = String((wsErr && wsErr.message) || wsErr || 'transcribe_ws_error');
+            throw new Error(
+                sio
+                    ? `socket_and_ws_failed (${sio}; ${ws})`
+                    : ws
+            );
+        }
     }
 
     async start(mediaStream) {

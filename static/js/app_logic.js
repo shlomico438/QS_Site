@@ -16381,7 +16381,58 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderMedicalLiveStreamStatus(statusKey) {
         if (!isMedicalModeEnabled()) return;
+        const key = String(statusKey || '').toLowerCase();
+        const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+        const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+        const T = (k, heFb, enFb) =>
+            (typeof window.t === 'function' ? window.t(k) : '') || (isRtl ? heFb : enFb);
+        const labelFor = (k) => {
+            if (k === 'connecting' || k === 'starting') {
+                return T('medical_stream_connecting', 'מתחבר לתמלול חי…', 'Connecting live transcription…');
+            }
+            if (k === 'resuming') {
+                return T('medical_stream_resuming', 'מתחדש לתמלול… אפשר להמשיך לדבר', 'Resuming transcription… you can keep talking');
+            }
+            if (k === 'parked') {
+                return T(
+                    'medical_stream_parked',
+                    'עדיין מקשיבים — אפשר להמשיך לדבר',
+                    'Still listening — you can keep talking'
+                );
+            }
+            if (k === 'listening') {
+                return T('medical_stream_listening', 'מאזין…', 'Listening…');
+            }
+            return '';
+        };
+        const label = labelFor(key);
+        if (!label) return;
+
+        // Soft toast when transcript boxes already exist (don't wipe them).
         const tw = document.getElementById('transcript-window');
+        const hasBoxes = !!(
+            tw
+            && tw.classList.contains('qs-medical-boxes-editable')
+            && tw.querySelector('textarea.qs-medical-edit-box-body, [data-medical-edit-box]')
+        );
+        if (hasBoxes || key === 'parked' || key === 'resuming') {
+            if (typeof showStatus === 'function' && (key === 'parked' || key === 'resuming')) {
+                const toastKey = `medical_stream_status_${key}`;
+                if (window._medicalStreamStatusToastKey !== toastKey) {
+                    window._medicalStreamStatusToastKey = toastKey;
+                    showStatus(label, false, {
+                        duration: key === 'parked' ? 8000 : 5000,
+                        toastPosition: 'above',
+                        toastAnchorId: 'medical-record-btn',
+                    });
+                }
+            }
+            if (hasBoxes) return;
+        }
+        if (key === 'listening') {
+            window._medicalStreamStatusToastKey = '';
+        }
+
         if (!tw) return;
         try { qsSyncMedicalLiveStreamTextFromDom(); } catch (_) {}
         try { qsSnapshotMedicalTranscriptBoxesFromDom(); } catch (_) {}
@@ -16395,18 +16446,8 @@ document.addEventListener('DOMContentLoaded', () => {
         ) {
             return;
         }
-        const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
-        const isRtl = locale.startsWith('he') || locale.startsWith('ar');
         const dir = isRtl ? 'rtl' : 'ltr';
         const align = isRtl ? 'right' : 'left';
-        const key = String(statusKey || '').toLowerCase();
-        let label = '';
-        if (key === 'connecting' || key === 'starting') {
-            label = (typeof window.t === 'function' ? window.t('medical_stream_connecting') : '') || (isRtl ? 'מתחבר לתמלול חי…' : 'Connecting live transcription…');
-        } else if (key === 'listening') {
-            label = (typeof window.t === 'function' ? window.t('medical_stream_listening') : '') || (isRtl ? 'מאזין…' : 'Listening…');
-        }
-        if (!label) return;
         tw.classList.remove('medical-wave-active');
         tw.classList.remove('qs-medical-boxes-editable');
         const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -16504,7 +16545,7 @@ document.addEventListener('DOMContentLoaded', () => {
             abortMedicalAwsTranscribeStream();
             if (typeof showStatus === 'function') {
                 const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
-                const networkHint = /socket|ws_|websocket|connect/i.test(msg)
+                const networkHint = /socket|ws_|websocket|connect|polling/i.test(msg)
                     ? T(
                         'medical_stream_network_blocked',
                         'Live connection was blocked on this network. Try another network, or ask IT to allow WebSocket/polling to getquickscribe.com.'

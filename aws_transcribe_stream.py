@@ -5,9 +5,14 @@ Fallback: raw WebSocket /ws/transcribe (local dev; may not work behind some CDNs
 
 Socket.IO protocol:
   - Client emits medical_transcribe_start {language_code, sample_rate_hz}
-  - Server emits medical_transcribe_event {type: connected|starting|ready|partial|error|transcript}
+  - Server emits medical_transcribe_event {type: connected|starting|ready|partial|parked|resuming|error|transcript}
   - Client emits medical_transcribe_audio (binary PCM int16 mono)
   - Client emits medical_transcribe_stop
+
+Silence keepalive (default on): once per idle spell, ~12s after the last
+client audio chunk, the bridge injects ~1s of PCM silence so AWS does not
+15s-timeout during a short thinking pause. A second idle stretch (~30s total)
+lets AWS die and the bridge parks; the next spoken audio starts a new session.
 
 WebSocket protocol (/ws/transcribe):
   1. Optional JSON text frame to start: {"action":"start","sample_rate_hz":16000}
@@ -49,6 +54,7 @@ try:
     from gevent import monkey as _gevent_monkey
     _REAL_THREAD = _gevent_monkey.get_original('threading', 'Thread')
     _REAL_LOCK = _gevent_monkey.get_original('threading', 'Lock')
+    _REAL_EVENT = _gevent_monkey.get_original('threading', 'Event')
     _REAL_START_NEW_THREAD = _gevent_monkey.get_original('_thread', 'start_new_thread')
     _REAL_QUEUE = _gevent_monkey.get_original('queue', 'Queue')
     _REAL_QUEUE_EMPTY = _gevent_monkey.get_original('queue', 'Empty')
@@ -66,6 +72,7 @@ except Exception:  # pragma: no cover
     import selectors as _selectors_mod
     _REAL_THREAD = threading.Thread
     _REAL_LOCK = threading.Lock
+    _REAL_EVENT = threading.Event
     _REAL_QUEUE = queue.Queue
     _REAL_QUEUE_EMPTY = queue.Empty
     _REAL_QUEUE_FULL = queue.Full
@@ -1164,6 +1171,9 @@ class TranscribeStreamBridge:
         self._ever_ready = False
         self._last_client_audio_at = 0.0
         self._rollover_count = 0
+        self._silence_keepalive_used = False
+        self._keepalive_stop: Optional[threading.Event] = None
+        self._keepalive_thread: Optional[threading.Thread] = None
 
     def _combined_transcript(self, current_session_text: str = '') -> str:
         parts = list(self._committed_segments)
@@ -1196,6 +1206,78 @@ class TranscribeStreamBridge:
             return float('inf')
         return max(0.0, time.time() - self._last_client_audio_at)
 
+    def _silence_keepalive_enabled(self) -> bool:
+        return _env_truthy('MEDICAL_TRANSCRIBE_SILENCE_KEEPALIVE', True)
+
+    def _silence_keepalive_idle_sec(self) -> float:
+        try:
+            return max(
+                5.0,
+                float(os.environ.get('MEDICAL_TRANSCRIBE_SILENCE_KEEPALIVE_IDLE_SEC', '12') or 12),
+            )
+        except (TypeError, ValueError):
+            return 12.0
+
+    def _stop_silence_keepalive_watchdog(self) -> None:
+        stop = self._keepalive_stop
+        if stop is not None:
+            stop.set()
+        self._keepalive_stop = None
+        self._keepalive_thread = None
+
+    def _feed_silence_keepalive_once(self) -> bool:
+        """Extend AWS once during a thinking pause; never update client-idle clock."""
+        if self._silence_keepalive_used or not self.session_live:
+            return False
+        sess = self.session
+        if not sess or getattr(sess, '_closed', False):
+            return False
+        idle = self._client_audio_idle_sec()
+        rate = max(8000, int(self.sample_rate_hz or DEFAULT_SAMPLE_RATE))
+        # ~1s of PCM16 silence — enough to reset AWS "no new audio" timer once.
+        chunk = b'\x00\x00' * rate
+        try:
+            sess.feed_audio(chunk)
+        except Exception:
+            logger.debug('transcribe silence keepalive feed failed', exc_info=True)
+            return False
+        self._silence_keepalive_used = True
+        logger.info(
+            'transcribe silence keepalive sent once (client idle=%.1fs); '
+            'next idle timeout will park AWS',
+            idle if idle != float('inf') else -1,
+        )
+        return True
+
+    def _start_silence_keepalive_watchdog(self) -> None:
+        """One-shot silence inject ~12s after last client audio; then let AWS die (~30s total)."""
+        self._stop_silence_keepalive_watchdog()
+        self._silence_keepalive_used = False
+        if not self._silence_keepalive_enabled():
+            return
+        stop = _REAL_EVENT()
+        self._keepalive_stop = stop
+
+        def _loop() -> None:
+            idle_need = self._silence_keepalive_idle_sec()
+            while not stop.wait(1.0):
+                if not self._alive:
+                    return
+                if not self.session_live or self._silence_keepalive_used:
+                    continue
+                idle = self._client_audio_idle_sec()
+                if idle < idle_need:
+                    continue
+                self._feed_silence_keepalive_once()
+
+        worker = _REAL_THREAD(
+            target=_loop,
+            name='transcribe-silence-keepalive',
+            daemon=True,
+        )
+        self._keepalive_thread = worker
+        worker.start()
+
     def _should_rollover_after_audio_timeout(self) -> bool:
         if not self._alive:
             return False
@@ -1227,6 +1309,7 @@ class TranscribeStreamBridge:
         """AWS died while the client is idle (user pause). Next audio chunk starts a new session."""
         old = None
         with self._rollover_lock:
+            self._stop_silence_keepalive_watchdog()
             self.session_live = False
             with self.start_lock:
                 self.start_scheduled = False
@@ -1237,6 +1320,11 @@ class TranscribeStreamBridge:
                 reason,
                 len(self._combined_transcript('')),
             )
+        self._emit({
+            'type': 'parked',
+            'reason': str(reason or 'audio_timeout'),
+            'committed_len': len(self._combined_transcript('')),
+        })
         if old and not getattr(old, '_closed', False):
             try:
                 old._queue_audio(None)
@@ -1250,6 +1338,7 @@ class TranscribeStreamBridge:
             self._park_dead_session(reason)
             return
         with self._rollover_lock:
+            self._stop_silence_keepalive_watchdog()
             self.session_live = False
             with self.start_lock:
                 self.start_scheduled = False
@@ -1263,10 +1352,18 @@ class TranscribeStreamBridge:
                 len(self.audio_pending),
                 self._client_audio_idle_sec() if self._last_client_audio_at else -1,
             )
+            self._emit({
+                'type': 'resuming',
+                'reason': str(reason or 'rollover'),
+                'language_code': self.language_code,
+                'sample_rate_hz': self.sample_rate_hz,
+                'region': self.region,
+            })
             self._schedule_session_start()
 
     def close(self) -> None:
         self._alive = False
+        self._stop_silence_keepalive_watchdog()
         sess = self.session
         if sess and not sess._closed:
             try:
@@ -1341,6 +1438,14 @@ class TranscribeStreamBridge:
                 self.session.session_id,
                 self._aws_session_count,
             )
+            self._emit({
+                'type': 'ready',
+                'language_code': self.session.language_code,
+                'sample_rate_hz': self.session.sample_rate_hz,
+                'region': self.session.region,
+                'resumed': True,
+            })
+        self._start_silence_keepalive_watchdog()
         self._flush_pending_audio()
 
     def _on_session_error(self, err: BaseException) -> None:
@@ -1423,7 +1528,7 @@ class TranscribeStreamBridge:
                 self.region,
             )
             self._emit({
-                'type': 'starting',
+                'type': 'starting' if not self._ever_ready else 'resuming',
                 'language_code': self.language_code,
                 'identify_multiple_languages': self.identify_multiple_languages,
                 'language_options': list(self.language_options),
@@ -1438,6 +1543,8 @@ class TranscribeStreamBridge:
         if not chunk or not self._alive:
             return
         self._last_client_audio_at = time.time()
+        # Real speech resets one-shot keepalive so the next thinking pause can extend once.
+        self._silence_keepalive_used = False
         self._audio_chunks_received += 1
         rms, peak = _pcm16_level(chunk)
         self._last_audio_rms = rms
@@ -1459,7 +1566,7 @@ class TranscribeStreamBridge:
         if self.session is None:
             self.session = self._make_session()
             self._emit({
-                'type': 'starting',
+                'type': 'resuming' if self._ever_ready else 'starting',
                 'language_code': self.language_code,
                 'sample_rate_hz': self.sample_rate_hz,
                 'region': self.region,
