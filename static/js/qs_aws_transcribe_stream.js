@@ -64,7 +64,35 @@ function qsGetGlobalSocket() {
     return null;
 }
 
-function qsWaitForSocketConnected(sock, timeoutMs = 15000) {
+function qsSocketTransportName(sock) {
+    try {
+        return String(
+            (sock && sock.io && sock.io.engine && sock.io.engine.transport
+                && sock.io.engine.transport.name)
+            || ''
+        ).toLowerCase();
+    } catch (_) {
+        return '';
+    }
+}
+
+/** True when this network is already on Socket.IO long-polling (raw /ws/transcribe will usually fail). */
+function qsSocketIoIsPollingOnly(sock) {
+    if (!sock) return false;
+    const name = qsSocketTransportName(sock);
+    if (name === 'polling') return true;
+    try {
+        const opts = sock.io && sock.io.opts;
+        if (opts && opts.upgrade === false) return true;
+        const transports = opts && opts.transports;
+        if (Array.isArray(transports) && transports.length === 1 && transports[0] === 'polling') {
+            return true;
+        }
+    } catch (_) {}
+    return false;
+}
+
+function qsWaitForSocketConnected(sock, timeoutMs = 20000) {
     if (!sock) return Promise.reject(new Error('socket_unavailable'));
     if (sock.connected) return Promise.resolve(sock);
     return new Promise((resolve, reject) => {
@@ -117,6 +145,13 @@ export class MedicalAwsTranscribeStream {
         this._ready = false;
         /** True after medical_transcribe_start was sent — server can buffer PCM before AWS ready. */
         this._transportArmed = false;
+        /** Client still wants a live session (between connect and stop/abort). */
+        this._sessionWanted = false;
+        /** At least one AWS ready received this capture. */
+        this._hadLiveSession = false;
+        this._restartingAfterReconnect = false;
+        this._onSocketDisconnect = null;
+        this._onSocketConnect = null;
         this._startResolve = null;
         this._startReject = null;
         this._stopResolve = null;
@@ -194,6 +229,8 @@ export class MedicalAwsTranscribeStream {
         if (msg.type === 'ready') {
             console.info('[transcribe-stream] server ready', msg.resumed ? '(resumed)' : '');
             this._ready = true;
+            this._hadLiveSession = true;
+            this._restartingAfterReconnect = false;
             this._armTransport();
             this._emitStatus('listening');
             this._resolveStart();
@@ -264,21 +301,77 @@ export class MedicalAwsTranscribeStream {
     }
 
     _socketTransportName() {
-        try {
-            return String(
-                (this._socket && this._socket.io && this._socket.io.engine && this._socket.io.engine.transport
-                    && this._socket.io.engine.transport.name)
-                || ''
-            ).toLowerCase();
-        } catch (_) {
-            return '';
-        }
+        return qsSocketTransportName(this._socket);
     }
 
     _isSocketPolling() {
         if (!this._socket) return false;
-        const name = this._socketTransportName();
-        return !name || name === 'polling';
+        return qsSocketIoIsPollingOnly(this._socket) || this._socketTransportName() === 'polling';
+    }
+
+    _emitStartConfig() {
+        if (!this._socket) return;
+        this._socket.emit('medical_transcribe_start', {
+            action: 'start',
+            sample_rate_hz: this.sampleRateHz,
+            language_code: this.languageCode,
+            identify_multiple_languages: this.identifyMultipleLanguages === true,
+            language_options: this.languageOptions,
+            preferred_language: this.preferredLanguage,
+            access_token: this.accessToken,
+            guest_try: this.guestTry === true,
+        });
+    }
+
+    _unbindSocketLifecycle() {
+        if (!this._socket) return;
+        if (this._onSocketDisconnect) {
+            try { this._socket.off('disconnect', this._onSocketDisconnect); } catch (_) {}
+            this._onSocketDisconnect = null;
+        }
+        if (this._onSocketConnect) {
+            try { this._socket.off('connect', this._onSocketConnect); } catch (_) {}
+            this._onSocketConnect = null;
+        }
+    }
+
+    _bindSocketLifecycle() {
+        this._unbindSocketLifecycle();
+        if (!this._socket) return;
+        this._onSocketDisconnect = (reason) => {
+            if (!this._sessionWanted || this._feedPaused) return;
+            console.warn(
+                '[transcribe-stream] socket disconnect during live session:',
+                reason,
+                '— will restart AWS on reconnect'
+            );
+            this._ready = false;
+            // Force pre-ready buffering until the new bridge is ready (avoid dropped PCM).
+            this._transportArmed = false;
+            this._clearPollingBatch();
+            this._emitStatus('resuming');
+        };
+        this._onSocketConnect = () => {
+            if (!this._sessionWanted || this._feedPaused) return;
+            if (!this._hadLiveSession) return;
+            if (this._ready) return;
+            if (this._restartingAfterReconnect) return;
+            this._restartingAfterReconnect = true;
+            console.info(
+                '[transcribe-stream] socket reconnected; restarting aws session',
+                'transport=',
+                qsSocketTransportName(this._socket) || 'unknown'
+            );
+            this._emitStatus('resuming');
+            try {
+                this._emitStartConfig();
+            } catch (e) {
+                this._restartingAfterReconnect = false;
+                console.error('[transcribe-stream] reconnect start emit failed', e);
+            }
+        };
+        try { this._socket.on('disconnect', this._onSocketDisconnect); } catch (_) {}
+        try { this._socket.on('connect', this._onSocketConnect); } catch (_) {}
     }
 
     _clearPollingBatchTimer() {
@@ -542,30 +635,35 @@ export class MedicalAwsTranscribeStream {
     }
 
     _teardownSocketIo() {
+        this._unbindSocketLifecycle();
         if (this._socket && this._socketEventHandler) {
             try { this._socket.off('medical_transcribe_event', this._socketEventHandler); } catch (_) {}
         }
         this._socketEventHandler = null;
         this._socket = null;
+        this._sessionWanted = false;
+        this._restartingAfterReconnect = false;
     }
 
     async _startSocketIo() {
         const sock = qsGetGlobalSocket();
         if (!sock) throw new Error('socket_unavailable');
         if (!sock.connected) {
-            // Prefer waiting briefly; if Socket.IO is dead on this network, fall back to raw WS.
+            // Hospital networks can be slow to establish long-polling.
             try {
-                await qsWaitForSocketConnected(sock, 8000);
+                await qsWaitForSocketConnected(sock, 20000);
             } catch (e) {
                 throw new Error('socket_connect_timeout');
             }
         }
 
         this._socket = sock;
+        this._sessionWanted = true;
         this._ready = false;
         this._transportArmed = false;
         this._socketEventHandler = (msg) => this._handleServerMessage(msg);
         sock.on('medical_transcribe_event', this._socketEventHandler);
+        this._bindSocketLifecycle();
 
         const readyPromise = new Promise((resolve, reject) => {
             this._startResolve = resolve;
@@ -582,19 +680,12 @@ export class MedicalAwsTranscribeStream {
             'connected=',
             !!sock.connected,
             'transport=',
-            (sock.io && sock.io.engine && sock.io.engine.transport && sock.io.engine.transport.name) || 'unknown'
+            qsSocketTransportName(sock) || 'unknown',
+            'pollingOnly=',
+            qsSocketIoIsPollingOnly(sock)
         );
         this._emitStatus('connecting');
-        sock.emit('medical_transcribe_start', {
-            action: 'start',
-            sample_rate_hz: this.sampleRateHz,
-            language_code: this.languageCode,
-            identify_multiple_languages: this.identifyMultipleLanguages === true,
-            language_options: this.languageOptions,
-            preferred_language: this.preferredLanguage,
-            access_token: this.accessToken,
-            guest_try: this.guestTry === true,
-        });
+        this._emitStartConfig();
 
         const readyTimer = setTimeout(() => {
             this._rejectStart(new Error('transcribe_stream_not_ready'));
@@ -602,6 +693,11 @@ export class MedicalAwsTranscribeStream {
 
         try {
             await readyPromise;
+            console.info(
+                '[transcribe-stream] socket.io live path ready',
+                'transport=',
+                qsSocketTransportName(sock) || 'unknown'
+            );
         } finally {
             clearTimeout(readyTimer);
             try { sock.off('disconnect', onSockDisconnect); } catch (_) {}
@@ -687,6 +783,7 @@ export class MedicalAwsTranscribeStream {
     async connectAndAwaitReady() {
         this._transportArmed = false;
         this._ready = false;
+        this._hadLiveSession = false;
         const forceWs = String(this.transport || '').toLowerCase() === 'websocket';
         const sock = qsGetGlobalSocket();
         const trySocketIo = !forceWs && Boolean(sock);
@@ -697,11 +794,17 @@ export class MedicalAwsTranscribeStream {
                 return;
             } catch (err) {
                 socketIoErr = err;
+                const transport = qsSocketTransportName(sock) || 'unknown';
+                const pollingOnly = qsSocketIoIsPollingOnly(sock);
                 console.warn(
                     '[transcribe-stream] Socket.IO start failed',
                     err,
                     'transport=',
-                    (sock.io && sock.io.engine && sock.io.engine.transport && sock.io.engine.transport.name) || 'unknown'
+                    transport,
+                    'pollingOnly=',
+                    pollingOnly,
+                    'connected=',
+                    !!sock.connected
                 );
                 try { this._teardownSocketIo(); } catch (_) {}
                 this._ready = false;
@@ -709,10 +812,9 @@ export class MedicalAwsTranscribeStream {
                 this._startResolve = null;
                 this._startReject = null;
                 this._finalTranscript = this._finalTranscript || '';
-                // Hospital/corporate nets often allow Socket.IO long-polling but block
-                // raw WebSocket upgrades. If Socket.IO is already connected, retrying
-                // /ws/transcribe usually fails with 400 — surface the Socket.IO error.
-                if (sock.connected) {
+                // Hospital/corporate nets: Socket.IO long-polling works, raw /ws/transcribe
+                // does not. Never burn time on a doomed WebSocket fallback in that case.
+                if (sock.connected || pollingOnly) {
                     const detail = String((err && err.message) || err || 'transcribe_stream_start_failed');
                     throw new Error(
                         /not_ready|timeout|disconnect/i.test(detail)
@@ -721,6 +823,10 @@ export class MedicalAwsTranscribeStream {
                     );
                 }
             }
+        } else if (!forceWs && !sock) {
+            console.warn(
+                '[transcribe-stream] window.socket missing — Socket.IO path unavailable; trying /ws/transcribe'
+            );
         }
         try {
             await this._startWebSocket();
