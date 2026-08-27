@@ -17516,7 +17516,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const hadLiveTranscribe = !!window._medicalAwsTranscribeStream;
                 if (hadLiveTranscribe) {
                     try {
-                        streamResult = await window._medicalAwsTranscribeStream.stop();
+                        // Use live transcript quickly; do not block Save on Socket.IO stop ack.
+                        streamResult = await window._medicalAwsTranscribeStream.stop({
+                            quickLocal: true,
+                            waitMs: 0,
+                        });
                         const tx = (typeof resolveMedicalStreamTranscript === 'function'
                             ? resolveMedicalStreamTranscript(streamResult)
                             : '')
@@ -17855,13 +17859,28 @@ document.addEventListener('DOMContentLoaded', () => {
             setMedicalTimerVisibility(false);
             setMedicalRecordingVisualState('idle');
             try { updateMedicalTabUi(); } catch (_) {}
-            if (
-                isMedicalModeEnabled()
-                && !qsMedicalStreamOnlyMode()
-                && window.__QS_MEDICAL_WARMUP_STATE !== 'ready'
-            ) {
-                qsShowMedicalWarmupProgressDuringRecording();
-            }
+            // Show progress immediately — do not wait for AWS/Socket.IO stop ack (can be ~12s on polling).
+            try {
+                if (typeof qsMedicalStreamOnlyMode === 'function' && qsMedicalStreamOnlyMode()) {
+                    if (typeof qsStartUnifiedProgressPhase === 'function') {
+                        qsStartUnifiedProgressPhase('transcribe');
+                    }
+                    if (typeof startProcessingStateUI === 'function') startProcessingStateUI();
+                    if (typeof showStatus === 'function') {
+                        const T = typeof window.t === 'function' ? window.t : (k) => k;
+                        showStatus(
+                            T('medical_saving_recording') || 'Saving recording…',
+                            false,
+                            { duration: 8000 }
+                        );
+                    }
+                } else if (
+                    isMedicalModeEnabled()
+                    && window.__QS_MEDICAL_WARMUP_STATE !== 'ready'
+                ) {
+                    qsShowMedicalWarmupProgressDuringRecording();
+                }
+            } catch (_) {}
             try { rec.stop(); } catch (_) {}
         });
     }

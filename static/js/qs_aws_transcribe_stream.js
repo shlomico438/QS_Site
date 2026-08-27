@@ -932,31 +932,67 @@ export class MedicalAwsTranscribeStream {
         };
     }
 
-    async stop() {
+    _localStopTranscript() {
+        const partials = this._partials.slice();
+        const localTranscript = String(this._finalTranscript || '').trim()
+            || (partials.length ? String(partials[partials.length - 1] || '').trim() : '');
+        return { transcript: localTranscript, partials };
+    }
+
+    async stop(options = {}) {
         this._feedPaused = true;
         this._sessionWanted = false;
         this._clearStarvationWatch();
         try { this._flushPollingBatch(); } catch (_) {}
         this._clearPreReadyBuffer();
         const chunksSent = this._chunksSent;
+        const local = this._localStopTranscript();
+        // Save UX: if we already have live text, do not wait up to 12s for Socket.IO
+        // stop ack (polling often never delivers it before timeout).
+        const quickLocal = options.quickLocal !== false && !!String(local.transcript || '').trim();
+        const stopWaitMs = Number.isFinite(Number(options.waitMs))
+            ? Math.max(0, Number(options.waitMs))
+            : (quickLocal ? 0 : 12000);
+
         if (this._socket) {
-            const resultPromise = new Promise((resolve, reject) => {
-                this._stopResolve = resolve;
-                this._stopReject = reject;
-                setTimeout(() => {
-                    if (this._stopResolve) {
-                        this._stopResolve = null;
-                        console.warn('[transcribe-stream] stop response timeout; using live transcript');
-                        resolve(this._resolveStopWithLocalFallback());
-                    }
-                }, 12000);
-            });
+            let result = null;
             try {
                 if (this._socket.connected) {
                     this._socket.emit('medical_transcribe_stop');
                 }
             } catch (_) {}
-            const result = await resultPromise;
+            if (quickLocal && stopWaitMs <= 0) {
+                result = { ...local, warning: null };
+            } else {
+                const resultPromise = new Promise((resolve, reject) => {
+                    this._stopResolve = resolve;
+                    this._stopReject = reject;
+                    setTimeout(() => {
+                        if (this._stopResolve) {
+                            this._stopResolve = null;
+                            this._stopReject = null;
+                            if (quickLocal) {
+                                console.info(
+                                    '[transcribe-stream] stop: using live transcript (server ack not required)'
+                                );
+                                resolve({ ...local, warning: null });
+                            } else {
+                                console.warn('[transcribe-stream] stop response timeout; using live transcript');
+                                resolve(this._resolveStopWithLocalFallback());
+                            }
+                        }
+                    }, stopWaitMs);
+                });
+                result = await resultPromise;
+                // Prefer longer server transcript when it arrives within the short wait.
+                if (
+                    quickLocal
+                    && result
+                    && String(local.transcript || '').length > String(result.transcript || '').length
+                ) {
+                    result = { ...result, transcript: local.transcript, partials: local.partials };
+                }
+            }
             this._teardownSocketIo();
             this._clearPollingBatch();
             await this._closeAudioContext();
@@ -970,7 +1006,7 @@ export class MedicalAwsTranscribeStream {
                 'last gain:',
                 this._lastGain.toFixed(2),
                 'transcript chars:',
-                String(result.transcript || '').length
+                String((result && result.transcript) || '').length
             );
             return result;
         }
@@ -986,10 +1022,15 @@ export class MedicalAwsTranscribeStream {
             setTimeout(() => {
                 if (this._stopResolve) {
                     this._stopResolve = null;
-                    console.warn('[transcribe-stream] stop response timeout; using live transcript');
-                    resolve(this._resolveStopWithLocalFallback());
+                    this._stopReject = null;
+                    if (quickLocal) {
+                        resolve({ ...local, warning: null });
+                    } else {
+                        console.warn('[transcribe-stream] stop response timeout; using live transcript');
+                        resolve(this._resolveStopWithLocalFallback());
+                    }
                 }
-            }, 12000);
+            }, stopWaitMs);
         });
 
         try {
@@ -997,22 +1038,17 @@ export class MedicalAwsTranscribeStream {
                 this._ws.send(JSON.stringify({ action: 'stop' }));
             }
         } catch (_) {}
-
         const result = await resultPromise;
-        try { this._ws.close(); } catch (_) {}
+        try {
+            if (this._ws && this._ws.readyState === WebSocket.OPEN) this._ws.close();
+        } catch (_) {}
         this._ws = null;
         await this._closeAudioContext();
         console.info(
             '[transcribe-stream] stopped; chunks sent:',
             chunksSent,
-            'last rms:',
-            this._lastRms.toFixed(4),
-            'last peak:',
-            this._lastPeak.toFixed(4),
-            'last gain:',
-            this._lastGain.toFixed(2),
             'transcript chars:',
-            String(result.transcript || '').length
+            String((result && result.transcript) || '').length
         );
         return result;
     }

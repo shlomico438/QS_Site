@@ -1680,7 +1680,10 @@ class TranscribeStreamBridge:
                 else:
                     logger.debug('transcribe async stop: %s', e)
 
-        threading.Thread(target=_drain_aws, daemon=True).start()
+        # Use real OS thread: monkey-patched threading.Thread is a greenlet and
+        # sess.stop() can block the Socket.IO hub long enough that the client never
+        # sees the fast-path transcript emit (looks like a ~12s save freeze).
+        _REAL_THREAD(target=_drain_aws, name='aws-transcribe-drain', daemon=True).start()
         return result_payload
 
 
