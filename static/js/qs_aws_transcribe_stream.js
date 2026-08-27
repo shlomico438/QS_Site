@@ -1,5 +1,6 @@
 /**
- * Medical live transcription via Socket.IO (primary) or /ws/transcribe fallback.
+ * Medical live transcription via Socket.IO HTTP long-polling only.
+ * No WebSocket upgrade and no /ws/transcribe fallback (avoids mid-session WS stalls).
  * PCM int16 mono @ 16 kHz → AWS Transcribe Streaming.
  */
 
@@ -853,59 +854,33 @@ export class MedicalAwsTranscribeStream {
         this._transportArmed = false;
         this._ready = false;
         this._hadLiveSession = false;
-        const forceWs = String(this.transport || '').toLowerCase() === 'websocket';
         const sock = qsGetGlobalSocket();
-        const trySocketIo = !forceWs && Boolean(sock);
-        let socketIoErr = null;
-        if (trySocketIo) {
-            try {
-                await this._startSocketIo();
-                return;
-            } catch (err) {
-                socketIoErr = err;
-                const transport = qsSocketTransportName(sock) || 'unknown';
-                const pollingOnly = qsSocketIoIsPollingOnly(sock);
-                console.warn(
-                    '[transcribe-stream] Socket.IO start failed',
-                    err,
-                    'transport=',
-                    transport,
-                    'pollingOnly=',
-                    pollingOnly,
-                    'connected=',
-                    !!sock.connected
-                );
-                try { this._teardownSocketIo(); } catch (_) {}
-                this._ready = false;
-                this._transportArmed = false;
-                this._startResolve = null;
-                this._startReject = null;
-                this._finalTranscript = this._finalTranscript || '';
-                // Hospital/corporate nets: Socket.IO long-polling works, raw /ws/transcribe
-                // does not. Never burn time on a doomed WebSocket fallback in that case.
-                if (sock.connected || pollingOnly) {
-                    const detail = String((err && err.message) || err || 'transcribe_stream_start_failed');
-                    throw new Error(
-                        /not_ready|timeout|disconnect/i.test(detail)
-                            ? `socketio_${detail}`
-                            : detail
-                    );
-                }
-            }
-        } else if (!forceWs && !sock) {
-            console.warn(
-                '[transcribe-stream] window.socket missing — Socket.IO path unavailable; trying /ws/transcribe'
-            );
+        if (!sock) {
+            throw new Error('socket_unavailable');
         }
         try {
-            await this._startWebSocket();
-        } catch (wsErr) {
-            const sio = String((socketIoErr && socketIoErr.message) || socketIoErr || '');
-            const ws = String((wsErr && wsErr.message) || wsErr || 'transcribe_ws_error');
+            await this._startSocketIo();
+        } catch (err) {
+            const transport = qsSocketTransportName(sock) || 'unknown';
+            console.warn(
+                '[transcribe-stream] Socket.IO start failed (polling-only; no WS fallback)',
+                err,
+                'transport=',
+                transport,
+                'connected=',
+                !!sock.connected
+            );
+            try { this._teardownSocketIo(); } catch (_) {}
+            this._ready = false;
+            this._transportArmed = false;
+            this._startResolve = null;
+            this._startReject = null;
+            this._finalTranscript = this._finalTranscript || '';
+            const detail = String((err && err.message) || err || 'transcribe_stream_start_failed');
             throw new Error(
-                sio
-                    ? `socket_and_ws_failed (${sio}; ${ws})`
-                    : ws
+                /not_ready|timeout|disconnect|socket_/i.test(detail)
+                    ? (detail.startsWith('socketio_') ? detail : `socketio_${detail}`)
+                    : detail
             );
         }
     }

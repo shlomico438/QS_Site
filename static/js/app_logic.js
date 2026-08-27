@@ -16570,8 +16570,6 @@ document.addEventListener('DOMContentLoaded', () => {
             return stream;
         } catch (e) {
             const msg = String((e && e.message) || e || 'transcribe_stream_start_failed');
-            // connectAndAwaitReady already tries /ws/transcribe after Socket.IO failure.
-            // If both failed, surface a clearer network hint.
             console.error('[medical] AWS Transcribe stream start failed', e);
             try { stream.abort(); } catch (_) {}
             abortMedicalAwsTranscribeStream();
@@ -16580,7 +16578,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const networkHint = /socket|ws_|websocket|connect|polling/i.test(msg)
                     ? T(
                         'medical_stream_network_blocked',
-                        'Live connection was blocked on this network. Try another network, or ask IT to allow WebSocket/polling to getquickscribe.com.'
+                        'Live connection was blocked on this network. Try another network, or ask IT to allow Socket.IO polling to getquickscribe.com.'
                     )
                     : '';
                 showStatus(networkHint || `AWS Transcribe stream: ${msg}`, true);
