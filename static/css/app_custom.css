@@ -2495,26 +2495,6 @@ body.qs-video-transcript-session.has-transcript-actions:not(.medical-mode) #subt
     margin-inline: 0;
 }
 
-.medical-toolbar-new-session-btn {
-    display: none;
-    align-items: center;
-    justify-content: center;
-    min-height: 38px;
-    padding: 0 16px;
-    border-radius: 10px;
-    border: 1px solid #99f6e4;
-    background: #ffffff;
-    color: #0f766e;
-    font-weight: 800;
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-/* Shown via JS when a medical session has finished (setTranscriptActionButtonsVisible). */
-.main-app-container.medical-mode .medical-toolbar-new-session-btn.is-visible {
-    display: inline-flex;
-}
-
 .medical-upload-new-session-btn {
     display: none;
     width: 100%;
@@ -2533,14 +2513,49 @@ body.qs-video-transcript-session.has-transcript-actions:not(.medical-mode) #subt
     display: block;
 }
 
-.medical-toolbar-new-session-btn:hover {
-    border-color: #2dd4bf;
-    background: linear-gradient(180deg, #f0fdfa 0%, #ccfbf1 100%);
+/* Session result: only "סשן חדש" in the bottom bar — shrink unused chrome so the
+   transcript/training pane can use ~3cm more height (paste + learn buttons stay in view). */
+.main-app-container.medical-mode.medical-has-session-result {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
+}
+.main-app-container.medical-mode.medical-has-session-result > .upload-zone {
+    padding: 6px 12px calc(6px + env(safe-area-inset-bottom, 0px)) !important;
+}
+.main-app-container.medical-mode.medical-has-session-result > .upload-zone .medical-upload-new-session-btn {
+    margin: 0 auto;
+    min-height: 44px;
+}
+.main-app-container.medical-mode.medical-has-session-result > .upload-zone .mobile-new-session-btn,
+.main-app-container.medical-mode.medical-has-session-result > .upload-zone .qs-pipeline-phase-wrap,
+.main-app-container.medical-mode.medical-has-session-result > .upload-zone .upload-zone-app-footer {
+    display: none !important;
 }
 
-.medical-toolbar-new-session-btn:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
+/* Training panel: actions stay above the paste box; long gold examples scroll inside the textarea. */
+#medical-training-panel .qs-medical-training-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 0 0 10px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #f0fdfa;
+    padding: 6px 0;
+}
+#medical-training-panel .qs-medical-training-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid #99f6e4;
+    border-radius: 10px;
+    padding: 10px;
+    resize: vertical;
+    direction: rtl;
+    text-align: right;
+    font: inherit;
+    min-height: 120px;
+    max-height: min(42vh, 340px);
+    overflow-y: auto;
 }
 
 /* Medical: no כתוביות/מסמך format switch or Aa subtitle styling — transcript vs summary uses medical tabs */
@@ -5830,6 +5845,10 @@ html[dir="rtl"] .upload-status {
         padding-bottom: calc(166px + env(safe-area-inset-bottom, 0px)) !important;
     }
 
+    .main-app-container.medical-mode.medical-has-session-result {
+        padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)) !important;
+    }
+
     /* 6. HIDE EXTRAS */
     footer:not(.site-footer), .footer, .copyright-text {
         display: none !important;
@@ -7016,6 +7035,30 @@ html[dir="rtl"] .upload-status {
   transform: scale(0.88);
 }
 
+/* Private-template subheads inside a summary pane (רגישות / תרופות / לסיכום) */
+.medical-summary-subhead {
+  font-weight: 700;
+  margin: 14px 0 6px;
+  line-height: 1.4;
+  color: inherit;
+}
+.medical-summary-subhead.is-first {
+  margin-top: 0;
+}
+#medical-summary-exam .medical-summary-subhead.is-first {
+  margin-top: 2px;
+}
+#medical-summary-exam.medical-summary-exam-has-subheads {
+  margin-top: 10px;
+}
+.medical-summary-body-text {
+  white-space: pre-wrap;
+  margin: 0 0 4px;
+}
+.medical-summary-body-text:last-child {
+  margin-bottom: 0;
+}
+
 /* Mobile only: page scroll + fixed bottom bar (desktop transcript scrolls inside #transcript-window) */
 @media screen and (max-width: 768px) {
   html:not(:has(body.has-transcript-actions)):not(:has(body.mobile-video-session)),
@@ -7108,6 +7151,10 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
 
   .main-app-container.medical-mode {
     padding-bottom: calc(118px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .main-app-container.medical-mode.medical-has-session-result {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
   }
 
   .main-app-container.medical-mode > .upload-zone {

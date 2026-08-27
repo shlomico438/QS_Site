@@ -8872,12 +8872,15 @@ function _stripLeadingMedicalExamLegacyPrefix(s) {
 
 /** All known Hebrew section header labels across all sections. */
 const _MEDICAL_SECTION_ALL_LABELS = [
-    'תלונה עיקרית', 'תלונה', 'תלונות',
+    'תלונה עיקרית / HPI', 'תלונה עיקרית', 'תלונה', 'תלונות',
     'תכנים מרכזיים',
+    'היסטוריה, תרופות ובדיקה נוירולוגית',
+    'הערכה ותוכנית',
     'ממצאים', 'בדיקה',
     'התרשמות רגשית',
     'המלצות למטופל', 'המלצות',
-    'דגשים להמשך'
+    'דגשים להמשך',
+    'Chief Complaint / HPI', 'Chief Complaint', 'History of Present Illness',
 ];
 
 /** Strip any leading section header (from any section) from the field value.
@@ -8922,7 +8925,7 @@ function _medicalSummaryFieldBody(text, sectionKey) {
 /** Client safety net when server guardrail missed a short-transcript GPT hallucination. */
 function _medicalFormatLooksHallucinated(sourceText, fmt) {
     const src = String(sourceText || '').trim();
-    if (!src || src.length > 120 || !fmt || typeof fmt !== 'object') return false;
+    if (!src || !fmt || typeof fmt !== 'object') return false;
     const parts = [
         fmt.clean_transcript,
         fmt.medical_chief_complaint,
@@ -8930,7 +8933,22 @@ function _medicalFormatLooksHallucinated(sourceText, fmt) {
         fmt.medical_examination_transcript,
         fmt.medical_patient_recommendations,
     ].map((p) => String(p || '').trim());
+    const blob = parts.join('\n');
     const maxOut = Math.max(0, ...parts.map((p) => p.length));
+    if (src.length <= 220) {
+        const dumpMarkers = [
+            'ברקע', 'המלצות', 'HTN', 'Dyslipidemia', 'carotid duplex', 'LOOP RECORDER', 'בכבוד רב',
+            'Chief Complaint', 'History of Present Illness', 'Neurological Examination',
+            'Mental Status', 'Assessment', 'Plan:', 'HPI:', 'CC:', 'בדיקה נוירולוגית',
+        ];
+        let hits = 0;
+        for (const m of dumpMarkers) {
+            if (blob.includes(m)) hits += 1;
+        }
+        if (hits >= 2 && blob.length > Math.max(src.length * 3, src.length + 120)) return true;
+        if (maxOut > Math.max(src.length * 3, src.length + 100)) return true;
+    }
+    if (src.length > 120) return false;
     return maxOut > Math.max(src.length * 2.5, src.length + 80);
 }
 
@@ -9136,6 +9154,23 @@ function buildTranscriptTextForGptFormat() {
         .filter(Boolean)
         .join('\n');
     if (fromSegments.trim()) return fromSegments;
+    // Medical live stream: segments can be empty briefly; prefer live/box text before giving up.
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+        const live = String(window._medicalLiveStreamText || '').trim();
+        if (live) return live;
+        const boxes = Array.isArray(window._medicalUnsavedBoxes)
+            ? window._medicalUnsavedBoxes.map((t) => String(t || '').trim()).filter(Boolean)
+            : [];
+        if (boxes.length) return boxes.join('\n');
+        try {
+            if (typeof qsCollectMedicalTranscriptBoxTexts === 'function') {
+                const fromDom = qsCollectMedicalTranscriptBoxTexts()
+                    .map((t) => String(t || '').trim())
+                    .filter(Boolean);
+                if (fromDom.length) return fromDom.join('\n');
+            }
+        } catch (_) {}
+    }
     const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
         ? window.currentFormattedDoc
         : null;
@@ -9933,12 +9968,16 @@ function renderMedicalTrainingPanel(container) {
         </button>
         <div id="medical-training-panel-body" style="display:${expanded ? 'block' : 'none'};margin-top:12px;">
         <div style="font-size:0.88rem;color:#0f766e;margin-bottom:10px;">ערכו את הסיכום לצורת התבנית שלכם (כותרות, סדר סעיפים וסגנון). האימון שומר תבנית וסגנון אישיים לחשבון שלכם בלבד — לא משותף עם רופאים אחרים. עובדות קליניות מהדוגמה לא נשמרות ככללים.</div>
-        <textarea id="medical-training-doctor-summary" class="qs-medical-training-textarea" rows="8" placeholder="הדביקו כאן את הסיכום בתבנית הרצויה שלכם" style="width:100%;box-sizing:border-box;border:1px solid #99f6e4;border-radius:10px;padding:10px;resize:vertical;direction:rtl;text-align:right;font:inherit;">${textareaInitialEsc}</textarea>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <div class="qs-medical-training-actions">
             <button type="button" id="medical-training-learn-btn" style="${learnBtnStyle}">${learnBtnLabel}</button>
             <button type="button" id="medical-training-approve-btn" style="${approveBtnStyle}">אשר אימון</button>
         </div>
+        <textarea id="medical-training-doctor-summary" class="qs-medical-training-textarea" rows="8" placeholder="הדביקו כאן את הסיכום בתבנית הרצויה שלכם">${textareaInitialEsc}</textarea>
         <div id="medical-training-message" style="margin-top:8px;font-size:0.88rem;color:#0f766e;">${esc(window._medicalTrainingMessage || '')}</div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid #99f6e4;">
+            <button type="button" id="medical-training-inspect-btn" style="padding:8px 12px;border:1px solid #0f766e;border-radius:10px;background:#ffffff;color:#0f766e;font-weight:700;cursor:pointer;">מה נשמר בחשבון?</button>
+            <div id="medical-training-inspect" style="display:none;margin-top:8px;font-size:0.85rem;color:#134e4a;white-space:pre-wrap;"></div>
+        </div>
         ${previewText ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid #99f6e4;"><strong>תצוגה מקדימה עם מודל הייצור:</strong><div style="white-space:pre-wrap;margin-top:6px;">${esc(previewText)}</div></div>` : ''}
         ${rules ? `<div style="margin-top:10px;"><strong>כללים שנלמדו:</strong>${rules}</div>` : ''}
         </div>
@@ -10024,13 +10063,20 @@ function renderMedicalTrainingPanel(container) {
                 window._medicalTrainingCandidatePrompt = learned.candidate_prompt || '';
                 window._medicalTrainingLastExampleId = learned.example_id || '';
                 window._medicalTrainingLearnedRules = Array.isArray(learned.learned_rules) ? learned.learned_rules : [];
+                if (learned.section_labels || learned.candidate_prompt) {
+                    qsApplyMedicalPersonalTemplateMeta({
+                        personal_template: true,
+                        section_labels: learned.section_labels,
+                        active_prompt_chars: String(learned.candidate_prompt || '').length,
+                    });
+                }
                 if (learned.optimizer_model || learned.preview_model) {
                     console.info('[medical training] learn models:', {
                         optimizer: learned.optimizer_model,
                         preview_planned: learned.preview_model,
                     });
                 }
-                window._medicalTrainingMessage = learned.rationale || 'נוצר פרומפט מועמד (תבנית + סגנון). מריץ תצוגה מקדימה...';
+                window._medicalTrainingMessage = learned.rationale || 'נוצר פרומפט אישי (תבנית + סגנון). מריץ תצוגה מקדימה...';
                 const previewRes = await medicalTrainingPreview({
                     transcript,
                     candidate_prompt: window._medicalTrainingCandidatePrompt,
@@ -10042,12 +10088,51 @@ function renderMedicalTrainingPanel(container) {
                 if (previewRes.preview_model) {
                     console.info('[medical training] preview model:', previewRes.preview_model);
                 }
-                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, לחצו על «אשר אימון» כדי להחיל אותם על סיכומים עתידיים.';
+                // Persist for future sessions (learn already writes active_prompt; approve
+                // confirms + bumps version so a new session never falls back to specialty).
+                const candidateToSave = String(window._medicalTrainingCandidatePrompt || '').trim();
+                if (candidateToSave) {
+                    try {
+                        const approved = await medicalTrainingApi('/api/medical_training/approve', {
+                            candidate_prompt: candidateToSave,
+                            example_id: window._medicalTrainingLastExampleId || ''
+                        });
+                        window._medicalTrainingApprovedCandidatePrompt = candidateToSave;
+                        const ver = approved?.profile?.version;
+                        window._medicalTrainingMessage = ver
+                            ? `התבנית האישית נשמרה (גרסה ${ver}) ותשמש גם בסשנים חדשים. בדקו את התצוגה המקדימה למטה.`
+                            : 'התבנית האישית נשמרה ותשמש גם בסשנים חדשים. בדקו את התצוגה המקדימה למטה.';
+                    } catch (approveErr) {
+                        console.warn('[medical training] auto-approve after learn failed', approveErr);
+                        window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה, אך שמירת התבנית לסשנים הבאים נכשלה — לחצו על «אשר אימון».';
+                    }
+                } else {
+                    window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, לחצו על «אשר אימון».';
+                }
+                // Apply preview to the open visit so Summary matches what was learned.
+                const previewFmt = window._medicalTrainingCandidatePreview;
+                if (previewFmt && typeof previewFmt === 'object') {
+                    const prevDoc = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                        ? window.currentFormattedDoc
+                        : {};
+                    window.currentFormattedDoc = normalizeFormattedFields({
+                        ...prevDoc,
+                        ...previewFmt,
+                        clean_transcript: previewFmt.clean_transcript || prevDoc.clean_transcript || '',
+                    }) || { ...prevDoc, ...previewFmt };
+                    window._medicalHasResult = true;
+                    window.medicalActiveTab = 'summary';
+                }
                 window._medicalTrainingPostLearnPreviewReady = true;
                 window._medicalTrainingPanelExpanded = true;
                 window._medicalTrainingBaselineForRetry = doctorSummary;
                 if (typeof window.hideClinicalTrainingModal === 'function') window.hideClinicalTrainingModal();
                 if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
+                if (typeof updateMedicalTabUi === 'function') {
+                    try { updateMedicalTabUi(); } catch (_) {}
+                } else if (typeof window.refreshMedicalTabs === 'function') {
+                    try { window.refreshMedicalTabs(); } catch (_) {}
+                }
             } catch (e) {
                 if (typeof window.hideClinicalTrainingModal === 'function') window.hideClinicalTrainingModal();
                 if (message) message.textContent = 'האימון נכשל: ' + String((e && e.message) || e).slice(0, 220);
@@ -10113,6 +10198,77 @@ function renderMedicalTrainingPanel(container) {
                 if (message) message.textContent = 'שמירת סיגנון הסיכום נכשלה: ' + String((e && e.message) || e).slice(0, 220);
             } finally {
                 syncTrainingButtons();
+            }
+        };
+    }
+    const inspectBtn = panel.querySelector('#medical-training-inspect-btn');
+    const inspectEl = panel.querySelector('#medical-training-inspect');
+    if (inspectBtn && inspectEl) {
+        inspectBtn.onclick = async () => {
+            try {
+                inspectBtn.disabled = true;
+                inspectEl.style.display = 'block';
+                inspectEl.textContent = 'טוען פרופיל אימון...';
+                const data = await medicalTrainingApi('/api/medical_training/profile', {});
+                qsApplyMedicalPersonalTemplateMeta({
+                    resolved_task2_source: data.resolved_task2_source,
+                    section_labels: data.section_labels,
+                    active_prompt_chars: data.profile && data.profile.active_prompt_chars,
+                    production_prompt_chars: data.production_prompt_chars,
+                });
+                const p = data.profile || {};
+                const rules = (data.latest_example && Array.isArray(data.latest_example.learned_rules))
+                    ? data.latest_example.learned_rules
+                    : [];
+                const labels = data.section_labels || {};
+                const lines = [
+                    `סטטוס: ${p.status || '?'} | גרסה: ${p.version || '?'} | דוגמאות: ${p.examples_count || 0}`,
+                    `מקור שיופעל בסשן חדש: ${data.resolved_task2_source || '?'}`,
+                    `התמחות בחשבון: ${data.specialty || '(ריק)'}`,
+                    `כותרות UI: chief=${labels.chief || '—'} | exam=${labels.exam || '—'} | rec=${labels.rec || '—'}`,
+                    `active_prompt: ${p.active_prompt_chars || 0} תווים | candidate: ${p.candidate_prompt_chars || 0} תווים`,
+                    data.resolved_task2_source === 'doctor_profile'
+                        ? '✓ התבנית האישית אמורה להיטען בסשן חדש'
+                        : '✗ לא נטענת תבנית אישית — נופל ל-' + (data.resolved_task2_source || 'default'),
+                ];
+                if (rules.length) {
+                    lines.push('', 'כללים שנשמרו בדוגמה האחרונה:');
+                    rules.forEach((r) => lines.push('• ' + String(r || '')));
+                }
+                if (data.latest_example && data.latest_example.rationale) {
+                    lines.push('', 'הסבר מהאופטימייזר:', String(data.latest_example.rationale));
+                }
+                const promptText = String(
+                    data.resolved_task2_prompt || data.production_prompt || p.active_prompt || p.candidate_prompt || ''
+                ).trim();
+                if (promptText) {
+                    lines.push(
+                        '',
+                        `—— פרומפט Task 2 שיישלח ל-GPT (${data.resolved_task2_prompt_chars || promptText.length} תווים) ——`,
+                        promptText,
+                    );
+                } else {
+                    lines.push('', 'אין פרומפט אישי שמור בחשבון.');
+                }
+                lines.push(
+                    '',
+                    'טיפ דיבאג: אחרי סיכום חדש, ב-Network חפשו format_transcript_summary →',
+                    'medical_task2_prompt_source + medical_task2_prompt_preview',
+                );
+                inspectEl.textContent = lines.join('\n');
+                window._medicalLastInspectProfile = data;
+                console.info('[medical training] saved profile inspect', {
+                    source: data.resolved_task2_source,
+                    chars: data.resolved_task2_prompt_chars,
+                    labels: data.section_labels,
+                });
+                console.info('[medical training] FULL Task2 prompt (also in panel above):');
+                console.log(promptText);
+            } catch (e) {
+                inspectEl.style.display = 'block';
+                inspectEl.textContent = 'טעינת הפרופיל נכשלה: ' + String((e && e.message) || e).slice(0, 220);
+            } finally {
+                inspectBtn.disabled = false;
             }
         };
     }
@@ -10213,7 +10369,11 @@ async function runFormatSummaryOnlyRequest(fullText, targetLang, jobId, options 
     if (Array.isArray(raw.segments) && raw.segments.length) {
         qsApplyCorrectedSegmentsFromGpt(raw.segments);
     }
-    const fmt = raw && !raw.error ? normalizeFormattedFields(raw) : raw;
+    const fmt = raw && !raw.error ? (normalizeFormattedFields(raw) || {}) : raw;
+    if (fmt && typeof fmt === 'object' && !fmt.error && raw && raw.medical_task2_prompt_source) {
+        fmt.medical_task2_prompt_source = raw.medical_task2_prompt_source;
+        fmt.medical_task2_prompt_chars = raw.medical_task2_prompt_chars;
+    }
     const elapsedMs = Math.round(performance.now() - t0);
     const summarySec = Number(raw && raw.summary_generation_time);
     qsTrackEvent('summary_generation_time', {
@@ -10654,13 +10814,36 @@ async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
         isMedical: true,
         ...(hint ? { input_s3_key: hint } : {}),
     });
+    let headers = { 'Content-Type': 'application/json' };
+    try {
+        if (typeof qsMedicalJsonHeaders === 'function') {
+            headers = await qsMedicalJsonHeaders();
+        }
+    } catch (authErr) {
+        console.warn('[export] medical format auth headers unavailable; sending userId only', authErr);
+    }
+    if (!userId) {
+        console.warn('[export] medical format missing userId — personal template may fall back to specialty default');
+    }
     const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ ...base(), text: fullText })
     });
     const fmt = await res.json().catch(() => ({}));
-    return { ok: res.ok && fmt && typeof fmt === 'object' && !fmt.error, res, fmt: fmt && !fmt.error ? normalizeFormattedFields(fmt) : fmt };
+    if (!res.ok || !fmt || typeof fmt !== 'object' || fmt.error) {
+        return { ok: false, res, fmt };
+    }
+    const normalized = normalizeFormattedFields(fmt) || {};
+    if (fmt.medical_task2_prompt_source) {
+        normalized.medical_task2_prompt_source = fmt.medical_task2_prompt_source;
+        normalized.medical_task2_prompt_chars = fmt.medical_task2_prompt_chars;
+    }
+    if (fmt.medical_task2_prompt_preview) {
+        normalized.medical_task2_prompt_preview = fmt.medical_task2_prompt_preview;
+    }
+    if (fmt.format_guardrail) normalized.format_guardrail = fmt.format_guardrail;
+    return { ok: true, res, fmt: normalized };
 }
 
 /** Keep document-format source in sync after manual subtitle edits. */
@@ -10692,12 +10875,29 @@ function syncFormattedDocWithCurrentSegments() {
     window.currentFormattedDoc = next;
 }
 
-async function ensureFormattedViaApiForExport() {
+async function ensureFormattedViaApiForExport(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const forceMedicalSummary = !!opts.forceMedicalSummary;
     const fullText = buildTranscriptTextForGptFormat();
-    if (!fullText.trim()) return false;
+    if (!fullText.trim()) {
+        console.warn('[export] ensureFormattedViaApiForExport: empty transcript text', {
+            forceMedicalSummary,
+            segments: Array.isArray(window.currentSegments) ? window.currentSegments.length : 0,
+            live_chars: String(window._medicalLiveStreamText || '').trim().length,
+        });
+        if (typeof showStatus === 'function') {
+            showStatus('אין תמלול ליצירת סיכום.', true);
+        }
+        return false;
+    }
     const targetLang = (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') || 'he';
     const medFmt = typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting();
-    const needSummary = !hasStandardFormattedSummary();
+    // Medical deferred stream: always regenerate when doctor opens Summary for this job,
+    // even if a previous visit left overview/clean_transcript in memory.
+    const needSummary = forceMedicalSummary
+        || (medFmt
+            ? !(typeof qsMedicalHasFormattedSummary === 'function' && qsMedicalHasFormattedSummary())
+            : !hasStandardFormattedSummary());
     let needClean = !hasCleanTranscript();
     // Prefer segments over a long GPT cleanup pass when exporting transcript text.
     if (needClean && !medFmt) {
@@ -10715,10 +10915,18 @@ async function ensureFormattedViaApiForExport() {
             } catch (_) {}
         }
     }
-    if (!needSummary && !needClean) return true;
+    if (!needSummary && !needClean) {
+        console.info('[export] ensureFormattedViaApiForExport skip (already have summary/clean)', {
+            medFmt,
+            forceMedicalSummary,
+            has_overview: !!(window.currentFormattedDoc && String(window.currentFormattedDoc.overview || '').trim()),
+            has_medical: !!(typeof qsMedicalHasFormattedSummary === 'function' && qsMedicalHasFormattedSummary()),
+        });
+        return true;
+    }
     if (typeof showStatus === 'function') {
         const msg = medFmt
-            ? 'מייצר סיכום רפואי ומעצב תמלול (GPT)…'
+            ? 'מייצר סיכום…'
             : (needClean && needSummary ? 'מייצר סיכום ומעצב תמלול…' : (needClean ? 'מעצב תמלול לייצוא…' : 'מייצר סיכום…'));
         showStatus(msg, false, { duration: 720000 });
     }
@@ -10728,6 +10936,11 @@ async function ensureFormattedViaApiForExport() {
             ? { ...window.currentFormattedDoc }
             : {};
         if (medFmt) {
+            console.info('[export] medical summary GPT start', {
+                chars: fullText.length,
+                jobId: jobId || null,
+                forceMedicalSummary,
+            });
             const { ok, res, fmt } = await runFormatTranscriptSummaryRequests(fullText, targetLang, jobId);
             if (!ok || !fmt || typeof fmt !== 'object') {
                 const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res.status}`;
@@ -10788,6 +11001,35 @@ async function ensureFormattedViaApiForExport() {
             '[export] GPT formatting computed for export (clean_transcript length=%s)',
             String(window.currentFormattedDoc.clean_transcript || '').length
         );
+        if (medFmt) {
+            console.info('[medical training] summary Task2 source', {
+                source: safeFmt.medical_task2_prompt_source || '(missing — restart server / hard refresh)',
+                chars: safeFmt.medical_task2_prompt_chars,
+                input_chars: String(fullText || '').length,
+                guardrail: safeFmt.format_guardrail || null,
+                expected: 'doctor_profile',
+            });
+            if (safeFmt.medical_task2_prompt_preview) {
+                console.info('[medical training] Task2 prompt preview (sent to GPT):');
+                console.log(safeFmt.medical_task2_prompt_preview);
+            }
+            window._medicalLastTask2Source = safeFmt.medical_task2_prompt_source || '';
+            window._medicalLastTask2PromptPreview = safeFmt.medical_task2_prompt_preview || '';
+            if (safeFmt.medical_task2_prompt_source === 'doctor_profile') {
+                window._medicalPersonalTemplateActive = true;
+                try { localStorage.setItem('qs_medical_personal_template', '1'); } catch (_) {}
+            } else if (
+                safeFmt.medical_task2_prompt_source === 'neurology'
+                || safeFmt.medical_task2_prompt_source === 'default'
+                || safeFmt.medical_task2_prompt_source === 'psychology'
+            ) {
+                console.warn(
+                    '[medical training] Task2 fell back to specialty/default template — personal profile not applied',
+                    { source: safeFmt.medical_task2_prompt_source }
+                );
+            }
+            try { qsInferPersonalTemplateFromSummaryDoc(window.currentFormattedDoc); } catch (_) {}
+        }
         if (medFmt && window.currentFormattedDoc) {
             try {
                 const d = window.currentFormattedDoc;
@@ -10836,8 +11078,11 @@ async function ensureFormattedViaApiForExport() {
  * Clinical paragraphs stay in the session target language (usually Hebrew)—not the colored UI hints.
  * Unsaved edits in the summary pane are not sent here; calling this after local edits will overwrite them.
  */
-window.qsRegenerateMedicalSummaryFromTranscript = async function qsRegenerateMedicalSummaryFromTranscript() {
-    return ensureFormattedViaApiForExport();
+window.qsRegenerateMedicalSummaryFromTranscript = async function qsRegenerateMedicalSummaryFromTranscript(options) {
+    return ensureFormattedViaApiForExport({
+        forceMedicalSummary: true,
+        ...(options && typeof options === 'object' ? options : {}),
+    });
 };
 
 async function tryRecoverSegmentsForExport() {
@@ -14457,7 +14702,6 @@ function setTranscriptActionButtonsVisible(visible) {
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
     const translateBtn = document.getElementById('btn-translate');
-    const medicalNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
     const togglesGroup = document.querySelector('.switches-top-bar .toggles-group') || document.querySelector('.controls-bar .toggles-group');
     const switchesTopBar = document.querySelector('.switches-top-bar');
     const controlsBar = document.querySelector('.controls-bar');
@@ -14467,15 +14711,6 @@ function setTranscriptActionButtonsVisible(visible) {
     [downloadBtn, editBtn, translateBtn].forEach((el) => {
         if (el) el.style.display = visible ? '' : 'none';
     });
-    if (medicalNewSessionBtn) {
-        const showMedicalNewSession = !!(
-            visible &&
-            typeof isMedicalModeEnabled === 'function' &&
-            isMedicalModeEnabled()
-        );
-        medicalNewSessionBtn.style.display = showMedicalNewSession ? 'inline-flex' : 'none';
-        medicalNewSessionBtn.classList.toggle('is-visible', showMedicalNewSession);
-    }
     if (togglesGroup) togglesGroup.style.display = visible ? '' : 'none';
     if (switchesTopBar) switchesTopBar.classList.toggle('is-visible', !!visible);
     if (controlsBar) {
@@ -14546,8 +14781,7 @@ function setExportMenuAuxiliaryControlsDisabled(disabled) {
     const fmtSummary = document.getElementById('format-mode-summary');
     const editBtn = document.getElementById('btn-edit');
     const subStyleToggle = document.getElementById('subtitle-style-toggle');
-    const medicalNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
-    [fmtSub, fmtDoc, fmtSummary, editBtn, subStyleToggle, medicalNewSessionBtn].forEach((el) => {
+    [fmtSub, fmtDoc, fmtSummary, editBtn, subStyleToggle].forEach((el) => {
         if (!el) return;
         el.disabled = !!disabled;
     });
@@ -14595,7 +14829,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const medicalCopyBtn = document.getElementById('medical-copy-btn');
     const medicalTypoFixBtn = document.getElementById('medical-typo-fix-btn');
     const translateBtn = document.getElementById('btn-translate');
-    const medicalToolbarNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
     const mobileSessionBtn = document.getElementById('mobile-new-session-btn');
     const navNewSessionBtn = document.getElementById('nav-new-session-btn');
     const statusTxt = document.getElementById('upload-status');
@@ -15028,7 +15261,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.applyMedicalModeUi = function() {
         const on = isMedicalModeEnabled();
-        if (on) void qsFetchMedicalTranscriptionConfig();
+        if (on) {
+            try { qsRestoreMedicalPersonalTemplateMetaFromStorage(); } catch (_) {}
+            void qsFetchMedicalTranscriptionConfig();
+            try {
+                if (typeof qsHydrateMedicalPersonalTemplateProfile === 'function') {
+                    void qsHydrateMedicalPersonalTemplateProfile();
+                }
+            } catch (_) {}
+        }
         if (on && typeof qsMedicalUseAwsTranscribeStream === 'function' && qsMedicalUseAwsTranscribeStream()) {
             qsSetMedicalWarmupBanner('hidden');
             qsStopMedicalWarmupPoll();
@@ -17356,10 +17597,24 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         window._qsMedicalStreamAwaitingSummary = null;
+        window._qsMedicalSummaryGenerating = false;
+        window.currentFormattedDoc = null;
+        window._qsSummaryGptDoneJobId = null;
         window._medicalStartRecordingInFlight = true;
         const preserveChunks = !!(options && options.preserveChunks);
         const resumeFromInterruption = !!(options && options.resumeFromInterruption);
         const transcriptPrefix = String((options && options.transcriptPrefix) || '').trim();
+        if (!preserveChunks && !resumeFromInterruption) {
+            // Drop previous visit transcript so Summary GPT cannot reuse old neurology text.
+            window.currentSegments = [];
+            window.currentWords = null;
+            window.currentCaptions = null;
+            window._medicalLiveStreamText = '';
+            window._medicalUnsavedBoxes = [];
+            window._medicalLiveLastBoxDirty = false;
+            window._medicalHasResult = false;
+            window._lastProcessedJobId = null;
+        }
         let stream = null;
         try {
             await qsReleaseMedicalMicTestForRecording();
@@ -17941,26 +18196,65 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             try { qsPersistMedicalTranscriptBoxesFromDom(); } catch (_) {}
             try { qsSnapshotMedicalTranscriptBoxesFromDom({ force: true }); } catch (_) {}
+            try {
+                if (typeof qsHydrateMedicalPersonalTemplateProfile === 'function') {
+                    await qsHydrateMedicalPersonalTemplateProfile();
+                }
+            } catch (_) {}
             window.medicalActiveTab = 'summary';
             updateMedicalTabUi();
             const jobId = localStorage.getItem('lastJobId') || '';
             const needsSummary = !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
+            // Do not leave the transcript visible while summary GPT runs — blank the pane first.
+            if (needsSummary || !_medicalHasFormattedSummaryContent()) {
+                window._qsMedicalSummaryGenerating = !!needsSummary;
+                if (typeof qsPaintMedicalSummaryEmptyPane === 'function') {
+                    qsPaintMedicalSummaryEmptyPane();
+                } else if (typeof renderTranscriptFromCues === 'function') {
+                    renderTranscriptFromCues(window.currentSegments || []);
+                }
+            } else if (typeof renderTranscriptFromCues === 'function') {
+                renderTranscriptFromCues(window.currentSegments || []);
+            }
             if (needsSummary && typeof window.qsRegenerateMedicalSummaryFromTranscript === 'function') {
                 const T = typeof window.t === 'function' ? window.t : (k) => k;
                 if (mainBtn) mainBtn.disabled = true;
                 if (typeof showStatus === 'function') {
                     showStatus(T('medical_generating_summary') || 'Generating medical summary…', false);
                 }
+                console.info('[medical] Summary tab requested deferred GPT', {
+                    jobId,
+                    awaiting: window._qsMedicalStreamAwaitingSummary,
+                    chars: String(typeof buildTranscriptTextForGptFormat === 'function' ? buildTranscriptTextForGptFormat() : '').length,
+                });
                 try {
-                    const ok = await window.qsRegenerateMedicalSummaryFromTranscript();
+                    const ok = await window.qsRegenerateMedicalSummaryFromTranscript({ forceMedicalSummary: true });
                     if (ok) {
                         window._qsMedicalStreamAwaitingSummary = null;
                         window._qsSummaryGptDoneJobId = jobId;
                         window._lastProcessedJobId = jobId;
+                    } else {
+                        console.warn('[medical] deferred summary generation failed or returned empty');
+                        // Keep awaiting so another Summary click can retry; leave transcript usable.
+                        window.medicalActiveTab = 'transcript';
+                        updateMedicalTabUi();
+                        if (typeof renderMedicalTranscriptMainView === 'function') {
+                            renderMedicalTranscriptMainView();
+                        }
+                        return;
                     }
                 } finally {
+                    window._qsMedicalSummaryGenerating = false;
                     if (mainBtn) mainBtn.disabled = false;
                     if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
+                }
+            } else {
+                window._qsMedicalSummaryGenerating = false;
+                if (!_medicalHasFormattedSummaryContent()) {
+                    console.warn('[medical] Summary tab opened with no content and not awaiting GPT', {
+                        jobId,
+                        awaiting: window._qsMedicalStreamAwaitingSummary || null,
+                    });
                 }
             }
             renderTranscriptFromCues(window.currentSegments || []);
@@ -18246,12 +18540,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (navNewSessionBtn) navNewSessionBtn.addEventListener('click', onNavWorkspaceCta);
     const navDashboardCta = document.getElementById('nav-dashboard-cta');
     if (navDashboardCta) navDashboardCta.addEventListener('click', onNavWorkspaceCta);
-    if (medicalToolbarNewSessionBtn) {
-        medicalToolbarNewSessionBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            void confirmAndStartMedicalNewSession();
-        });
-    }
     window.addEventListener('resize', syncMobileVideoSessionState);
     syncMobileVideoSessionState();
     try { qsEnsureDefaultStarterPlan(); } catch (_) {}
@@ -18582,13 +18870,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
         function qsJobSummaryAlreadyDone(id) {
             if (!id) return false;
-            if (window._qsSummaryGptDoneJobId === id) return true;
+            if (window._qsSummaryGptDoneJobId === id) {
+                // Medical stream: only "done" after a real medical summary, not clean_transcript alone.
+                if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+                    return !!(typeof qsMedicalHasFormattedSummary === 'function' && qsMedicalHasFormattedSummary());
+                }
+                return true;
+            }
             if (window._lastProcessedJobId === id && hasStandardFormattedSummary()) return true;
             if (window._lastProcessedJobId === id && typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
                 const fmt = window.currentFormattedDoc;
                 return !!(fmt && (
-                    String(fmt.overview || '').trim() ||
                     String(fmt.medical_chief_complaint || '').trim()
+                    || String(fmt.medical_examination_transcript || '').trim()
+                    || String(fmt.medical_patient_recommendations || '').trim()
                 ));
             }
             return false;
@@ -18598,10 +18893,29 @@ document.addEventListener('DOMContentLoaded', () => {
             // Second socket often carries server-side `formatted` after S3 persist.
             // Never drop it just because transcript UI already rendered.
             qsNoteServerGptOutcomeFromPayload(rawResult);
-            if (qsApplyIncomingFormattedFromPayload(rawResult, 'duplicate_socket')) {
+            const awaitingThisMedicalSummary = !!(
+                typeof isMedicalModeEnabled === 'function'
+                && isMedicalModeEnabled()
+                && window._qsMedicalStreamAwaitingSummary === jobId
+            );
+            // While the doctor has not requested Summary yet, ignore incomplete/non-medical
+            // formatted payloads so we do not fake "summary done" and blank the Summary tab.
+            if (!awaitingThisMedicalSummary && qsApplyIncomingFormattedFromPayload(rawResult, 'duplicate_socket')) {
                 const jid = jobId;
                 if (jid) window._qsSummaryGptDoneJobId = jid;
                 qsRenderSummaryIfAvailable('handleJobUpdate_duplicate_with_formatted');
+            } else if (awaitingThisMedicalSummary) {
+                const incomingMedical = extractFormattedFromJobPayload(rawResult);
+                const hasMedicalParts = !!(incomingMedical && (
+                    String(incomingMedical.medical_chief_complaint || '').trim()
+                    || String(incomingMedical.medical_examination_transcript || '').trim()
+                    || String(incomingMedical.medical_patient_recommendations || '').trim()
+                ));
+                if (hasMedicalParts && qsApplyIncomingFormattedFromPayload(rawResult, 'duplicate_socket_medical_awaiting')) {
+                    window._qsMedicalStreamAwaitingSummary = null;
+                    window._qsSummaryGptDoneJobId = jobId;
+                    qsRenderSummaryIfAvailable('handleJobUpdate_duplicate_medical_ready');
+                }
             }
             qsApplyIncomingSubtitleCorrectionsFromPayload(rawResult, 'duplicate_socket');
             const haveUi = qsHasTranscriptResult();
@@ -18713,7 +19027,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const prevFmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
             ? window.currentFormattedDoc
             : null;
-        if (incomingFmt) {
+        const isMedicalStreamIncoming = qsJobEngineFromPayload(rawResult) === 'aws_transcribe_stream'
+            || !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
+        // Never carry a previous visit's summary into a new medical live-stream job.
+        if (isMedicalStreamIncoming && jobId && jobId !== window._lastProcessedJobId) {
+            window.currentFormattedDoc = incomingFmt
+                ? normalizeFormattedFields({ ...incomingFmt })
+                : null;
+        } else if (incomingFmt) {
             window.currentFormattedDoc = normalizeFormattedFields({ ...(prevFmt || {}), ...incomingFmt });
         } else if (jobId && (qsJobSummaryAlreadyDone(jobId) || (prevFmt && hasStandardFormattedSummary()))) {
             window.currentFormattedDoc = prevFmt;
@@ -18851,8 +19172,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         /** Keep toolbar hidden until unified GPT (summary + grammar) completes. */
         const deferToolbarUntilGptDone = true;
-        const summaryAlreadyDone = qsJobSummaryAlreadyDone(jobId) || hasStandardFormattedSummary();
-        const deferMedicalStreamSummary = qsShouldDeferMedicalStreamSummary(rawResult) && !summaryAlreadyDone;
+        // Stale overview from a previous visit must not skip medical stream deferral.
+        const summaryAlreadyDone = qsJobSummaryAlreadyDone(jobId) || (
+            !qsShouldDeferMedicalStreamSummary(rawResult) && hasStandardFormattedSummary()
+        );
+        const deferMedicalStreamSummary = qsShouldDeferMedicalStreamSummary(rawResult) && !qsJobSummaryAlreadyDone(jobId)
+            && !(
+                window._qsSummaryGptDoneJobId === jobId
+                && typeof qsMedicalHasFormattedSummary === 'function'
+                && qsMedicalHasFormattedSummary()
+            );
         if (deferMedicalStreamSummary) {
             window.isTriggering = false;
         }
@@ -19090,6 +19419,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (jobId) {
                     window._qsSummaryGptDoneJobId = jobId;
                     window._lastProcessedJobId = jobId;
+                }
+                if (medFmt) {
+                    console.info('[medical training] summary Task2 source', {
+                        source: fmt.medical_task2_prompt_source || '(missing — redeploy server?)',
+                        chars: fmt.medical_task2_prompt_chars,
+                        expected: 'doctor_profile',
+                    });
+                    window._medicalLastTask2Source = fmt.medical_task2_prompt_source || '';
                 }
                 void qsPersistFormattedDocToS3();
                 try {
@@ -21958,6 +22295,16 @@ function _medicalText(key, fallback) {
 }
 
 function _medicalSummarySectionLabel(sectionKey) {
+    const personal = window._medicalPersonalSectionLabels;
+    if (personal && typeof personal === 'object') {
+        const custom = String(personal[sectionKey] || '').trim();
+        if (custom) return custom;
+    }
+    // Personal clinic template active but labels not cached yet — avoid stock תלונה/ממצאים chrome.
+    if (window._medicalPersonalTemplateActive) {
+        const fallbackPersonal = { chief: 'ברקע', exam: 'בבדיקה', rec: 'המלצות' };
+        if (fallbackPersonal[sectionKey]) return fallbackPersonal[sectionKey];
+    }
     if (qsIsMedicalPsychologySpecialty()) {
         const psychKeyMap = {
             chief: 'medical_summary_chief_psychology',
@@ -21969,7 +22316,8 @@ function _medicalSummarySectionLabel(sectionKey) {
             QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY[sectionKey] || sectionKey
         );
     }
-    if (qsIsMedicalNeurologySpecialty()) {
+    // Personal Hebrew clinic templates (ברקע/בבדיקה/המלצות) must not show stock neurology CC/HPI titles.
+    if (qsIsMedicalNeurologySpecialty() && !window._medicalPersonalTemplateActive) {
         const neuroKeyMap = {
             chief: 'medical_summary_chief_neurology',
             exam: 'medical_summary_exam_neurology',
@@ -21988,6 +22336,100 @@ function _medicalSummarySectionLabel(sectionKey) {
     return _medicalText(keyMap[sectionKey], QS_MEDICAL_SUMMARY_SECTION_LABELS[sectionKey] || sectionKey);
 }
 
+function qsApplyMedicalPersonalTemplateMeta(meta) {
+    meta = meta || {};
+    const labels = meta.section_labels && typeof meta.section_labels === 'object' ? meta.section_labels : null;
+    const hasPersonal = !!(
+        meta.resolved_task2_source === 'doctor_profile'
+        || meta.personal_template
+        || (labels && (labels.chief || labels.exam || labels.rec))
+        || Number(meta.active_prompt_chars || 0) > 0
+        || Number(meta.production_prompt_chars || 0) > 0
+    );
+    window._medicalPersonalTemplateActive = hasPersonal;
+    if (labels && (labels.chief || labels.exam || labels.rec)) {
+        window._medicalPersonalSectionLabels = {
+            chief: String(labels.chief || '').trim(),
+            exam: String(labels.exam || '').trim(),
+            rec: String(labels.rec || '').trim(),
+        };
+    }
+    try {
+        if (hasPersonal) localStorage.setItem('qs_medical_personal_template', '1');
+        if (window._medicalPersonalSectionLabels) {
+            localStorage.setItem(
+                'qs_medical_section_labels',
+                JSON.stringify(window._medicalPersonalSectionLabels)
+            );
+        }
+    } catch (_) {}
+}
+
+function qsRestoreMedicalPersonalTemplateMetaFromStorage() {
+    try {
+        if (localStorage.getItem('qs_medical_personal_template') === '1') {
+            window._medicalPersonalTemplateActive = true;
+        }
+        const raw = localStorage.getItem('qs_medical_section_labels');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                window._medicalPersonalSectionLabels = parsed;
+                window._medicalPersonalTemplateActive = true;
+            }
+        }
+    } catch (_) {}
+}
+
+/** Load saved personal template meta so Summary UI never falls back to neurology chrome. */
+async function qsHydrateMedicalPersonalTemplateProfile(options) {
+    const force = !!(options && options.force);
+    if (!force && window._medicalPersonalTemplateHydrated) return window._medicalPersonalTemplateActive;
+    try {
+        if (typeof medicalTrainingApi !== 'function') {
+            qsRestoreMedicalPersonalTemplateMetaFromStorage();
+            return !!window._medicalPersonalTemplateActive;
+        }
+        const data = await medicalTrainingApi('/api/medical_training/profile', {});
+        qsApplyMedicalPersonalTemplateMeta({
+            resolved_task2_source: data.resolved_task2_source,
+            section_labels: data.section_labels,
+            active_prompt_chars: data.profile && data.profile.active_prompt_chars,
+            production_prompt_chars: data.production_prompt_chars,
+        });
+        window._medicalPersonalTemplateHydrated = true;
+        console.info('[medical training] hydrated personal template meta', {
+            source: data.resolved_task2_source || null,
+            active: !!window._medicalPersonalTemplateActive,
+            labels: window._medicalPersonalSectionLabels || null,
+        });
+        return !!window._medicalPersonalTemplateActive;
+    } catch (e) {
+        console.warn('[medical training] hydrate personal template failed', e);
+        qsRestoreMedicalPersonalTemplateMetaFromStorage();
+        return !!window._medicalPersonalTemplateActive;
+    }
+}
+window.qsHydrateMedicalPersonalTemplateProfile = qsHydrateMedicalPersonalTemplateProfile;
+
+/** If body text already uses personal clinic headings, treat session as personal (UI labels). */
+function qsInferPersonalTemplateFromSummaryDoc(fmt) {
+    const blob = [
+        fmt && fmt.medical_chief_complaint,
+        fmt && fmt.medical_examination_transcript,
+        fmt && fmt.medical_patient_recommendations,
+    ].map((s) => String(s || '')).join('\n');
+    if (!blob.trim()) return false;
+    const hits = ['ברקע', 'רגישות', 'תרופות', 'לסיכום'].filter((h) => blob.includes(h)).length;
+    if (hits < 2) return false;
+    window._medicalPersonalTemplateActive = true;
+    if (!window._medicalPersonalSectionLabels) {
+        window._medicalPersonalSectionLabels = { chief: 'ברקע', exam: 'בבדיקה', rec: 'המלצות' };
+    }
+    try { localStorage.setItem('qs_medical_personal_template', '1'); } catch (_) {}
+    return true;
+}
+
 function _medicalSummarySectionHeadHtml(title, sectionKey, esc) {
     const t = esc(title);
     const key = esc(sectionKey);
@@ -22000,6 +22442,72 @@ function _medicalSummarySectionHeadHtml(title, sectionKey, esc) {
         `aria-label="${copyLabel} ${label}" title="${copyLabel}">` +
         `<span class="medical-copy-icon" aria-hidden="true"></span></button></div>`
     );
+}
+
+/** Hebrew/English clinic subsection titles that should render as bold section heads inside a pane. */
+const QS_MEDICAL_SUMMARY_SUBHEADINGS = [
+    'ברקע',
+    'רגישות',
+    'תרופות',
+    'לסיכום',
+    'המלצות',
+    'בבדיקה',
+    'אנמנזה',
+    'בדיקה',
+    'סיכום',
+    'chief complaint',
+    'hpi',
+    'history of present illness',
+    'medications',
+    'allergies',
+    'assessment',
+    'plan',
+];
+
+function _medicalSummaryLineLooksLikeSubheading(line) {
+    const raw = String(line || '').trim();
+    if (!raw || raw.length > 48) return false;
+    const normalized = raw.replace(/[:：.\s]+$/u, '').trim().toLowerCase();
+    if (!normalized) return false;
+    return QS_MEDICAL_SUMMARY_SUBHEADINGS.some((h) => h.toLowerCase() === normalized);
+}
+
+/** Escape body text and bold known private-template subsection headings (רגישות / תרופות / לסיכום…). */
+function _formatMedicalSummaryBodyHtml(text, esc, emptyFallback, opts) {
+    const options = opts && typeof opts === 'object' ? opts : {};
+    const skipFirstIfMatches = String(options.skipFirstHeadingIfMatches || '').trim().toLowerCase();
+    const raw = String(text || '').replace(/\r\n/g, '\n');
+    if (!raw.trim()) return esc(emptyFallback || '');
+    const lines = raw.split('\n');
+    const parts = [];
+    let buffer = [];
+    let sawContent = false;
+    const flushBuffer = () => {
+        if (!buffer.length) return;
+        const chunk = buffer.join('\n');
+        buffer = [];
+        parts.push(`<div class="medical-summary-body-text">${esc(chunk)}</div>`);
+        sawContent = true;
+    };
+    lines.forEach((line, idx) => {
+        if (_medicalSummaryLineLooksLikeSubheading(line)) {
+            flushBuffer();
+            const title = String(line || '').trim().replace(/[:：.\s]+$/u, '').trim();
+            const titleNorm = title.toLowerCase();
+            // Avoid "ברקע" twice when the outer section head already shows it.
+            if (!sawContent && skipFirstIfMatches && titleNorm === skipFirstIfMatches) {
+                return;
+            }
+            parts.push(
+                `<div class="medical-summary-subhead${parts.length === 0 ? ' is-first' : ''}" contenteditable="false">${esc(title)}</div>`
+            );
+            sawContent = true;
+            return;
+        }
+        buffer.push(line);
+    });
+    flushBuffer();
+    return parts.length ? parts.join('') : esc(emptyFallback || '');
 }
 
 async function _copyMedicalSummarySection(sectionKey) {
@@ -22098,6 +22606,21 @@ function _medicalHasFormattedSummaryContent() {
     if (String(fmt.overview || '').trim()) return true;
     const kp = fmt.key_points;
     return Array.isArray(kp) && kp.some((p) => String(p || '').trim());
+}
+
+/** Blank summary pane so transcript boxes are not left on screen while summary GPT runs. */
+function qsPaintMedicalSummaryEmptyPane() {
+    const transcriptWindow = document.getElementById('transcript-window');
+    if (!transcriptWindow) return;
+    transcriptWindow.classList.remove('qs-medical-boxes-editable', 'medical-wave-active');
+    transcriptWindow.contentEditable = 'false';
+    transcriptWindow.onclick = null;
+    transcriptWindow.onbeforeinput = null;
+    if (transcriptWindow._qsSelectionChangeHandler) {
+        try { document.removeEventListener('selectionchange', transcriptWindow._qsSelectionChangeHandler); } catch (_) {}
+        transcriptWindow._qsSelectionChangeHandler = null;
+    }
+    transcriptWindow.innerHTML = '<div id="medical-summary-content" aria-busy="true"></div>';
 }
 
 /**
@@ -22610,12 +23133,12 @@ function renderTranscriptFromCues(cues) {
     const isRtl = contentLayout.isRtl;
     const textDirection = contentLayout.textDirection;
     const textAlign = contentLayout.textAlign;
-    // Do not paint the clinical summary shell on the landing screen (no job / no cues yet).
-    const showMedicalSummaryPane =
-        isMedical &&
-        activeTab === 'summary' &&
-        (_medicalHasTranscriptModel(cues) || _medicalHasFormattedSummaryContent());
-    if (showMedicalSummaryPane) {
+    // While summary is not ready yet, keep an empty pane — never leave transcript boxes visible.
+    if (isMedical && activeTab === 'summary') {
+        if (!_medicalHasFormattedSummaryContent()) {
+            qsPaintMedicalSummaryEmptyPane();
+            return;
+        }
         container.classList.remove('qs-medical-boxes-editable');
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
         const hasStructured =
@@ -22631,14 +23154,30 @@ function renderTranscriptFromCues(cues) {
             const chief = _medicalSummaryFieldBody(fmt.medical_chief_complaint, 'chief');
             const exam = _medicalSummaryFieldBody(fmt.medical_examination_transcript, 'exam');
             const rec = _medicalSummaryFieldBody(fmt.medical_patient_recommendations, 'rec');
+            const chiefLabel = _medicalSummarySectionLabel('chief');
+            const examLabel = _medicalSummarySectionLabel('exam');
+            const recLabel = _medicalSummarySectionLabel('rec');
+            // For Orion-style personal notes, mid-pane is רגישות/תרופות/לסיכום — hide redundant outer "בבדיקה".
+            const examHasOwnHeads = /(?:^|\n)\s*(רגישות|תרופות|לסיכום)\s*$/m.test(String(exam || '').trim())
+                || /(?:^|\n)\s*(רגישות|תרופות|לסיכום)\s*\n/m.test(String(exam || ''));
+            const hideExamOuter = !!(window._medicalPersonalTemplateActive && examHasOwnHeads);
+            const chiefHtml = _formatMedicalSummaryBodyHtml(chief || emptyMsg, esc, emptyMsg, {
+                skipFirstHeadingIfMatches: chiefLabel,
+            });
+            const examHtml = _formatMedicalSummaryBodyHtml(exam || notSpecifiedMsg, esc, notSpecifiedMsg, {
+                skipFirstHeadingIfMatches: hideExamOuter ? '' : examLabel,
+            });
+            const recHtml = _formatMedicalSummaryBodyHtml(rec || notSpecifiedMsg, esc, notSpecifiedMsg, {
+                skipFirstHeadingIfMatches: recLabel,
+            });
             container.innerHTML = `
             <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
-                ${_medicalSummarySectionHeadHtml(_medicalSummarySectionLabel('chief'), 'chief', esc)}
-                <div id="medical-summary-chief" data-medical-section="chief">${esc(chief || emptyMsg)}</div>
-                ${_medicalSummarySectionHeadHtml(_medicalSummarySectionLabel('exam'), 'exam', esc)}
-                <div id="medical-summary-exam" data-medical-section="exam">${esc(exam || notSpecifiedMsg)}</div>
-                ${_medicalSummarySectionHeadHtml(_medicalSummarySectionLabel('rec'), 'rec', esc)}
-                <div id="medical-summary-rec" data-medical-section="rec">${esc(rec || notSpecifiedMsg)}</div>
+                ${_medicalSummarySectionHeadHtml(chiefLabel, 'chief', esc)}
+                <div id="medical-summary-chief" data-medical-section="chief">${chiefHtml}</div>
+                ${hideExamOuter ? '' : _medicalSummarySectionHeadHtml(examLabel, 'exam', esc)}
+                <div id="medical-summary-exam" data-medical-section="exam"${hideExamOuter ? ' class="medical-summary-exam-has-subheads"' : ''}>${examHtml}</div>
+                ${_medicalSummarySectionHeadHtml(recLabel, 'rec', esc)}
+                <div id="medical-summary-rec" data-medical-section="rec">${recHtml}</div>
             </div>
         `;
         } else {
