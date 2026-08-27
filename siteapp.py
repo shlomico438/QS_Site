@@ -439,6 +439,12 @@ def _render_medical_task2_prompt_text(prompt_text, output_lang_label, lang_hint)
 
 
 def _doctor_prompt_profile_active_prompt(user_id):
+    """Return the doctor's approved personal Task 2 prompt, if any.
+
+    Uses non-empty active_prompt whenever the profile is not disabled. Status may be
+    ``training`` while iterating on a new candidate; production must keep using the
+    last approved active_prompt until the next approve (not fall back to specialty).
+    """
     user_id = str(user_id or "").strip()
     if not user_id:
         return ""
@@ -451,7 +457,7 @@ def _doctor_prompt_profile_active_prompt(user_id):
         uid = quote(user_id, safe='')
         url = (
             f"{supabase_url}/rest/v1/doctor_prompt_profiles"
-            f"?user_id=eq.{uid}&status=eq.active&select=active_prompt&limit=1"
+            f"?user_id=eq.{uid}&select=active_prompt,status&limit=1"
         )
         r = _supabase_http_request('GET', url, headers=_supabase_service_headers(service_key), retries=1)
         if r.status_code != 200:
@@ -460,10 +466,21 @@ def _doctor_prompt_profile_active_prompt(user_id):
         rows = r.json() if r.text else []
         if not rows:
             return ""
-        return str((rows[0] or {}).get('active_prompt') or '').strip()
+        row = rows[0] or {}
+        status = str(row.get('status') or '').strip().lower()
+        if status == 'disabled':
+            return ""
+        return str(row.get('active_prompt') or '').strip()
     except Exception as e:
         logging.warning("doctor prompt profile lookup error: %s", e)
         return ""
+
+
+def _medical_task2_uses_personal_prompt(user_id=None, prompt_override=None):
+    """True when Task 2 will use a request override or an approved doctor profile prompt."""
+    if str(prompt_override or '').strip():
+        return True
+    return bool(_doctor_prompt_profile_active_prompt(user_id))
 
 
 def _resolve_medical_task2_prompt(output_lang_label, lang_hint, user_id=None, prompt_override=None, single_shot=False):
@@ -10701,7 +10718,13 @@ def _format_unified_transcript_openai(
         specialty = _medical_professional_specialty(user_id)
         psych = _is_psychology_specialty(specialty)
         neuro = _is_neurology_specialty(specialty)
-        if neuro:
+        # Personal/candidate Task 2 must win over specialty structure (neurology defaults
+        # otherwise force CC/HPI/exam/plan even after the doctor trained a private template).
+        personal_task2 = _medical_task2_uses_personal_prompt(
+            user_id=user_id,
+            prompt_override=medical_task2_prompt_override,
+        )
+        if neuro and not personal_task2:
             # Neurology fields intentionally contain internal subsection headings (CC, HPI, Mental Status, …).
             forbidden_labels = (
                 "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
@@ -10712,6 +10735,18 @@ def _format_unified_transcript_openai(
                 f"({forbidden_labels} or English equivalents). "
                 "DO include the internal neurology subsection headings required by Task 2 "
                 "(e.g. Chief Complaint (CC):, History of Present Illness (HPI):, Mental Status:, Plan:). "
+            )
+        elif neuro and personal_task2:
+            forbidden_labels = (
+                "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
+                "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+            )
+            summary_heading_rule = (
+                "CRITICAL: Do NOT prefix JSON field values with the outer UI labels "
+                f"({forbidden_labels} or English equivalents). "
+                "Follow the doctor's personal Task 2 template for note structure and internal headings. "
+                "Do NOT force the default neurology CC/HPI/exam/plan layout when the personal template differs. "
+                "Include subsection headings inside field values only when the personal Task 2 prompt requires them. "
             )
         elif psych:
             forbidden_labels = (
@@ -11784,8 +11819,12 @@ def _execute_medical_training_learn(data):
     if not candidate_prompt:
         raise RuntimeError("optimizer returned empty candidate_prompt")
     old_count = int((profile or {}).get('examples_count') or 0)
+    prev_status = str((profile or {}).get('status') or '').strip().lower()
+    # Keep an already-approved profile as active so production keeps using active_prompt
+    # while the doctor iterates on a new candidate (approve still required to promote it).
+    next_status = 'active' if prev_status == 'active' else 'training'
     updated_profile = _doctor_prompt_upsert_profile(user_id, {
-        "status": "training",
+        "status": next_status,
         "candidate_prompt": candidate_prompt,
         "optimizer_model": optimizer_model,
         "preview_model": preview_model,

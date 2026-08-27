@@ -10042,7 +10042,7 @@ function renderMedicalTrainingPanel(container) {
                 if (previewRes.preview_model) {
                     console.info('[medical training] preview model:', previewRes.preview_model);
                 }
-                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, אשרו את האימון.';
+                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, לחצו על «אשר אימון» כדי להחיל אותם על סיכומים עתידיים.';
                 window._medicalTrainingPostLearnPreviewReady = true;
                 window._medicalTrainingPanelExpanded = true;
                 window._medicalTrainingBaselineForRetry = doctorSummary;
@@ -10074,12 +10074,27 @@ function renderMedicalTrainingPanel(container) {
                     }
                     return;
                 }
-                if (message) message.textContent = 'שומר סיגנון סיכום...';
+                if (message) message.textContent = 'שומר סיגנון ותבנית סיכום...';
                 const approved = await medicalTrainingApi('/api/medical_training/approve', {
                     candidate_prompt: candidateToApprove,
                     example_id: window._medicalTrainingLastExampleId || ''
                 });
-                window._medicalTrainingMessage = `נשמר סיגנון סיכום, גרסה ${approved?.profile?.version || ''}.`;
+                // Apply the trained preview to the open visit so Summary reflects the private template
+                // immediately (not only on the next recording).
+                const previewFmt = window._medicalTrainingCandidatePreview;
+                if (previewFmt && typeof previewFmt === 'object') {
+                    const prevDoc = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                        ? window.currentFormattedDoc
+                        : {};
+                    const merged = normalizeFormattedFields({
+                        ...prevDoc,
+                        ...previewFmt,
+                        clean_transcript: previewFmt.clean_transcript || prevDoc.clean_transcript || '',
+                    }) || { ...prevDoc, ...previewFmt };
+                    window.currentFormattedDoc = merged;
+                    window._medicalHasResult = true;
+                }
+                window._medicalTrainingMessage = `התבנית והסגנון נשמרו (גרסה ${approved?.profile?.version || ''}). סיכומים חדשים ישתמשו בתבנית האישית שלכם.`;
                 window._medicalTrainingApprovedCandidatePrompt = candidateToApprove;
                 window._medicalTrainingPostLearnPreviewReady = false;
                 window._medicalTrainingBaselineForRetry = '';
@@ -10089,6 +10104,11 @@ function renderMedicalTrainingPanel(container) {
                 window._medicalTrainingLearnedRules = [];
                 window._medicalTrainingLastExampleId = '';
                 if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
+                if (typeof updateMedicalTabUi === 'function') {
+                    try { updateMedicalTabUi(); } catch (_) {}
+                } else if (typeof window.refreshMedicalTabs === 'function') {
+                    try { window.refreshMedicalTabs(); } catch (_) {}
+                }
             } catch (e) {
                 if (message) message.textContent = 'שמירת סיגנון הסיכום נכשלה: ' + String((e && e.message) || e).slice(0, 220);
             } finally {
