@@ -10,9 +10,10 @@ Socket.IO protocol:
   - Client emits medical_transcribe_stop
 
 Silence keepalive (default on): once per idle spell, ~12s after the last
-client audio chunk, the bridge injects ~1s of PCM silence so AWS does not
-15s-timeout during a short thinking pause. A second idle stretch (~30s total)
-lets AWS die and the bridge parks; the next spoken audio starts a new session.
+client audio chunk, the bridge injects ~1s of PCM silence (split into small
+AWS frames) so AWS does not 15s-timeout during a short thinking pause. A second
+idle stretch (~30s total) lets AWS die and the bridge parks; the next spoken
+audio starts a new session.
 
 WebSocket protocol (/ws/transcribe):
   1. Optional JSON text frame to start: {"action":"start","sample_rate_hz":16000}
@@ -127,6 +128,36 @@ DEFAULT_SAMPLE_RATE = 16000
 # Doctors often mix Hebrew + English mid-visit. IdentifyMultipleLanguages needs ≥2 options
 # and language_code must be omitted (see amazon-transcribe StartStreamTranscription).
 DEFAULT_LANGUAGE_OPTIONS = ('he-IL', 'en-US')
+
+
+def _aws_max_audio_event_bytes(sample_rate_hz: int = DEFAULT_SAMPLE_RATE) -> int:
+    """Max PCM bytes per AWS AudioEvent.
+
+    AWS recommends 50–200ms frames. Socket.IO polling may batch ~1.5s for fewer HTTP
+    POSTs; those must be split before send_audio_event or AWS returns:
+    BadRequestException: Your stream is too big.
+    """
+    try:
+        ms = max(50, min(200, int(os.environ.get('AWS_TRANSCRIBE_FRAME_MS', '100') or 100)))
+    except (TypeError, ValueError):
+        ms = 100
+    rate = max(8000, int(sample_rate_hz or DEFAULT_SAMPLE_RATE))
+    # PCM16 mono: 2 bytes/sample; keep even length.
+    return max(320, ((rate * 2 * ms) // 1000) & ~1)
+
+
+def _iter_aws_audio_frames(chunk: bytes, max_bytes: int):
+    """Yield PCM frames small enough for one AWS Transcribe AudioEvent."""
+    if not chunk:
+        return
+    max_bytes = max(2, int(max_bytes) & ~1)
+    raw = bytes(chunk)
+    if len(raw) % 2:
+        raw = raw[:-1]
+    for i in range(0, len(raw), max_bytes):
+        frame = raw[i:i + max_bytes]
+        if frame:
+            yield frame
 
 
 def _env_truthy(name: str, default: bool = False) -> bool:
@@ -982,6 +1013,7 @@ class AwsTranscribeStreamSession:
             # Poll the lock-free deque from this asyncio worker thread.
             # deque.popleft() is GIL-atomic: no gevent lock involvement.
             logger.info('transcribe AWS feed loop started session=%s', self.session_id)
+            max_frame = _aws_max_audio_event_bytes(self.sample_rate_hz)
             while True:
                 drained = 0
                 while self._audio_deque:
@@ -994,18 +1026,25 @@ class AwsTranscribeStreamSession:
                         logger.info('transcribe end-of-stream marker reached fed=%d', self._chunks_fed_to_aws)
                         await stream.input_stream.end_stream()
                         return
-                    await stream.input_stream.send_audio_event(audio_chunk=chunk)
-                    self._chunks_fed_to_aws += 1
-                    self._bytes_fed_to_aws += len(chunk)
-                    if self._chunks_fed_to_aws == 1:
-                        logger.info('transcribe first chunk fed to AWS (%d bytes)', len(chunk))
-                    elif self._chunks_fed_to_aws % 50 == 0:
-                        logger.info(
-                            'transcribe chunks fed to AWS: %d queued=%d bytes_fed=%d',
-                            self._chunks_fed_to_aws,
-                            self._chunks_queued,
-                            self._bytes_fed_to_aws,
-                        )
+                    # Split Socket.IO polling batches / silence keepalive into AWS-safe frames.
+                    for frame in _iter_aws_audio_frames(chunk, max_frame):
+                        await stream.input_stream.send_audio_event(audio_chunk=frame)
+                        self._chunks_fed_to_aws += 1
+                        self._bytes_fed_to_aws += len(frame)
+                        if self._chunks_fed_to_aws == 1:
+                            logger.info(
+                                'transcribe first chunk fed to AWS (%d bytes; source=%d max_frame=%d)',
+                                len(frame),
+                                len(chunk),
+                                max_frame,
+                            )
+                        elif self._chunks_fed_to_aws % 50 == 0:
+                            logger.info(
+                                'transcribe chunks fed to AWS: %d queued=%d bytes_fed=%d',
+                                self._chunks_fed_to_aws,
+                                self._chunks_queued,
+                                self._bytes_fed_to_aws,
+                            )
                 if not drained:
                     await asyncio.sleep(0.005)
 

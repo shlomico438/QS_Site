@@ -112,9 +112,10 @@ function qsWaitForSocketConnected(sock, timeoutMs = 20000) {
 
 /** Max PCM held before transport is armed (~45s @ 16 kHz mono int16). */
 const QS_PRE_READY_BUFFER_MAX_BYTES = 16000 * 2 * 45;
-/** When Socket.IO is stuck on HTTP polling, batch PCM to avoid Engine.IO "Too many packets". */
-const QS_POLLING_BATCH_MAX_BYTES = 48000; // ~1.5s @ 16 kHz mono int16 — fewer HTTP POSTs
-const QS_POLLING_BATCH_MAX_MS = 400;
+/** When Socket.IO is on HTTP polling, batch PCM for fewer POSTs.
+ * Server splits to ~100ms AWS frames — keep batches moderate (~0.5s) for lower latency. */
+const QS_POLLING_BATCH_MAX_BYTES = 16000; // ~0.5s @ 16 kHz mono int16
+const QS_POLLING_BATCH_MAX_MS = 250;
 /** If ready but no server audio ack / partials, restart AWS instead of waiting ~15s for timeout. */
 const QS_STARVATION_RESTART_MS = 5000;
 

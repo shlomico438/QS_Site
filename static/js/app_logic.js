@@ -187,6 +187,9 @@ const QS_MEDICAL_REASSERT_AFTER_LOGOUT = 'qs_reassert_medical_after_logout';
 /** Cached: last /api/medical/account said allowed — skip pricing flash for registered doctors. */
 const QS_MEDICAL_ACCOUNT_ALLOWED_KEY = 'qs_medical_account_allowed';
 const QS_IOS_SAFARI_HINT_TS_KEY = 'qs_ios_safari_hint_ts';
+/** Survive OAuth/magic-link when Supabase lands on Site URL "/" instead of medical/locale path. */
+const QS_AUTH_RETURN_PATH_KEY = 'qs_auth_return_path';
+const QS_AUTH_RETURN_LOCALE_KEY = 'qs_auth_return_locale';
 /** Live AWS Transcribe language: he | en | auto. Default Hebrew-only (Auto flickers). */
 const QS_MEDICAL_STREAM_LANG_KEY = 'qs_medical_transcribe_lang';
 /** Workstation mic default (device id + label). Not PHI. */
@@ -579,19 +582,37 @@ function qsApplyMedicalPreferenceAfterAuth(user) {
     try {
         path = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
     } catch (_) {}
-    const preferMedical = String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1';
+    const preferMedical = (
+        String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1'
+        || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())
+        || !!String(sessionStorage.getItem(QS_AUTH_RETURN_PATH_KEY) || '').match(/\/medical/)
+        || !!(typeof qsMedicalPendingOnboardingRead === 'function' && qsMedicalPendingOnboardingRead()?.professionalSpecialty)
+    );
     const search = String((window.location && window.location.search) || '');
     const openMatch = /(?:\?|&)open=([^&]+)/i.exec(search);
     const openId = openMatch ? decodeURIComponent(openMatch[1] || '').trim() : '';
 
     if (user) {
+        if (typeof qsConsumeAuthReturnRedirect === 'function' && qsConsumeAuthReturnRedirect()) {
+            return;
+        }
         if (typeof qsIsMedicalAppPath === 'function' ? qsIsMedicalAppPath(path) : path === '/medical') {
             try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
             try { if (typeof _qsSetMedicalLanding === 'function') _qsSetMedicalLanding(); } catch (_) {}
             return;
         }
         if ((path === '/' || path === '/en') && preferMedical) {
-            const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
+            let locale = String(
+                sessionStorage.getItem(QS_AUTH_RETURN_LOCALE_KEY)
+                || window.currentLocale
+                || localStorage.getItem('locale')
+                || 'he'
+            ).toLowerCase().split('-')[0];
+            if (locale !== 'en') locale = 'he';
+            try { localStorage.setItem('locale', locale); } catch (_) {}
+            const medicalHome = typeof qsMedicalHomePath === 'function'
+                ? qsMedicalHomePath(locale)
+                : (locale === 'en' ? '/en/medical' : '/medical');
             const dest = openId
                 ? (medicalHome + '?open=' + encodeURIComponent(openId))
                 : medicalHome;
@@ -627,6 +648,7 @@ window.qsApplyMedicalPreferenceAfterAuth = qsApplyMedicalPreferenceAfterAuth;
 function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     const k = String(key || '');
     if (k === QS_MEDICAL_MODE_KEY || k === QS_MEDICAL_LANDING_KEY || k === QS_MEDICAL_ACCOUNT_ALLOWED_KEY || k === 'locale' || k === 'qs_console') return true;
+    if (k === QS_AUTH_RETURN_PATH_KEY || k === QS_AUTH_RETURN_LOCALE_KEY) return true;
     // Supabase Auth persists session under sb-<project-ref>-… (e.g. auth-token, PKCE). Blocking these breaks Google OAuth / refresh.
     if (k.startsWith('sb-')) return true;
     if (k === 'supabase.auth.token') return true;
@@ -1557,7 +1579,9 @@ function qsWireMedicalSaasOnboarding() {
             openLoginBtn.type = 'button';
             openLoginBtn.id = 'medical-open-login-btn';
             openLoginBtn.className = 'medical-secondary-cta';
-            openLoginBtn.textContent = 'כבר יש לי חשבון רפואי — התחברות';
+            openLoginBtn.textContent = (typeof window.t === 'function'
+                ? window.t('medical_onboarding_login_cta')
+                : 'I already have a medical account — Sign in');
             openAuthBtn.insertAdjacentElement('afterend', openLoginBtn);
         }
     }
@@ -2603,15 +2627,100 @@ async function qsPollForOAuthSession(maxMs, intervalMs) {
     return false;
 }
 
+/** Remember medical + locale before OAuth/magic-link so a Site-URL "/" callback can restore them. */
+function qsStashAuthReturnContext() {
+    try {
+        const locale = String(
+            window.currentLocale
+            || (typeof localStorage !== 'undefined' && localStorage.getItem('locale'))
+            || 'he'
+        ).toLowerCase().split('-')[0];
+        const loc = locale === 'en' ? 'en' : 'he';
+        let path = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
+        const preferMedical = (
+            (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell())
+            || (typeof qsIsMedicalAppPath === 'function' && qsIsMedicalAppPath(path))
+            || (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+        );
+        if (preferMedical) {
+            path = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath(loc) : (loc === 'en' ? '/en/medical' : '/medical');
+            try { localStorage.setItem(QS_MEDICAL_MODE_KEY, '1'); } catch (_) {}
+            try { if (typeof _qsSetMedicalLanding === 'function') _qsSetMedicalLanding(); } catch (_) {}
+        }
+        sessionStorage.setItem(QS_AUTH_RETURN_PATH_KEY, path);
+        sessionStorage.setItem(QS_AUTH_RETURN_LOCALE_KEY, loc);
+        try { localStorage.setItem('locale', loc); } catch (_) {}
+        window.currentLocale = loc;
+    } catch (_) {}
+}
+
+/** After auth callback: restore English/medical if Supabase dropped us on "/" (regular Hebrew home). */
+function qsConsumeAuthReturnRedirect() {
+    try {
+        const returnPath = String(sessionStorage.getItem(QS_AUTH_RETURN_PATH_KEY) || '').trim();
+        const returnLocale = String(sessionStorage.getItem(QS_AUTH_RETURN_LOCALE_KEY) || '').trim().toLowerCase();
+        if (!returnPath && returnLocale !== 'en' && returnLocale !== 'he') return false;
+
+        if (returnLocale === 'en' || returnLocale === 'he') {
+            try { localStorage.setItem('locale', returnLocale); } catch (_) {}
+            window.currentLocale = returnLocale;
+            try {
+                document.documentElement.lang = returnLocale === 'he' ? 'he' : 'en';
+                document.documentElement.dir = returnLocale === 'he' ? 'rtl' : 'ltr';
+            } catch (_) {}
+        }
+
+        const cur = String((window.location && window.location.pathname) || '/').replace(/\/+$/, '') || '/';
+        const wantMedical = (
+            returnPath === '/medical'
+            || returnPath === '/en/medical'
+            || returnPath === '/he/medical'
+            || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())
+            || String(localStorage.getItem(QS_MEDICAL_MODE_KEY) || '').trim() === '1'
+            || !!(typeof qsMedicalPendingOnboardingRead === 'function' && qsMedicalPendingOnboardingRead()?.professionalSpecialty)
+        );
+        if (!wantMedical) {
+            try { sessionStorage.removeItem(QS_AUTH_RETURN_PATH_KEY); } catch (_) {}
+            try { sessionStorage.removeItem(QS_AUTH_RETURN_LOCALE_KEY); } catch (_) {}
+            return false;
+        }
+
+        const dest = typeof qsMedicalHomePath === 'function'
+            ? qsMedicalHomePath(returnLocale || window.currentLocale)
+            : (String(returnLocale || window.currentLocale) === 'en' ? '/en/medical' : '/medical');
+        const destNorm = String(dest).replace(/\/+$/, '') || '/medical';
+        if (cur === destNorm) {
+            try { sessionStorage.removeItem(QS_AUTH_RETURN_PATH_KEY); } catch (_) {}
+            try { sessionStorage.removeItem(QS_AUTH_RETURN_LOCALE_KEY); } catch (_) {}
+            return false;
+        }
+        try { sessionStorage.removeItem(QS_AUTH_RETURN_PATH_KEY); } catch (_) {}
+        try { sessionStorage.removeItem(QS_AUTH_RETURN_LOCALE_KEY); } catch (_) {}
+        try { window.location.replace(destNorm); } catch (_) { window.location.href = destNorm; }
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 function qsOAuthRedirectTo() {
     try {
+        qsStashAuthReturnContext();
         const loc = window.location;
         const origin = String(loc.origin || '').trim();
         let path = String(loc.pathname || '/');
         if (!path.startsWith('/')) path = '/' + path;
         // Keep medical users on medical home after Google/Apple (not Core / or /personal).
         try {
-            const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
+            const locale = String(
+                sessionStorage.getItem(QS_AUTH_RETURN_LOCALE_KEY)
+                || window.currentLocale
+                || localStorage.getItem('locale')
+                || 'he'
+            ).toLowerCase().split('-')[0];
+            const medicalHome = typeof qsMedicalHomePath === 'function'
+                ? qsMedicalHomePath(locale)
+                : (locale === 'en' ? '/en/medical' : '/medical');
             if (typeof qsShouldPreferMedicalAppShell === 'function' && qsShouldPreferMedicalAppShell()) {
                 path = medicalHome;
             } else if (
@@ -2619,6 +2728,11 @@ function qsOAuthRedirectTo() {
                 || (typeof _qsReadMedicalLanding === 'function' && _qsReadMedicalLanding())
             ) {
                 path = medicalHome;
+            } else {
+                try {
+                    const stashed = String(sessionStorage.getItem(QS_AUTH_RETURN_PATH_KEY) || '').trim();
+                    if (stashed) path = stashed;
+                } catch (_) {}
             }
         } catch (_) {}
         return origin ? (origin + path) : path;
@@ -3900,6 +4014,11 @@ supabase.auth.onAuthStateChange((event, session) => {
     }
     if (event === 'SIGNED_IN' && session) {
         try { window.__QS_OAUTH_CALLBACK_RESOLVED = true; } catch (_) {}
+        try {
+            if (typeof qsConsumeAuthReturnRedirect === 'function' && qsConsumeAuthReturnRedirect()) {
+                return;
+            }
+        } catch (_) {}
         if (typeof window.toggleModal === 'function') window.toggleModal(false);
         if (typeof setupNavbarAuth === 'function') setupNavbarAuth();
         try {
@@ -6004,13 +6123,13 @@ function applyAuthModalMode() {
     const nameInput = document.getElementById('auth-name');
     const emailInput = document.getElementById('auth-email');
     if (titleEl) {
-        if (isMedicalLogin) titleEl.textContent = 'התחברות לחשבון רפואי';
-        else if (isMedical) titleEl.textContent = 'הפעלת תקופת הניסיון הרפואית';
+        if (isMedicalLogin) titleEl.textContent = T('medical_auth_login_title');
+        else if (isMedical) titleEl.textContent = T('medical_auth_trial_title');
         else titleEl.textContent = isSignUpMode ? T('get_started') : T('welcome_back');
     }
     if (subtitleEl) {
-        if (isMedicalLogin) subtitleEl.textContent = 'התחברו עם Google או קבלו קישור מאובטח לאימייל.';
-        else if (isMedical) subtitleEl.textContent = 'הירשמו עם Google או קבלו קישור מאובטח לאימייל. לא נדרש כרטיס אשראי.';
+        if (isMedicalLogin) subtitleEl.textContent = T('medical_auth_login_sub');
+        else if (isMedical) subtitleEl.textContent = T('medical_auth_trial_sub');
         else subtitleEl.textContent = T('sign_in_to_save');
     }
     if (signupFieldsEl) signupFieldsEl.style.display = (showMedicalProfile || (!isMedical && isSignUpMode)) ? 'block' : 'none';
@@ -6018,27 +6137,28 @@ function applyAuthModalMode() {
     if (specialtyWrap) specialtyWrap.style.display = showMedicalProfile ? 'block' : 'none';
     if (authSubmitBtnEl) {
         authSubmitBtnEl.textContent = isMedicalLogin
-            ? 'שלחו לי קישור להתחברות'
+            ? T('medical_auth_send_login_link')
             : (existingMedicalUser
-            ? 'הפעלת 30 ימי ניסיון'
-            : (isMedical ? 'שלחו לי קישור להפעלת הניסיון' : T('send_magic_link')));
+            ? T('medical_auth_activate_trial')
+            : (isMedical ? T('medical_auth_send_trial_link') : T('send_magic_link')));
     }
     if (authSwitchTextEl) {
         authSwitchTextEl.textContent = isMedical
-            ? (isSignUpMode ? 'כבר יש לי חשבון רפואי' : 'עדיין אין לי חשבון רפואי')
+            ? (isSignUpMode ? T('medical_auth_have_account') : T('medical_auth_need_account'))
             : (isSignUpMode ? T('already_have') : T('need_account'));
     }
     if (toggleAuthModeEl) {
         toggleAuthModeEl.textContent = isMedical
-            ? (isSignUpMode ? 'התחברות' : 'הפעלת תקופת ניסיון')
+            ? (isSignUpMode ? T('medical_auth_switch_login') : T('medical_auth_switch_trial'))
             : (isSignUpMode ? T('log_in') : T('sign_up'));
     }
     if (switchRow) switchRow.style.display = existingMedicalUser ? 'none' : '';
     if (googleBtn) googleBtn.style.display = existingMedicalUser ? 'none' : 'flex';
     if (providerDivider) providerDivider.style.display = existingMedicalUser ? 'none' : 'flex';
-    if (nameInput) nameInput.placeholder = isMedical ? 'שם מלא' : (T('full_name') || 'Full Name (optional)');
+    if (nameInput) nameInput.placeholder = isMedical ? T('full_name') : (T('full_name') || 'Full Name (optional)');
     if (emailInput) emailInput.readOnly = existingMedicalUser;
 }
+window.applyAuthModalMode = applyAuthModalMode;
 
 async function requireUserForCopyOrDownload() {
     const { data: { user } } = await supabase.auth.getUser();
@@ -9809,11 +9929,11 @@ function renderMedicalTrainingPanel(container) {
     panel.innerHTML = `
         <button type="button" id="medical-training-toggle" aria-expanded="${expanded ? 'true' : 'false'}" style="display:flex;width:100%;align-items:center;gap:10px;background:transparent;border:none;cursor:pointer;padding:0;margin:0;font:inherit;text-align:right;direction:rtl;color:inherit;">
             <span id="medical-training-chevron" style="font-size:0.72rem;color:#0f766e;flex-shrink:0;width:1.1em;line-height:1;text-align:center;" aria-hidden="true">${chevron}</span>
-            <span style="font-weight:800;color:#0f766e;flex:1;">מצב אימון: התאמת סיכום לרופא</span>
+            <span style="font-weight:800;color:#0f766e;flex:1;">מצב אימון: סגנון ותבנית סיכום אישית</span>
         </button>
         <div id="medical-training-panel-body" style="display:${expanded ? 'block' : 'none'};margin-top:12px;">
-        <div style="font-size:0.88rem;color:#0f766e;margin-bottom:10px;">ערכו/הדביקו את הסיכום הרצוי. המערכת תלמד העדפות סגנון ומבנה בלבד, לא עובדות קליניות.</div>
-        <textarea id="medical-training-doctor-summary" class="qs-medical-training-textarea" rows="8" placeholder="כתוב פה את הסיכום הרצוי" style="width:100%;box-sizing:border-box;border:1px solid #99f6e4;border-radius:10px;padding:10px;resize:vertical;direction:rtl;text-align:right;font:inherit;">${textareaInitialEsc}</textarea>
+        <div style="font-size:0.88rem;color:#0f766e;margin-bottom:10px;">ערכו את הסיכום לצורת התבנית שלכם (כותרות, סדר סעיפים וסגנון). האימון שומר תבנית וסגנון אישיים לחשבון שלכם בלבד — לא משותף עם רופאים אחרים. עובדות קליניות מהדוגמה לא נשמרות ככללים.</div>
+        <textarea id="medical-training-doctor-summary" class="qs-medical-training-textarea" rows="8" placeholder="הדביקו כאן את הסיכום בתבנית הרצויה שלכם" style="width:100%;box-sizing:border-box;border:1px solid #99f6e4;border-radius:10px;padding:10px;resize:vertical;direction:rtl;text-align:right;font:inherit;">${textareaInitialEsc}</textarea>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
             <button type="button" id="medical-training-learn-btn" style="${learnBtnStyle}">${learnBtnLabel}</button>
             <button type="button" id="medical-training-approve-btn" style="${approveBtnStyle}">אשר אימון</button>
@@ -9893,7 +10013,7 @@ function renderMedicalTrainingPanel(container) {
                 learnBtn.disabled = true;
                 window._medicalTrainingPostLearnPreviewReady = false;
                 window._medicalTrainingApprovedCandidatePrompt = '';
-                if (message) message.textContent = 'מנתח סגנון ומגבש מודל סיכום מותאם...';
+                if (message) message.textContent = 'מנתח תבנית וסגנון ומגבש מודל סיכום אישי...';
                 if (typeof window.showClinicalTrainingModal === 'function') window.showClinicalTrainingModal();
                 const learned = await medicalTrainingLearn({
                     transcript,
@@ -9910,7 +10030,7 @@ function renderMedicalTrainingPanel(container) {
                         preview_planned: learned.preview_model,
                     });
                 }
-                window._medicalTrainingMessage = learned.rationale || 'נוצר פרומפט מועמד. מריץ תצוגה מקדימה...';
+                window._medicalTrainingMessage = learned.rationale || 'נוצר פרומפט מועמד (תבנית + סגנון). מריץ תצוגה מקדימה...';
                 const previewRes = await medicalTrainingPreview({
                     transcript,
                     candidate_prompt: window._medicalTrainingCandidatePrompt,
@@ -9922,7 +10042,7 @@ function renderMedicalTrainingPanel(container) {
                 if (previewRes.preview_model) {
                     console.info('[medical training] preview model:', previewRes.preview_model);
                 }
-                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם סגנון הסיכום מתאים, אשרו את הגדרות האימון..';
+                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, אשרו את האימון.';
                 window._medicalTrainingPostLearnPreviewReady = true;
                 window._medicalTrainingPanelExpanded = true;
                 window._medicalTrainingBaselineForRetry = doctorSummary;
@@ -11933,6 +12053,7 @@ if (googleLoginBtn) {
                 saveMedicalAuthSnapshotForPendingSignIn();
             }
         } catch (_) {}
+        try { qsStashAuthReturnContext(); } catch (_) {}
         if (window.currentSegments && window.currentSegments.length > 0 && !isMedicalModeEnabled()) {
             localStorage.setItem('pendingTranscript', JSON.stringify(window.currentSegments));
         }
@@ -21763,6 +21884,12 @@ const QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY = {
     rec: 'דגשים להמשך'
 };
 
+const QS_MEDICAL_SUMMARY_SECTION_LABELS_NEUROLOGY = {
+    chief: 'תלונה עיקרית / HPI',
+    exam: 'היסטוריה, תרופות ובדיקה נוירולוגית',
+    rec: 'הערכה ותוכנית'
+};
+
 function qsMedicalProfessionalSpecialty() {
     const fromAccount = String(window.__QS_MEDICAL_ACCOUNT?.professionalSpecialty || '').trim();
     if (fromAccount) return fromAccount;
@@ -21774,6 +21901,13 @@ function qsIsMedicalPsychologySpecialty(specialty) {
         .trim()
         .toLowerCase();
     return s === 'psychologist' || s === 'psychology' || s === 'פסיכולוגיה';
+}
+
+function qsIsMedicalNeurologySpecialty(specialty) {
+    const s = String(specialty != null ? specialty : qsMedicalProfessionalSpecialty())
+        .trim()
+        .toLowerCase();
+    return s === 'neurology' || s === 'neurologist' || s === 'נוירולוגיה' || s === 'נוירולוג';
 }
 
 function _medicalText(key, fallback) {
@@ -21794,6 +21928,17 @@ function _medicalSummarySectionLabel(sectionKey) {
         return _medicalText(
             psychKeyMap[sectionKey],
             QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY[sectionKey] || sectionKey
+        );
+    }
+    if (qsIsMedicalNeurologySpecialty()) {
+        const neuroKeyMap = {
+            chief: 'medical_summary_chief_neurology',
+            exam: 'medical_summary_exam_neurology',
+            rec: 'medical_summary_recommendations_neurology'
+        };
+        return _medicalText(
+            neuroKeyMap[sectionKey],
+            QS_MEDICAL_SUMMARY_SECTION_LABELS_NEUROLOGY[sectionKey] || sectionKey
         );
     }
     const keyMap = {

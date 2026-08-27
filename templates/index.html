@@ -241,42 +241,41 @@ try {
             </div>
         </div>
 
-        <section id="medical-onboarding-screen" class="medical-onboarding-screen" {% if not medical_entry %}hidden{% endif %}>
+        <section id="medical-onboarding-screen" class="medical-onboarding-screen" {% if not medical_entry %}hidden{% endif %} data-qs-locale-dir>
             <div class="medical-onboarding-hero">
                 <span class="medical-onboarding-kicker">QuickScribe Medical</span>
-                <h1>AI Documentation for Healthcare Professionals</h1>
-                <p>
-                    תמלול וסיכום קליני מאובטח לרופאים, פסיכולוגים, מרפאים בעיסוק,
-                    פיזיותרפיסטים, קלינאי תקשורת ואנשי מקצוע נוספים בתחום הבריאות.
+                <h1 data-i18n="medical_onboarding_hero_title">{% if qs_is_en %}AI Documentation for Healthcare Professionals{% else %}תיעוד AI לאנשי מקצוע בתחום הבריאות{% endif %}</h1>
+                <p data-i18n="medical_onboarding_hero_sub">
+                    {% if qs_is_en %}Secure clinical transcription and summary for physicians, psychologists, occupational therapists, physiotherapists, speech therapists, and other healthcare professionals.{% else %}תמלול וסיכום קליני מאובטח לרופאים, פסיכולוגים, מרפאים בעיסוק, פיזיותרפיסטים, קלינאי תקשורת ואנשי מקצוע נוספים בתחום הבריאות.{% endif %}
                 </p>
-                <div class="medical-trust-row" aria-label="Medical product benefits">
-                    <span>30 ימי ניסיון ללא עלות</span>
-                    <span>30 שעות תמלול</span>
-                    <span>ללא כרטיס אשראי</span>
+                <div class="medical-trust-row" aria-label="{% if qs_is_en %}Medical product benefits{% else %}יתרונות המוצר הרפואי{% endif %}">
+                    <span data-i18n="medical_onboarding_trust_trial">{% if qs_is_en %}30-day free trial{% else %}30 ימי ניסיון ללא עלות{% endif %}</span>
+                    <span data-i18n="medical_onboarding_trust_hours">{% if qs_is_en %}30 transcription hours{% else %}30 שעות תמלול{% endif %}</span>
+                    <span data-i18n="medical_onboarding_trust_no_card">{% if qs_is_en %}No credit card required{% else %}ללא כרטיס אשראי{% endif %}</span>
                 </div>
             </div>
 
             <div class="medical-onboarding-grid">
                 <div class="medical-activation-card" id="medical-activation-card">
-                    <h2>הפעלת תקופת הניסיון הרפואית</h2>
-                    <p>הרשמה קצרה באמצעות Google או קישור מאובטח לאימייל — ומתחילים לתעד מיד.</p>
+                    <h2 data-i18n="medical_onboarding_activate_title">{% if qs_is_en %}Start your medical trial{% else %}הפעלת תקופת הניסיון הרפואית{% endif %}</h2>
+                    <p data-i18n="medical_onboarding_activate_sub">{% if qs_is_en %}Quick signup with Google or a secure email link — start documenting right away.{% else %}הרשמה קצרה באמצעות Google או קישור מאובטח לאימייל — ומתחילים לתעד מיד.{% endif %}</p>
                     <div id="medical-onboarding-message" class="medical-onboarding-message" role="status" aria-live="polite"></div>
-                    <button type="button" id="medical-open-auth-btn" class="medical-primary-cta">
-                        התחילו 30 ימי ניסיון
+                    <button type="button" id="medical-open-auth-btn" class="medical-primary-cta" data-i18n="medical_onboarding_start_cta">
+                        {% if qs_is_en %}Start 30-day trial{% else %}התחילו 30 ימי ניסיון{% endif %}
                     </button>
-                    <button type="button" id="medical-open-login-btn" class="medical-secondary-cta">
-                        כבר יש לי חשבון רפואי — התחברות
+                    <button type="button" id="medical-open-login-btn" class="medical-secondary-cta" data-i18n="medical_onboarding_login_cta">
+                        {% if qs_is_en %}I already have a medical account — Sign in{% else %}כבר יש לי חשבון רפואי — התחברות{% endif %}
                     </button>
-                    <small>לא נדרשים פרטי תשלום. תקופת הניסיון כוללת 30 שעות תמלול.</small>
+                    <small data-i18n="medical_onboarding_activate_note">{% if qs_is_en %}No payment details required. The trial includes 30 transcription hours.{% else %}לא נדרשים פרטי תשלום. תקופת הניסיון כוללת 30 שעות תמלול.{% endif %}</small>
                 </div>
 
                 <div class="medical-security-card">
-                    <h2>נבנה לתיעוד מקצועי רגיש</h2>
+                    <h2 data-i18n="medical_onboarding_security_title">{% if qs_is_en %}Built for sensitive clinical documentation{% else %}נבנה לתיעוד מקצועי רגיש{% endif %}</h2>
                     <ul>
-                        <li>סביבת עבודה רפואית נפרדת</li>
-                        <li>הצפנה ואחסון ייעודי לתוכן רפואי</li>
-                        <li>תמלול, עריכה וסיכום קליני במקום אחד</li>
-                        <li>מתאים למגוון מקצועות הבריאות — לא רק לרופאים</li>
+                        <li data-i18n="medical_onboarding_security_1">{% if qs_is_en %}Separate medical workspace{% else %}סביבת עבודה רפואית נפרדת{% endif %}</li>
+                        <li data-i18n="medical_onboarding_security_2">{% if qs_is_en %}Encryption and dedicated storage for medical content{% else %}הצפנה ואחסון ייעודי לתוכן רפואי{% endif %}</li>
+                        <li data-i18n="medical_onboarding_security_3">{% if qs_is_en %}Transcription, editing, and clinical summary in one place{% else %}תמלול, עריכה וסיכום קליני במקום אחד{% endif %}</li>
+                        <li data-i18n="medical_onboarding_security_4">{% if qs_is_en %}Built for many healthcare professions — not only physicians{% else %}מתאים למגוון מקצועות הבריאות — לא רק לרופאים{% endif %}</li>
                     </ul>
                 </div>
             </div>
@@ -307,17 +306,18 @@ try {
                 <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
 
                 <div id="auth-medical-specialty-wrap" style="display:none; text-align:start;">
-                    <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;">בחרו תחום מקצועי</label>
+                    <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;" data-i18n="medical_specialty_label">Choose your professional field</label>
                     <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
-                        <option value="">בחרו תחום מקצועי</option>
-                        <option value="physician">רפואה</option>
-                        <option value="psychologist">פסיכולוגיה</option>
-                        <option value="occupational_therapist">ריפוי בעיסוק</option>
-                        <option value="physiotherapist">פיזיותרפיה</option>
-                        <option value="speech_therapist">קלינאות תקשורת</option>
-                        <option value="nurse">סיעוד</option>
-                        <option value="social_worker">עבודה סוציאלית רפואית</option>
-                        <option value="other">מקצוע בריאות אחר</option>
+                        <option value="" data-i18n="medical_specialty_placeholder">Choose your professional field</option>
+                        <option value="physician" data-i18n="medical_specialty_physician">Medicine</option>
+                        <option value="neurology" data-i18n="medical_specialty_neurology">Neurology</option>
+                        <option value="psychologist" data-i18n="medical_specialty_psychologist">Psychology</option>
+                        <option value="occupational_therapist" data-i18n="medical_specialty_occupational_therapist">Occupational therapy</option>
+                        <option value="physiotherapist" data-i18n="medical_specialty_physiotherapist">Physiotherapy</option>
+                        <option value="speech_therapist" data-i18n="medical_specialty_speech_therapist">Speech therapy</option>
+                        <option value="nurse" data-i18n="medical_specialty_nurse">Nursing</option>
+                        <option value="social_worker" data-i18n="medical_specialty_social_worker">Medical social work</option>
+                        <option value="other" data-i18n="medical_specialty_other">Other healthcare profession</option>
                     </select>
                 </div>
 

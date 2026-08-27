@@ -148,16 +148,16 @@ window.translations = {
         medical_session_secure_recording: "סשן הקלטה רפואי מאובטח",
         medical_session_hipaa_active: "תמלול קליני בתקן HIPAA פעיל",
         medical_mode_label: "מצב רפואי (HIPAA)",
-        medical_mode_enabled_message: "מצב רפואי (HIPAA) פעיל — אימון סיכום זמין מתחת לסיכום הרפואי.",
+        medical_mode_enabled_message: "מצב רפואי (HIPAA) פעיל — אימון תבנית וסגנון סיכום זמין מתחת לסיכום הרפואי.",
         medical_mode_disabled_message: "מצב רפואי כבוי.",
-        medical_training_style_title: "התאמת סגנון סיכום",
-        medical_training_style_hint: "זמין אוטומטית במצב רפואי — ניתן לאמן סגנון סיכום מתחת לסיכום הרפואי, או לאפס כאן.",
+        medical_training_style_title: "התאמת סגנון ותבנית סיכום",
+        medical_training_style_hint: "במצב רפואי — ערכו סיכום לדוגמה בתבנית שלכם; האימון לומד תבנית וסגנון לחשבון שלכם בלבד. ניתן גם לאפס כאן.",
         medical_training_reset_btn: "אפס אימון סיכום",
         medical_training_resetting: "מאפס אימון...",
-        medical_training_reset_done: "האימון אופס והפרומפט האישי הושבת.",
+        medical_training_reset_done: "האימון אופס והפרומפט האישי (תבנית + סגנון) הושבת.",
         medical_training_reset_failed: "איפוס נכשל: {error}",
         medical_training_requires_mode: "יש להפעיל תחילה מצב רפואי (HIPAA).",
-        medical_training_available_hint: "אימון סיכום זמין מתחת לסיכום הרפואי.",
+        medical_training_available_hint: "אימון תבנית וסגנון זמין מתחת לסיכום הרפואי.",
         medical_aws_footnote: "מבוסס על תשתית \u200fAWS",
         medical_settings: "הגדרות",
         medical_settings_test_mic: "בדיקת מיקרופון",
@@ -236,6 +236,43 @@ window.translations = {
         invoice_billing_city_required: "נא להזין ישוב (עיר).",
         medical_pricing_page_lead: "מסלולים חודשיים לתיעוד קליני מאובטח.",
         medical_pricing_start_cta: "התחילו ניסיון רפואי",
+        medical_onboarding_hero_title: "תיעוד AI לאנשי מקצוע בתחום הבריאות",
+        medical_onboarding_hero_sub: "תמלול וסיכום קליני מאובטח לרופאים, פסיכולוגים, מרפאים בעיסוק, פיזיותרפיסטים, קלינאי תקשורת ואנשי מקצוע נוספים בתחום הבריאות.",
+        medical_onboarding_trust_trial: "30 ימי ניסיון ללא עלות",
+        medical_onboarding_trust_hours: "30 שעות תמלול",
+        medical_onboarding_trust_no_card: "ללא כרטיס אשראי",
+        medical_onboarding_activate_title: "הפעלת תקופת הניסיון הרפואית",
+        medical_onboarding_activate_sub: "הרשמה קצרה באמצעות Google או קישור מאובטח לאימייל — ומתחילים לתעד מיד.",
+        medical_onboarding_start_cta: "התחילו 30 ימי ניסיון",
+        medical_onboarding_login_cta: "כבר יש לי חשבון רפואי — התחברות",
+        medical_onboarding_activate_note: "לא נדרשים פרטי תשלום. תקופת הניסיון כוללת 30 שעות תמלול.",
+        medical_onboarding_security_title: "נבנה לתיעוד מקצועי רגיש",
+        medical_onboarding_security_1: "סביבת עבודה רפואית נפרדת",
+        medical_onboarding_security_2: "הצפנה ואחסון ייעודי לתוכן רפואי",
+        medical_onboarding_security_3: "תמלול, עריכה וסיכום קליני במקום אחד",
+        medical_onboarding_security_4: "מתאים למגוון מקצועות הבריאות — לא רק לרופאים",
+        medical_auth_login_title: "התחברות לחשבון רפואי",
+        medical_auth_trial_title: "הפעלת תקופת הניסיון הרפואית",
+        medical_auth_login_sub: "התחברו עם Google או קבלו קישור מאובטח לאימייל.",
+        medical_auth_trial_sub: "הירשמו עם Google או קבלו קישור מאובטח לאימייל. לא נדרש כרטיס אשראי.",
+        medical_auth_send_login_link: "שלחו לי קישור להתחברות",
+        medical_auth_activate_trial: "הפעלת 30 ימי ניסיון",
+        medical_auth_send_trial_link: "שלחו לי קישור להפעלת הניסיון",
+        medical_auth_have_account: "כבר יש לי חשבון רפואי",
+        medical_auth_need_account: "עדיין אין לי חשבון רפואי",
+        medical_auth_switch_login: "התחברות",
+        medical_auth_switch_trial: "הפעלת תקופת ניסיון",
+        medical_specialty_label: "בחרו תחום מקצועי",
+        medical_specialty_placeholder: "בחרו תחום מקצועי",
+        medical_specialty_physician: "רפואה",
+        medical_specialty_neurology: "נוירולוגיה",
+        medical_specialty_psychologist: "פסיכולוגיה",
+        medical_specialty_occupational_therapist: "ריפוי בעיסוק",
+        medical_specialty_physiotherapist: "פיזיותרפיה",
+        medical_specialty_speech_therapist: "קלינאות תקשורת",
+        medical_specialty_nurse: "סיעוד",
+        medical_specialty_social_worker: "עבודה סוציאלית רפואית",
+        medical_specialty_other: "מקצוע בריאות אחר",
         medical_recording: "הקלטה",
         medical_save_recording: "שמור הקלטה",
         medical_delete_recording: "מחק הקלטה",
@@ -247,6 +284,9 @@ window.translations = {
         medical_summary_chief_psychology: "תכנים מרכזיים",
         medical_summary_exam_psychology: "התרשמות רגשית",
         medical_summary_recommendations_psychology: "דגשים להמשך",
+        medical_summary_chief_neurology: "תלונה עיקרית / HPI",
+        medical_summary_exam_neurology: "היסטוריה, תרופות ובדיקה נוירולוגית",
+        medical_summary_recommendations_neurology: "הערכה ותוכנית",
         medical_summary_overview: "סקירה",
         medical_summary_key_points: "נקודות מפתח",
         medical_summary_empty: "אין סיכום רפואי זמין עדיין.",
@@ -590,16 +630,16 @@ window.translations = {
         medical_session_secure_recording: "Secure medical recording session",
         medical_session_hipaa_active: "Clinical transcription with HIPAA mode active",
         medical_mode_label: "Medical mode (HIPAA)",
-        medical_mode_enabled_message: "Medical mode (HIPAA) is on — summary training is available below the clinical summary.",
+        medical_mode_enabled_message: "Medical mode (HIPAA) is on — template and style training is available below the clinical summary.",
         medical_mode_disabled_message: "Medical mode is off.",
-        medical_training_style_title: "Summary style adaptation",
-        medical_training_style_hint: "Available automatically in medical mode — train summary style below the clinical summary, or reset here.",
+        medical_training_style_title: "Summary style & template adaptation",
+        medical_training_style_hint: "In medical mode — edit a sample summary into your template; training learns your private structure and style. You can also reset here.",
         medical_training_reset_btn: "Reset summary training",
         medical_training_resetting: "Resetting training…",
-        medical_training_reset_done: "Training was reset and your personal prompt was cleared.",
+        medical_training_reset_done: "Training was reset and your personal prompt (template + style) was cleared.",
         medical_training_reset_failed: "Reset failed: {error}",
         medical_training_requires_mode: "Turn on medical mode (HIPAA) first.",
-        medical_training_available_hint: "Summary training is available below the clinical summary.",
+        medical_training_available_hint: "Template and style training is available below the clinical summary.",
         medical_aws_footnote: "Built on AWS infrastructure",
         medical_settings: "Settings",
         medical_settings_test_mic: "Mic test",
@@ -678,6 +718,43 @@ window.translations = {
         invoice_billing_city_required: "Enter a city.",
         medical_pricing_page_lead: "Monthly plans for secure clinical documentation.",
         medical_pricing_start_cta: "Start medical trial",
+        medical_onboarding_hero_title: "AI Documentation for Healthcare Professionals",
+        medical_onboarding_hero_sub: "Secure clinical transcription and summary for physicians, psychologists, occupational therapists, physiotherapists, speech therapists, and other healthcare professionals.",
+        medical_onboarding_trust_trial: "30-day free trial",
+        medical_onboarding_trust_hours: "30 transcription hours",
+        medical_onboarding_trust_no_card: "No credit card required",
+        medical_onboarding_activate_title: "Start your medical trial",
+        medical_onboarding_activate_sub: "Quick signup with Google or a secure email link — start documenting right away.",
+        medical_onboarding_start_cta: "Start 30-day trial",
+        medical_onboarding_login_cta: "I already have a medical account — Sign in",
+        medical_onboarding_activate_note: "No payment details required. The trial includes 30 transcription hours.",
+        medical_onboarding_security_title: "Built for sensitive clinical documentation",
+        medical_onboarding_security_1: "Separate medical workspace",
+        medical_onboarding_security_2: "Encryption and dedicated storage for medical content",
+        medical_onboarding_security_3: "Transcription, editing, and clinical summary in one place",
+        medical_onboarding_security_4: "Built for many healthcare professions — not only physicians",
+        medical_auth_login_title: "Sign in to your medical account",
+        medical_auth_trial_title: "Start your medical trial",
+        medical_auth_login_sub: "Sign in with Google or get a secure email link.",
+        medical_auth_trial_sub: "Sign up with Google or get a secure email link. No credit card required.",
+        medical_auth_send_login_link: "Send me a sign-in link",
+        medical_auth_activate_trial: "Start 30-day trial",
+        medical_auth_send_trial_link: "Send me a trial activation link",
+        medical_auth_have_account: "I already have a medical account",
+        medical_auth_need_account: "I don't have a medical account yet",
+        medical_auth_switch_login: "Sign in",
+        medical_auth_switch_trial: "Start trial",
+        medical_specialty_label: "Choose your professional field",
+        medical_specialty_placeholder: "Choose your professional field",
+        medical_specialty_physician: "Medicine",
+        medical_specialty_neurology: "Neurology",
+        medical_specialty_psychologist: "Psychology",
+        medical_specialty_occupational_therapist: "Occupational therapy",
+        medical_specialty_physiotherapist: "Physiotherapy",
+        medical_specialty_speech_therapist: "Speech therapy",
+        medical_specialty_nurse: "Nursing",
+        medical_specialty_social_worker: "Medical social work",
+        medical_specialty_other: "Other healthcare profession",
         medical_recording: "Recording",
         medical_save_recording: "Save recording",
         medical_delete_recording: "Delete recording",
@@ -689,6 +766,9 @@ window.translations = {
         medical_summary_chief_psychology: "Central themes",
         medical_summary_exam_psychology: "Emotional impression",
         medical_summary_recommendations_psychology: "Focus for next steps",
+        medical_summary_chief_neurology: "Chief Complaint / HPI",
+        medical_summary_exam_neurology: "History, meds & neurological exam",
+        medical_summary_recommendations_neurology: "Assessment & Plan",
         medical_summary_overview: "Overview",
         medical_summary_key_points: "Key points",
         medical_summary_empty: "No medical summary is available yet.",
@@ -903,7 +983,9 @@ function resolveLocale() {
     try {
         const path = String(window.location.pathname || '/').replace(/\/+$/, '') || '/';
         if (path === '/en' || path.startsWith('/en/')) return 'en';
-        if (path === '/he' || path.startsWith('/he/') || path === '/') return 'he';
+        if (path === '/he' || path.startsWith('/he/')) return 'he';
+        // Do not treat bare "/" as Hebrew: OAuth/magic-link often lands on Site URL "/"
+        // and must not overwrite a stored English preference.
     } catch (_) {}
     try {
         const stored = String(localStorage.getItem('locale') || '').toLowerCase().split('-')[0];
@@ -920,10 +1002,15 @@ function resolveLocale() {
 window.currentLocale = resolveLocale();
 try { localStorage.setItem('locale', window.currentLocale); } catch (_) {}
 
-/** Returns translated string for key; fallback to key if missing. */
+/** Returns translated string for key. English never falls back to Hebrew (avoids mixed UI). */
 window.t = function(key) {
-    const dict = window.translations[window.currentLocale];
-    return (dict && dict[key]) || window.translations.he[key] || key;
+    const loc = String(window.currentLocale || 'he').toLowerCase().split('-')[0];
+    const primary = window.translations[loc];
+    if (primary && primary[key]) return primary[key];
+    if (loc === 'en') return key;
+    if (window.translations.en && window.translations.en[key]) return window.translations.en[key];
+    if (window.translations.he && window.translations.he[key]) return window.translations.he[key];
+    return key;
 };
 
 /** Set app language and refresh UI. Call after changing window.currentLocale. */
@@ -1081,5 +1168,8 @@ window.applyTranslations = function() {
     } catch (_) {}
     try {
         if (typeof window.qsSyncMedicalNavPricingLinks === 'function') window.qsSyncMedicalNavPricingLinks();
+    } catch (_) {}
+    try {
+        if (typeof window.applyAuthModalMode === 'function') window.applyAuthModalMode();
     } catch (_) {}
 };
