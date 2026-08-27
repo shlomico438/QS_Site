@@ -17276,10 +17276,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (document.visibilityState === 'visible') {
                 resetMedicalWaveformClock();
-                try { qsRestoreMedicalTranscriptBoxesIfNeeded(); } catch (_) {}
+                try { qsMedicalRepaintActiveTabContent(); } catch (_) {}
                 try {
                     requestAnimationFrame(() => {
-                        try { qsRestoreMedicalTranscriptBoxesIfNeeded(); } catch (_) {}
+                        try { qsMedicalRepaintActiveTabContent(); } catch (_) {}
                     });
                 } catch (_) {}
                 onReturnToApp();
@@ -17287,7 +17287,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         window.addEventListener('focus', onReturnToApp);
         window.addEventListener('pageshow', () => {
-            try { qsRestoreMedicalTranscriptBoxesIfNeeded(); } catch (_) {}
+            try { qsMedicalRepaintActiveTabContent(); } catch (_) {}
             onReturnToApp();
         });
         try {
@@ -17296,7 +17296,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 try { qsSnapshotMedicalTranscriptBoxesFromDom({ force: true }); } catch (_) {}
             });
             document.addEventListener('resume', () => {
-                try { qsRestoreMedicalTranscriptBoxesIfNeeded(); } catch (_) {}
+                try { qsMedicalRepaintActiveTabContent(); } catch (_) {}
                 onReturnToApp();
             });
         } catch (_) {}
@@ -22257,8 +22257,12 @@ function qsSnapshotMedicalTranscriptBoxesFromDom(options) {
 
 function qsRestoreMedicalTranscriptBoxesIfNeeded() {
     if (!isMedicalModeEnabled()) return false;
+    // Never overwrite the summary pane when the doctor is on the Summary tab
+    // (browser tab blur/focus used to re-inject transcript boxes while Summary stayed selected).
+    if (String(window.medicalActiveTab || 'transcript') === 'summary') return false;
     const tw = document.getElementById('transcript-window');
     if (!tw) return false;
+    if (tw.querySelector('#medical-summary-content')) return false;
     const snap = Array.isArray(window._medicalUnsavedBoxes) ? window._medicalUnsavedBoxes : [];
     if (!snap.length) return false;
     const current = tw.querySelectorAll('textarea.qs-medical-edit-box-body');
@@ -22271,9 +22275,28 @@ function qsRestoreMedicalTranscriptBoxesIfNeeded() {
     return false;
 }
 
+/** After returning to the Chrome tab, keep Summary content in sync with the active tab button. */
+function qsMedicalRepaintActiveTabContent() {
+    if (!isMedicalModeEnabled()) return;
+    const active = String(window.medicalActiveTab || 'transcript');
+    if (active === 'summary') {
+        if (typeof renderTranscriptFromCues === 'function') {
+            try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
+        }
+        if (typeof updateMedicalTabUi === 'function') {
+            try { updateMedicalTabUi(); } catch (_) {}
+        } else if (typeof window.refreshMedicalTabs === 'function') {
+            try { window.refreshMedicalTabs(); } catch (_) {}
+        }
+        return;
+    }
+    try { qsRestoreMedicalTranscriptBoxesIfNeeded(); } catch (_) {}
+}
+
 function qsRenderMedicalEditableTranscriptBoxes(paragraphs) {
     const transcriptWindow = document.getElementById('transcript-window');
     if (!transcriptWindow || !isMedicalModeEnabled()) return;
+    if (String(window.medicalActiveTab || 'transcript') === 'summary') return;
     const layout = qsMedicalTranscriptLocaleLayout();
     const list = Array.isArray(paragraphs) ? paragraphs.map((p) => String(p == null ? '' : p)) : [];
     const blocks = list.length ? list : [''];
