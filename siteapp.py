@@ -6006,6 +6006,51 @@ def _duration_from_job_metadata_dict(md):
     return max(candidates) if candidates else 0.0
 
 
+def _normalize_file_duration_sec(duration_sec):
+    """Return a billable duration in seconds, or None if invalid."""
+    try:
+        val = float(duration_sec or 0)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0 or val > 86400:
+        return None
+    return val
+
+
+def _duration_from_job_row(row):
+    """Prefer jobs.file_duration_sec column, then metadata hints."""
+    if not isinstance(row, dict):
+        return 0.0
+    normalized = _normalize_file_duration_sec(row.get('file_duration_sec'))
+    if normalized:
+        return float(normalized)
+    return _duration_from_job_metadata_dict(row.get('metadata'))
+
+
+def _jobs_persist_file_duration_sec(runpod_job_id, user_id, duration_sec):
+    """Write billable media length onto jobs.file_duration_sec (+ metadata mirror). Best-effort."""
+    jid = str(runpod_job_id or '').strip()
+    val = _normalize_file_duration_sec(duration_sec)
+    if not jid or not val:
+        return False
+    ok = False
+    try:
+        ok = bool(_jobs_patch_by_runpod_job_id(jid, user_id, {"file_duration_sec": float(val)}))
+    except Exception:
+        logging.warning(
+            "jobs_persist_file_duration_sec patch failed job=%s",
+            jid,
+            exc_info=True,
+        )
+    try:
+        _merge_job_qs_trigger(jid, {"credit_file_duration_sec": float(val), "file_duration_sec": float(val)})
+    except Exception:
+        logging.debug("jobs_persist_file_duration_sec metadata mirror failed job=%s", jid, exc_info=True)
+    if ok:
+        logging.info("jobs_persist_file_duration_sec job=%s duration_sec=%.3f", jid, val)
+    return ok
+
+
 def _resolve_claim_credit_duration_sec(
     *,
     job_id,
@@ -6016,6 +6061,7 @@ def _resolve_claim_credit_duration_sec(
     pending_info=None,
     job_metadata=None,
     result_s3_key=None,
+    job_row=None,
 ):
     """Resolve billable seconds for anonymous→user claim (OAuth often wipes in-memory client duration)."""
     try:
@@ -6024,6 +6070,10 @@ def _resolve_claim_credit_duration_sec(
             return client_val
     except (TypeError, ValueError):
         pass
+
+    row_dur = _duration_from_job_row(job_row) if isinstance(job_row, dict) else 0.0
+    if row_dur > 0:
+        return row_dur
 
     if isinstance(pending_info, dict):
         try:
@@ -6039,6 +6089,20 @@ def _resolve_claim_credit_duration_sec(
     best = _duration_from_job_metadata_dict(job_metadata)
     if best > 0:
         return best
+
+    # Fall back to any jobs row for this runpod id (may already have file_duration_sec).
+    try:
+        rows = _get_job_rows_by_runpod_job_id(
+            job_id,
+            select="id,file_duration_sec,metadata",
+            limit=5,
+        )
+        for row in rows or []:
+            d = _duration_from_job_row(row)
+            if d > 0:
+                return d
+    except Exception:
+        logging.debug("claim duration: jobs row lookup failed job=%s", job_id, exc_info=True)
 
     if result_s3_key:
         try:
@@ -6568,6 +6632,11 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
         pinfo['credit_file_duration_sec'] = float(duration_sec)
         pending_job_info[job_id] = pinfo
         _stash_deferred_credit_context(job_id, user_id, s3_key, pending_info=pinfo)
+    try:
+        if duration_sec > 0:
+            _jobs_persist_file_duration_sec(job_id, user_id, duration_sec)
+    except Exception:
+        logging.debug("credit_verify_before_gpu persist duration failed job=%s", job_id, exc_info=True)
 
     return {
         "ok": True,
@@ -6649,7 +6718,7 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
 
     rows = _get_job_rows_by_runpod_job_id(
         runpod_job_id,
-        select="id,user_id,credit_minutes_used,input_s3_key",
+        select="id,user_id,credit_minutes_used,input_s3_key,file_duration_sec,metadata",
         limit=20,
     )
     for row in rows:
@@ -6690,6 +6759,17 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         except (TypeError, ValueError):
             pass
     if duration_sec <= 0:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            owner = str(row.get('user_id') or '').strip()
+            if owner and owner != user_id:
+                continue
+            d = _duration_from_job_row(row)
+            if d > 0:
+                duration_sec = d
+                break
+    if duration_sec <= 0:
         duration_sec = _file_duration_seconds_for_credits(
             bucket,
             input_s3_key,
@@ -6702,6 +6782,11 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
         )
     if duration_sec <= 0:
         duration_sec = _segments_duration_seconds_for_credits(segments)
+    if duration_sec > 0:
+        try:
+            _jobs_persist_file_duration_sec(runpod_job_id, user_id, duration_sec)
+        except Exception:
+            logging.debug("credit_charge persist file_duration_sec failed job=%s", runpod_job_id, exc_info=True)
     minutes = _credit_minutes_from_duration(duration_sec)
     if minutes <= 0:
         logging.info(
@@ -6743,7 +6828,10 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
     _jobs_patch_by_runpod_job_id(
         runpod_job_id,
         user_id,
-        {"credit_minutes_used": float(minutes)},
+        {
+            "credit_minutes_used": float(minutes),
+            "file_duration_sec": float(duration_sec),
+        },
     )
     balance = int((wallet or {}).get('credit_minutes') or 0)
     logging.info(
@@ -6796,11 +6884,11 @@ def _charge_credits_on_gpu_finalize(user_id, job_id, segments, input_s3_key, pen
                     key = str(ctx.get('input_s3_key') or '').strip()
         if file_duration is None and jid:
             try:
-                row = _get_job_row_by_runpod_job_id(jid, select="metadata,input_s3_key")
+                row = _get_job_row_by_runpod_job_id(jid, select="file_duration_sec,metadata,input_s3_key")
                 if isinstance(row, dict):
                     if not key:
                         key = str(row.get('input_s3_key') or '').strip()
-                    persisted = _duration_from_job_metadata_dict(row.get('metadata'))
+                    persisted = _duration_from_job_row(row)
                     if persisted > 0:
                         file_duration = persisted
                         pending.setdefault('credit_file_duration_sec', float(persisted))
@@ -6877,9 +6965,13 @@ def _stash_deferred_credit_context(job_id, user_id, input_s3_key, pending_info=N
     dur = ctx.get('credit_file_duration_sec')
     if dur:
         try:
-            _merge_job_qs_trigger(jid, {"credit_file_duration_sec": float(dur)})
+            _jobs_persist_file_duration_sec(jid, uid, dur)
         except Exception:
             logging.warning("stash credit duration persist failed job_id=%s", jid)
+        try:
+            _merge_job_qs_trigger(jid, {"credit_file_duration_sec": float(dur), "file_duration_sec": float(dur)})
+        except Exception:
+            logging.warning("stash credit duration metadata mirror failed job_id=%s", jid)
 
 
 @app.route('/api/charge_job_credits', methods=['POST'])
@@ -6929,9 +7021,8 @@ def api_charge_job_credits():
                 pending_info['credit_file_duration_sec'] = client_duration
         if not pending_info.get('credit_file_duration_sec'):
             try:
-                row = _get_job_row_by_runpod_job_id(job_id, select="metadata")
-                md = row.get('metadata') if isinstance(row, dict) else None
-                persisted = _duration_from_job_metadata_dict(md)
+                row = _get_job_row_by_runpod_job_id(job_id, select="file_duration_sec,metadata")
+                persisted = _duration_from_job_row(row) if isinstance(row, dict) else 0.0
                 if persisted > 0:
                     pending_info['credit_file_duration_sec'] = persisted
             except Exception:
@@ -6944,7 +7035,10 @@ def api_charge_job_credits():
             segments,
             input_s3_key,
             pending_info=pending_info or None,
-            file_duration_sec=client_duration if client_duration > 0 else None,
+            file_duration_sec=(
+                client_duration if client_duration > 0
+                else pending_info.get('credit_file_duration_sec')
+            ),
         )
         if isinstance(credit_info, dict) and credit_info.get('error') == 'insufficient_credits':
             return jsonify({**credit_info, "ok": False}), 402
@@ -7340,7 +7434,7 @@ def _finalize_claimed_anonymous_job(
             break
     existing = _get_job_row_by_runpod_job_id(
         job_id,
-        select="id,user_id,input_s3_key,result_s3_key,credit_minutes_used,metadata",
+        select="id,user_id,input_s3_key,result_s3_key,credit_minutes_used,file_duration_sec,metadata",
     )
     if not new_result and isinstance(existing, dict):
         old_result = str(existing.get('result_s3_key') or '').strip()
@@ -7381,11 +7475,16 @@ def _finalize_claimed_anonymous_job(
         pending_info=pinfo,
         job_metadata=job_md if isinstance(job_md, dict) else None,
         result_s3_key=new_result,
+        job_row=existing if isinstance(existing, dict) else None,
     )
     if duration_sec > 0:
         pinfo['credit_file_duration_sec'] = float(duration_sec)
         pending_job_info[job_id] = pinfo
         _stash_deferred_credit_context(job_id, user_id, new_input, pending_info=pinfo)
+        try:
+            _jobs_persist_file_duration_sec(job_id, user_id, duration_sec)
+        except Exception:
+            logging.warning("claim: persist file_duration_sec failed job=%s", job_id, exc_info=True)
 
     credit_info = _charge_job_credits(
         user_id,

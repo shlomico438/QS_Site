@@ -4516,8 +4516,53 @@ function qsRememberMediaDurationSec(sec, jobId) {
         const jid = String(jobId || '').trim();
         if (jid) localStorage.setItem(`mediaDurationSec:${jid}`, String(d));
     } catch (_) {}
+    try {
+        if (typeof qsPersistJobFileDurationSec === 'function') {
+            void qsPersistJobFileDurationSec(d, jobId);
+        }
+    } catch (_) {}
 }
 window.qsRememberMediaDurationSec = qsRememberMediaDurationSec;
+
+/** Write jobs.file_duration_sec when signed in (best-effort; billing source of truth). */
+async function qsPersistJobFileDurationSec(sec, jobId) {
+    const d = Number(sec);
+    if (!Number.isFinite(d) || d <= 0 || d > 86400) return false;
+    try {
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return false;
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return false;
+        const dbId = String(localStorage.getItem('lastJobDbId') || '').trim();
+        const jid = String(
+            jobId
+            || localStorage.getItem('lastJobId')
+            || localStorage.getItem('pendingJobId')
+            || ''
+        ).trim();
+        const payload = {
+            file_duration_sec: d,
+            updated_at: new Date().toISOString(),
+        };
+        if (dbId) {
+            const { error } = await supabase.from('jobs').update(payload).eq('id', dbId).eq('user_id', user.id);
+            if (!error) return true;
+            console.warn('[jobs] persist file_duration_sec by id failed', error);
+        }
+        if (jid) {
+            const { error } = await supabase
+                .from('jobs')
+                .update(payload)
+                .eq('runpod_job_id', jid)
+                .eq('user_id', user.id);
+            if (!error) return true;
+            console.warn('[jobs] persist file_duration_sec by runpod_job_id failed', error);
+        }
+    } catch (e) {
+        console.warn('[jobs] persist file_duration_sec failed', e);
+    }
+    return false;
+}
+window.qsPersistJobFileDurationSec = qsPersistJobFileDurationSec;
 
 function qsRecallMediaDurationSec(jobId) {
     try {
@@ -8571,6 +8616,11 @@ async function createJobOnUpload({ jobId, s3Key, displayName } = {}) {
     const user_name = info.displayName === 'Account' ? null : info.displayName;
     const user_email = info.email || null;
     const niceName = String(displayName || qsRecordingDisplayNameFromUpload() || '').trim();
+    const durationSec = (
+        (typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec(jobId) : 0)
+        || Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC)
+        || 0
+    );
 
     const row = {
         user_id: user.id,
@@ -8583,7 +8633,11 @@ async function createJobOnUpload({ jobId, s3Key, displayName } = {}) {
         metadata: {
             job_id: jobId,
             ...(niceName ? { display_name: niceName, original_filename: niceName } : {}),
-        }
+            ...(Number.isFinite(durationSec) && durationSec > 0
+                ? { file_duration_sec: durationSec, credit_file_duration_sec: durationSec }
+                : {}),
+        },
+        ...(Number.isFinite(durationSec) && durationSec > 0 ? { file_duration_sec: durationSec } : {}),
     };
     const { data, error } = await supabase.from('jobs').insert([row]).select('id').single();
     if (error) {
@@ -8714,6 +8768,11 @@ async function ensureJobRecordOnExport(opts) {
     const user_name = info.displayName === 'Account' ? null : info.displayName;
     const user_email = info.email || null;
     const niceName = qsRecordingDisplayNameFromUpload();
+    const durationSec = (
+        (typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec(jobId) : 0)
+        || Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC)
+        || 0
+    );
     const row = {
         user_id: user.id,
         type: 'transcription',
@@ -8725,7 +8784,11 @@ async function ensureJobRecordOnExport(opts) {
         metadata: {
             job_id: jobId || null,
             ...(niceName ? { display_name: niceName, original_filename: niceName } : {}),
-        }
+            ...(Number.isFinite(durationSec) && durationSec > 0
+                ? { file_duration_sec: durationSec, credit_file_duration_sec: durationSec }
+                : {}),
+        },
+        ...(Number.isFinite(durationSec) && durationSec > 0 ? { file_duration_sec: durationSec } : {}),
     };
     let { data, error } = await supabase.from('jobs').insert([row]).select('id').single();
     if (error && error.code === '22P02') {
