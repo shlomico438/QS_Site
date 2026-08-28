@@ -5237,7 +5237,7 @@ async function qsMedicalJsonHeaders() {
     };
 }
 
-/** Probe duration in the background (upload-first flow); does not block the UI. */
+/** Probe file duration (metadata). Callers should await before credit check / S3 upload. */
 function qsStartUploadDurationProbeInBackground(file) {
     window.__QS_UPLOAD_MEDIA_DURATION_SEC = null;
     const promise = (async () => {
@@ -22145,7 +22145,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 try { window.__QS_UPLOAD_PREVIEW_READY = false; } catch (_) {}
                 qsShowLocalUploadMediaPreview(file);
-                qsStartUploadDurationProbeInBackground(file);
+                const durationProbePromise = qsStartUploadDurationProbeInBackground(file);
                 setSeoHomeContentVisibility(false);
                 try {
                     document.body.classList.add('qs-app-busy');
@@ -22158,7 +22158,19 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     void qsRefreshUserCredits({ ensureWelcome: true });
                 }
 
-                if (!(await qsEnsureMinCreditsForUpload())) {
+                // Prefer credit check before S3 when the browser can read length.
+                // If metadata is missing (some WhatsApp exports), fall back to soft
+                // wallet gate and let the server enforce once duration is known.
+                let probedDurationSec = 0;
+                try {
+                    probedDurationSec = Number(await durationProbePromise) || 0;
+                } catch (_) {
+                    probedDurationSec = 0;
+                }
+                const creditsOk = (Number.isFinite(probedDurationSec) && probedDurationSec > 0)
+                    ? await qsEnsureCreditsForUpload(probedDurationSec)
+                    : await qsEnsureMinCreditsForUpload();
+                if (!creditsOk) {
                     fileInput.value = '';
                     try { window.__QS_UPLOAD_PREVIEW_READY = false; } catch (_) {}
                     qsRestoreUiAfterUploadConfirmCancel({ keepMediaPreview: true });
