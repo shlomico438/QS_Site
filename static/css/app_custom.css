@@ -5718,40 +5718,113 @@ html[dir="rtl"] .upload-status {
         border-radius: 8px;
     }
 
-    /* Upload row: Start CTA stays page-centered */
+    /* Upload row: record | Start (center) | lang — single row on narrow phones */
     .upload-controls-row {
-        display: grid;
-        grid-template-columns: 1fr auto 1fr;
-        flex-wrap: nowrap;
-        justify-content: center;
+        display: grid !important;
+        grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+        grid-template-rows: auto;
         align-items: center;
-        column-gap: 8px;
+        column-gap: 6px;
         margin-bottom: 8px;
         direction: ltr;
     }
-    .regular-record-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 0;
+    /* Hidden file input is still a grid child — pin it in cell 1 so Record stays on row 1 */
+    .upload-controls-row > input#fileInput.qs-visually-hidden-file,
+    .upload-controls-row > input.qs-visually-hidden-file {
+        grid-column: 1;
+        grid-row: 1;
+        position: absolute;
+        left: 0;
+        top: 50%;
+        width: 1px;
+        height: 1px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        opacity: 0.01;
+        overflow: hidden;
+        z-index: 0;
+        transform: translateY(-50%);
+        pointer-events: none;
+    }
+    .upload-main-cluster {
+        display: contents;
+    }
+    .upload-controls-row #main-btn,
+    .upload-controls-row .btn.btn-primary#main-btn {
+        grid-column: 2;
+        grid-row: 1;
+        justify-self: center;
+        align-self: center;
         flex: 0 0 auto;
-    }
-    .upload-control-left .control-label {
-        font-size: 0.85rem;
-    }
-    .upload-controls-row .btn.btn-primary {
-        flex: 1 1 auto;
         width: auto;
-        min-width: 140px;
-        max-width: none;
+        min-width: 108px;
+        max-width: min(44vw, 176px);
         margin: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        height: 50px;
+        height: 46px;
         border-radius: 12px;
-        padding: 0 16px;
-        font-size: 17px;
+        padding: 0 12px;
+        font-size: 16px;
+        z-index: 1;
+    }
+    .regular-record-btn {
+        grid-column: 1;
+        grid-row: 1;
+        justify-self: start;
+        align-self: center;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        max-width: 34vw;
+        height: 46px;
+        box-sizing: border-box;
+        padding: 0 10px;
+        font-size: 0.78rem;
+        line-height: 1.15;
+        white-space: nowrap;
+        z-index: 1;
+    }
+    .regular-asr-lang-wrap {
+        position: static;
+        left: auto;
+        top: auto;
+        transform: none;
+        grid-column: 3;
+        grid-row: 1;
+        justify-self: end;
+        align-self: center;
+        gap: 0;
+        max-width: 32vw;
+        min-width: 0;
+        z-index: 1;
+    }
+    .regular-asr-lang-label {
+        display: none;
+    }
+    .regular-asr-lang-select {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 4.25rem;
+        max-width: 6.75rem;
+        height: 40px;
+        padding: 0 22px 0 8px;
+        font-size: 0.76rem;
+        border-radius: 10px;
+    }
+    body.qs-session-complete:not(.medical-mode) .upload-main-cluster {
+        display: flex;
+        grid-column: 1;
+        width: 100%;
+    }
+    body.qs-session-complete:not(.medical-mode) .upload-controls-row #main-btn,
+    body.qs-session-complete:not(.medical-mode) .upload-controls-row .btn.btn-primary#main-btn {
+        grid-column: auto;
+        width: 100%;
+        max-width: none;
     }
     .upload-status { display: none; }
 
@@ -5839,7 +5912,7 @@ html[dir="rtl"] .upload-status {
     /* Keep bottom upload CTA visible on mobile (toolbar stays above transcript). */
     body.mobile-video-session .upload-controls-row,
     body.has-transcript-actions .upload-controls-row {
-        display: flex !important;
+        display: grid !important;
     }
     body.mobile-video-session .upload-zone,
     body.has-transcript-actions .upload-zone {
@@ -6044,7 +6117,7 @@ html[dir="rtl"] .upload-status {
     }
 
     .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row {
-        display: flex !important;
+        display: grid !important;
     }
 
     .main-app-container.medical-mode > .upload-zone {
@@ -7065,56 +7138,99 @@ html[dir="rtl"] .upload-status {
   }
 
   .main-app-container > .upload-zone .upload-controls-row {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    justify-content: center;
+    display: grid !important;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+    grid-template-rows: auto;
     align-items: center;
     width: 100%;
     margin: 0;
-    column-gap: 10px;
-    flex-wrap: nowrap;
+    column-gap: 6px;
     direction: ltr;
   }
 
-  .main-app-container > .upload-zone .upload-controls-row .upload-main-cluster {
-    grid-column: 2;
-    flex: 0 0 auto;
-    min-width: 0;
-    max-width: none;
-    justify-self: center;
+  .main-app-container > .upload-zone .upload-controls-row > input.qs-visually-hidden-file {
+    grid-column: 1;
+    grid-row: 1;
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0.01;
+    overflow: hidden;
+    z-index: 0;
+    transform: translateY(-50%);
+    pointer-events: none;
   }
 
-  .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary {
+  .main-app-container > .upload-zone .upload-controls-row .upload-main-cluster {
+    display: contents;
+  }
+
+  .main-app-container > .upload-zone .upload-controls-row #main-btn,
+  .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary#main-btn {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: center;
+    align-self: center;
     margin: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
-    min-width: 120px;
-    max-width: 280px;
-    height: 50px;
+    min-width: 108px;
+    max-width: min(44vw, 176px);
+    height: 46px;
     border-radius: 18px;
-    padding: 10px 18px;
+    padding: 0 12px;
     flex-shrink: 0;
+    z-index: 1;
   }
 
-  .main-app-container > .upload-zone .upload-controls-row .regular-asr-lang-select {
-    width: 12.5rem;
-    max-width: min(12.5rem, 38vw);
-    min-width: 9.5rem;
-    padding: 10px 26px 10px 10px;
-    font-size: 0.86rem;
-    border-radius: 12px;
+  .main-app-container > .upload-zone .upload-controls-row .regular-asr-lang-wrap {
+    position: static;
+    transform: none;
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+    align-self: center;
+    gap: 0;
+    max-width: 32vw;
+    min-width: 0;
+    z-index: 1;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .regular-asr-lang-label {
-    font-size: 0.68rem;
+    display: none;
+  }
+
+  .main-app-container > .upload-zone .upload-controls-row .regular-asr-lang-select {
+    width: 100%;
+    min-width: 4.25rem;
+    max-width: 6.75rem;
+    height: 40px;
+    padding: 0 22px 0 8px;
+    font-size: 0.76rem;
+    border-radius: 10px;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .regular-record-btn {
     grid-column: 1;
-    justify-self: end;
+    grid-row: 1;
+    justify-self: start;
+    align-self: center;
     flex-shrink: 0;
+    max-width: 34vw;
+    height: 46px;
+    box-sizing: border-box;
+    padding: 0 10px;
+    font-size: 0.78rem;
+    line-height: 1.15;
+    white-space: nowrap;
+    z-index: 1;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary#main-btn::before {
@@ -7402,15 +7518,15 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
 
 body.has-transcript-actions .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row,
 body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row {
-  display: flex !important;
+  display: grid !important;
 }
 
 @media screen and (min-width: 769px) {
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row {
-    display: flex !important;
-    justify-content: center;
+    display: grid !important;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    gap: 12px;
+    column-gap: 10px;
     width: 100%;
   }
 }
@@ -7496,33 +7612,38 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row {
     display: grid !important;
-    grid-template-columns: 1fr auto 1fr;
-    justify-content: center;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+    grid-template-rows: auto;
     align-items: center;
-    column-gap: 10px;
+    column-gap: 6px;
     width: 100%;
     direction: ltr;
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .upload-main-cluster {
-    grid-column: 2;
-    flex: 0 0 auto;
-    min-width: 0;
-    max-width: none;
-    justify-self: center;
+    display: contents;
   }
 
-  .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .btn.btn-primary {
+  .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row #main-btn,
+  .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .btn.btn-primary#main-btn {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: center;
     display: inline-flex !important;
     flex: 0 0 auto;
-    min-width: 120px;
-    max-width: 280px;
+    min-width: 108px;
+    max-width: min(44vw, 176px);
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .regular-record-btn {
     display: inline-flex !important;
     grid-column: 1;
-    justify-self: end;
+    grid-row: 1;
+    justify-self: start;
+    align-self: center;
+    max-width: 34vw;
+    height: 46px;
+    box-sizing: border-box;
   }
 
   /* Transcript/video session: lock page chrome; only #transcript-window scrolls */
