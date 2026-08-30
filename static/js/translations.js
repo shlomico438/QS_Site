@@ -181,6 +181,15 @@ window.translations = {
         medical_stream_lang_he: "עברית",
         medical_stream_lang_en: "English",
         medical_stream_lang_auto: "אוטומטי",
+        regular_asr_lang_label: "שפת תמלול",
+        regular_asr_lang_aria: "שפת תמלול לקובץ",
+        regular_asr_lang_he: "עברית",
+        regular_asr_lang_en: "English",
+        regular_asr_lang_auto: "אוטומטי",
+        regular_asr_lang_common: "שפות נפוצות",
+        regular_asr_lang_all: "כל השפות",
+        regular_record_audio: "הקלטת שמע",
+        regular_recording: "מקליט…",
         medical_warmup_cold_title: "סשן קליני חדש",
         medical_warmup_cold_msg: "מערכת התמלול במצב שינה כדי לחסוך באנרגיה.",
         medical_warmup_cold_submsg: "לחץ על המיקרופון כדי להעיר את המערכת ולהתחיל את יום העבודה.",
@@ -188,6 +197,8 @@ window.translations = {
         medical_tab_transcript: "תמלול מלא",
         medical_tab_summary: "סיכום רפואי",
         medical_summary_save_first: "שמרו קודם את ההקלטה כדי ליצור סיכום רפואי.",
+        medical_generating_summary: "מייצר סיכום רפואי…",
+        medical_generating_summary_hint: "זה יכול לקחת כמה שניות",
         medical_delete_recording_title: "מחיקת הקלטה",
         medical_delete_recording_message: "האם אתה בטוח שברצונך למחוק הקלטה זו?",
         medical_wake_choice_title: "העירת מערכת התמלול",
@@ -664,6 +675,15 @@ window.translations = {
         medical_stream_lang_he: "Hebrew",
         medical_stream_lang_en: "English",
         medical_stream_lang_auto: "Auto",
+        regular_asr_lang_label: "Transcription language",
+        regular_asr_lang_aria: "File transcription language",
+        regular_asr_lang_he: "Hebrew",
+        regular_asr_lang_en: "English",
+        regular_asr_lang_auto: "Auto",
+        regular_asr_lang_common: "Common languages",
+        regular_asr_lang_all: "All languages",
+        regular_record_audio: "Record audio",
+        regular_recording: "Recording…",
         medical_warmup_cold_title: "New clinical session",
         medical_warmup_cold_msg: "The transcription system is sleeping to save energy.",
         medical_warmup_cold_submsg: "Press the microphone to wake the system and start your workday.",
@@ -671,6 +691,8 @@ window.translations = {
         medical_tab_transcript: "Full transcript",
         medical_tab_summary: "Medical summary",
         medical_summary_save_first: "Save the recording first to generate a medical summary.",
+        medical_generating_summary: "Generating medical summary…",
+        medical_generating_summary_hint: "This can take a few seconds",
         medical_delete_recording_title: "Delete recording",
         medical_delete_recording_message: "Are you sure you want to delete this recording?",
         medical_wake_choice_title: "Wake transcription system",
@@ -1117,6 +1139,10 @@ window.applyTranslations = function() {
         if (el.id === 'main-btn' && (window.isTriggering || el.getAttribute('data-qs-dynamic-label') === '1')) {
             return;
         }
+        if (el.id === 'regular-record-btn') {
+            const rec = window._medicalRecorder;
+            if (rec && (rec.state === 'recording' || rec.state === 'paused')) return;
+        }
         // Pipeline phase label is owned by qsSetUnifiedProgressPhase; stale data-i18n
         // (defaults to pipeline_upload in HTML) must not overwrite "תמלול" mid-job.
         if (el.id === 'qs-pipeline-phase-label' && window.__QS_UNIFIED_PROGRESS_PHASE) {
@@ -1173,5 +1199,8 @@ window.applyTranslations = function() {
     } catch (_) {}
     try {
         if (typeof window.applyAuthModalMode === 'function') window.applyAuthModalMode();
+    } catch (_) {}
+    try {
+        if (typeof window.qsWireRegularAsrLangUi === 'function') window.qsWireRegularAsrLangUi();
     } catch (_) {}
 };

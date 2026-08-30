@@ -90,7 +90,7 @@ body:has(#main-app-container) > footer.site-footer {
 .upload-zone-app-footer {
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-end; /* Hebrew default: copyright on the visual right */
     flex-wrap: wrap;
     gap: 6px 12px;
     margin-top: 10px;
@@ -101,6 +101,9 @@ body:has(#main-app-container) > footer.site-footer {
     line-height: 1.35;
     width: 100%;
     box-sizing: border-box;
+}
+html[lang^="en"] .upload-zone-app-footer {
+    justify-content: flex-start; /* English: copyright on the left */
 }
 /* Footer only on idle landing — hide during upload, processing, and transcript session */
 body.qs-app-busy .upload-zone-app-footer,
@@ -3149,10 +3152,16 @@ body.qs-session-complete:not(.medical-mode) .upload-controls-row {
   justify-content: center;
 }
 
+body.qs-session-complete:not(.medical-mode) .upload-controls-row .upload-main-cluster {
+  flex: 1 1 auto;
+  max-width: none;
+  width: 100%;
+}
+
 body.qs-session-complete:not(.medical-mode) .upload-controls-row .btn.btn-primary {
   flex: 1 1 auto !important;
   max-width: none !important;
-  width: 100%;
+  width: auto;
 }
 
 body.qs-session-complete:not(.medical-mode) #qs-pipeline-phase-wrap {
@@ -5290,7 +5299,7 @@ html[dir="ltr"] #main-btn::before {
 }
 /* --- NEW CONTROLS STYLING --- */
 
-/* Single row: [Music] [Upload and Process] [Record] */
+/* Single row: [Upload+lang cluster] [Record] — lang sits to the right of the CTA */
 .upload-controls-row {
     display: flex;
     flex-wrap: nowrap;
@@ -5305,12 +5314,74 @@ html[dir="ltr"] #main-btn::before {
     flex: 0 0 auto;
     min-width: 0;
 }
+.upload-main-cluster {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: min(560px, 100%);
+    direction: ltr;
+}
+.upload-main-cluster .btn.btn-primary,
 .upload-controls-row .btn.btn-primary {
     flex: 1 1 auto;
     align-self: center;
     margin: 0;
     min-width: 0;
     max-width: 320px;
+}
+.regular-asr-lang-wrap {
+    display: inline-flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    margin: 0;
+    min-width: 0;
+    direction: ltr;
+}
+.regular-asr-lang-wrap[hidden] {
+    display: none !important;
+}
+.regular-asr-lang-label {
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #334155;
+    white-space: nowrap;
+    line-height: 1.2;
+    text-align: center;
+}
+.regular-asr-lang-select {
+    box-sizing: border-box;
+    width: 15rem;
+    max-width: min(15rem, 42vw);
+    min-width: 11rem;
+    height: auto;
+    padding: 10px 28px 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23475569' d='M1.4 1.2 6 5.8l4.6-4.6 1.2 1.2L6 8.2.2 2.4z'/%3E%3C/svg%3E") no-repeat right 10px center;
+    background-size: 10px 7px;
+    color: #0f172a;
+    font: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+}
+.regular-asr-lang-select:focus-visible {
+    outline: 2px solid #1e3a8a;
+    outline-offset: 1px;
+}
+body.medical-mode .regular-asr-lang-wrap,
+.main-app-container.medical-mode .regular-asr-lang-wrap {
+    display: none !important;
 }
 .regular-record-btn {
     justify-self: center;
@@ -6834,18 +6905,38 @@ html[dir="rtl"] .upload-status {
     direction: rtl;
   }
 
+  .main-app-container > .upload-zone .upload-controls-row .upload-main-cluster {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: min(380px, calc(100% - 64px));
+    gap: 6px;
+  }
+
   .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary {
     margin: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 1 1 auto;
-    min-width: 140px;
+    min-width: 120px;
     max-width: 280px;
     height: 50px;
     border-radius: 18px;
-    padding: 10px 24px;
+    padding: 10px 18px;
     flex-shrink: 1;
+  }
+
+  .main-app-container > .upload-zone .upload-controls-row .regular-asr-lang-select {
+    width: 12.5rem;
+    max-width: min(12.5rem, 38vw);
+    min-width: 9.5rem;
+    padding: 10px 26px 10px 10px;
+    font-size: 0.86rem;
+    border-radius: 12px;
+  }
+
+  .main-app-container > .upload-zone .upload-controls-row .regular-asr-lang-label {
+    font-size: 0.68rem;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .regular-record-btn {
@@ -7059,6 +7150,44 @@ html[dir="rtl"] .upload-status {
   margin-bottom: 0;
 }
 
+/* Summary tab: in-pane ring while GPT is generating (toast alone feels stuck). */
+.medical-summary-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: min(42vh, 320px);
+  padding: 28px 20px;
+  box-sizing: border-box;
+  text-align: center;
+}
+.medical-summary-loading-ring {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 4px solid #ccfbf1;
+  border-top-color: #0f766e;
+  animation: medicalSummaryLoadingSpin 0.85s linear infinite;
+}
+.medical-summary-loading-label {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: #0f766e;
+  line-height: 1.35;
+}
+.medical-summary-loading-hint {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+@keyframes medicalSummaryLoadingSpin {
+  to { transform: rotate(360deg); }
+}
+
 /* Mobile only: page scroll + fixed bottom bar (desktop transcript scrolls inside #transcript-window) */
 @media screen and (max-width: 768px) {
   html:not(:has(body.has-transcript-actions)):not(:has(body.mobile-video-session)),
@@ -7199,11 +7328,17 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
     width: 100%;
   }
 
+  .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .upload-main-cluster {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: min(340px, calc(100% - 72px));
+  }
+
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .btn.btn-primary {
     display: inline-flex !important;
     flex: 1 1 auto;
     min-width: 0;
-    max-width: min(240px, calc(100% - 88px));
+    max-width: none;
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .regular-record-btn {
@@ -7481,6 +7616,7 @@ body.qs-app-busy #subtitle-style-selector,
 }
 
 body.qs-app-busy .main-app-container > .upload-zone .upload-controls-row,
+body.qs-app-busy .main-app-container > .upload-zone .regular-asr-lang-wrap,
 body.qs-app-busy .main-app-container > .upload-zone #medical-recording-wrap,
 body.qs-app-busy .main-app-container > .upload-zone .mobile-new-session-btn,
 body.qs-app-busy .main-app-container > .upload-zone .medical-upload-new-session-btn,

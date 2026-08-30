@@ -1679,10 +1679,12 @@ function qsEnsureMedicalProgressPanel(hideBanner) {
     if (hideBanner !== false) qsHideMedicalWarmupBanner();
     const panel = document.getElementById('processing-state-panel');
     const controlsRow = document.querySelector('.upload-zone .upload-controls-row');
+    const asrLangWrap = document.getElementById('regular-asr-lang-wrap');
     const introEl = document.getElementById('processing-state-intro');
     if (panel) panel.style.display = 'flex';
     qsSetProcessingOverlayActive(true);
     if (controlsRow) controlsRow.style.display = 'none';
+    if (asrLangWrap && !asrLangWrap.hidden) asrLangWrap.style.display = 'none';
     if (introEl) introEl.style.display = '';
     if (typeof qsShowPipelineBarChrome === 'function') qsShowPipelineBarChrome();
 }
@@ -4253,9 +4255,9 @@ function qsSyncRegularRecordUi() {
     regularRecordBtn.style.display = canShow ? 'inline-flex' : 'none';
     const rec = window._medicalRecorder;
     if (canShow && rec && (rec.state === 'recording' || rec.state === 'paused')) {
-        regularRecordBtn.textContent = '⏸️ Recording...';
+        regularRecordBtn.textContent = (typeof window.t === 'function' ? window.t('regular_recording') : null) || 'מקליט…';
     } else {
-        regularRecordBtn.textContent = '🎤 Record audio';
+        regularRecordBtn.textContent = (typeof window.t === 'function' ? window.t('regular_record_audio') : null) || 'הקלטת שמע';
     }
 }
 
@@ -7915,7 +7917,15 @@ async function initPersonalPage() {
                     const res = await fetch('/api/trigger_processing', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ s3Key: file.s3_key, jobId: transcribeJobId, task: 'transcribe', language: 'he', isMedical: isMedicalModeEnabled() })
+                        body: JSON.stringify({
+                            s3Key: file.s3_key,
+                            jobId: transcribeJobId,
+                            task: 'transcribe',
+                            isMedical: isMedicalModeEnabled(),
+                            ...(typeof qsBuildAsrLanguageFields === 'function'
+                                ? qsBuildAsrLanguageFields()
+                                : { language: 'auto' }),
+                        })
                     });
                     const out = await res.json().catch(() => ({}));
                     if (!res.ok) throw new Error(out.message || out.error || `HTTP ${res.status}`);
@@ -10005,16 +10015,10 @@ function renderMedicalTrainingPanel(container) {
         window._medicalTrainingDoctorDraft = '';
         draftText = '';
     }
-    const canLearnNow = !!draftText && (!postLearnPreview || !retryBaseline || draftText !== retryBaseline);
     const learnBtnLabel = postLearnPreview ? 'נסה שנית' : 'למד מהסיכום הזה';
     const learnBtnStyle = postLearnPreview
         ? 'padding:10px 14px;border:1px solid #0f766e;border-radius:10px;background:#ffffff;color:#0f766e;font-weight:700;cursor:pointer;'
         : 'padding:10px 14px;border:none;border-radius:10px;background:#0f766e;color:#ffffff;font-weight:700;cursor:pointer;';
-    const approveEnabled = (
-        postLearnPreview &&
-        !!String(window._medicalTrainingCandidatePrompt || '').trim() &&
-        !window._medicalTrainingApprovedCandidatePrompt
-    );
     const approveBtnStyle = postLearnPreview
         ? 'padding:10px 14px;border:none;border-radius:10px;background:#0f766e;color:#ffffff;font-weight:700;cursor:pointer;'
         : 'padding:10px 14px;border:1px solid #0f766e;border-radius:10px;background:#ffffff;color:#0f766e;font-weight:700;cursor:pointer;';
@@ -10072,9 +10076,7 @@ function renderMedicalTrainingPanel(container) {
     const approveBtn = panel.querySelector('#medical-training-approve-btn');
     const syncTrainingButtons = () => {
         const currentDraft = _qsNormMedicalTrainingSummaryText(textarea ? textarea.value : '');
-        const baseline = _qsNormMedicalTrainingSummaryText(window._medicalTrainingBaselineForRetry || '');
-        const hasChangedForRetry = !window._medicalTrainingPostLearnPreviewReady || !baseline || currentDraft !== baseline;
-        const learnActive = !!(currentDraft && hasChangedForRetry);
+        const learnActive = !!currentDraft;
         const approveActive = !!(
             window._medicalTrainingPostLearnPreviewReady &&
             String(window._medicalTrainingCandidatePrompt || '').trim() &&
@@ -10094,20 +10096,10 @@ function renderMedicalTrainingPanel(container) {
         learnBtn.onclick = async () => {
             if (_medicalTrainingBtnBlockIfInactive(learnBtn)) return;
             try {
-                if (window._medicalTrainingPostLearnPreviewReady) {
-                    const cur = _qsNormMedicalTrainingSummaryText(textarea ? textarea.value : '');
-                    const baseline = _qsNormMedicalTrainingSummaryText(window._medicalTrainingBaselineForRetry);
-                    if (baseline && cur === baseline) {
-                        if (typeof showStatus === 'function') {
-                            showStatus('יש לערוך את הטקסט לפני ניסיון חדש.', false, { duration: 5000 });
-                        }
-                        return;
-                    }
-                }
                 const doctorSummary = _qsNormMedicalTrainingSummaryText(textarea ? textarea.value : '');
                 if (!doctorSummary) {
                     if (typeof showStatus === 'function') {
-                        showStatus('יש לערוך את הטקסט לפני ניסיון חדש.', false, { duration: 5000 });
+                        showStatus(QS_MEDICAL_TRAINING_TOAST_UPDATE_SUMMARY, false, { duration: 5000 });
                     }
                     syncTrainingButtons();
                     return;
@@ -10151,28 +10143,10 @@ function renderMedicalTrainingPanel(container) {
                 if (previewRes.preview_model) {
                     console.info('[medical training] preview model:', previewRes.preview_model);
                 }
-                // Persist for future sessions (learn already writes active_prompt; approve
-                // confirms + bumps version so a new session never falls back to specialty).
-                const candidateToSave = String(window._medicalTrainingCandidatePrompt || '').trim();
-                if (candidateToSave) {
-                    try {
-                        const approved = await medicalTrainingApi('/api/medical_training/approve', {
-                            candidate_prompt: candidateToSave,
-                            example_id: window._medicalTrainingLastExampleId || ''
-                        });
-                        window._medicalTrainingApprovedCandidatePrompt = candidateToSave;
-                        const ver = approved?.profile?.version;
-                        window._medicalTrainingMessage = ver
-                            ? `התבנית האישית נשמרה (גרסה ${ver}) ותשמש גם בסשנים חדשים. בדקו את התצוגה המקדימה למטה.`
-                            : 'התבנית האישית נשמרה ותשמש גם בסשנים חדשים. בדקו את התצוגה המקדימה למטה.';
-                    } catch (approveErr) {
-                        console.warn('[medical training] auto-approve after learn failed', approveErr);
-                        window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה, אך שמירת התבנית לסשנים הבאים נכשלה — לחצו על «אשר אימון».';
-                    }
-                } else {
-                    window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, לחצו על «אשר אימון».';
-                }
+                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, לחצו על «אשר אימון». אם לא — ערכו ו«נסה שנית».';
                 // Apply preview to the open visit so Summary matches what was learned.
+                // Production persistence waits for «אשר אימון» (do not auto-approve — that
+                // left both buttons greyed out / unusable).
                 const previewFmt = window._medicalTrainingCandidatePreview;
                 if (previewFmt && typeof previewFmt === 'object') {
                     const prevDoc = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
@@ -10187,6 +10161,7 @@ function renderMedicalTrainingPanel(container) {
                     window.medicalActiveTab = 'summary';
                 }
                 window._medicalTrainingPostLearnPreviewReady = true;
+                window._medicalTrainingApprovedCandidatePrompt = '';
                 window._medicalTrainingPanelExpanded = true;
                 window._medicalTrainingBaselineForRetry = doctorSummary;
                 if (typeof window.hideClinicalTrainingModal === 'function') window.hideClinicalTrainingModal();
@@ -13995,6 +13970,11 @@ function stopProcessingStateUI(reason) {
     if (twWrap) twWrap.style.minHeight = '';
     if (twOuter) twOuter.style.minHeight = '';
     if (controlsRow) controlsRow.style.display = '';
+    const asrLangWrap = document.getElementById('regular-asr-lang-wrap');
+    if (asrLangWrap) {
+        asrLangWrap.style.display = '';
+        try { if (typeof qsSyncRegularAsrLangUi === 'function') qsSyncRegularAsrLangUi(); } catch (_) {}
+    }
     qsLogProcessingAnimStop('phase_lines_panel', {
         reason: reason != null ? String(reason) : 'unspecified',
         hadPhaseTimer,
@@ -14110,6 +14090,8 @@ function startProcessingStateUI() {
     qsShowProcessingShowcase();
     qsSyncAppChromeBodyClasses();
     if (controlsRow) controlsRow.style.display = 'none';
+    const asrLangWrapStart = document.getElementById('regular-asr-lang-wrap');
+    if (asrLangWrapStart) asrLangWrapStart.style.display = 'none';
 
     const phase = window.__QS_UNIFIED_PROGRESS_PHASE;
     const isMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
@@ -15358,6 +15340,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 : ((on || showRegularRecWrap) ? '' : 'none');
         }
         try { qsSyncMedicalStreamLangUi(); } catch (_) {}
+        try { if (typeof qsSyncRegularAsrLangUi === 'function') qsSyncRegularAsrLangUi(); } catch (_) {}
         const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
         if (medicalUploadNewSessionBtn) {
             const rec = window._medicalRecorder;
@@ -16864,6 +16847,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const label = labelFor(key);
         if (!label) return;
 
+        // User paused the mic on purpose — "still listening / keep talking" is wrong.
+        const userPaused = !!window._medicalUserPaused
+            || !!(medicalRecordOuter && medicalRecordOuter.classList.contains('is-paused'));
+        if (userPaused && (key === 'parked' || key === 'resuming')) {
+            return;
+        }
+
         // Soft toast when transcript boxes already exist (don't wipe them).
         const tw = document.getElementById('transcript-window');
         const hasBoxes = !!(
@@ -18040,6 +18030,11 @@ document.addEventListener('DOMContentLoaded', () => {
             setMedicalRecordingVisualState('paused');
             renderMedicalRecordingTimer();
             pauseMedicalWaveform();
+            // AWS parks on silence after pause; dismiss any "still listening" toast.
+            try {
+                window._medicalStreamStatusToastKey = '';
+                if (typeof _hideToastNow === 'function') _hideToastNow();
+            } catch (_) {}
             if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.pause();
             return;
         }
@@ -18268,11 +18263,11 @@ document.addEventListener('DOMContentLoaded', () => {
             updateMedicalTabUi();
             const jobId = localStorage.getItem('lastJobId') || '';
             const needsSummary = !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
-            // Do not leave the transcript visible while summary GPT runs — blank the pane first.
+            // Do not leave the transcript visible while summary GPT runs — show loading ring first.
             if (needsSummary || !_medicalHasFormattedSummaryContent()) {
                 window._qsMedicalSummaryGenerating = !!needsSummary;
                 if (typeof qsPaintMedicalSummaryEmptyPane === 'function') {
-                    qsPaintMedicalSummaryEmptyPane();
+                    qsPaintMedicalSummaryEmptyPane({ generating: !!needsSummary });
                 } else if (typeof renderTranscriptFromCues === 'function') {
                     renderTranscriptFromCues(window.currentSegments || []);
                 }
@@ -18283,7 +18278,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const T = typeof window.t === 'function' ? window.t : (k) => k;
                 if (mainBtn) mainBtn.disabled = true;
                 if (typeof showStatus === 'function') {
-                    showStatus(T('medical_generating_summary') || 'Generating medical summary…', false);
+                    showStatus(T('medical_generating_summary') || 'Generating medical summary…', false, {
+                        duration: 12000,
+                        toastPosition: 'above',
+                        toastAnchorId: 'medical-result-tabs',
+                    });
                 }
                 console.info('[medical] Summary tab requested deferred GPT', {
                     jobId,
@@ -18658,7 +18657,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     const triggerRes = await fetch('/api/trigger_processing', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ s3Key, jobId: transcribeJobId, task: 'transcribe', language: 'he', isMedical: isMedicalModeEnabled() })
+                        body: JSON.stringify({
+                            s3Key,
+                            jobId: transcribeJobId,
+                            task: 'transcribe',
+                            isMedical: isMedicalModeEnabled(),
+                            ...(typeof qsBuildAsrLanguageFields === 'function'
+                                ? qsBuildAsrLanguageFields()
+                                : { language: 'auto' }),
+                        })
                     });
                     const triggerData = await triggerRes.json().catch(() => ({}));
                     if (!triggerRes.ok) {
@@ -21605,7 +21612,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     diarization: diarizationValue,
                     isMedical: isMedicalModeEnabled(),
                     userId: userId,
-                    language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
+                    ...(isMedicalModeEnabled()
+                        ? { language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') }
+                        : (typeof qsBuildAsrLanguageFields === 'function'
+                            ? qsBuildAsrLanguageFields()
+                            : { language: 'auto' })),
                     fileSize: currentFile.size,
                 };
                 if (!isMedicalModeEnabled() && qsUserTreatAsMusicForUpload()) {
@@ -21827,7 +21838,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         jobId: jobId,
                         diarization: diarizationValue,
                         isMedical: isMedicalModeEnabled(),
-                        language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
+                        ...(isMedicalModeEnabled()
+                            ? { language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') }
+                            : (typeof qsBuildAsrLanguageFields === 'function'
+                                ? qsBuildAsrLanguageFields()
+                                : { language: 'auto' })),
                         ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
                     };
                     if (!isMedicalUpload && qsUserTreatAsMusicForUpload()) {
@@ -22243,6 +22258,271 @@ function getUserTargetLang() {
     if (locale.startsWith('he')) return 'he';
     return locale;
 }
+
+/** Regular-mode ASR language override. Marketed default is Auto (detect). */
+const QS_ASR_LANG_KEY = 'qs_asr_language';
+
+/** Common Whisper codes shown first in the override dropdown. */
+const QS_ASR_COMMON_LANG_CODES = ['he', 'en', 'ar', 'ru', 'fr', 'es', 'de', 'it', 'pt', 'yi'];
+
+/**
+ * Whisper / WhisperX language catalog (code + English label + native name).
+ * Auto is handled separately as the default option.
+ */
+const QS_ASR_LANGUAGE_CATALOG = [
+    { code: 'af', label: 'Afrikaans', native: 'Afrikaans' },
+    { code: 'am', label: 'Amharic', native: 'አማርኛ' },
+    { code: 'ar', label: 'Arabic', native: 'العربية' },
+    { code: 'as', label: 'Assamese', native: 'অসমীয়া' },
+    { code: 'az', label: 'Azerbaijani', native: 'Azərbaycan' },
+    { code: 'ba', label: 'Bashkir', native: 'Башҡортса' },
+    { code: 'be', label: 'Belarusian', native: 'Беларуская' },
+    { code: 'bg', label: 'Bulgarian', native: 'Български' },
+    { code: 'bn', label: 'Bengali', native: 'বাংলা' },
+    { code: 'bo', label: 'Tibetan', native: 'བོད་སྐད་' },
+    { code: 'br', label: 'Breton', native: 'Brezhoneg' },
+    { code: 'bs', label: 'Bosnian', native: 'Bosanski' },
+    { code: 'ca', label: 'Catalan', native: 'Català' },
+    { code: 'cs', label: 'Czech', native: 'Čeština' },
+    { code: 'cy', label: 'Welsh', native: 'Cymraeg' },
+    { code: 'da', label: 'Danish', native: 'Dansk' },
+    { code: 'de', label: 'German', native: 'Deutsch' },
+    { code: 'el', label: 'Greek', native: 'Ελληνικά' },
+    { code: 'en', label: 'English', native: 'English' },
+    { code: 'es', label: 'Spanish', native: 'Español' },
+    { code: 'et', label: 'Estonian', native: 'Eesti' },
+    { code: 'eu', label: 'Basque', native: 'Euskara' },
+    { code: 'fa', label: 'Persian', native: 'فارسی' },
+    { code: 'fi', label: 'Finnish', native: 'Suomi' },
+    { code: 'fo', label: 'Faroese', native: 'Føroyskt' },
+    { code: 'fr', label: 'French', native: 'Français' },
+    { code: 'gl', label: 'Galician', native: 'Galego' },
+    { code: 'gu', label: 'Gujarati', native: 'ગુજરાતી' },
+    { code: 'ha', label: 'Hausa', native: 'Hausa' },
+    { code: 'haw', label: 'Hawaiian', native: 'ʻŌlelo Hawaiʻi' },
+    { code: 'he', label: 'Hebrew', native: 'עברית' },
+    { code: 'hi', label: 'Hindi', native: 'हिन्दी' },
+    { code: 'hr', label: 'Croatian', native: 'Hrvatski' },
+    { code: 'ht', label: 'Haitian Creole', native: 'Kreyòl ayisyen' },
+    { code: 'hu', label: 'Hungarian', native: 'Magyar' },
+    { code: 'hy', label: 'Armenian', native: 'Հայերեն' },
+    { code: 'id', label: 'Indonesian', native: 'Bahasa Indonesia' },
+    { code: 'is', label: 'Icelandic', native: 'Íslenska' },
+    { code: 'it', label: 'Italian', native: 'Italiano' },
+    { code: 'ja', label: 'Japanese', native: '日本語' },
+    { code: 'jw', label: 'Javanese', native: 'Basa Jawa' },
+    { code: 'ka', label: 'Georgian', native: 'ქართული' },
+    { code: 'kk', label: 'Kazakh', native: 'Қазақ' },
+    { code: 'km', label: 'Khmer', native: 'ខ្មែរ' },
+    { code: 'kn', label: 'Kannada', native: 'ಕನ್ನಡ' },
+    { code: 'ko', label: 'Korean', native: '한국어' },
+    { code: 'la', label: 'Latin', native: 'Latina' },
+    { code: 'lb', label: 'Luxembourgish', native: 'Lëtzebuergesch' },
+    { code: 'ln', label: 'Lingala', native: 'Lingála' },
+    { code: 'lo', label: 'Lao', native: 'ລາວ' },
+    { code: 'lt', label: 'Lithuanian', native: 'Lietuvių' },
+    { code: 'lv', label: 'Latvian', native: 'Latviešu' },
+    { code: 'mg', label: 'Malagasy', native: 'Malagasy' },
+    { code: 'mi', label: 'Maori', native: 'Māori' },
+    { code: 'mk', label: 'Macedonian', native: 'Македонски' },
+    { code: 'ml', label: 'Malayalam', native: 'മലയാളം' },
+    { code: 'mn', label: 'Mongolian', native: 'Монгол' },
+    { code: 'mr', label: 'Marathi', native: 'मराठी' },
+    { code: 'ms', label: 'Malay', native: 'Bahasa Melayu' },
+    { code: 'mt', label: 'Maltese', native: 'Malti' },
+    { code: 'my', label: 'Myanmar', native: 'မြန်မာ' },
+    { code: 'ne', label: 'Nepali', native: 'नेपाली' },
+    { code: 'nl', label: 'Dutch', native: 'Nederlands' },
+    { code: 'nn', label: 'Norwegian Nynorsk', native: 'Nynorsk' },
+    { code: 'no', label: 'Norwegian', native: 'Norsk' },
+    { code: 'oc', label: 'Occitan', native: 'Occitan' },
+    { code: 'pa', label: 'Punjabi', native: 'ਪੰਜਾਬੀ' },
+    { code: 'pl', label: 'Polish', native: 'Polski' },
+    { code: 'ps', label: 'Pashto', native: 'پښتو' },
+    { code: 'pt', label: 'Portuguese', native: 'Português' },
+    { code: 'ro', label: 'Romanian', native: 'Română' },
+    { code: 'ru', label: 'Russian', native: 'Русский' },
+    { code: 'sa', label: 'Sanskrit', native: 'संस्कृतम्' },
+    { code: 'sd', label: 'Sindhi', native: 'سنڌي' },
+    { code: 'si', label: 'Sinhala', native: 'සිංහල' },
+    { code: 'sk', label: 'Slovak', native: 'Slovenčina' },
+    { code: 'sl', label: 'Slovenian', native: 'Slovenščina' },
+    { code: 'sn', label: 'Shona', native: 'ChiShona' },
+    { code: 'so', label: 'Somali', native: 'Soomaali' },
+    { code: 'sq', label: 'Albanian', native: 'Shqip' },
+    { code: 'sr', label: 'Serbian', native: 'Српски' },
+    { code: 'su', label: 'Sundanese', native: 'Basa Sunda' },
+    { code: 'sv', label: 'Swedish', native: 'Svenska' },
+    { code: 'sw', label: 'Swahili', native: 'Kiswahili' },
+    { code: 'ta', label: 'Tamil', native: 'தமிழ்' },
+    { code: 'te', label: 'Telugu', native: 'తెలుగు' },
+    { code: 'tg', label: 'Tajik', native: 'Тоҷикӣ' },
+    { code: 'th', label: 'Thai', native: 'ไทย' },
+    { code: 'tk', label: 'Turkmen', native: 'Türkmençe' },
+    { code: 'tl', label: 'Tagalog', native: 'Tagalog' },
+    { code: 'tr', label: 'Turkish', native: 'Türkçe' },
+    { code: 'tt', label: 'Tatar', native: 'Татарча' },
+    { code: 'uk', label: 'Ukrainian', native: 'Українська' },
+    { code: 'ur', label: 'Urdu', native: 'اردو' },
+    { code: 'uz', label: 'Uzbek', native: 'Oʻzbek' },
+    { code: 'vi', label: 'Vietnamese', native: 'Tiếng Việt' },
+    { code: 'yi', label: 'Yiddish', native: 'ייִדיש' },
+    { code: 'yo', label: 'Yoruba', native: 'Yorùbá' },
+    { code: 'zh', label: 'Chinese', native: '中文' },
+];
+
+const QS_ASR_LANG_CODE_SET = new Set(
+    QS_ASR_LANGUAGE_CATALOG.map((row) => row.code).concat(['auto'])
+);
+
+function qsNormalizeAsrLangCode(raw) {
+    let code = String(raw || '').trim().toLowerCase();
+    if (!code || code === 'none' || code === 'null') return 'auto';
+    if (code === 'iw' || code === 'hebrew' || code === 'עברית' || code.startsWith('he-')) return 'he';
+    if (code === 'english' || code.startsWith('en-')) return 'en';
+    if (code === 'jw') return 'jw';
+    if (code.includes('-')) code = code.split('-')[0];
+    if (QS_ASR_LANG_CODE_SET.has(code)) return code;
+    return 'auto';
+}
+
+function qsAsrLangOptionLabel(row) {
+    if (!row) return '';
+    if (row.native && row.native !== row.label) return `${row.label} (${row.native})`;
+    return row.label;
+}
+
+function getUserAsrLang() {
+    try {
+        return qsNormalizeAsrLangCode(localStorage.getItem(QS_ASR_LANG_KEY) || 'auto');
+    } catch (_) {}
+    return 'auto';
+}
+
+function setUserAsrLang(mode) {
+    const normalized = qsNormalizeAsrLangCode(mode);
+    try { localStorage.setItem(QS_ASR_LANG_KEY, normalized); } catch (_) {}
+    return normalized;
+}
+
+/** Fields for multipart-init / trigger_processing (regular mode). */
+function qsBuildAsrLanguageFields() {
+    const language = getUserAsrLang();
+    const out = { language };
+    if (language === 'auto') {
+        try {
+            const hint = typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he';
+            if (hint) out.languageHint = hint;
+        } catch (_) {
+            out.languageHint = 'he';
+        }
+    }
+    return out;
+}
+
+function qsRegularAsrLangI18n(key, fallback) {
+    try {
+        if (typeof window.t === 'function') {
+            const v = window.t(key);
+            if (v && v !== key) return v;
+        }
+    } catch (_) {}
+    return fallback;
+}
+
+function qsPopulateRegularAsrLangSelect(select) {
+    if (!select) return;
+    const current = getUserAsrLang();
+    const byCode = new Map(QS_ASR_LANGUAGE_CATALOG.map((row) => [row.code, row]));
+    const commonCodes = QS_ASR_COMMON_LANG_CODES.filter((code) => byCode.has(code));
+    const commonSet = new Set(commonCodes);
+    const rest = QS_ASR_LANGUAGE_CATALOG
+        .filter((row) => !commonSet.has(row.code))
+        .slice()
+        .sort((a, b) => a.label.localeCompare(b.label, 'en'));
+
+    select.innerHTML = '';
+    const autoOpt = document.createElement('option');
+    autoOpt.value = 'auto';
+    autoOpt.textContent = qsRegularAsrLangI18n('regular_asr_lang_auto', 'Auto');
+    select.appendChild(autoOpt);
+
+    const commonGroup = document.createElement('optgroup');
+    commonGroup.label = qsRegularAsrLangI18n('regular_asr_lang_common', 'Common languages');
+    commonCodes.forEach((code) => {
+        const row = byCode.get(code);
+        if (!row) return;
+        const opt = document.createElement('option');
+        opt.value = row.code;
+        opt.textContent = qsAsrLangOptionLabel(row);
+        commonGroup.appendChild(opt);
+    });
+    select.appendChild(commonGroup);
+
+    const restGroup = document.createElement('optgroup');
+    restGroup.label = qsRegularAsrLangI18n('regular_asr_lang_all', 'All languages');
+    rest.forEach((row) => {
+        const opt = document.createElement('option');
+        opt.value = row.code;
+        opt.textContent = qsAsrLangOptionLabel(row);
+        restGroup.appendChild(opt);
+    });
+    select.appendChild(restGroup);
+
+    select.value = current;
+    if (select.value !== current) select.value = 'auto';
+}
+
+function qsSyncRegularAsrLangUi() {
+    const wrap = document.getElementById('regular-asr-lang-wrap');
+    const select = document.getElementById('regular-asr-lang-select');
+    const medicalOn = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+    if (wrap) wrap.hidden = !!medicalOn;
+    if (!select) return;
+    if (!select.options.length) qsPopulateRegularAsrLangSelect(select);
+    const mode = getUserAsrLang();
+    if (select.value !== mode) {
+        select.value = mode;
+        if (select.value !== mode) {
+            setUserAsrLang('auto');
+            select.value = 'auto';
+        }
+    }
+    const aria = qsRegularAsrLangI18n('regular_asr_lang_aria', 'File transcription language');
+    select.setAttribute('aria-label', aria);
+}
+
+function qsWireRegularAsrLangUi() {
+    const select = document.getElementById('regular-asr-lang-select');
+    if (!select) {
+        qsSyncRegularAsrLangUi();
+        return;
+    }
+    if (select.dataset.qsWired !== '1') {
+        select.dataset.qsWired = '1';
+        qsPopulateRegularAsrLangSelect(select);
+        select.addEventListener('change', () => {
+            setUserAsrLang(select.value);
+            qsSyncRegularAsrLangUi();
+        });
+    } else {
+        qsPopulateRegularAsrLangSelect(select);
+    }
+    qsSyncRegularAsrLangUi();
+}
+
+try {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', qsWireRegularAsrLangUi);
+    } else {
+        qsWireRegularAsrLangUi();
+    }
+} catch (_) {}
+window.getUserAsrLang = getUserAsrLang;
+window.setUserAsrLang = setUserAsrLang;
+window.qsBuildAsrLanguageFields = qsBuildAsrLanguageFields;
+window.qsSyncRegularAsrLangUi = qsSyncRegularAsrLangUi;
+window.qsWireRegularAsrLangUi = qsWireRegularAsrLangUi;
 
 /** Enforce minimum duration per segment and no overlaps. Returns new array; does not mutate. */
 function normalizeSegmentDurations(segments, minDuration = 0.5) {
@@ -22684,7 +22964,8 @@ function _medicalHasFormattedSummaryContent() {
 }
 
 /** Blank summary pane so transcript boxes are not left on screen while summary GPT runs. */
-function qsPaintMedicalSummaryEmptyPane() {
+function qsPaintMedicalSummaryEmptyPane(opts) {
+    opts = opts || {};
     const transcriptWindow = document.getElementById('transcript-window');
     if (!transcriptWindow) return;
     transcriptWindow.classList.remove('qs-medical-boxes-editable', 'medical-wave-active');
@@ -22695,7 +22976,27 @@ function qsPaintMedicalSummaryEmptyPane() {
         try { document.removeEventListener('selectionchange', transcriptWindow._qsSelectionChangeHandler); } catch (_) {}
         transcriptWindow._qsSelectionChangeHandler = null;
     }
-    transcriptWindow.innerHTML = '<div id="medical-summary-content" aria-busy="true"></div>';
+    const generating = opts.generating != null
+        ? !!opts.generating
+        : !!window._qsMedicalSummaryGenerating;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+    const isRtl = locale.startsWith('he') || locale.startsWith('ar');
+    const dir = isRtl ? 'rtl' : 'ltr';
+    if (generating) {
+        const label = T('medical_generating_summary')
+            || (isRtl ? 'מייצר סיכום רפואי…' : 'Generating medical summary…');
+        const hint = T('medical_generating_summary_hint')
+            || (isRtl ? 'זה יכול לקחת כמה שניות' : 'This can take a few seconds');
+        transcriptWindow.innerHTML = `
+<div id="medical-summary-content" class="medical-summary-loading" aria-busy="true" aria-live="polite" dir="${dir}">
+  <div class="medical-summary-loading-ring" aria-hidden="true"></div>
+  <p class="medical-summary-loading-label">${String(label).replace(/</g, '&lt;')}</p>
+  <p class="medical-summary-loading-hint">${String(hint).replace(/</g, '&lt;')}</p>
+</div>`;
+        return;
+    }
+    transcriptWindow.innerHTML = '<div id="medical-summary-content" aria-busy="false"></div>';
 }
 
 /**

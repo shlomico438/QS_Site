@@ -1827,7 +1827,10 @@ def _early_transcription_options_for_upload_sign(data, base_transcription_option
         )
         return opts, False
     if not _audio_profile_detection_enabled():
-        return _provisional_transcription_options_for_early_trigger(), True
+        opts = _attach_language_hint_to_options(
+            _provisional_transcription_options_for_early_trigger(), data
+        )
+        return opts, True
     client = None
     if _client_audio_profile_enabled():
         client = _client_audio_profile_from_request(data)
@@ -1840,7 +1843,15 @@ def _early_transcription_options_for_upload_sign(data, base_transcription_option
             client.get('classification_basis'),
         )
         return opts, False
-    return _provisional_transcription_options_for_early_trigger(), True
+    opts = _attach_language_hint_to_options(
+        _provisional_transcription_options_for_early_trigger(), data
+    )
+    # Keep hint from the original request even when VAD opts are provisional.
+    if isinstance(base_transcription_options, dict):
+        base_hint = base_transcription_options.get('language_hint') or base_transcription_options.get('languageHint')
+        if base_hint and 'language_hint' not in opts:
+            opts['language_hint'] = base_hint
+    return opts, True
 
 
 def _force_disable_vad_enabled():
@@ -1864,6 +1875,64 @@ def _gpt_disabled():
     """
     v = (os.environ.get('DISABLE_GPT') or os.environ.get('GPT_DISABLED') or '').strip().strip('"').strip("'").lower()
     return v in ('1', 'true', 'yes', 'on')
+
+
+def _normalize_asr_language_code(raw, *, default='auto'):
+    """Normalize client ASR language: auto | he | en | other ISO codes."""
+    lang = str(raw or '').strip().lower()
+    if lang in ('', 'none', 'null'):
+        return default
+    if lang in ('he', 'iw', 'hebrew', 'עברית') or lang.startswith('he-'):
+        return 'he'
+    if lang in ('en', 'english') or lang.startswith('en-'):
+        return 'en'
+    if lang in ('auto',):
+        return 'auto'
+    return lang
+
+
+def _client_asr_language(data=None, *, is_medical=False):
+    """ASR language from request JSON. Regular default is auto; medical defaults to he."""
+    data = data if isinstance(data, dict) else {}
+    default = 'he' if is_medical else 'auto'
+    if 'language' not in data or data.get('language') is None or str(data.get('language')).strip() == '':
+        return default
+    return _normalize_asr_language_code(data.get('language'), default=default)
+
+
+def _client_language_hint(data=None):
+    """Soft UI-locale bias for Auto detection (he/en). Empty when unused."""
+    data = data if isinstance(data, dict) else {}
+    raw = data.get('language_hint')
+    if raw is None or str(raw).strip() == '':
+        raw = data.get('languageHint')
+    hint = _normalize_asr_language_code(raw, default='')
+    if hint in ('', 'auto'):
+        return None
+    return hint
+
+
+def _attach_language_hint_to_options(transcription_options, data=None):
+    """Put language_hint into transcription_options so GPU handoff carries it."""
+    out = dict(transcription_options or {})
+    hint = _client_language_hint(data)
+    if hint:
+        out['language_hint'] = hint
+    return out
+
+
+def _runpod_input_language_fields(language, transcription_options=None, data=None):
+    """Top-level language (+ optional language_hint) for RunPod / GPU input."""
+    fields = {"language": _normalize_asr_language_code(language, default='auto')}
+    hint = None
+    if isinstance(transcription_options, dict):
+        hint = transcription_options.get('language_hint') or transcription_options.get('languageHint')
+    if not hint:
+        hint = _client_language_hint(data)
+    hint = _normalize_asr_language_code(hint, default='') if hint else ''
+    if hint and hint != 'auto':
+        fields['language_hint'] = hint
+    return fields
 
 
 def _site_transcription_options_from_payload(data=None):
@@ -1899,6 +1968,9 @@ def _site_transcription_options_from_payload(data=None):
         "save_pre_align_json": True,
         "align_model_name": _pick("align_model_name", "TRANSCRIBE_ALIGN_MODEL_NAME", str, ""),
     }
+    hint = _client_language_hint(data)
+    if hint:
+        out["language_hint"] = hint
     force_disable = _force_disable_vad_enabled()
     force_enable = _force_enable_vad_enabled()
     out["vad_force_disable_env_active"] = force_disable
@@ -2604,6 +2676,18 @@ def _worker_upload_status_response(job_id):
     sk = handoff.get("transcription_s3_key") or handoff.get("input_s3_key")
     if sk:
         out["s3Key"] = sk
+    # Surface ASR language so early-warmup RunPod jobs pick up trigger overrides.
+    lang = str(pinfo.get("language") or "").strip()
+    if lang:
+        out["language"] = lang
+    hint = None
+    if isinstance(tx_opts, dict):
+        hint = tx_opts.get("language_hint") or tx_opts.get("languageHint")
+    if not hint:
+        hint = pinfo.get("language_hint") or pinfo.get("languageHint")
+    hint = str(hint or "").strip()
+    if hint:
+        out["language_hint"] = hint
     return out
 
 
@@ -13796,7 +13880,7 @@ def sign_s3():
         public_base = _public_base_url(request)
         Thread(
             target=_submit_simulation_job,
-            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base, transcription_options),
+            args=(job_id, s3_key, 'transcribe', _client_asr_language(data, is_medical=is_medical), is_diarization_requested, is_medical, sim_bucket, public_base, transcription_options),
             daemon=True,
         ).start()
 
@@ -13862,7 +13946,7 @@ def sign_s3():
             s3_key,
             request,
             task='transcribe',
-            language=data.get('language', 'he'),
+            language=_client_asr_language(data, is_medical=is_medical),
             diarization=data.get('diarization', False),
             speaker_count=2,
             is_medical=is_medical,
@@ -13976,7 +14060,7 @@ def sign_s3_multipart_init():
         public_base = _public_base_url(request)
         Thread(
             target=_submit_simulation_job,
-            args=(job_id, s3_key, 'transcribe', data.get('language', 'he'), is_diarization_requested, is_medical, sim_bucket, public_base, transcription_options),
+            args=(job_id, s3_key, 'transcribe', _client_asr_language(data, is_medical=is_medical), is_diarization_requested, is_medical, sim_bucket, public_base, transcription_options),
             daemon=True,
         ).start()
         return jsonify({
@@ -14039,7 +14123,7 @@ def sign_s3_multipart_init():
         s3_key,
         request,
         task='transcribe',
-        language=data.get('language', 'he'),
+        language=_client_asr_language(data, is_medical=is_medical),
         diarization=data.get('diarization', False),
         speaker_count=2,
         is_medical=is_medical,
@@ -14891,6 +14975,7 @@ def _start_trigger_if_configured(
     start_callback_url = f"{public_base}/api/gpu_started"
     upload_status_url = f"{public_base}/api/upload_status?job_id={job_id}"
     job_options_url = f"{public_base}/api/job_transcription_options?job_id={job_id}" if public_base else None
+    lang_fields = _runpod_input_language_fields(language, transcription_options)
     payload = {
         "input": {
             "s3Key": s3_key,
@@ -14898,7 +14983,7 @@ def _start_trigger_if_configured(
             "isMedical": bool(is_medical),
             "jobId": job_id,
             "task": task,
-            "language": language,
+            **lang_fields,
             "transcription_options": transcription_options or {},
             "callback_url": callback_url,
             "start_callback_url": start_callback_url,
@@ -14913,7 +14998,8 @@ def _start_trigger_if_configured(
         "is_medical": bool(is_medical),
         "user_id": _extract_user_id_from_s3_key(s3_key),
         "task": task,
-        "language": language,
+        "language": lang_fields.get("language") or language,
+        "language_hint": lang_fields.get("language_hint"),
         "transcription_options": transcription_options or {},
         "options_finalized": not defer_final_options,
         "worker_ready": not defer_final_options,
@@ -15775,7 +15861,7 @@ def trigger_processing():
 
         if SIMULATION_MODE and _simulation_uses_sagemaker_async():
             task = data.get('task', 'transcribe')
-            language = data.get('language', 'he')
+            language = _client_asr_language(data, is_medical=is_medical)
             diarization = data.get('diarization', False)
             upload_complete[job_id] = True
             _mark_upload_complete(job_id)
@@ -15809,7 +15895,7 @@ def trigger_processing():
 
         if is_medical and _medical_uses_sagemaker_transcription() and not _medical_use_aws_transcribe_stream():
             task = data.get('task', 'transcribe')
-            language = data.get('language', 'he')
+            language = _client_asr_language(data, is_medical=is_medical)
             upload_complete[job_id] = True
             _mark_upload_complete(job_id)
             _set_worker_handoff(
@@ -15892,7 +15978,7 @@ def trigger_processing():
         )
 
         task = data.get('task', 'transcribe')
-        language = data.get('language', 'he')
+        language = _client_asr_language(data, is_medical=is_medical)
         diarization = data.get('diarization', False)
         use_music_vocal_preprocess = _should_preprocess_music_vocals(is_medical, audio_profile_info)
         use_audio_preprocess = (
@@ -15960,6 +16046,11 @@ def trigger_processing():
             start_callback_url = f"{public_base}/api/gpu_started"
             upload_status_url = f"{public_base}/api/upload_status?job_id={job_id}"
             job_options_url = f"{public_base}/api/job_transcription_options?job_id={job_id}"
+            lang_fields = _runpod_input_language_fields(language, transcription_options, data)
+            pinfo["language"] = lang_fields.get("language") or language
+            if lang_fields.get("language_hint"):
+                pinfo["language_hint"] = lang_fields["language_hint"]
+            pending_job_info[job_id] = pinfo
             payload = {
                 "input": {
                     "s3Key": transcription_s3_key,
@@ -15967,7 +16058,7 @@ def trigger_processing():
                     "isMedical": bool(is_medical),
                     "jobId": job_id,
                     "task": task,
-                    "language": language,
+                    **lang_fields,
                     "transcription_options": transcription_options,
                     "callback_url": callback_url,
                     "start_callback_url": start_callback_url,
@@ -16089,7 +16180,7 @@ def trigger_processing():
                 "isMedical": bool(is_medical),
                 "jobId": job_id,
                 "task": task,
-                "language": language,
+                **_runpod_input_language_fields(language, transcription_options, data),
                 "transcription_options": transcription_options,
                 "callback_url": callback_url,
                 "start_callback_url": start_callback_url,
@@ -16099,6 +16190,7 @@ def trigger_processing():
         }
 
         # So gpu_callback can save raw JSON even when RunPod does not echo input; store task/language for retry
+        _lang_fields = _runpod_input_language_fields(language, transcription_options, data)
         pending_job_info[job_id] = {
             "input_s3_key": s3_key,
             "transcription_s3_key": transcription_s3_key,
@@ -16106,7 +16198,8 @@ def trigger_processing():
             "is_medical": bool(is_medical),
             "user_id": user_id_credits or _extract_user_id_from_s3_key(s3_key),
             "task": task,
-            "language": language,
+            "language": _lang_fields.get("language") or language,
+            "language_hint": _lang_fields.get("language_hint"),
             "transcription_options": transcription_options or {},
             "preprocess": (
                 "vocal_separation" if use_music_vocal_preprocess

@@ -361,8 +361,14 @@
         <div class="upload-zone">
             <div class="upload-controls-row">
                 <input type="file" id="fileInput" class="qs-visually-hidden-file" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" aria-hidden="true" tabindex="-1">
-                <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
-                <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;">🎤 Record audio</button>
+                <div class="upload-main-cluster">
+                    <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
+                    <div class="regular-asr-lang-wrap" id="regular-asr-lang-wrap"{% if medical_entry %} hidden{% endif %}>
+                        <label class="regular-asr-lang-label" for="regular-asr-lang-select" data-i18n="regular_asr_lang_label">שפת תמלול</label>
+                        <select id="regular-asr-lang-select" class="regular-asr-lang-select" data-i18n-aria-label="regular_asr_lang_aria" aria-label="שפת תמלול"></select>
+                    </div>
+                </div>
+                <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;" data-i18n="regular_record_audio">הקלטת שמע</button>
             </div>
             <div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
                 <div class="medical-record-controls" dir="ltr">
