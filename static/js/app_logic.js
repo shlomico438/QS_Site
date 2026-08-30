@@ -14796,6 +14796,7 @@ function setTranscriptActionButtonsVisible(visible) {
     }
     try { qsSyncMusicModeBottomToggleUi(); } catch (_) {}
     try { qsSyncRegularRecordUi(); } catch (_) {}
+    try { if (typeof qsSyncRegularAsrLangUi === 'function') qsSyncRegularAsrLangUi(); } catch (_) {}
     if (visible) {
         const syncAa = () => {
             try { qsSyncSubtitleStyleAaVisibility(); } catch (_) {}
@@ -22477,7 +22478,17 @@ function qsSyncRegularAsrLangUi() {
     const wrap = document.getElementById('regular-asr-lang-wrap');
     const select = document.getElementById('regular-asr-lang-select');
     const medicalOn = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
-    if (wrap) wrap.hidden = !!medicalOn;
+    const sessionDone = !!(
+        document.body
+        && (
+            document.body.classList.contains('qs-session-complete')
+            || (
+                document.body.classList.contains('has-transcript-actions')
+                && !document.body.classList.contains('qs-app-busy')
+            )
+        )
+    );
+    if (wrap) wrap.hidden = !!(medicalOn || sessionDone);
     if (!select) return;
     if (!select.options.length) qsPopulateRegularAsrLangSelect(select);
     const mode = getUserAsrLang();

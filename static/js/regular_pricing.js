@@ -346,8 +346,13 @@
         const creditBundleStorageKey = 'qs_selected_credit_bundle';
         const creditBundlePriceMeta = {
             light: { he: '₪19', en: '$7', noteHe: ' / 90 דקות', noteEn: ' / 90 min' },
-            standard: { he: '₪39', en: '$13', noteHe: ' / 300 דקות', noteEn: ' / 300 min' },
+            standard: { he: '₪45', en: '$13', noteHe: ' / 300 דקות', noteEn: ' / 300 min' },
             plus: { he: '₪79', en: '$27', noteHe: ' / 720 דקות', noteEn: ' / 720 min' },
+        };
+        const creditBundleMinutesMeta = {
+            light: { he: '90 דקות תמלול', en: '90 transcription minutes' },
+            standard: { he: '300 דקות תמלול', en: '300 transcription minutes' },
+            plus: { he: '720 דקות תמלול', en: '720 transcription minutes' },
         };
         const buyCreditsBtn = document.getElementById('seo-buy-credits-btn');
         const creditBundlePriceEl = document.getElementById('seo-credit-bundle-price');
@@ -409,6 +414,7 @@
 
         const syncCreditBundleDisplay = (bundleId) => {
             const meta = creditBundlePriceMeta[bundleId] || creditBundlePriceMeta.standard;
+            const minutesMeta = creditBundleMinutesMeta[bundleId] || creditBundleMinutesMeta.standard;
             const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
             if (creditBundlePriceEl) {
                 const priceEl = creditBundlePriceEl.querySelector('[data-bundle-price]');
@@ -416,6 +422,9 @@
                 if (priceEl) priceEl.textContent = isEn ? meta.en : meta.he;
                 if (noteEl) noteEl.textContent = isEn ? meta.noteEn : meta.noteHe;
             }
+            document.querySelectorAll('#seo-pricing-pro [data-bundle-minutes]').forEach((el) => {
+                el.textContent = isEn ? minutesMeta.en : minutesMeta.he;
+            });
             creditBundlePanes.forEach((pane) => {
                 const on = pane.dataset.bundlePane === bundleId;
                 pane.hidden = !on;
@@ -477,6 +486,9 @@
                         return;
                     }
                 }
+                if (el.closest('#seo-pricing-starter') || el.id === 'seo-starter-signup-btn') {
+                    setSelectedPlan('starter');
+                }
                 smoothTo('main-btn');
             });
         });
@@ -485,7 +497,7 @@
             const card = planCards[planId];
             if (!card) return;
             const activate = (e) => {
-                if (e && e.target && e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn')) return;
+                if (e && e.target && e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn, .seo-pricing-medical-teaser-link')) return;
                 if (planId === 'enterprise') {
                     window.location.href = qsMedicalPricingUrl();
                     return;
@@ -495,7 +507,7 @@
             card.addEventListener('click', activate);
             card.addEventListener('keydown', (e) => {
                 if (e.key !== 'Enter' && e.key !== ' ') return;
-                if (e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn')) return;
+                if (e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn, .seo-pricing-medical-teaser-link')) return;
                 e.preventDefault();
                 if (planId === 'enterprise') {
                     window.location.href = qsMedicalPricingUrl();

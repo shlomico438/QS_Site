@@ -947,13 +947,21 @@ body.landing-logo-large .nav-logo img {
     cursor: pointer;
 }
 .seo-btn-primary {
-    background: #3b82f6;
+    background: #5b58ee;
+    color: #fff;
+}
+.seo-btn-primary:hover {
+    background: #4a47d6;
     color: #fff;
 }
 .seo-btn-secondary {
     background: #ffffff;
     color: #1e293b;
     border-color: #cbd5e1;
+}
+.seo-btn-secondary:hover {
+    background: #f8fafc;
+    border-color: #94a3b8;
 }
 .seo-btn-medical {
     background: #0f766e;
@@ -1105,6 +1113,22 @@ html[dir="rtl"] .product-card-features {
 .seo-pricing-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.seo-pricing-grid.seo-pricing-grid--two {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 20px;
+    grid-template-columns: none;
+}
+.seo-pricing-grid.seo-pricing-grid--two .seo-pricing-card {
+    flex: 1 1 0;
+    min-width: 0;
+}
+@media (max-width: 768px) {
+    .seo-pricing-grid.seo-pricing-grid--two {
+        flex-direction: column;
+    }
+}
 /* Equal-height pricing cards (Hebrew + English) */
 .seo-pricing-grid {
     align-items: stretch;
@@ -1196,6 +1220,10 @@ html[dir="rtl"] .product-card-features {
 .seo-pricing-features {
     margin-top: 10px;
 }
+.seo-pricing-feature-highlight {
+    font-weight: 800;
+    color: #5b58ee;
+}
 .seo-plan-auto-badge {
     display: inline-flex;
     align-items: center;
@@ -1251,7 +1279,7 @@ html[dir="rtl"] .product-card-features {
 }
 .seo-credit-bundle-tabs .seo-credit-bundle-tab.is-selected {
     background: #ffffff;
-    color: #111827;
+    color: #5b58ee;
     font-weight: 700;
     box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.06), 0 1px 3px 0 rgba(15, 23, 42, 0.04);
 }
@@ -1376,8 +1404,12 @@ html[dir="ltr"] #pricing-section.seo-landing-section {
     color: #64748b;
 }
 .seo-pricing-popular {
-    border-color: #93c5fd;
-    box-shadow: 0 8px 24px rgba(59, 130, 246, 0.12);
+    border-color: #5b58ee;
+    box-shadow: 0 10px 28px rgba(91, 88, 238, 0.16);
+}
+.seo-pricing-card--starter {
+    background: #ffffff;
+    border: 1px solid #d1d5db;
 }
 .seo-pricing-card--starter,
 .seo-pricing-card--selectable {
@@ -1386,15 +1418,65 @@ html[dir="ltr"] #pricing-section.seo-landing-section {
 }
 .seo-pricing-card--starter:hover,
 .seo-pricing-card--selectable:hover {
-    border-color: #93c5fd;
+    border-color: #5b58ee;
 }
 .seo-pricing-card.is-plan-muted {
-    opacity: 0.7;
+    opacity: 0.72;
     border-color: #e2e8f0;
     box-shadow: none;
 }
 .seo-pricing-card.is-plan-muted .seo-popular-badge {
     display: none;
+}
+.seo-credit-bundle-picker--header {
+    margin: 0 0 12px;
+}
+.seo-pricing-medical-teaser {
+    margin-top: 20px;
+    padding: 18px 20px;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    background: #ffffff;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px 20px;
+    text-align: start;
+}
+.seo-pricing-medical-teaser-title {
+    margin: 0 0 4px;
+    font-size: 1.05rem;
+    font-weight: 750;
+    color: #0f172a;
+}
+.seo-pricing-medical-teaser-text {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.92rem;
+    line-height: 1.55;
+    max-width: 42rem;
+}
+.seo-pricing-medical-teaser-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    color: #5b58ee;
+    font-weight: 700;
+    text-decoration: none;
+    border: 1px solid #c7c5fb;
+    border-radius: 10px;
+    padding: 10px 14px;
+    background: #f5f5ff;
+}
+.seo-pricing-medical-teaser-link:hover {
+    background: #eeedff;
+    border-color: #5b58ee;
+}
+.seo-pricing-medical-teaser-arrow {
+    font-size: 1.05rem;
+    line-height: 1;
 }
 #metrics-section .seo-metrics-row {
     margin-top: 0;
@@ -1515,9 +1597,9 @@ html[dir="ltr"] #pricing-section.seo-landing-section {
 .seo-pricing-card.seo-pricing-popular.is-selected,
 .seo-pricing-card--starter.is-selected,
 .seo-pricing-card.is-selected {
-    border-color: #2563eb !important;
+    border-color: #5b58ee !important;
     border-width: 2px;
-    box-shadow: 0 8px 24px rgba(37, 99, 235, 0.2) !important;
+    box-shadow: 0 8px 24px rgba(91, 88, 238, 0.22) !important;
     opacity: 1 !important;
 }
 .seo-pricing-card.is-selected.is-plan-muted {
@@ -1528,10 +1610,10 @@ html[dir="ltr"] #pricing-section.seo-landing-section {
     margin-bottom: 8px;
     font-size: 0.75rem;
     font-weight: 700;
-    color: #1d4ed8;
-    background: #dbeafe;
+    color: #4338ca;
+    background: #eef2ff;
     border-radius: 999px;
-    padding: 4px 8px;
+    padding: 4px 10px;
 }
 html[dir="rtl"] .seo-home-content h1,
 html[dir="rtl"] .seo-home-content .seo-hero-subtitle {
@@ -3145,6 +3227,12 @@ body.qs-upload-confirm-open {
 
 body.qs-session-complete:not(.medical-mode) .regular-record-btn,
 body.has-transcript-actions.qs-session-complete:not(.medical-mode) .regular-record-btn {
+  display: none !important;
+}
+
+/* After transcription: only New Session — hide ASR language picker */
+body.qs-session-complete:not(.medical-mode) .regular-asr-lang-wrap,
+body.has-transcript-actions:not(.medical-mode):not(.qs-app-busy) .regular-asr-lang-wrap {
   display: none !important;
 }
 
@@ -5529,10 +5617,14 @@ html[dir="rtl"] .upload-status {
     .seo-use-cases-grid,
     .seo-testimonials-grid,
     .seo-pricing-grid,
+    .seo-pricing-grid.seo-pricing-grid--two,
     .seo-format-grid,
     .seo-metrics-row,
     .products-grid {
         grid-template-columns: 1fr;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two {
+        flex-direction: column;
     }
     .seo-hero-copy {
         padding: 10px 12px;

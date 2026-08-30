@@ -5093,7 +5093,7 @@ STRIPE_CREDIT_BUNDLES = {
     "standard": {
         "name": "QuickScribe Standard credit bundle",
         "credit_minutes": 300,
-        "amount_ils": 39,
+        "amount_ils": 45,
         "amount_usd": 13,
     },
     "plus": {
