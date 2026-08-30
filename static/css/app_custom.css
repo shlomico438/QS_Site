@@ -1124,22 +1124,21 @@ html[dir="rtl"] .product-card-features {
     flex: 1 1 0;
     min-width: 0;
 }
-@media (max-width: 768px) {
-    .seo-pricing-grid.seo-pricing-grid--two {
-        flex-direction: column;
-    }
-}
-/* Equal-height pricing cards (Hebrew + English) */
+/* Equal-height pricing cards on desktop (Hebrew + English) */
 .seo-pricing-grid {
     align-items: stretch;
 }
 .seo-pricing-grid .seo-pricing-card {
     display: flex;
     flex-direction: column;
-    height: 100%;
-    min-height: 100%;
     box-sizing: border-box;
     padding: 14px;
+}
+@media (min-width: 769px) {
+    .seo-pricing-grid .seo-pricing-card {
+        height: 100%;
+        min-height: 100%;
+    }
 }
 .seo-pricing-grid .seo-pricing-card .seo-pricing-features,
 .seo-pricing-grid .seo-pricing-card > ul {
@@ -1155,6 +1154,68 @@ html[dir="rtl"] .product-card-features {
 .seo-pricing-grid .seo-pricing-card .seo-credit-bundle-picker {
     flex-shrink: 0;
     margin-bottom: 0;
+}
+@media (max-width: 768px) {
+    .seo-pricing-grid.seo-pricing-grid--two {
+        flex-direction: row;
+        align-items: stretch;
+        gap: 12px;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two .seo-pricing-card,
+    .seo-pricing-grid .seo-pricing-card {
+        height: auto;
+        min-height: 0;
+        flex: 1 1 0;
+        width: auto;
+        padding: 12px 10px;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two .seo-pricing-card h3 {
+        font-size: 0.95rem;
+        line-height: 1.25;
+        margin-bottom: 6px;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two .seo-price {
+        font-size: 1.35rem;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two .seo-price small {
+        font-size: 0.75rem;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two .seo-pricing-features,
+    .seo-pricing-grid.seo-pricing-grid--two .seo-pricing-card > ul {
+        font-size: 0.82rem;
+        line-height: 1.45;
+        padding-inline-start: 14px;
+        margin-top: 8px;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two .seo-btn {
+        width: 100%;
+        padding: 10px 8px;
+        font-size: 0.85rem;
+    }
+    .seo-credit-bundle-picker--header {
+        margin-bottom: 8px;
+    }
+    .seo-pricing-medical-teaser {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 14px 16px;
+    }
+    .seo-pricing-medical-teaser-link {
+        justify-content: center;
+        width: 100%;
+        box-sizing: border-box;
+    }
+}
+@media (max-width: 420px) {
+    .seo-pricing-grid.seo-pricing-grid--two {
+        flex-direction: column;
+        gap: 14px;
+    }
+    .seo-pricing-grid.seo-pricing-grid--two .seo-pricing-card {
+        flex: 0 0 auto;
+        width: 100%;
+        padding: 14px;
+    }
 }
 .seo-testimonials-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3238,18 +3299,21 @@ body.has-transcript-actions:not(.medical-mode):not(.qs-app-busy) .regular-asr-la
 
 body.qs-session-complete:not(.medical-mode) .upload-controls-row {
   justify-content: center;
+  grid-template-columns: 1fr;
 }
 
 body.qs-session-complete:not(.medical-mode) .upload-controls-row .upload-main-cluster {
+  grid-column: 1;
   flex: 1 1 auto;
   max-width: none;
   width: 100%;
+  justify-self: stretch;
 }
 
 body.qs-session-complete:not(.medical-mode) .upload-controls-row .btn.btn-primary {
   flex: 1 1 auto !important;
   max-width: none !important;
-  width: auto;
+  width: 100%;
 }
 
 body.qs-session-complete:not(.medical-mode) #qs-pipeline-phase-wrap {
@@ -5387,39 +5451,43 @@ html[dir="ltr"] #main-btn::before {
 }
 /* --- NEW CONTROLS STYLING --- */
 
-/* Single row: [Upload+lang cluster] [Record] — lang sits to the right of the CTA */
+/* Single row: Start CTA is truly centered; lang/record sit beside without shifting it */
 .upload-controls-row {
-    display: flex;
-    flex-wrap: nowrap;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: center;
-    gap: 10px;
+    column-gap: 10px;
     margin-bottom: 10px;
-    direction: rtl;
+    direction: ltr;
     width: 100%;
+    position: relative;
 }
 .upload-control-left {
     flex: 0 0 auto;
     min-width: 0;
 }
 .upload-main-cluster {
+    grid-column: 2;
     display: inline-flex;
     flex-direction: row;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    flex: 0 1 auto;
+    position: relative;
+    flex: 0 0 auto;
     min-width: 0;
-    max-width: min(560px, 100%);
+    max-width: none;
+    justify-self: center;
     direction: ltr;
 }
 .upload-main-cluster .btn.btn-primary,
 .upload-controls-row .btn.btn-primary {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     align-self: center;
     margin: 0;
     min-width: 0;
     max-width: 320px;
+    position: relative;
+    z-index: 1;
 }
 .regular-asr-lang-wrap {
     display: inline-flex;
@@ -5430,6 +5498,11 @@ html[dir="ltr"] #main-btn::before {
     margin: 0;
     min-width: 0;
     direction: ltr;
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 2;
 }
 .regular-asr-lang-wrap[hidden] {
     display: none !important;
@@ -5472,7 +5545,8 @@ body.medical-mode .regular-asr-lang-wrap,
     display: none !important;
 }
 .regular-record-btn {
-    justify-self: center;
+    grid-column: 1;
+    justify-self: end;
     align-self: center;
     border-radius: 12px;
     border: 1px solid #cbd5e1;
@@ -5623,8 +5697,10 @@ html[dir="rtl"] .upload-status {
     .products-grid {
         grid-template-columns: 1fr;
     }
-    .seo-pricing-grid.seo-pricing-grid--two {
-        flex-direction: column;
+    .seo-pricing-grid.seo-pricing-grid--two .seo-pricing-card,
+    .seo-pricing-grid .seo-pricing-card {
+        height: auto;
+        min-height: 0;
     }
     .seo-hero-copy {
         padding: 10px 12px;
@@ -5642,14 +5718,16 @@ html[dir="rtl"] .upload-status {
         border-radius: 8px;
     }
 
-    /* Upload row: one line — music toggle + upload button */
+    /* Upload row: Start CTA stays page-centered */
     .upload-controls-row {
-        display: flex;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         flex-wrap: nowrap;
         justify-content: center;
         align-items: center;
-        gap: 8px;
+        column-gap: 8px;
         margin-bottom: 8px;
+        direction: ltr;
     }
     .regular-record-btn {
         display: inline-flex;
@@ -6987,21 +7065,23 @@ html[dir="rtl"] .upload-status {
   }
 
   .main-app-container > .upload-zone .upload-controls-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     justify-content: center;
     align-items: center;
     width: 100%;
     margin: 0;
-    gap: 10px;
+    column-gap: 10px;
     flex-wrap: nowrap;
-    direction: rtl;
+    direction: ltr;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .upload-main-cluster {
-    flex: 1 1 auto;
+    grid-column: 2;
+    flex: 0 0 auto;
     min-width: 0;
-    max-width: min(380px, calc(100% - 64px));
-    gap: 6px;
+    max-width: none;
+    justify-self: center;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .btn.btn-primary {
@@ -7009,13 +7089,13 @@ html[dir="rtl"] .upload-status {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     min-width: 120px;
     max-width: 280px;
     height: 50px;
     border-radius: 18px;
     padding: 10px 18px;
-    flex-shrink: 1;
+    flex-shrink: 0;
   }
 
   .main-app-container > .upload-zone .upload-controls-row .regular-asr-lang-select {
@@ -7032,6 +7112,8 @@ html[dir="rtl"] .upload-status {
   }
 
   .main-app-container > .upload-zone .upload-controls-row .regular-record-btn {
+    grid-column: 1;
+    justify-self: end;
     flex-shrink: 0;
   }
 
@@ -7413,28 +7495,34 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row {
-    display: flex !important;
+    display: grid !important;
+    grid-template-columns: 1fr auto 1fr;
     justify-content: center;
     align-items: center;
-    gap: 10px;
+    column-gap: 10px;
     width: 100%;
+    direction: ltr;
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .upload-main-cluster {
-    flex: 1 1 auto;
+    grid-column: 2;
+    flex: 0 0 auto;
     min-width: 0;
-    max-width: min(340px, calc(100% - 72px));
+    max-width: none;
+    justify-self: center;
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .btn.btn-primary {
     display: inline-flex !important;
-    flex: 1 1 auto;
-    min-width: 0;
-    max-width: none;
+    flex: 0 0 auto;
+    min-width: 120px;
+    max-width: 280px;
   }
 
   .main-app-container:not(.medical-mode) > .upload-zone .upload-controls-row .regular-record-btn {
     display: inline-flex !important;
+    grid-column: 1;
+    justify-self: end;
   }
 
   /* Transcript/video session: lock page chrome; only #transcript-window scrolls */
