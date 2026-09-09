@@ -93,6 +93,7 @@
       }
       html.qs-medical-entry #seo-home-content,
       html.qs-medical-entry #main-btn,
+      html.qs-medical-entry #regular-record-wrap,
       html.qs-medical-entry #regular-record-btn { display: none !important; }
       html.qs-medical-entry #medical-session-header,
       html.qs-medical-entry #medical-recording-wrap { display: block !important; }
@@ -360,43 +361,86 @@
     </footer>
 
     <script>
-        // Expose on window so app_logic.js (module) can see the socket.
+        // Expose on window so app_logic.js (module) can use the socket.
         (function () {
             if (typeof io !== 'function') {
                 console.warn('QuickScribe: Socket.IO library not loaded; live job updates disabled.');
                 window.socket = null;
                 return;
             }
-            const socketOrigin = `${window.location.protocol}//${window.location.host}`;
-            // Medical (and Site): HTTP long-polling only — never upgrade to WebSocket.
-            // Hospital/corporate proxies often kill WS mid-session; polling stays reliable.
-            const socket = io(socketOrigin, {
-                transports: ['polling'],
-                upgrade: false,
-                secure: window.location.protocol === 'https:',
-                reconnection: true,
-                reconnectionAttempts: 20,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 10000,
-                timeout: 20000
-            });
-            window.socket = socket;
             let socketWarned = false;
-            socket.on('connect_error', (err) => {
-                if (!socketWarned) {
-                    socketWarned = true;
-                    const detail = (err && (err.message || err.description)) ? String(err.message || err.description) : '';
-                    console.warn('QuickScribe: Socket.IO could not connect (live job updates disabled).' + (detail ? ' ' + detail : '') + ' Deploy with Socket.IO reachable on the same origin, or allow long-polling through your proxy.');
-                }
-            });
-            socket.on('connect', () => {
+            function shouldAutoConnectSocket() {
                 try {
-                    const t = socket.io && socket.io.engine && socket.io.engine.transport
-                        ? socket.io.engine.transport.name
-                        : '';
-                    if (t) console.info('QuickScribe: Socket.IO connected via', t);
-                } catch (_) {}
-            });
+                    if (document.body.classList.contains('medical-mode')) return true;
+                    return !!(localStorage.getItem('activeJobId') || '').trim();
+                } catch (_) {
+                    return false;
+                }
+            }
+            function createSocket() {
+                const socketOrigin = `${window.location.protocol}//${window.location.host}`;
+                // Medical (and Site): HTTP long-polling only — never upgrade to WebSocket.
+                const socket = io(socketOrigin, {
+                    transports: ['polling'],
+                    upgrade: false,
+                    secure: window.location.protocol === 'https:',
+                    withCredentials: true,
+                    reconnection: true,
+                    reconnectionAttempts: Infinity,
+                    reconnectionDelay: 1000,
+                    reconnectionDelayMax: 10000,
+                    randomizationFactor: 0.5,
+                    // Must exceed server ping_timeout. A 20s xhr timeout aborts the
+                    // long-poll while the server still holds it → overlapping GET →
+                    // HTTP 400 Invalid session after ~1 minute.
+                    timeout: 120000
+                });
+                socket.on('connect_error', (err) => {
+                    const detail = (err && (err.message || err.description)) ? String(err.message || err.description) : '';
+                    const invalid = /invalid session|session is disconnected/i.test(detail);
+                    if (invalid) {
+                        console.warn('QuickScribe: Socket.IO session dropped; reconnecting.', detail);
+                        return;
+                    }
+                    if (socketWarned) return;
+                    socketWarned = true;
+                    console.warn(
+                        'QuickScribe: Socket.IO connect error; will keep retrying with backoff.'
+                        + (detail ? ' ' + detail : '')
+                    );
+                });
+                socket.on('reconnect', (attempt) => {
+                    console.info('QuickScribe: Socket.IO reconnected after', attempt, 'attempt(s)');
+                    if (typeof window.qsBindSocketHandlers === 'function') {
+                        window.qsBindSocketHandlers(socket);
+                    }
+                });
+                socket.on('connect', () => {
+                    try {
+                        const t = socket.io && socket.io.engine && socket.io.engine.transport
+                            ? socket.io.engine.transport.name
+                            : '';
+                        if (t) console.info('QuickScribe: Socket.IO connected via', t);
+                    } catch (_) {}
+                    if (typeof window.qsBindSocketHandlers === 'function') {
+                        window.qsBindSocketHandlers(socket);
+                    }
+                });
+                if (typeof window.qsBindSocketHandlers === 'function') {
+                    window.qsBindSocketHandlers(socket);
+                }
+                return socket;
+            }
+            window.qsWantSocket = function () {
+                if (window.socket) return window.socket;
+                window.socket = createSocket();
+                return window.socket;
+            };
+            if (shouldAutoConnectSocket()) {
+                window.qsWantSocket();
+            } else {
+                window.socket = null;
+            }
         })();
     </script>
     <script>

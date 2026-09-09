@@ -39,13 +39,15 @@ function qsDownsampleFloat32(buffer, fromRate, toRate) {
     return out;
 }
 
+function qsSpeechGainAmount(rms, peak) {
+    if (!Number.isFinite(rms) || rms <= 0.002) return 1;
+    const gain = Math.max(1, Math.min(3, 0.03 / rms, 0.92 / Math.max(0.001, Number(peak) || 0.001)));
+    return gain <= 1.05 ? 1 : gain;
+}
+
 function qsApplySpeechGain(float32, rms, peak) {
-    if (!float32 || !float32.length) return float32;
-    if (!Number.isFinite(rms) || rms <= 0.002) return float32;
-    const targetRms = 0.03;
-    const maxPeak = Math.max(0.001, Number(peak) || 0.001);
-    const gain = Math.max(1, Math.min(3, targetRms / rms, 0.92 / maxPeak));
-    if (gain <= 1.05) return float32;
+    const gain = qsSpeechGainAmount(rms, peak);
+    if (!float32 || !float32.length || gain <= 1.05) return float32;
     const out = new Float32Array(float32.length);
     for (let i = 0; i < float32.length; i++) {
         out[i] = Math.max(-1, Math.min(1, float32[i] * gain));
@@ -113,11 +115,13 @@ function qsWaitForSocketConnected(sock, timeoutMs = 20000) {
 /** Max PCM held before transport is armed (~45s @ 16 kHz mono int16). */
 const QS_PRE_READY_BUFFER_MAX_BYTES = 16000 * 2 * 45;
 /** When Socket.IO is on HTTP polling, batch PCM for fewer POSTs.
- * Server splits to ~100ms AWS frames — keep batches moderate (~0.5s) for lower latency. */
+ * Server splits to ~100ms AWS frames. 300ms batches cut poll overlap vs 150–250ms. */
 const QS_POLLING_BATCH_MAX_BYTES = 16000; // ~0.5s @ 16 kHz mono int16
-const QS_POLLING_BATCH_MAX_MS = 250;
-/** If ready but no server audio ack / partials, restart AWS instead of waiting ~15s for timeout. */
-const QS_STARVATION_RESTART_MS = 5000;
+const QS_POLLING_BATCH_MAX_MS = 300;
+/** Cold start: no server audio/partials at all. Mid-session gaps of 5–8s are normal for AWS. */
+const QS_STARVATION_RESTART_MS = 8000;
+/** After live text has started, only treat a stall as real if AWS is silent this long. */
+const QS_PARTIAL_STALL_MS = 20000;
 
 export class MedicalAwsTranscribeStream {
     constructor(options = {}) {
@@ -130,7 +134,7 @@ export class MedicalAwsTranscribeStream {
             : ['he-IL', 'en-US'];
         this.preferredLanguage = String(options.preferredLanguage || this.languageCode || 'he-IL').trim() || 'he-IL';
         this.accessToken = String(options.accessToken || '').trim();
-        this.guestTry = options.guestTry === true;
+        this.committedTranscript = String(options.committedTranscript || '').trim();
         this.applySpeechGain = options.applySpeechGain !== false;
         this.transport = options.transport || 'socketio';
         this.onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
@@ -175,7 +179,18 @@ export class MedicalAwsTranscribeStream {
         this._serverGotAudio = false;
         this._starvationTimer = null;
         this._starvationRestarts = 0;
+        this._stallTransportCycles = 0;
         this._loggedPartial = false;
+        this._lastPartialText = '';
+        this._lastPartialAt = 0;
+        this._lastQuietAt = Date.now();
+        this._partialsSinceReady = 0;
+        this._restartingAfterStall = false;
+        this._stallRestartAt = 0;
+        this._chunksSentAtStallRestart = 0;
+        this._httpAudio = true;
+        this._httpAudioLogged = false;
+        this._httpAudioFailed = false;
     }
 
     _emitStatus(text) {
@@ -225,11 +240,11 @@ export class MedicalAwsTranscribeStream {
         if (msg.type === 'parked') {
             console.info('[transcribe-stream] aws parked', msg.reason || '', 'committed_len=', msg.committed_len);
             this._emitStatus('parked');
+            this._armStarvationWatch();
             return;
         }
         if (msg.type === 'audio_rx') {
             this._serverGotAudio = true;
-            this._clearStarvationWatch();
             return;
         }
         if (msg.type === 'error') {
@@ -244,6 +259,10 @@ export class MedicalAwsTranscribeStream {
             this._ready = true;
             this._hadLiveSession = true;
             this._restartingAfterReconnect = false;
+            this._restartingAfterStall = false;
+            this._httpAudioFailed = false;
+            this._partialsSinceReady = 0;
+            this._starvationRestarts = 0;
             this._armTransport();
             this._emitStatus('listening');
             this._resolveStart();
@@ -253,12 +272,19 @@ export class MedicalAwsTranscribeStream {
         if (msg.type === 'partial') {
             const t = String(msg.text || '').trim();
             if (t) {
-                this._partialUpdates += 1;
                 this._serverGotAudio = true;
-                this._clearStarvationWatch();
+                this._stallTransportCycles = 0;
+                if (t === this._lastPartialText) return;
+                this._partialsSinceReady += 1;
+                this._lastPartialAt = Date.now();
+                this._restartingAfterStall = false;
+                this._armStarvationWatch();
+                this._lastPartialText = t;
+                this._partialUpdates += 1;
                 if (!this._loggedPartial) {
                     this._loggedPartial = true;
-                    console.info('[transcribe-stream] first partial received');
+                    const via = msg.via ? ` via ${msg.via}` : '';
+                    console.info('[transcribe-stream] first partial received' + via);
                 } else if (this._partialUpdates <= 5 || this._partialUpdates % 10 === 0) {
                     console.info('[transcribe-stream] partial update:', this._partialUpdates, 'chars:', t.length);
                 }
@@ -325,8 +351,23 @@ export class MedicalAwsTranscribeStream {
         return qsSocketIoIsPollingOnly(this._socket) || this._socketTransportName() === 'polling';
     }
 
+    _snapshotCommittedText() {
+        try {
+            if (typeof window.qsSyncMedicalLiveStreamTextFromDom === 'function') {
+                window.qsSyncMedicalLiveStreamTextFromDom();
+            }
+        } catch (_) {}
+        let text = '';
+        try { text = String(window._medicalLiveStreamText || '').trim(); } catch (_) {}
+        if (!text) text = String(this.committedTranscript || '').trim();
+        this.committedTranscript = text;
+        try { window._medicalLiveCommitAnchor = text; } catch (_) {}
+        return text;
+    }
+
     _emitStartConfig() {
         if (!this._socket) return;
+        const committed = this._snapshotCommittedText();
         this._socket.emit('medical_transcribe_start', {
             action: 'start',
             sample_rate_hz: this.sampleRateHz,
@@ -336,6 +377,8 @@ export class MedicalAwsTranscribeStream {
             preferred_language: this.preferredLanguage,
             access_token: this.accessToken,
             guest_try: this.guestTry === true,
+            committed_transcript: committed,
+            transcript_prefix: committed,
         });
     }
 
@@ -349,43 +392,89 @@ export class MedicalAwsTranscribeStream {
     _armStarvationWatch() {
         this._clearStarvationWatch();
         if (!this._socket) return;
+        const delay = this._partialsSinceReady > 0
+            ? QS_PARTIAL_STALL_MS
+            : QS_STARVATION_RESTART_MS;
         this._starvationTimer = setTimeout(() => {
             this._starvationTimer = null;
             this._onStarvationTimeout();
-        }, QS_STARVATION_RESTART_MS);
+        }, delay);
     }
 
-    _onStarvationTimeout() {
-        if (!this._sessionWanted || this._feedPaused) return;
-        if (this._loggedPartial || this._serverGotAudio) return;
-        if (this._chunksSent < 20) return;
-        if (this._starvationRestarts >= 2) {
-            console.warn(
-                '[transcribe-stream] still no server audio after restarts;',
-                'chunksSent=',
-                this._chunksSent,
-                'transport=',
-                this._socketTransportName() || 'unknown'
-            );
+    _restartAwsAfterStall(reason) {
+        const now = Date.now();
+        if (this._restartingAfterStall && (now - this._stallRestartAt) < 10000) {
+            this._armStarvationWatch();
             return;
         }
         this._starvationRestarts += 1;
+        this._restartingAfterStall = true;
+        this._stallRestartAt = now;
+        this._chunksSentAtStallRestart = this._chunksSent;
+        this._partialsSinceReady = 0;
         console.warn(
-            '[transcribe-stream] ready but no server audio/partials after',
-            QS_STARVATION_RESTART_MS,
-            'ms — restarting AWS session (#',
+            '[transcribe-stream]',
+            reason,
+            '— restarting AWS session (#',
             this._starvationRestarts,
-            ') transport=',
+            ') chunksSent=',
+            this._chunksSent,
+            'rms=',
+            this.getLastRms().toFixed(4),
+            'transport=',
             this._socketTransportName() || 'unknown'
         );
-        this._ready = false;
-        this._transportArmed = false;
-        this._serverGotAudio = false;
+        // Keep transport armed so PCM POSTs continue. Disarming dumps audio into
+        // a local buffer, so the new session never hears the speaker.
         this._emitStatus('resuming');
         try {
             this._emitStartConfig();
         } catch (e) {
-            console.warn('[transcribe-stream] starvation restart failed', e);
+            this._restartingAfterStall = false;
+            console.warn('[transcribe-stream] stall restart failed', e);
+        }
+        this._armStarvationWatch();
+    }
+
+    _onStarvationTimeout() {
+        if (!this._sessionWanted || this._feedPaused) return;
+        const speaking = this.getLastRms() >= 0.008;
+        if (!speaking) {
+            this._armStarvationWatch();
+            return;
+        }
+        const speechGapMs = Date.now() - Math.max(this._lastQuietAt || 0, this._lastPartialAt || 0);
+        if (this._restartingAfterStall) {
+            const sentSince = this._chunksSent - (this._chunksSentAtStallRestart || 0);
+            if (sentSince < 80 || speechGapMs < QS_STARVATION_RESTART_MS) {
+                this._armStarvationWatch();
+                return;
+            }
+            if (this._starvationRestarts >= 3) {
+                console.warn(
+                    '[transcribe-stream] still no new partials after restarts;',
+                    'chunksSent=',
+                    this._chunksSent,
+                    'transport=',
+                    this._socketTransportName() || 'unknown'
+                );
+                this._armStarvationWatch();
+                return;
+            }
+            this._restartAwsAfterStall('start issued but no new partials');
+            return;
+        }
+        if (this._partialsSinceReady <= 0) {
+            if (this._chunksSent < 20 || speechGapMs < QS_STARVATION_RESTART_MS) {
+                this._armStarvationWatch();
+                return;
+            }
+            this._restartAwsAfterStall('ready but no new partials');
+            return;
+        }
+        if (this._chunksSent >= 20 && speechGapMs >= QS_PARTIAL_STALL_MS) {
+            this._restartAwsAfterStall('no partial while speaking');
+            return;
         }
         this._armStarvationWatch();
     }
@@ -416,6 +505,7 @@ export class MedicalAwsTranscribeStream {
             // Force pre-ready buffering until the new bridge is ready (avoid dropped PCM).
             this._transportArmed = false;
             this._clearPollingBatch();
+            this._snapshotCommittedText();
             this._emitStatus('resuming');
         };
         this._onSocketConnect = () => {
@@ -424,6 +514,7 @@ export class MedicalAwsTranscribeStream {
             if (this._ready) return;
             if (this._restartingAfterReconnect) return;
             this._restartingAfterReconnect = true;
+            this._httpAudioFailed = false;
             this._serverGotAudio = false;
             this._clearStarvationWatch();
             console.info(
@@ -475,8 +566,53 @@ export class MedicalAwsTranscribeStream {
         }
         this._pollingBatch = [];
         this._pollingBatchBytes = 0;
+        this._emitAudioWithAck(merged);
+    }
+
+    _emitAudioWithAck(payload) {
+        if (this._httpAudio && !this._httpAudioFailed && this._socket && this._socket.id) {
+            void this._postAudioHttp(payload);
+            return;
+        }
+        if (!this._socket) return;
+        const onAck = (ack) => {
+            if (!ack || typeof ack !== 'object') return;
+            this._handleServerMessage(ack);
+        };
         try {
-            this._socket.emit('medical_transcribe_audio', merged);
+            this._socket.emit('medical_transcribe_audio', payload, onAck);
+        } catch (_) {}
+    }
+
+    async _postAudioHttp(payload) {
+        const sid = this._socket && this._socket.id;
+        if (!sid) return;
+        if (!this._httpAudioLogged) {
+            this._httpAudioLogged = true;
+            console.info('[transcribe-stream] audio POST /api/medical_transcribe_audio (transcript on same response)');
+        }
+        try {
+            const body = payload instanceof Uint8Array
+                ? payload
+                : new Uint8Array(payload instanceof ArrayBuffer ? payload : payload);
+            const res = await fetch(
+                `/api/medical_transcribe_audio?sid=${encodeURIComponent(sid)}`,
+                {
+                    method: 'POST',
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    body,
+                }
+            );
+            if (res.status === 409) {
+                this._httpAudioFailed = true;
+                this._emitAudioWithAck(payload);
+                return;
+            }
+            if (!res.ok) return;
+            const ack = await res.json().catch(() => null);
+            if (ack && ack.type) this._handleServerMessage(ack);
         } catch (_) {}
     }
 
@@ -511,7 +647,7 @@ export class MedicalAwsTranscribeStream {
                 return;
             }
             this._flushPollingBatch();
-            this._socket.emit('medical_transcribe_audio', payload);
+            this._emitAudioWithAck(payload);
         } else if (this._ws) {
             this._ws.send(payload);
         }
@@ -601,8 +737,9 @@ export class MedicalAwsTranscribeStream {
             }
             this._lastRms = Math.sqrt(sumSq / pcm.length);
             this._lastPeak = peak;
+            if (this._lastRms < 0.008) this._lastQuietAt = Date.now();
+            this._lastGain = this.applySpeechGain ? qsSpeechGainAmount(this._lastRms, this._lastPeak) : 1;
             const audioPcm = this.applySpeechGain ? qsApplySpeechGain(pcm, this._lastRms, this._lastPeak) : pcm;
-            this._lastGain = audioPcm === pcm ? 1 : Math.max(1, Math.min(3, 0.03 / Math.max(this._lastRms, 0.002)));
             const pcmBuf = qsFloat32ToPcm16(audioPcm);
             if (this._canSendLiveAudio()) {
                 this._sendAudioChunk(pcmBuf);
@@ -620,8 +757,16 @@ export class MedicalAwsTranscribeStream {
                 }
             }
             const totalChunks = this._chunksSent + this._preReadyChunksBuffered;
-            if (totalChunks === 1 || this._chunksSent === 1 || (this._chunksSent > 0 && this._chunksSent % 100 === 0)) {
-                console.info(
+            const logLevels = (
+                totalChunks === 1
+                || this._chunksSent === 1
+                || this._chunksSent === 10
+                || this._chunksSent === 25
+                || (this._chunksSent > 0 && this._chunksSent % 50 === 0)
+            );
+            if (logLevels) {
+                // console.error survives the prod console gate (info/warn are no-oped).
+                console.error(
                     '[transcribe-stream] audio chunks sent:',
                     this._chunksSent,
                     'rms:',
@@ -731,6 +876,7 @@ export class MedicalAwsTranscribeStream {
         this._transportArmed = false;
         this._serverGotAudio = false;
         this._starvationRestarts = 0;
+        this._partialsSinceReady = 0;
         this._clearStarvationWatch();
         this._socketEventHandler = (msg) => this._handleServerMessage(msg);
         sock.on('medical_transcribe_event', this._socketEventHandler);
@@ -895,6 +1041,11 @@ export class MedicalAwsTranscribeStream {
         this._feedPaused = true;
         this._clearStarvationWatch();
         try { this._flushPollingBatch(); } catch (_) {}
+        try {
+            if (this._socket && this._socket.connected) {
+                this._socket.emit('medical_transcribe_pause');
+            }
+        } catch (_) {}
         console.info('[transcribe-stream] feed paused');
     }
 
@@ -908,11 +1059,85 @@ export class MedicalAwsTranscribeStream {
     }
 
     resume() {
+        const wasPaused = this._feedPaused;
         this._feedPaused = false;
         if (this._audioCtx && this._audioCtx.state === 'suspended') {
             void this._audioCtx.resume().catch(() => {});
         }
-        console.info('[transcribe-stream] feed resumed');
+        if (wasPaused) {
+            console.info('[transcribe-stream] feed resumed');
+        }
+    }
+
+    /**
+     * Tab/app return: keep this capture graph and Socket.IO sid.
+     * The server parks AWS after ~15s with no PCM and starts a new AWS
+     * session on the next chunk — tearing the client down waits 45s for a
+     * new `ready` and is what froze live medical after a tab switch.
+     */
+    ensureLiveAfterForeground(hiddenMs = 0) {
+        this.resume();
+        this._sessionWanted = true;
+        const sock = this._socket || qsGetGlobalSocket();
+        if (sock) this._socket = sock;
+        const hiddenLong = Number(hiddenMs) >= 8000;
+        if (this.isLive() && !hiddenLong) {
+            console.info(
+                '[transcribe-stream] tab foreground: keeping live session',
+                'hiddenMs=',
+                hiddenMs,
+                'transport=',
+                qsSocketTransportName(sock) || 'unknown'
+            );
+            this._armStarvationWatch();
+            return;
+        }
+        if (this.isLive() && hiddenLong) {
+            console.info(
+                '[transcribe-stream] tab foreground: hidden long; re-issuing aws start',
+                'hiddenMs=',
+                hiddenMs,
+                'transport=',
+                qsSocketTransportName(sock) || 'unknown'
+            );
+            this._partialsSinceReady = 0;
+            this._emitStatus('resuming');
+            try { this._emitStartConfig(); } catch (e) {
+                console.warn('[transcribe-stream] tab foreground start failed', e);
+            }
+            this._armStarvationWatch();
+            return;
+        }
+        if (!sock) {
+            console.warn('[transcribe-stream] tab foreground: no socket');
+            return;
+        }
+        if (!sock.connected) {
+            console.info('[transcribe-stream] tab foreground: socket down; AWS will restart on reconnect');
+            this._emitStatus('resuming');
+            return;
+        }
+        this._armTransport();
+        this._emitStatus('resuming');
+        if (this._startResolve) {
+            return;
+        }
+        if (!this._hadLiveSession || !this._ready) {
+            console.info(
+                '[transcribe-stream] tab foreground: re-issuing aws start on existing socket',
+                'hiddenMs=',
+                hiddenMs
+            );
+            try { this._emitStartConfig(); } catch (e) {
+                console.warn('[transcribe-stream] tab foreground start failed', e);
+            }
+            return;
+        }
+        console.info(
+            '[transcribe-stream] tab foreground: sending audio on existing bridge',
+            'hiddenMs=',
+            hiddenMs
+        );
     }
 
     getLastRms() {
@@ -996,7 +1221,7 @@ export class MedicalAwsTranscribeStream {
             this._teardownSocketIo();
             this._clearPollingBatch();
             await this._closeAudioContext();
-            console.info(
+            console.error(
                 '[transcribe-stream] stopped; chunks sent:',
                 chunksSent,
                 'last rms:',
@@ -1044,7 +1269,7 @@ export class MedicalAwsTranscribeStream {
         } catch (_) {}
         this._ws = null;
         await this._closeAudioContext();
-        console.info(
+        console.error(
             '[transcribe-stream] stopped; chunks sent:',
             chunksSent,
             'transcript chars:',

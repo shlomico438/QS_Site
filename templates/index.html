@@ -488,7 +488,7 @@ try {
                 <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
-                <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}">
+                <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}" data-showcase-version="{{ static_asset_version }}">
                     <div class="qs-feature-showcase-header">
                         <p class="qs-feature-showcase-kicker" data-i18n="showcase_kicker">בינתיים, הנה מה שמחכה לכם</p>
                         <h2 class="qs-feature-showcase-title" data-i18n="showcase_title">כלים חזקים — מוכנים ברגע שהתמלול יסתיים</h2>
@@ -499,7 +499,7 @@ try {
                         <div class="qs-feature-showcase-card">
                             <div class="qs-feature-showcase-media">
                                 <span class="qs-feature-showcase-slide-badge">Aa</span>
-                                <img class="qs-feature-showcase-image" src="{{ url_for('static', filename='images/showcase/subtitle-styling.png') }}" alt="" loading="lazy" decoding="async">
+                                <img class="qs-feature-showcase-image" src="{{ url_for('static', filename='images/showcase/subtitle-styling.png') }}?v={{ static_asset_version }}" alt="" loading="lazy" decoding="async">
                             </div>
                             <div class="qs-feature-showcase-copy">
                                 <h3 class="qs-feature-showcase-slide-title"></h3>
@@ -662,7 +662,18 @@ try {
 
         <div class="upload-zone">
             <div class="upload-controls-row">
-                <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" style="display:none;" data-i18n="regular_record_audio">הקלטת שמע</button>
+                <div class="regular-record-wrap" id="regular-record-wrap" hidden>
+                    <label class="regular-record-label" id="regular-record-label" for="regular-record-btn" data-i18n="regular_record_audio">הקלטת שמע</label>
+                    <button class="btn btn-secondary regular-record-btn" id="regular-record-btn" type="button" data-i18n-aria-label="regular_record_audio" aria-label="הקלטת שמע">
+                        <svg class="regular-record-mic-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="2" width="6" height="11" rx="3"></rect>
+                            <path d="M5.5 11a6.5 6.5 0 0 0 13 0"></path>
+                            <line x1="12" y1="17.5" x2="12" y2="21"></line>
+                            <line x1="9" y1="21" x2="15" y2="21"></line>
+                        </svg>
+                        <span class="regular-record-btn-text" data-i18n="regular_record_audio">הקלטת שמע</span>
+                    </button>
+                </div>
                 <input type="file" id="fileInput" class="qs-visually-hidden-file" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" aria-hidden="true" tabindex="-1">
                 <div class="upload-main-cluster">
                     <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>

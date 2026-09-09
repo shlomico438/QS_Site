@@ -1139,7 +1139,7 @@ window.applyTranslations = function() {
         if (el.id === 'main-btn' && (window.isTriggering || el.getAttribute('data-qs-dynamic-label') === '1')) {
             return;
         }
-        if (el.id === 'regular-record-btn') {
+        if (el.id === 'regular-record-btn' || el.id === 'regular-record-label' || el.classList.contains('regular-record-btn-text')) {
             const rec = window._medicalRecorder;
             if (rec && (rec.state === 'recording' || rec.state === 'paused')) return;
         }

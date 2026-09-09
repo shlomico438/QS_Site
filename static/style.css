@@ -2,10 +2,11 @@
    ROOT & GLOBAL
 ========================= */
 :root {
-    --qs-ui-scale: 0.9;
-    --nav-height: 104px;
+    /* Desktop: full 16px. Mobile keeps 0.9 so phones are not oversized. */
+    --qs-ui-scale: 1;
+    --nav-height: 134px;
     --nav-utility-height: 40px;
-    --nav-main-height: 64px;
+    --nav-main-height: 94px;
     --nav-total-height: calc(var(--nav-utility-height) + var(--nav-main-height));
 }
 
@@ -16,6 +17,12 @@ html {
     zoom: var(--qs-ui-scale);
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+}
+
+@media screen and (max-width: 768px) {
+    :root {
+        --qs-ui-scale: 0.9;
+    }
 }
 
 /* Browsers without zoom: shrink rem-based typography (~90%). */

@@ -9,11 +9,10 @@ Socket.IO protocol:
   - Client emits medical_transcribe_audio (binary PCM int16 mono)
   - Client emits medical_transcribe_stop
 
-Silence keepalive (default on): once per idle spell, ~12s after the last
-client audio chunk, the bridge injects ~1s of PCM silence (split into small
-AWS frames) so AWS does not 15s-timeout during a short thinking pause. A second
-idle stretch (~30s total) lets AWS die and the bridge parks; the next spoken
-audio starts a new session.
+Silence keepalive (default on): the AWS feed loop sends ~100ms of PCM silence
+after ~8s with no AudioEvents so AWS does not 15s-timeout when Socket.IO
+polling stalls. A watchdog thread does the same from last client audio. Long
+true idle still parks; the next spoken audio starts a new session.
 
 WebSocket protocol (/ws/transcribe):
   1. Optional JSON text frame to start: {"action":"start","sample_rate_hz":16000}
@@ -64,9 +63,11 @@ try:
     # must run on the gevent hub (main thread).  Running it from an OS thread deadlocks on the
     # first I/O await.  Grab the original selector so we can build a real asyncio loop.
     _REAL_SELECTOR_CLASS = _gevent_monkey.get_original('selectors', 'DefaultSelector')
+    _REAL_SLEEP = _gevent_monkey.get_original('time', 'sleep')
     # Capture the main gevent hub at import time (we are on the main thread here).
-    # _run_on_hub uses hub.loop.run_callback which is thread-safe in libev and always
-    # dispatches to the main event loop even when called from an asyncio OS thread.
+    # Cross-thread hops must use loop.run_callback_threadsafe — run_callback() is
+    # not safe from the AWS OS thread and can leave partials queued until a later
+    # network event (15s UI freeze, then a burst).
     import gevent as _gevent_mod
     _MAIN_GEVENT_HUB = _gevent_mod.get_hub()
 except Exception:  # pragma: no cover
@@ -78,6 +79,7 @@ except Exception:  # pragma: no cover
     _REAL_QUEUE_EMPTY = queue.Empty
     _REAL_QUEUE_FULL = queue.Full
     _REAL_SELECTOR_CLASS = _selectors_mod.DefaultSelector
+    _REAL_SLEEP = time.sleep
     _MAIN_GEVENT_HUB = None
     try:
         import _thread
@@ -125,6 +127,9 @@ def _start_real_os_thread(target: Callable[[], None], name: str) -> None:
 
 DEFAULT_LANGUAGE = 'he-IL'
 DEFAULT_SAMPLE_RATE = 16000
+# Drop oldest PCM if AWS/socket lags so the deque cannot pin the GIL/RAM.
+_AUDIO_DEQUE_MAX_BYTES = 16000 * 2 * 6  # ~6s of 16 kHz mono int16
+_AUDIO_PENDING_MAX_CHUNKS = 80
 # Doctors often mix Hebrew + English mid-visit. IdentifyMultipleLanguages needs ≥2 options
 # and language_code must be omitted (see amazon-transcribe StartStreamTranscription).
 DEFAULT_LANGUAGE_OPTIONS = ('he-IL', 'en-US')
@@ -758,6 +763,7 @@ class AwsTranscribeStreamSession:
         # safe from any gevent greenlet or real OS thread without gevent interference.
         self._audio_deque: collections.deque = collections.deque()
         self._audio_deque_has_sentinel = False
+        self._audio_deque_bytes = 0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._handler: Optional[_CollectingTranscriptHandler] = None
@@ -831,8 +837,25 @@ class AwsTranscribeStreamSession:
                 except Exception:
                     pass
             return
+        raw = bytes(chunk)
         self._chunks_queued += 1
-        self._audio_deque.append(bytes(chunk))
+        self._audio_deque.append(raw)
+        self._audio_deque_bytes += len(raw)
+        dropped = 0
+        while self._audio_deque_bytes > _AUDIO_DEQUE_MAX_BYTES and self._audio_deque:
+            oldest = self._audio_deque[0]
+            if oldest is None:
+                break
+            self._audio_deque.popleft()
+            self._audio_deque_bytes -= len(oldest)
+            dropped += 1
+        if dropped and (dropped == 1 or self._chunks_queued % 50 == 0):
+            logger.warning(
+                'transcribe audio deque overflow dropped=%d queued=%d bytes=%d',
+                dropped,
+                self._chunks_queued,
+                self._audio_deque_bytes,
+            )
 
     def feed_audio(self, chunk: bytes) -> None:
         if self._closed or not chunk:
@@ -895,8 +918,10 @@ class AwsTranscribeStreamSession:
         # must run on the gevent hub — calling it from an OS thread deadlocks on I/O awaits.
         try:
             self._loop = asyncio.SelectorEventLoop(_REAL_SELECTOR_CLASS())
+            logger.info('transcribe asyncio loop=%s selector=%s', type(self._loop).__name__, _REAL_SELECTOR_CLASS.__name__)
         except Exception:
             self._loop = asyncio.new_event_loop()
+            logger.warning('transcribe asyncio loop fallback %s', type(self._loop).__name__)
         asyncio.set_event_loop(self._loop)
         end_reason = 'ended'
         try:
@@ -1014,6 +1039,7 @@ class AwsTranscribeStreamSession:
             # deque.popleft() is GIL-atomic: no gevent lock involvement.
             logger.info('transcribe AWS feed loop started session=%s', self.session_id)
             max_frame = _aws_max_audio_event_bytes(self.sample_rate_hz)
+            last_aws_send = time.monotonic()
             while True:
                 drained = 0
                 while self._audio_deque:
@@ -1026,6 +1052,7 @@ class AwsTranscribeStreamSession:
                         logger.info('transcribe end-of-stream marker reached fed=%d', self._chunks_fed_to_aws)
                         await stream.input_stream.end_stream()
                         return
+                    self._audio_deque_bytes = max(0, self._audio_deque_bytes - len(chunk))
                     # Split Socket.IO polling batches / silence keepalive into AWS-safe frames.
                     for frame in _iter_aws_audio_frames(chunk, max_frame):
                         await stream.input_stream.send_audio_event(audio_chunk=frame)
@@ -1045,11 +1072,35 @@ class AwsTranscribeStreamSession:
                                 self._chunks_queued,
                                 self._bytes_fed_to_aws,
                             )
+                        # Yield to handle_events() on this loop (partials).
+                        await asyncio.sleep(0)
+                        # asyncio.sleep(0) does not drop the GIL. Socket.IO polling
+                        # runs on the main gevent thread and starves until we do.
+                        # A tiny real sleep every other frame (~200ms of audio) lets
+                        # gunicorn finish POSTs. Do not sleep on every frame and do
+                        # not skip asyncio.sleep(0) — that combo froze partials.
+                        if self._chunks_fed_to_aws % 2 == 0:
+                            _REAL_SLEEP(0.003)
+                        last_aws_send = time.monotonic()
                 if not drained:
-                    await asyncio.sleep(0.005)
+                    # AWS closes the stream after ~15s with no AudioEvents.
+                    # Socket.IO polling can stall that long while this loop is idle;
+                    # send a short silence frame so the session stays up and the
+                    # client does not see park → resume (a pause in the transcript).
+                    if (time.monotonic() - last_aws_send) >= 8.0:
+                        n_samples = max(160, min(max_frame // 2, int(self.sample_rate_hz * 0.1)))
+                        await stream.input_stream.send_audio_event(
+                            audio_chunk=b'\x00\x00' * n_samples,
+                        )
+                        last_aws_send = time.monotonic()
+                        logger.info(
+                            'transcribe feed-loop silence keepalive session=%s',
+                            self.session_id,
+                        )
+                    await asyncio.sleep(0.05)
 
         # Call on_ready directly — it schedules the Socket.IO 'ready' emit via
-        # _run_on_hub (main gevent hub), which is safe from this asyncio OS thread.
+        # _run_on_hub (thread-safe hop onto the main gevent hub).
         if self.on_ready:
             try:
                 self.on_ready()
@@ -1099,16 +1150,32 @@ def _ws_send_json(ws, payload: dict) -> None:
     ws.send(json.dumps(payload, ensure_ascii=False))
 
 
-def _ws_send_json_from_hub(ws, payload: dict) -> None:
-    """Send on the gevent hub thread (safe after ThreadPoolExecutor callbacks)."""
+def _hub_schedule(callback, *args) -> bool:
+    """Schedule callback on the main gevent hub from any OS thread.
+
+    Returns True if the callback was queued on the hub. False means the caller
+    should invoke it directly (no hub, or the loop API is missing).
+    """
     try:
-        import gevent
-        hub = gevent.get_hub()
-        if hub is not None and getattr(hub, 'loop', None) is not None:
-            hub.loop.run_callback(_ws_send_json, ws, payload)
-            return
+        hub = _MAIN_GEVENT_HUB
+        loop = getattr(hub, 'loop', None) if hub is not None else None
+        if loop is None:
+            return False
+        # gevent documents run_callback() as hub-thread only. From the AWS OS
+        # thread it can drop or delay the wakeup — the GET then sits until ping.
+        schedule = getattr(loop, 'run_callback_threadsafe', None) or getattr(loop, 'run_callback', None)
+        if schedule is None:
+            return False
+        schedule(callback, *args)
+        return True
     except Exception:
-        pass
+        return False
+
+
+def _ws_send_json_from_hub(ws, payload: dict) -> None:
+    """Send on the main gevent hub (safe after ThreadPoolExecutor / AWS threads)."""
+    if _hub_schedule(_ws_send_json, ws, payload):
+        return
     _ws_send_json(ws, payload)
 
 
@@ -1165,20 +1232,27 @@ def _coerce_audio_chunk(data) -> Optional[bytes]:
 def _run_on_hub(callback) -> None:
     """Schedule callback on the main gevent hub (safe from asyncio OS threads).
 
-    hub.loop.run_callback() is thread-safe in libev: it uses an async watcher to
-    wake the main event loop from any OS thread.  gevent.spawn() must NOT be used
-    here because get_hub() is thread-local — from an asyncio OS thread it returns a
-    per-thread mini-hub that is never started, so the callback would never fire.
+    Use run_callback_threadsafe() so the hub is woken from another OS thread.
+    gevent.spawn() must NOT be used here: get_hub() is thread-local and from an
+    asyncio OS thread it returns a per-thread mini-hub that is never started.
+    """
+    if _hub_schedule(callback):
+        return
+    callback()
+
+
+def _yield_hub() -> None:
+    """Let the Socket.IO polling GET / ping greenlet run.
+
+    Audio POSTs can occupy the gevent hub in a tight loop. Without a yield the
+    long-poll never completes, Engine.IO deletes the sid after ping_timeout,
+    and the GET returns HTTP 400 Invalid session.
     """
     try:
-        if _MAIN_GEVENT_HUB is not None:
-            loop = getattr(_MAIN_GEVENT_HUB, 'loop', None)
-            if loop is not None:
-                loop.run_callback(callback)
-                return
+        import gevent
+        gevent.sleep(0)
     except Exception:
         pass
-    callback()
 
 
 class TranscribeStreamBridge:
@@ -1213,6 +1287,47 @@ class TranscribeStreamBridge:
         self._silence_keepalive_used = False
         self._keepalive_stop: Optional[threading.Event] = None
         self._keepalive_thread: Optional[threading.Thread] = None
+        self._last_partial_text = ''
+        self._last_partial_push_at = 0.0
+        self._last_partial_push_text = ''
+        self._push_lock = _REAL_LOCK()
+        self._start_fail_count = 0
+
+    def _should_push_partial(self, text: str) -> bool:
+        """Wake the Socket.IO GET only when the client is not POSTing audio.
+
+        Live speech already gets the transcript on the audio POST ack. Emitting
+        during that window overlaps polls and Engine.IO drops the sid
+        (HTTP 400 Invalid session).
+        """
+        combined = str(text or '').strip()
+        if not combined:
+            return False
+        if self._client_audio_idle_sec() < 1.0:
+            return False
+        now = time.monotonic()
+        with self._push_lock:
+            last_at = float(self._last_partial_push_at or 0.0)
+            if combined == self._last_partial_push_text and (now - last_at) < 1.0:
+                return False
+            if (now - last_at) < 0.4:
+                return False
+            self._last_partial_push_at = now
+            self._last_partial_push_text = combined
+            return True
+
+    def latest_audio_ack(self) -> Optional[dict]:
+        """Latest transcript for the audio POST ack (polling GET may sit idle ~15s)."""
+        current = ''
+        sess = self.session
+        if sess is not None:
+            current = str(getattr(sess, 'best_transcript', '') or '')
+        text = self._combined_transcript(current)
+        if not text:
+            text = str(self._last_partial_text or '')
+        if not text:
+            return None
+        return {'type': 'partial', 'text': text, 'via': 'ack'}
 
     def _combined_transcript(self, current_session_text: str = '') -> str:
         parts = list(self._committed_segments)
@@ -1252,10 +1367,10 @@ class TranscribeStreamBridge:
         try:
             return max(
                 5.0,
-                float(os.environ.get('MEDICAL_TRANSCRIBE_SILENCE_KEEPALIVE_IDLE_SEC', '12') or 12),
+                float(os.environ.get('MEDICAL_TRANSCRIBE_SILENCE_KEEPALIVE_IDLE_SEC', '8') or 8),
             )
         except (TypeError, ValueError):
-            return 12.0
+            return 8.0
 
     def _stop_silence_keepalive_watchdog(self) -> None:
         stop = self._keepalive_stop
@@ -1314,13 +1429,10 @@ class TranscribeStreamBridge:
                     continue
                 self._feed_silence_keepalive_once()
 
-        worker = _REAL_THREAD(
-            target=_loop,
-            name='transcribe-silence-keepalive',
-            daemon=True,
-        )
-        self._keepalive_thread = worker
-        worker.start()
+        # Real OS thread: a gevent greenlet would freeze during the same hub stall
+        # that delays handle_audio, so silence would never reach AWS.
+        self._keepalive_thread = True
+        _start_real_os_thread(_loop, 'transcribe-silence-keepalive')
 
     def _should_rollover_after_audio_timeout(self) -> bool:
         if not self._alive:
@@ -1328,7 +1440,7 @@ class TranscribeStreamBridge:
         pending_audio = bool(self.audio_pending)
         idle_sec = self._client_audio_idle_sec()
         max_rollovers = max(1, int(os.environ.get('MEDICAL_TRANSCRIBE_MAX_ROLLOVERS', '8') or 8))
-        idle_limit = max(2.0, float(os.environ.get('MEDICAL_TRANSCRIBE_ROLLOVER_IDLE_SEC', '8') or 8))
+        idle_limit = max(2.0, float(os.environ.get('MEDICAL_TRANSCRIBE_ROLLOVER_IDLE_SEC', '45') or 45))
         if self._rollover_count >= max_rollovers:
             logger.warning(
                 'transcribe rollover suppressed: max replacements reached (%d) idle=%.1fs pending_audio=%d',
@@ -1375,10 +1487,26 @@ class TranscribeStreamBridge:
             except Exception:
                 logger.debug('transcribe park end-marker failed', exc_info=True)
 
+    def handle_client_pause(self) -> None:
+        """Park AWS from the Socket.IO hub so the waiting GET is flushed immediately."""
+        if self.session_live or self.session is not None:
+            self._park_dead_session('client_pause')
+            return
+        self._emit({'type': 'paused'})
+
     def _roll_over_session(self, reason: str) -> None:
         if not self._alive:
             return
         if reason == 'audio_timeout' and not self._should_rollover_after_audio_timeout():
+            self._park_dead_session(reason)
+            return
+        max_rollovers = max(1, int(os.environ.get('MEDICAL_TRANSCRIBE_MAX_ROLLOVERS', '8') or 8))
+        if self._rollover_count >= max_rollovers:
+            logger.warning(
+                'transcribe rollover suppressed after %s: max replacements reached (%d)',
+                reason,
+                max_rollovers,
+            )
             self._park_dead_session(reason)
             return
         with self._rollover_lock:
@@ -1432,7 +1560,9 @@ class TranscribeStreamBridge:
                 self._logged_first_partial = True
                 logger.info('transcribe first partial (%d chars)', len(combined))
             self._combined_partials.append(combined)
-            self._emit({'type': 'partial', 'text': combined})
+            self._last_partial_text = combined
+            if self._should_push_partial(combined):
+                self._emit({'type': 'partial', 'text': combined})
         except Exception:
             logger.debug('Failed to send partial transcript to client', exc_info=True)
 
@@ -1467,6 +1597,7 @@ class TranscribeStreamBridge:
             return
         was_live = self.session_live
         self.session_live = True
+        self._start_fail_count = 0
         if not self._ever_ready:
             self._ever_ready = True
             self._emit({
@@ -1497,16 +1628,29 @@ class TranscribeStreamBridge:
             'AWS Transcribe stream start failed',
             exc_info=(type(err), err, err.__traceback__),
         )
-        self._emit({
-            'type': 'error',
-            'error': str(err)[:500],
-            'region': getattr(self.session, 'region', self.region),
-        })
-        if self._on_fatal:
-            try:
-                self._on_fatal()
-            except Exception:
-                logger.debug('transcribe fatal cleanup callback failed', exc_info=True)
+        if not self._alive:
+            return
+        # Keep the Socket.IO bridge. Dropping it here leaves the browser
+        # connected and sending audio POSTs that are silently discarded.
+        sess = self.session
+        if sess is not None and getattr(sess, '_loop', None) is not None:
+            # _thread_main will notify on_finished('error') and roll over.
+            return
+        self._start_fail_count += 1
+        max_fails = max(1, int(os.environ.get('MEDICAL_TRANSCRIBE_MAX_START_FAILURES', '3') or 3))
+        if self._start_fail_count >= max_fails:
+            self._emit({
+                'type': 'error',
+                'error': str(err)[:500],
+                'region': getattr(self.session, 'region', self.region),
+            })
+            with self.start_lock:
+                self.start_scheduled = False
+            if self.session is sess:
+                self.session_live = False
+                self.session = None
+            return
+        self._roll_over_session('start_error')
 
     def _begin_session_in_os_thread(self) -> None:
         if not self.session:
@@ -1561,6 +1705,15 @@ class TranscribeStreamBridge:
             self.preferred_language = str(pref).strip() or self.preferred_language
         elif self.language_code:
             self.preferred_language = self.language_code
+        committed = str(
+            cfg.get('committed_transcript')
+            or cfg.get('transcript_prefix')
+            or cfg.get('transcriptPrefix')
+            or ''
+        ).strip()
+        if committed:
+            self._committed_segments = [committed]
+            logger.info('transcribe seeded committed_len=%d', len(committed))
         if self.session is None:
             logger.info(
                 'transcribe start action lang=%s multi=%s options=%s preferred=%s rate=%s region=%s',
@@ -1590,9 +1743,13 @@ class TranscribeStreamBridge:
         # Real speech resets one-shot keepalive so the next thinking pause can extend once.
         self._silence_keepalive_used = False
         self._audio_chunks_received += 1
-        rms, peak = _pcm16_level(chunk)
-        self._last_audio_rms = rms
-        self._last_audio_peak = peak
+        log_levels = self._audio_chunks_received == 1 or self._audio_chunks_received % 10 == 0
+        if log_levels:
+            rms, peak = _pcm16_level(chunk)
+            self._last_audio_rms = rms
+            self._last_audio_peak = peak
+        else:
+            rms, peak = self._last_audio_rms, self._last_audio_peak
         if self._audio_chunks_received == 1:
             logger.info(
                 'transcribe first audio chunk (%d bytes rms=%d peak=%d)',
@@ -1600,13 +1757,7 @@ class TranscribeStreamBridge:
                 rms,
                 peak,
             )
-            self._emit({
-                'type': 'audio_rx',
-                'bytes': len(chunk),
-                'rms': rms,
-                'peak': peak,
-            })
-        elif self._audio_chunks_received % 50 == 0:
+        elif self._audio_chunks_received % 10 == 0:
             logger.info(
                 'transcribe audio chunks received: %d rms=%d peak=%d',
                 self._audio_chunks_received,
@@ -1626,6 +1777,9 @@ class TranscribeStreamBridge:
             self.session.feed_audio(chunk)
         else:
             self.audio_pending.append(chunk)
+            if len(self.audio_pending) > _AUDIO_PENDING_MAX_CHUNKS:
+                overflow = len(self.audio_pending) - _AUDIO_PENDING_MAX_CHUNKS
+                del self.audio_pending[:overflow]
 
     def finish(self, stop_timeout_sec: float = 8.0) -> dict:
         """Return the live transcript immediately; drain AWS session in the background."""
@@ -1706,13 +1860,18 @@ def register_transcribe_socketio_handlers(socketio) -> None:
     """Medical live transcribe via Socket.IO (works behind CDN/proxy; raw /ws/transcribe may not)."""
     from flask import request
 
-    def _emit_to_sid(sid: str, payload: dict) -> None:
+    def _emit_to_sid(sid: str, payload: dict, *, from_hub: bool = False) -> None:
         def _do() -> None:
             try:
                 socketio.emit('medical_transcribe_event', payload, room=sid)
             except Exception as e:
                 logger.warning('transcribe socketio emit failed sid=%s: %s', sid, e)
 
+        # AWS thread must hop to the gevent hub. The audio POST handler is
+        # already on the hub — emit here so the waiting GET is woken now.
+        if from_hub:
+            _do()
+            return
         _run_on_hub(_do)
 
     @socketio.on('medical_transcribe_start')
@@ -1763,6 +1922,26 @@ def register_transcribe_socketio_handlers(socketio) -> None:
                 )
             return
         bridge.handle_audio(chunk)
+        # Let the waiting GET send its ping. Skipping this lets audio POSTs
+        # starve the poll until Engine.IO expires the sid (~60s → Invalid session).
+        _yield_hub()
+        # Polling POST ack carries the latest transcript on the same HTTP
+        # response. Do not emit() here — that wakes the GET and drops the sid.
+        return bridge.latest_audio_ack()
+
+    @socketio.on('medical_transcribe_pause')
+    def on_medical_transcribe_pause():
+        """Client paused the mic. Park AWS and flush the long-poll GET from this hub."""
+        sid = request.sid
+        bridge = _SOCKETIO_BRIDGES.get(sid)
+        if not bridge:
+            return {'ok': True}
+        logger.info('transcribe socketio pause sid=%s', sid)
+        try:
+            bridge.handle_client_pause()
+        except Exception:
+            logger.debug('transcribe pause park failed', exc_info=True)
+        return {'ok': True, 'type': 'paused'}
 
     @socketio.on('medical_transcribe_stop')
     def on_medical_transcribe_stop():
@@ -1911,6 +2090,30 @@ def register_transcribe_websocket_routes(app: Flask) -> None:
     def api_transcribe_stream_active():
         """Non-PHI debug view of currently accepted AWS Transcribe Streaming sessions."""
         return jsonify(active_transcribe_sessions_snapshot()), 200
+
+    @app.route('/api/medical_transcribe_audio', methods=['POST'])
+    def api_medical_transcribe_audio():
+        """PCM in, latest transcript out on the same HTTP response.
+
+        Socket.IO polling delivers acks on the long-poll GET. When that GET
+        stalls, the UI freezes even though audio POSTs succeed. This path
+        bypasses Engine.IO for the hot audio/transcript loop.
+        """
+        sid = str(request.args.get('sid') or request.headers.get('X-Socket-Id') or '').strip()
+        if not sid:
+            return jsonify({'ok': False, 'error': 'sid_required'}), 400
+        bridge = _SOCKETIO_BRIDGES.get(sid)
+        if not bridge:
+            return jsonify({'ok': False, 'error': 'no_bridge'}), 409
+        chunk = _coerce_audio_chunk(request.get_data(cache=False))
+        if not chunk:
+            return jsonify({'ok': False, 'error': 'empty_audio'}), 400
+        bridge.handle_audio(chunk)
+        _yield_hub()
+        payload = bridge.latest_audio_ack()
+        if not payload:
+            return jsonify({'ok': True}), 200
+        return jsonify(payload), 200
 
     @app.route('/ws/transcribe')
     def ws_transcribe_route():

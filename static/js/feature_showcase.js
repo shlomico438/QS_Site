@@ -61,7 +61,9 @@
         if (!root || !slide) return '';
         const base = String(root.getAttribute('data-showcase-base') || '/static/images/showcase/');
         const normalized = base.endsWith('/') ? base : `${base}/`;
-        return `${normalized}${slide.file}`;
+        const version = String(root.getAttribute('data-showcase-version') || '').trim();
+        const url = `${normalized}${slide.file}`;
+        return version ? `${url}?v=${encodeURIComponent(version)}` : url;
     }
 
     function applySlideText() {
@@ -76,7 +78,7 @@
         if (titleEl) titleEl.textContent = T(slide.titleKey, '');
         if (bodyEl) bodyEl.textContent = T(slide.bodyKey, '');
         if (badgeEl) badgeEl.textContent = T(slide.badgeKey, '');
-        if (mediaEl) mediaEl.classList.toggle('qs-feature-showcase-media--tall', !!slide.mediaTall);
+        if (mediaEl) mediaEl.classList.add('qs-feature-showcase-media--fill');
         if (imgEl) {
             imgEl.src = imageUrlFor(slide);
             imgEl.alt = T(slide.titleKey, 'Feature preview');

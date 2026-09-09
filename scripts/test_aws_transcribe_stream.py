@@ -42,8 +42,6 @@ def _print_caller_identity(region: str) -> None:
         import boto3
         sts = boto3.client(
             'sts',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=region,
         )
         ident = sts.get_caller_identity()

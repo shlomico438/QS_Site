@@ -2045,15 +2045,16 @@ window.qsMedicalWarmupOnReady = function qsMedicalWarmupOnReady(data, opts) {
 };
 
 window.qsJoinMedicalEndpointScaleEvents = function qsJoinMedicalEndpointScaleEvents() {
-    if (typeof socket === 'undefined' || !socket) return;
+    const sock = (typeof window.qsWantSocket === 'function') ? window.qsWantSocket() : window.socket;
+    if (!sock) return;
     const room = QS_MEDICAL_ENDPOINT_EVENTS_ROOM;
-    if (!socket.connected) {
+    if (!sock.connected) {
         window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = null;
         return;
     }
     // Always re-emit join after reconnect — server room membership is lost on disconnect.
     try {
-        socket.emit('join', { room });
+        sock.emit('join', { room });
         window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = room;
     } catch (e) {
         window.__QS_MEDICAL_ENDPOINT_EVENTS_JOINED = null;
@@ -3815,7 +3816,7 @@ window.startJobStatusPolling = function(jobId) {
     window._pollingJobId = jobId;
     // Soft isolation: when Socket.IO is live, completion usually arrives via socket —
     // poll less often so regular jobs do not starve medical realtime on Site.
-    const socketLive = !!(typeof socket !== 'undefined' && socket && socket.connected);
+    const socketLive = !!(window.socket && window.socket.connected);
     const medicalLive = !!(
         typeof isMedicalModeEnabled === 'function'
         && isMedicalModeEnabled()
@@ -3980,7 +3981,7 @@ window.retryTriggerForActiveJob = async function() {
         if (typeof qsStartUnifiedProgressPhase === 'function') qsStartUnifiedProgressPhase('transcribe');
         if (typeof startFakeProgress === 'function') startFakeProgress();
         try {
-            if (typeof socket !== 'undefined' && socket) socket.emit('join', { room: jobId });
+            if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(jobId);
         } catch (_) {}
         if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(jobId);
         console.info('[trigger] retry_trigger started', { jobId, status: body.status });
@@ -4241,8 +4242,31 @@ function qsUserTreatAsMusicForUpload() {
 
 function qsSyncMusicModeBottomToggleUi() {}
 
+function qsSetRegularRecordLabels(recording) {
+    const key = recording ? 'regular_recording' : 'regular_record_audio';
+    const fallback = recording ? 'מקליט…' : 'הקלטת שמע';
+    const value = (typeof window.t === 'function' ? window.t(key) : null) || fallback;
+    const btn = document.getElementById('regular-record-btn');
+    const label = document.getElementById('regular-record-label');
+    const text = document.querySelector('#regular-record-btn .regular-record-btn-text');
+    if (label) {
+        label.textContent = value;
+        label.setAttribute('data-i18n', key);
+    }
+    if (text) {
+        text.textContent = value;
+        text.setAttribute('data-i18n', key);
+    }
+    if (btn) {
+        btn.setAttribute('aria-label', value);
+        btn.setAttribute('data-i18n-aria-label', key);
+        btn.classList.toggle('is-recording', !!recording);
+    }
+}
+
 function qsSyncRegularRecordUi() {
     const regularRecordBtn = document.getElementById('regular-record-btn');
+    const regularRecordWrap = document.getElementById('regular-record-wrap');
     if (!regularRecordBtn) return;
     const onMedical = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
     const processing = (typeof qsTranscriptActionsSuppressedDuringProcessing === 'function')
@@ -4252,13 +4276,11 @@ function qsSyncRegularRecordUi() {
         document.body.classList.contains('has-transcript-actions') || qsHasTranscriptResult()
     );
     const canShow = !processing && !onMedical && !window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON && !sessionComplete;
+    if (regularRecordWrap) regularRecordWrap.hidden = !canShow;
     regularRecordBtn.style.display = canShow ? 'inline-flex' : 'none';
     const rec = window._medicalRecorder;
-    if (canShow && rec && (rec.state === 'recording' || rec.state === 'paused')) {
-        regularRecordBtn.textContent = (typeof window.t === 'function' ? window.t('regular_recording') : null) || 'מקליט…';
-    } else {
-        regularRecordBtn.textContent = (typeof window.t === 'function' ? window.t('regular_record_audio') : null) || 'הקלטת שמע';
-    }
+    const recording = !!(canShow && rec && (rec.state === 'recording' || rec.state === 'paused'));
+    qsSetRegularRecordLabels(recording);
 }
 
 /** Align with server RUNPOD_DEFER_WARMUP_FILE_BYTES — avoid loading whole File in the browser. */
@@ -5894,8 +5916,22 @@ window.qsResumeActiveJobAfterConnect = async function (jobId) {
 };
 
 // --- 1. GLOBAL SOCKET INITIALIZATION ---
-const socket = (typeof window !== 'undefined' && window.socket) ? window.socket : null;
-if (socket) {
+function qsGetSocket() {
+    if (typeof window.qsWantSocket === 'function') return window.qsWantSocket();
+    return window.socket || null;
+}
+
+window.qsEmitJoinRoom = function qsEmitJoinRoom(room) {
+    const sock = qsGetSocket();
+    if (!sock || !room) return;
+    if (typeof window.qsBindSocketHandlers === 'function') window.qsBindSocketHandlers(sock);
+    try { sock.emit('join', { room }); } catch (_) {}
+};
+
+function qsBindSocketHandlers(socket) {
+    if (!socket || socket.__qsHandlersBound) return;
+    socket.__qsHandlersBound = true;
+
     socket.on('connect', () => {
         const savedJobId = typeof window.qsGetActiveJobForResume === 'function'
             ? window.qsGetActiveJobForResume()
@@ -5986,6 +6022,10 @@ if (socket) {
         }, 0);
     });
 }
+window.qsBindSocketHandlers = qsBindSocketHandlers;
+
+const socket = qsGetSocket();
+if (socket) qsBindSocketHandlers(socket);
 
 
 
@@ -12559,7 +12599,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         window.startJobStatusPolling(activeJobId);
                     }
                     try {
-                        if (typeof socket !== 'undefined') socket.emit('join', { room: activeJobId });
+                        if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(activeJobId);
                     } catch (_) {}
                 }
             }
@@ -16417,11 +16457,55 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let _medicalLiveFollowEnd = true;
+    let _medicalLiveScrollPinning = false;
 
-    function qsMedicalTranscriptNearEnd(el, px) {
-        if (!el) return true;
-        const slop = Number.isFinite(px) ? px : 120;
-        return (el.scrollHeight - el.scrollTop - el.clientHeight) <= slop;
+    function qsMedicalLiveBottomChromePx() {
+        const bar = document.querySelector('.main-app-container.medical-mode > .upload-zone')
+            || document.getElementById('medical-recording-wrap')
+            || document.getElementById('medical-record-btn');
+        let h = 0;
+        try {
+            if (bar) h = bar.getBoundingClientRect().height || 0;
+        } catch (_) {}
+        return Math.max(72, h) + 16;
+    }
+
+    function qsMedicalLiveViewBottom() {
+        try {
+            const vv = window.visualViewport;
+            if (vv && Number.isFinite(vv.height)) return (vv.offsetTop || 0) + vv.height;
+        } catch (_) {}
+        return Number(window.innerHeight) || 0;
+    }
+
+    function qsMedicalLiveLastBox() {
+        const tw = document.getElementById('transcript-window');
+        if (!tw) return null;
+        const boxes = tw.querySelectorAll('textarea.qs-medical-edit-box-body');
+        if (boxes.length) return boxes[boxes.length - 1];
+        const live = tw.querySelector('.medical-live-transcript');
+        return live || tw;
+    }
+
+    function qsMedicalOverflowScroller() {
+        const tw = document.getElementById('transcript-window');
+        if (tw && tw.scrollHeight > tw.clientHeight + 8) return tw;
+        const main = document.querySelector('main.main-content');
+        if (main && main.scrollHeight > main.clientHeight + 8) return main;
+        return null;
+    }
+
+    function qsMedicalTranscriptNearEnd() {
+        const last = qsMedicalLiveLastBox();
+        if (!last) return true;
+        try {
+            const rect = last.getBoundingClientRect();
+            const viewBottom = qsMedicalLiveViewBottom();
+            const chrome = qsMedicalLiveBottomChromePx();
+            return rect.bottom <= (viewBottom - chrome + 96);
+        } catch (_) {
+            return true;
+        }
     }
 
     function qsScrollMedicalTranscriptToEnd(force) {
@@ -16429,11 +16513,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!tw) return;
         if (!force && !_medicalLiveFollowEnd) return;
         const pin = () => {
-            try { tw.scrollTop = tw.scrollHeight; } catch (_) {}
-            const boxes = tw.querySelectorAll('textarea.qs-medical-edit-box-body');
-            const last = boxes.length ? boxes[boxes.length - 1] : null;
-            if (last) {
-                try { last.scrollTop = last.scrollHeight; } catch (_) {}
+            const last = qsMedicalLiveLastBox();
+            if (!last) return;
+            let overflow = 0;
+            try {
+                const rect = last.getBoundingClientRect();
+                const viewBottom = qsMedicalLiveViewBottom();
+                const chrome = qsMedicalLiveBottomChromePx();
+                overflow = rect.bottom - (viewBottom - chrome);
+            } catch (_) {
+                overflow = 0;
+            }
+            if (overflow > 1) {
+                _medicalLiveScrollPinning = true;
+                const scroller = qsMedicalOverflowScroller();
+                try {
+                    if (scroller) scroller.scrollTop += overflow;
+                    else window.scrollBy(0, overflow);
+                } catch (_) {}
+                try { tw.scrollTop = tw.scrollHeight; } catch (_) {}
+                requestAnimationFrame(() => { _medicalLiveScrollPinning = false; });
             }
         };
         pin();
@@ -16447,9 +16546,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const tw = document.getElementById('transcript-window');
         if (!tw || tw.dataset.qsLiveFollowWired === '1') return;
         tw.dataset.qsLiveFollowWired = '1';
-        tw.addEventListener('scroll', () => {
-            _medicalLiveFollowEnd = qsMedicalTranscriptNearEnd(tw);
-        }, { passive: true });
+        const onScroll = () => {
+            if (_medicalLiveScrollPinning) return;
+            _medicalLiveFollowEnd = qsMedicalTranscriptNearEnd();
+        };
+        tw.addEventListener('scroll', onScroll, { passive: true });
+        const main = document.querySelector('main.main-content');
+        if (main) main.addEventListener('scroll', onScroll, { passive: true });
+        window.addEventListener('scroll', onScroll, { passive: true });
+        try {
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', () => {
+                    if (_medicalLiveFollowEnd) qsScrollMedicalTranscriptToEnd(false);
+                }, { passive: true });
+            }
+        } catch (_) {}
     }
 
     function ensureMedicalWaveformCanvas() {
@@ -16578,7 +16689,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const { data: { user } } = await supabase.auth.getUser();
         const userId = user ? user.id : null;
         const filename = `medical_recording_${Date.now()}.${ext}`;
-        qsUploadTraceErr('medical_upload_session_start', { filename, mime });
+        qsUploadTrace('medical_upload_session_start', { filename, mime });
         const res = await fetch('/api/sign-s3', {
             method: 'POST',
             headers: await qsMedicalJsonHeaders(),
@@ -16606,8 +16717,8 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('pendingS3Key', session.s3Key);
         localStorage.setItem('lastJobId', session.jobId);
         if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId: session.jobId, s3Key: session.s3Key });
-        try { if (typeof socket !== 'undefined') socket.emit('join', { room: session.jobId }); } catch (_) {}
-        qsUploadTraceErr('medical_upload_session_ready', { jobId: session.jobId, s3Key: session.s3Key });
+        try { if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(session.jobId); } catch (_) {}
+        qsUploadTrace('medical_upload_session_ready', { jobId: session.jobId, s3Key: session.s3Key });
         return session;
     }
 
@@ -16681,11 +16792,24 @@ document.addEventListener('DOMContentLoaded', () => {
         window._medicalLiveStreamText = lines.join('\n\n').trim();
     }
 
+    function qsMergeMedicalLivePartial(incoming) {
+        const next = String(incoming || '').trim();
+        const kept = String(window._medicalLiveStreamText || '').trim();
+        if (!next) return kept;
+        if (!kept) return next;
+        if (next === kept || next.startsWith(kept)) return next;
+        // AWS rewrites earlier words; that is a replacement, not a second transcript.
+        // Never join with blank lines — that spawned duplicate live boxes.
+        if (kept.startsWith(next)) return kept;
+        if (next.length >= 24) return next;
+        return kept;
+    }
+
     function renderMedicalLiveStreamTranscript(partialText) {
         if (!isMedicalModeEnabled()) return;
         const tw = document.getElementById('transcript-window');
         if (!tw) return;
-        const text = String(partialText || '').trim();
+        const text = qsMergeMedicalLivePartial(partialText);
         if (!text) return;
         const prevStream = String(window._medicalLiveStreamText || '');
         window._medicalLiveStreamText = text;
@@ -16716,6 +16840,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 qsWireMedicalLiveFollowScroll();
                 _medicalLiveFollowEnd = true;
                 focusMedicalTranscriptEditorAtEnd();
+                qsScrollMedicalTranscriptToEnd(true);
                 try { qsSnapshotMedicalTranscriptBoxesFromDom(); } catch (_) {}
                 return;
             }
@@ -16901,13 +17026,18 @@ document.addEventListener('DOMContentLoaded', () => {
         tw.innerHTML = `<div class="medical-live-transcript medical-live-status" dir="${dir}" style="text-align:${align};padding:12px 16px;opacity:0.75;font-style:italic;">${esc(label)}</div>`;
     }
 
+    let _medicalAwsStreamGeneration = 0;
+
     function abortMedicalAwsTranscribeStream(options = {}) {
+        const current = window._medicalAwsTranscribeStream;
         try {
-            if (window._medicalAwsTranscribeStream) {
-                window._medicalAwsTranscribeStream.abort(options);
+            if (current) {
+                current.abort(options);
             }
         } catch (_) {}
-        window._medicalAwsTranscribeStream = null;
+        if (window._medicalAwsTranscribeStream === current) {
+            window._medicalAwsTranscribeStream = null;
+        }
     }
 
     function qsMedicalStreamOnlyMode() {
@@ -16915,6 +17045,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function startMedicalAwsTranscribeStream(mediaStream, options = {}) {
+        const generation = ++_medicalAwsStreamGeneration;
         // Soft abort: skip medical_transcribe_stop so it cannot race with the new start
         // on Socket.IO polling and tear down the fresh bridge.
         abortMedicalAwsTranscribeStream({ emitStop: false });
@@ -16965,12 +17096,11 @@ document.addEventListener('DOMContentLoaded', () => {
             transport,
             accessToken: '',
             guestTry: false,
+            committedTranscript: transcriptPrefix,
             onPartial: (t) => {
-                const next = String(t || '').trim();
-                const combined = transcriptPrefix && next
-                    ? `${transcriptPrefix}\n\n${next}`
-                    : (transcriptPrefix || next);
-                renderMedicalLiveStreamTranscript(combined);
+                // Server already prefixes committed text after reconnect. Do not
+                // prepend it again here — that duplicated the live transcript.
+                renderMedicalLiveStreamTranscript(t);
             },
             onStatus: (s) => renderMedicalLiveStreamStatus(s),
         });
@@ -16981,13 +17111,25 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (typeof stream.start === 'function') {
                 // Stale cached qs_aws_transcribe_stream.js without beginCapture — fall back.
                 console.warn('[medical] beginCapture missing; using stream.start() (hard-refresh recommended)');
+                if (generation !== _medicalAwsStreamGeneration) {
+                    try { stream.abort({ emitStop: false }); } catch (_) {}
+                    return window._medicalAwsTranscribeStream;
+                }
                 window._medicalAwsTranscribeStream = stream;
                 await stream.start(mediaStream);
+                if (generation !== _medicalAwsStreamGeneration) {
+                    try { stream.abort({ emitStop: false }); } catch (_) {}
+                    return window._medicalAwsTranscribeStream;
+                }
                 return stream;
             } else {
                 throw new Error('transcribe_stream_api_unavailable');
             }
         } catch (captureErr) {
+            if (generation !== _medicalAwsStreamGeneration) {
+                try { stream.abort({ emitStop: false }); } catch (_) {}
+                throw captureErr;
+            }
             console.error('[medical] AWS Transcribe capture failed to start', captureErr);
             try { stream.abort({ emitStop: true }); } catch (_) {}
             try {
@@ -16997,18 +17139,36 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (_) {}
             throw captureErr;
         }
+        if (generation !== _medicalAwsStreamGeneration) {
+            try { stream.abort({ emitStop: false }); } catch (_) {}
+            return window._medicalAwsTranscribeStream;
+        }
         window._medicalAwsTranscribeStream = stream;
         try {
             const accessToken = await qsSupabaseAccessToken();
+            if (generation !== _medicalAwsStreamGeneration) {
+                try { stream.abort({ emitStop: false }); } catch (_) {}
+                return window._medicalAwsTranscribeStream;
+            }
             stream.accessToken = accessToken || '';
             stream.guestTry = !accessToken && qsMedicalGuestTryAccepted();
             await stream.connectAndAwaitReady();
+            if (generation !== _medicalAwsStreamGeneration) {
+                try { stream.abort({ emitStop: false }); } catch (_) {}
+                return window._medicalAwsTranscribeStream;
+            }
             return stream;
         } catch (e) {
+            if (generation !== _medicalAwsStreamGeneration) {
+                try { stream.abort({ emitStop: false }); } catch (_) {}
+                throw e;
+            }
             const msg = String((e && e.message) || e || 'transcribe_stream_start_failed');
             console.error('[medical] AWS Transcribe stream start failed', e);
             try { stream.abort(); } catch (_) {}
-            abortMedicalAwsTranscribeStream();
+            if (window._medicalAwsTranscribeStream === stream) {
+                window._medicalAwsTranscribeStream = null;
+            }
             if (typeof showStatus === 'function') {
                 const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
                 const networkHint = /socket|ws_|websocket|connect|polling/i.test(msg)
@@ -17040,6 +17200,38 @@ document.addEventListener('DOMContentLoaded', () => {
         const candidates = [live, fromFinal, fromPartial].filter(Boolean);
         if (!candidates.length) return '';
         return candidates.reduce((best, cur) => (cur.length > best.length ? cur : best));
+    }
+
+    async function putMedicalRecordingViaApp(session, file) {
+        const tokenHeaders = await qsMedicalJsonHeaders();
+        delete tokenHeaders['Content-Type'];
+        const form = new FormData();
+        form.append('jobId', session.jobId);
+        form.append('s3Key', session.s3Key);
+        if (session.bucket) form.append('bucket', session.bucket);
+        form.append(
+            'filetype',
+            normalizeMedicalUploadMime((session && session.filetype) || (file && file.type) || 'audio/webm')
+        );
+        form.append('file', file, file.name || 'recording');
+        const proxyRes = await fetch('/api/medical/archive_recording', {
+            method: 'POST',
+            headers: tokenHeaders,
+            body: form,
+            credentials: 'same-origin',
+        });
+        const errText = await proxyRes.text().catch(() => '');
+        if (!proxyRes.ok) {
+            let extra = String(errText || '').slice(0, 280);
+            try {
+                const parsed = JSON.parse(errText);
+                extra = [parsed.aws_code, parsed.aws_message, parsed.bucket, parsed.region]
+                    .filter(Boolean)
+                    .join(' | ');
+            } catch (_) {}
+            throw new Error(`archive_proxy HTTP ${proxyRes.status} ${extra}`.trim());
+        }
+        return errText;
     }
 
     async function uploadWarmedMedicalRecordingWithStream(file, streamResult, durationMs) {
@@ -17105,7 +17297,7 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem('activeJobId', session.jobId);
         }
         try {
-            if (typeof socket !== 'undefined') socket.emit('join', { room: session.jobId });
+            if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(session.jobId);
         } catch (_) {}
 
         const payload = {
@@ -17119,37 +17311,37 @@ document.addEventListener('DOMContentLoaded', () => {
             await window.handleJobUpdate(payload);
         }
 
-        const headers = buildMedicalUploadHeaders(session, file);
+        // HIPAA S3 has no CORS — never PUT from the phone. Same-origin proxy uses IAM.
         try {
-            qsUploadTraceErr('medical_stream_put_start', { jobId: session.jobId, bytes: file.size, mime: headers['Content-Type'] });
-            const putRes = await fetch(session.url, {
-                method: 'PUT',
-                headers,
-                body: file,
-                mode: 'cors',
-                credentials: 'omit',
+            qsUploadTrace('medical_stream_archive_start', {
+                jobId: session.jobId,
+                bytes: file.size,
+                mime: file && file.type,
+                name: file && file.name,
             });
-            if (!putRes.ok) {
-                const errText = await putRes.text().catch(() => '');
-                qsUploadTraceErr('medical_stream_put_failed', {
-                    jobId: session.jobId,
-                    status: putRes.status,
-                    errText: String(errText || '').slice(0, 300),
-                });
-                console.warn('[medical] audio archive PUT failed', putRes.status, errText);
-                if (typeof showStatus === 'function') {
-                    showStatus('Transcript saved; audio archive upload failed.', true, { duration: 6000 });
-                }
-            } else {
-                qsUploadTraceErr('medical_stream_put_done', { jobId: session.jobId, bytes: file.size });
-                const dbId = localStorage.getItem('lastJobDbId');
-                if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
+            if (!file || !file.size) {
+                throw new Error('empty_recording_blob');
             }
-        } catch (putErr) {
-            qsUploadTraceErr('medical_stream_put_error', { jobId: session.jobId, err: String((putErr && putErr.message) || putErr) });
-            console.warn('[medical] audio archive PUT error', putErr);
+            await putMedicalRecordingViaApp(session, file);
+            qsUploadTrace('medical_stream_archive_done', { jobId: session.jobId, bytes: file.size });
+            const dbId = localStorage.getItem('lastJobDbId');
+            if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
+        } catch (proxyErr) {
+            qsUploadTraceErr('medical_stream_archive_error', {
+                jobId: session.jobId,
+                bytes: file && file.size,
+                err: String((proxyErr && proxyErr.message) || proxyErr),
+            });
+            console.error('[medical] audio archive proxy failed', proxyErr);
             if (typeof showStatus === 'function') {
-                showStatus('Transcript saved; audio archive upload failed.', true, { duration: 6000 });
+                const msg = String((proxyErr && proxyErr.message) || proxyErr || '');
+                showStatus(
+                    msg.includes('empty_recording_blob')
+                        ? 'Transcript saved; recorder produced no audio file.'
+                        : 'Transcript saved; audio archive upload failed.',
+                    true,
+                    { duration: 6000 }
+                );
             }
         }
 
@@ -17192,12 +17384,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         setDiarizationBusyState(true);
         setTranscriptActionButtonsVisible(false);
-        qsUploadTraceErr('medical_recording_put_start', { jobId: session.jobId, bytes: file.size });
-        const putRes = await fetch(session.url, { method: 'PUT', headers, body: file });
-        if (!putRes.ok) throw new Error(`Recording upload failed: HTTP ${putRes.status}`);
+        qsUploadTrace('medical_recording_put_start', { jobId: session.jobId, bytes: file.size });
+        try {
+            const putRes = await fetch(session.url, { method: 'PUT', headers, body: file, mode: 'cors', credentials: 'omit' });
+            if (!putRes.ok) {
+                const errText = await putRes.text().catch(() => '');
+                throw new Error(`Recording upload failed: HTTP ${putRes.status} ${String(errText || '').slice(0, 120)}`);
+            }
+        } catch (putErr) {
+            qsUploadTraceErr('medical_recording_put_cors_fallback', {
+                jobId: session.jobId,
+                err: String((putErr && putErr.message) || putErr),
+            });
+            await putMedicalRecordingViaApp(session, file);
+        }
         qsSetProgressBarPct(100);
         if (mainBtn) mainBtn.innerText = uploadLabel;
-        qsUploadTraceErr('medical_recording_put_done', { jobId: session.jobId, bytes: file.size });
+        qsUploadTrace('medical_recording_put_done', { jobId: session.jobId, bytes: file.size });
 
         localStorage.setItem('lastS3Key', session.s3Key);
         localStorage.setItem('pendingS3Key', session.s3Key);
@@ -17249,7 +17452,7 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem('activeJobId', session.jobId);
         }
         try {
-            if (typeof socket !== 'undefined') socket.emit('join', { room: session.jobId });
+            if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(session.jobId);
         } catch (_) {}
         if (typeof startFakeProgress === 'function') startFakeProgress();
         if (typeof window.startJobStatusPolling === 'function') window.startJobStatusPolling(session.jobId);
@@ -17363,7 +17566,22 @@ document.addEventListener('DOMContentLoaded', () => {
         return new Blob([out], { type: 'audio/wav' });
     }
 
+    async function qsWaitForMedicalRecorderBytes(maxMs = 700) {
+        const t0 = Date.now();
+        while (Date.now() - t0 < maxMs) {
+            const chunks = window._medicalRecorderChunks || [];
+            const segs = window._medicalRecorderSegments || [];
+            let n = 0;
+            for (let i = 0; i < chunks.length; i++) n += (chunks[i] && chunks[i].size) || 0;
+            for (let i = 0; i < segs.length; i++) n += (segs[i] && segs[i].size) || 0;
+            if (n > 0) return n;
+            await new Promise((r) => setTimeout(r, 50));
+        }
+        return 0;
+    }
+
     async function buildMedicalRecordingFile(prefix, fallbackMime) {
+        await qsWaitForMedicalRecorderBytes(700);
         const segments = (window._medicalRecorderSegments || []).filter((b) => b && b.size > 0);
         if (segments.length <= 1) {
             const only = segments[0] || new Blob(window._medicalRecorderChunks || [], { type: fallbackMime || 'audio/webm' });
@@ -17507,8 +17725,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const hiddenAt = Number(window._medicalTabHiddenAt || 0);
         const hiddenMs = hiddenAt ? Math.max(0, Date.now() - hiddenAt) : 0;
         window._medicalTabHiddenAt = 0;
-        if (qsMedicalLiveStreamIsLive() && hiddenMs < 8000) {
+        const live = window._medicalAwsTranscribeStream;
+        if (live) {
+            // Keep the existing Socket.IO session. A full start() tears the
+            // client down and waits 45s for ready — that is the tab-return freeze.
             qsResumeMedicalAudioGraphs();
+            if (typeof live.ensureLiveAfterForeground === 'function') {
+                try { live.ensureLiveAfterForeground(hiddenMs); } catch (_) {}
+            }
             return;
         }
         if (window._medicalForegroundStreamRestart) return;
@@ -17893,6 +18117,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         throw new Error('AWS Transcribe stream did not start — check WebSocket /ws/transcribe and IAM');
                     }
                     const file = await buildMedicalRecordingFile(prefix, mime);
+                    qsUploadTrace('medical_recording_blob', {
+                        bytes: file && file.size,
+                        type: file && file.type,
+                        chunks: (window._medicalRecorderChunks || []).length,
+                        segments: (window._medicalRecorderSegments || []).length,
+                    });
                     let uploadedViaWarmup = false;
                     if (isMedicalModeEnabled() && streamOk) {
                         let saveToken = '';
@@ -18025,6 +18255,7 @@ document.addEventListener('DOMContentLoaded', () => {
             window._medicalUserPaused = true;
             window._medicalSystemRecordingInterrupted = false;
             stopMedicalResumeRetryLoop();
+            try { rec.requestData(); } catch (_) {}
             try { rec.pause(); } catch (_) { window._medicalPauseUserIntent = false; return; }
             window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
             window._medicalRecorderPaused = true;
@@ -18215,7 +18446,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     qsShowMedicalWarmupProgressDuringRecording();
                 }
             } catch (_) {}
-            try { rec.stop(); } catch (_) {}
+            try { rec.requestData(); } catch (_) {}
+            setTimeout(() => {
+                try { rec.stop(); } catch (_) {}
+            }, 80);
         });
     }
     if (medicalTabTranscript) {
@@ -21683,7 +21917,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
                 // 3. Start Socket communication
                 if (typeof socket !== 'undefined') {
-                    socket.emit('join', { room: jobId });
+                    if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(jobId);
                 }
 
                 // 4. Proceed with S3 Upload (multipart: parallel part PUTs) + wake lock + visibility hint
@@ -22112,7 +22346,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         }
                         try {
                             if (typeof socket !== 'undefined' && jobId) {
-                                socket.emit('join', { room: jobId });
+                                if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(jobId);
                             }
                         } catch (_) {}
                         const supersededBySocket = jobAlreadyHandledBySocket();

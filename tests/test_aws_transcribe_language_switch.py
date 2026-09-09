@@ -87,7 +87,7 @@ def test_finish_returns_committed_transcript_after_audio_timeout_park():
     bridge = TranscribeStreamBridge(lambda payload: None)
     sess = _FakeParkedSession()
     bridge.session = sess
-    bridge._last_client_audio_at = time.time() - 20.0
+    bridge._last_client_audio_at = time.time() - 90.0
     bridge._on_partial(sess.best_transcript)
     bridge._on_session_finished(sess, 'audio_timeout')
     assert bridge.session is None
@@ -106,7 +106,7 @@ def test_park_emits_parked_event_for_client_ux():
     bridge.session = sess
     bridge.session_live = True
     bridge._ever_ready = True
-    bridge._last_client_audio_at = time.time() - 25.0
+    bridge._last_client_audio_at = time.time() - 90.0
     bridge._on_partial(sess.best_transcript)
     bridge._on_session_finished(sess, 'audio_timeout')
     assert bridge.session is None
@@ -161,17 +161,106 @@ def test_silence_keepalive_skipped_before_any_client_audio():
     assert len(sess.fed) == 0
 
 
-def test_first_audio_emits_audio_rx():
+def test_first_audio_is_counted_without_waking_poll():
     events = []
     bridge = TranscribeStreamBridge(lambda payload: events.append(payload))
     sess = _FakeLiveSession()
     bridge.session = sess
     bridge.session_live = True
     bridge.handle_audio(b'\x01\x00' * 160)
-    assert any(e.get('type') == 'audio_rx' for e in events)
     assert bridge._audio_chunks_received == 1
-    # Second chunk should not emit another audio_rx.
-    before = len([e for e in events if e.get('type') == 'audio_rx'])
-    bridge.handle_audio(b'\x02\x00' * 160)
-    after = len([e for e in events if e.get('type') == 'audio_rx'])
-    assert before == 1 and after == 1
+    assert not any(e.get('type') == 'audio_rx' for e in events)
+    ack = bridge.latest_audio_ack()
+    assert ack is None or ack.get('type') == 'partial'
+
+
+def test_should_push_partial_skips_during_live_audio():
+    bridge = TranscribeStreamBridge(lambda payload: None)
+    bridge._last_client_audio_at = __import__('time').time()
+    assert bridge._should_push_partial('hello there') is False
+    bridge._last_client_audio_at = __import__('time').time() - 5.0
+    assert bridge._should_push_partial('hello there') is True
+
+
+def test_seeded_commit_survives_in_combined_transcript():
+    bridge = TranscribeStreamBridge(lambda payload: None)
+    bridge._committed_segments = ['hello parked transcript']
+    out = bridge._combined_transcript('new tail')
+    assert out.startswith('hello parked transcript')
+    assert 'new tail' in out
+
+
+def test_run_on_hub_prefers_threadsafe_callback():
+    import aws_transcribe_stream as m
+
+    calls = []
+
+    class Loop:
+        def run_callback(self, cb, *args):
+            calls.append('unsafe')
+            cb(*args)
+
+        def run_callback_threadsafe(self, cb, *args):
+            calls.append('safe')
+            cb(*args)
+
+    class Hub:
+        loop = Loop()
+
+    old = m._MAIN_GEVENT_HUB
+    m._MAIN_GEVENT_HUB = Hub()
+    try:
+        ran = []
+        m._run_on_hub(lambda: ran.append(True))
+        assert calls == ['safe']
+        assert ran == [True]
+    finally:
+        m._MAIN_GEVENT_HUB = old
+
+
+def test_session_error_does_not_drop_bridge_when_thread_will_finish():
+    fatal = []
+    bridge = TranscribeStreamBridge(lambda payload: None, on_fatal=lambda: fatal.append(True))
+    sess = _FakeLiveSession()
+    sess._loop = object()
+    bridge.session = sess
+    scheduled = []
+    bridge._schedule_session_start = lambda: scheduled.append(True)
+    bridge._on_session_error(RuntimeError('start failed'))
+    assert fatal == []
+    assert bridge.session is sess
+    assert bridge._alive is True
+    assert scheduled == []
+
+
+def test_start_background_error_rolls_over_without_fatal():
+    fatal = []
+    events = []
+    bridge = TranscribeStreamBridge(lambda payload: events.append(payload), on_fatal=lambda: fatal.append(True))
+    sess = _FakeLiveSession()
+    sess._loop = None
+    bridge.session = sess
+    scheduled = []
+    bridge._schedule_session_start = lambda: scheduled.append(True)
+    bridge._on_session_error(RuntimeError('start_background failed'))
+    assert fatal == []
+    assert bridge._alive is True
+    assert bridge.session is not sess
+    assert scheduled == [True]
+    assert any(e.get('type') == 'resuming' for e in events)
+
+
+def test_repeated_start_errors_emit_error_but_keep_bridge():
+    fatal = []
+    events = []
+    bridge = TranscribeStreamBridge(lambda payload: events.append(payload), on_fatal=lambda: fatal.append(True))
+    sess = _FakeLiveSession()
+    sess._loop = None
+    bridge.session = sess
+    bridge._start_fail_count = 2
+    bridge._schedule_session_start = lambda: None
+    bridge._on_session_error(RuntimeError('still failing'))
+    assert fatal == []
+    assert bridge._alive is True
+    assert bridge.session is None
+    assert any(e.get('type') == 'error' for e in events)

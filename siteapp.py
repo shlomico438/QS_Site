@@ -120,20 +120,49 @@ def _r2_configured():
     )
 
 
+def _r2_storage_selected():
+    """Whether the standard bucket is intended to use R2, even if misconfigured."""
+    return bool(
+        _r2_endpoint_url()
+        or (os.environ.get('R2_ACCESS_KEY_ID') or '').strip()
+        or (os.environ.get('R2_SECRET_ACCESS_KEY') or '').strip()
+    )
+
+
 def _medical_s3_bucket_name():
     return (MEDICAL_S3_BUCKET or '').strip()
 
 
 def _bucket_uses_r2(bucket):
     """Only the standard RunPod bucket uses R2; medical and other buckets use AWS S3."""
-    if not _r2_configured():
-        return False
+    # Backend selection must not depend on credentials being complete. Otherwise
+    # a missing R2 setting silently reclassifies this bucket as AWS S3 and boto3
+    # incorrectly tries the ECS task-role credential chain.
     b = str(bucket or '').strip()
+    endpoint = _r2_endpoint_url()
+    selected = _r2_storage_selected()
+    access_key_present = bool((os.environ.get('R2_ACCESS_KEY_ID') or '').strip())
+    secret_key_present = bool((os.environ.get('R2_SECRET_ACCESS_KEY') or '').strip())
+    configured = bool(endpoint and access_key_present and secret_key_present)
     medical = _medical_s3_bucket_name()
-    if medical and b == medical:
-        return False
     standard = _standard_s3_bucket_name()
-    return bool(standard and b == standard)
+    result = bool(selected and standard and b == standard and b != medical)
+    # TEMPORARY: diagnose ECS/R2 routing. Never log access keys or secrets.
+    logging.warning(
+        "R2 routing debug: bucket=%r endpoint=%r selected=%s "
+        "access_key_present=%s secret_key_present=%s configured=%s "
+        "standard_bucket=%r medical_bucket=%r result=%s",
+        b,
+        endpoint,
+        selected,
+        access_key_present,
+        secret_key_present,
+        configured,
+        standard,
+        medical,
+        result,
+    )
+    return result
 
 
 def _s3_region_for_bucket(bucket):
@@ -147,17 +176,52 @@ def _s3_region_for_bucket(bucket):
 
 
 def _s3_storage_credentials_configured(bucket):
+    """R2 requires explicit keys; AWS credentials are resolved lazily by boto3."""
     if _bucket_uses_r2(bucket):
-        return _r2_configured()
-    return bool(
-        (os.environ.get('AWS_ACCESS_KEY_ID') or '').strip()
-        and (os.environ.get('AWS_SECRET_ACCESS_KEY') or '').strip()
-    )
+        endpoint = _r2_endpoint_url()
+        access_key = (os.environ.get('R2_ACCESS_KEY_ID') or '').strip()
+        secret_key = (os.environ.get('R2_SECRET_ACCESS_KEY') or '').strip()
+        logging.warning(
+            "R2 credential check: endpoint_present=%s access_key_present=%s "
+            "access_key_len=%s secret_key_present=%s secret_key_len=%s",
+            bool(endpoint),
+            bool(access_key),
+            len(access_key),
+            bool(secret_key),
+            len(secret_key),
+        )
+        return bool(endpoint and access_key and secret_key)
+    return True
+
+
+def _public_s3_error(exc):
+    """Safe AWS error fields for API clients (no request ids or credentials)."""
+    code = ''
+    msg = str(exc or '').strip()
+    if isinstance(exc, ClientError):
+        err = (exc.response or {}).get('Error') or {}
+        code = str(err.get('Code') or '').strip()
+        msg = str(err.get('Message') or msg).strip()
+    if len(msg) > 300:
+        msg = msg[:300]
+    return code, msg
 
 
 def _s3_credentials_error_message(bucket):
     backend = 'R2' if _bucket_uses_r2(bucket) else 'AWS'
-    return f"{backend} credentials missing on server"
+    if _bucket_uses_r2(bucket):
+        missing = []
+        if not _r2_endpoint_url():
+            missing.append('S3_ENDPOINT_URL/R2_ENDPOINT_URL')
+        if not (os.environ.get('R2_ACCESS_KEY_ID') or '').strip():
+            missing.append('R2_ACCESS_KEY_ID')
+        if not (os.environ.get('R2_SECRET_ACCESS_KEY') or '').strip():
+            missing.append('R2_SECRET_ACCESS_KEY')
+        return (
+            f"{backend} credentials missing on server "
+            f"(missing: {', '.join(missing) or 'unknown'})"
+        )
+    return f"{backend} credentials could not be resolved by boto3"
 
 
 def _s3_upload_accelerate_enabled_for_bucket(bucket):
@@ -194,15 +258,16 @@ def _s3_boto_client(for_upload=False, bucket=None):
         config_kw['s3'] = {'use_accelerate_endpoint': True}
     client_kw = {
         'service_name': 's3',
-        'aws_access_key_id': (
-            os.environ.get('R2_ACCESS_KEY_ID') if use_r2 else os.environ.get('AWS_ACCESS_KEY_ID')
-        ),
-        'aws_secret_access_key': (
-            os.environ.get('R2_SECRET_ACCESS_KEY') if use_r2 else os.environ.get('AWS_SECRET_ACCESS_KEY')
-        ),
         'region_name': region,
         'config': Config(**config_kw),
     }
+    # R2 is not AWS IAM and still requires its own explicit S3-compatible keys.
+    if use_r2:
+        client_kw['aws_access_key_id'] = (os.environ.get('R2_ACCESS_KEY_ID') or '').strip()
+        client_kw['aws_secret_access_key'] = (
+            os.environ.get('R2_SECRET_ACCESS_KEY') or ''
+        ).strip()
+    # AWS clients intentionally omit credentials so boto3 uses the ECS task role.
     # Never attach R2 endpoint_url to AWS/medical clients (that yields s3.auto.amazonaws.com).
     endpoint = _r2_endpoint_url() if use_r2 else None
     if endpoint:
@@ -870,6 +935,56 @@ app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 # Fingerprinted CSS/JS use ?v= — allow long browser/CDN cache for /static.
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000
 
+# ECS/Gunicorn SIGTERM: fail ALB health so the target deregisters before kill.
+_draining = False
+
+
+def mark_draining():
+    global _draining
+    if _draining:
+        return
+    _draining = True
+    logging.warning('Process draining: /health will return 503')
+
+
+@app.before_request
+def _reject_new_work_while_draining():
+    if not _draining:
+        return None
+    if request.path == '/health':
+        return None
+    if request.path.startswith('/api/') or request.path.startswith('/socket.io'):
+        return Response(
+            'draining',
+            status=503,
+            headers={'Retry-After': '5', 'Cache-Control': 'no-store'},
+        )
+    return _service_unavailable(None)
+
+
+@app.route('/health')
+def health_check():
+    if _draining:
+        return Response('draining', status=503, headers={'Cache-Control': 'no-store'})
+    return 'OK', 200
+
+
+@app.errorhandler(503)
+def _service_unavailable(_err):
+    if request.path.startswith('/api/') or request.path.startswith('/socket.io'):
+        return Response('draining' if _draining else 'unavailable', status=503, headers={'Retry-After': '5'})
+    return Response(
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta http-equiv="refresh" content="3">'
+        '<title>QuickScribe</title></head><body>'
+        '<p>Reconnecting…</p>'
+        '<script>setTimeout(function(){location.reload();},3000);</script>'
+        '</body></html>',
+        status=503,
+        mimetype='text/html',
+        headers={'Retry-After': '3', 'Cache-Control': 'no-store'},
+    )
+
 # Gzip text assets (CSS/JS/HTML/JSON/SVG) so Heroku/origin responses are smaller.
 try:
     from flask_compress import Compress
@@ -919,6 +1034,10 @@ def _resolve_static_asset_version():
         os.path.join(static_root, 'js', 'qs_subtitle_timing.js'),
         os.path.join(static_root, 'js', 'qs_subtitle_layout.js'),
         os.path.join(static_root, 'js', 'clinical_training_modal.js'),
+        os.path.join(static_root, 'images', 'showcase', 'subtitle-styling.png'),
+        os.path.join(static_root, 'images', 'showcase', 'transcript-editing.png'),
+        os.path.join(static_root, 'images', 'showcase', 'translation.png'),
+        os.path.join(static_root, 'images', 'showcase', 'export.png'),
     ]
 
     digest = hashlib.sha256()
@@ -1130,8 +1249,6 @@ def _fetch_medical_endpoint_desired_capacity():
     try:
         aas = boto3.client(
             'application-autoscaling',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
             config=_medical_aws_client_config(),
         )
@@ -1158,8 +1275,6 @@ def _fetch_medical_sagemaker_endpoint_status():
     try:
         sm = boto3.client(
             'sagemaker',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
             config=_medical_aws_client_config(),
         )
@@ -1464,8 +1579,6 @@ def _medical_scale_out_endpoint(desired_instances=1):
     try:
         sm = boto3.client(
             'sagemaker',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=(os.environ.get('AWS_REGION') or 'eu-north-1').strip(),
             config=_medical_aws_client_config(),
         )
@@ -3635,6 +3748,10 @@ def enforce_https_on_proxy():
         return None
     if request.path.startswith('/health'):
         return None
+    # ALB/ELB health checks hit the container over HTTP without X-Forwarded-Proto.
+    ua = str(request.headers.get('User-Agent') or '')
+    if 'healthchecker' in ua.lower():
+        return None
 
     xfp = (request.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
     # If proxy explicitly says HTTPS, or app already sees HTTPS, do nothing.
@@ -4115,16 +4232,28 @@ try:
 except Exception:
     pass
 
-# Strict settings to keep connections alive
+# Strict settings to keep connections alive.
+# ping_interval must be short enough that the polling GET cannot sit until
+# ping_timeout (that is the 1-minute "Invalid session" hang). Audio POSTs
+# yield the hub so this ping greenlet can actually run.
 socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
     transports=['polling'],
-    ping_timeout=600,
-    ping_interval=20,
+    async_handlers=True,
+    ping_timeout=120,
+    ping_interval=10,
     manage_session=False,
     max_http_buffer_size=20 * 1024 * 1024,
 )
+
+# Behind ALB / reverse proxies Flask often sees http:// while the browser Origin is
+# https:// — Engine.IO rejects that mismatch with HTTP 400 on the second poll.
+try:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+except ImportError:
+    logging.warning('werkzeug ProxyFix unavailable; Socket.IO may 400 behind HTTPS proxies')
 
 # --- GLOBAL CACHE ---
 job_results_cache = {}
@@ -4134,18 +4263,21 @@ logging.basicConfig(level=logging.INFO)
 
 print(f"SIMULATION_MODE is {SIMULATION_MODE}")
 if not SIMULATION_MODE:
-    BASE_DIR = pathlib.Path(__file__).resolve().parent
-    ffmpeg_path = BASE_DIR / "bin" / "ffmpeg"
-    ffprobe_path = BASE_DIR / "bin" / "ffprobe"
-    try:
-        if ffmpeg_path.exists():
-            os.chmod(ffmpeg_path, 0o755)
-        if ffprobe_path.exists():
-            os.chmod(ffprobe_path, 0o755)
-        if ffmpeg_path.exists():
-            subprocess.run([str(ffmpeg_path), "-version"], check=True, timeout=5)
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as e:
-        logging.warning("ffmpeg check skipped or failed (app will start; burn-in may fail): %s", e)
+    def _deferred_ffmpeg_check():
+        BASE_DIR = pathlib.Path(__file__).resolve().parent
+        ffmpeg_path = BASE_DIR / "bin" / "ffmpeg"
+        ffprobe_path = BASE_DIR / "bin" / "ffprobe"
+        try:
+            if ffmpeg_path.exists():
+                os.chmod(ffmpeg_path, 0o755)
+            if ffprobe_path.exists():
+                os.chmod(ffprobe_path, 0o755)
+            if ffmpeg_path.exists():
+                subprocess.run([str(ffmpeg_path), "-version"], check=True, timeout=5)
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as e:
+            logging.warning("ffmpeg check skipped or failed (app will start; burn-in may fail): %s", e)
+
+    threading.Thread(target=_deferred_ffmpeg_check, name='ffmpeg-check', daemon=True).start()
 
 
 @app.route('/api/get_presigned_url', methods=['POST'])
@@ -13081,10 +13213,12 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                     (result_s3_key or '')[-100:],
                 )
             except Exception as early_put_err:
+                aws_code, aws_msg = _public_s3_error(early_put_err)
                 logging.warning(
-                    "gpu_callback: early S3 persist failed job_id=%s: %s",
+                    "gpu_callback: early S3 persist failed job_id=%s code=%s msg=%s",
                     job_id,
-                    early_put_err,
+                    aws_code or 'n/a',
+                    aws_msg or early_put_err,
                 )
             _record_completed_medical_usage(
                 user_id,
@@ -13147,9 +13281,25 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                             "gpu_callback: server-side GPT format failed (segments still saved): %s",
                             fmt_err,
                         )
-            result_s3_key = _put_transcript_json_to_s3(
-                user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt', is_medical=is_medical_job
-            )
+            try:
+                result_s3_key = _put_transcript_json_to_s3(
+                    user_id or 'anonymous', input_s3_key, transcript_payload, stage='gpt', is_medical=is_medical_job
+                )
+            except Exception as persist_err:
+                aws_code, aws_msg = _public_s3_error(persist_err)
+                logging.exception(
+                    "gpu_callback: final S3 persist failed job_id=%s code=%s msg=%s",
+                    job_id,
+                    aws_code or 'n/a',
+                    aws_msg,
+                )
+                stream_engine = str((pending_info or {}).get('engine') or '') == 'aws_transcribe_stream'
+                if is_medical_job and stream_engine:
+                    data['transcript_persisted'] = False
+                    data['transcript_persist_error'] = aws_code or aws_msg[:180]
+                    job_results_cache[job_id] = data
+                    return
+                raise
             _job_result_s3_missing_until.pop(str(job_id), None)
             result_dict = dict(data.get('result') or result) if isinstance(result, dict) else {}
             result_dict['result_s3_key'] = result_s3_key
@@ -13191,6 +13341,9 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
                 )
     except Exception as e:
         logging.exception("gpu_callback background save failed for %s", job_id)
+        stream_engine = str((pending_info or {}).get('engine') or '') == 'aws_transcribe_stream'
+        if is_medical_job and stream_engine:
+            return
         fail_payload = {
             "jobId": job_id,
             "status": "failed",
@@ -13730,8 +13883,6 @@ def _submit_sagemaker_async_job(
 
         smrt = boto3.client(
             'sagemaker-runtime',
-            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
             region_name=region,
         )
         async_args = {
@@ -14696,6 +14847,80 @@ def api_medical_complete_stream_transcription():
         'segments': segments,
         **_credit_fields_for_api(credit_reserve),
     }), 200
+
+
+@app.route('/api/medical/archive_recording', methods=['POST'])
+def api_medical_archive_recording():
+    """Store the MediaRecorder blob via the app when the browser S3 PUT fails (CORS / pause blobs)."""
+    job_id = str(request.form.get('jobId') or request.form.get('job_id') or '').strip()
+    s3_key = str(request.form.get('s3Key') or request.form.get('s3_key') or '').strip()
+    payload = {'jobId': job_id, 's3Key': s3_key, 'isMedical': True}
+    _is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(payload, s3_key=s3_key)
+    if medical_error:
+        return medical_error
+    user_id = str(authenticated_medical_user or '').strip()
+    if not job_id or not s3_key:
+        return jsonify({'error': 'jobId and s3Key required'}), 400
+    upload = request.files.get('file')
+    if upload is None:
+        return jsonify({'error': 'file required'}), 400
+    body = upload.read()
+    if not body:
+        logging.warning(
+            'medical archive_recording empty_file job_id=%s filename=%s mimetype=%s',
+            job_id,
+            getattr(upload, 'filename', ''),
+            getattr(upload, 'mimetype', ''),
+        )
+        return jsonify({'error': 'empty_file'}), 400
+    try:
+        _assert_multipart_key_for_user(s3_key, user_id, True)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    storage = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=True)
+    bucket = str(storage.get('bucket') or '').strip()
+    if not bucket:
+        return jsonify({'error': 'bucket required'}), 400
+    content_type = _guess_upload_content_type(s3_key, upload.mimetype or request.form.get('filetype'))
+    try:
+        kms_arn = _require_medical_kms_or_raise(True)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    put_kw = {
+        'Bucket': bucket,
+        'Key': s3_key,
+        'Body': body,
+        'ContentType': content_type,
+    }
+    if kms_arn:
+        put_kw['ServerSideEncryption'] = 'aws:kms'
+        put_kw['SSEKMSKeyId'] = kms_arn
+    region = _s3_region_for_bucket(bucket)
+    try:
+        s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
+        s3_client.put_object(**put_kw)
+    except Exception as put_err:
+        aws_code, aws_msg = _public_s3_error(put_err)
+        logging.exception(
+            'medical archive_recording put failed job_id=%s bytes=%s bucket=%s key=%s region=%s kms=%s code=%s msg=%s',
+            job_id,
+            len(body),
+            bucket,
+            s3_key,
+            region,
+            bool(kms_arn),
+            aws_code,
+            aws_msg,
+        )
+        return jsonify({
+            'error': 'archive_put_failed',
+            'aws_code': aws_code,
+            'aws_message': aws_msg,
+            'bucket': bucket,
+            'region': region,
+        }), 502
+    logging.info('medical archive_recording ok job_id=%s bytes=%s content_type=%s', job_id, len(body), content_type)
+    return jsonify({'ok': True, 'jobId': job_id, 's3Key': s3_key, 'bytes': len(body)}), 200
 
 
 @app.route('/api/medical_session_warmup', methods=['POST'])
@@ -17668,12 +17893,6 @@ def handle_disconnect():
         cleanup_transcribe_socketio_bridge(request.sid)
     except Exception:
         pass
-
-# --- HEALTH CHECK ROUTE ---
-@app.route('/health')
-def health_check():
-    return "OK", 200
-
 
 logging.info(
     "GPT postprocess: %s (DISABLE_GPT / GPT_DISABLED) | VAD force_disable=%s force_enable=%s",
