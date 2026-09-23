@@ -274,6 +274,18 @@
                         : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
                     showStatus(msg, false, { duration: 6000 });
                 }
+                try {
+                    if (typeof window.qsTrackGa4Purchase === 'function') {
+                        window.qsTrackGa4Purchase({
+                            transaction_id: sessionId,
+                            value: data.amount ?? data.amount_ils,
+                            currency: data.currency || 'ILS',
+                            items: data.bundle_id
+                                ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
+                                : undefined,
+                        });
+                    }
+                } catch (_) {}
                 params.delete('stripe_success');
                 params.delete('session_id');
                 const cleanQuery = params.toString();
@@ -330,6 +342,18 @@
                         : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
                     showStatus(msg, false, { duration: 6000 });
                 }
+                try {
+                    if (typeof window.qsTrackGa4Purchase === 'function') {
+                        window.qsTrackGa4Purchase({
+                            transaction_id: orderId,
+                            value: data.amount ?? data.amount_ils,
+                            currency: data.currency || 'ILS',
+                            items: data.bundle_id
+                                ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
+                                : undefined,
+                        });
+                    }
+                } catch (_) {}
                 const cleanQuery = cleanCardcomReturnQuery(params);
                 history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
             } catch (err) {

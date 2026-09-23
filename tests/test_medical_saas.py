@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from medical_saas import _cardcom_token_info, medical_account_public, medical_entitlement
+from medical_saas import (
+    _cardcom_token_info,
+    medical_account_public,
+    medical_entitlement,
+    normalize_default_signature,
+)
 
 
 NOW = datetime(2026, 7, 28, 10, 0, tzinfo=timezone.utc)
@@ -96,7 +101,33 @@ def test_cardcom_token_fields_are_normalized():
 def test_trial_account_public_exposes_period_usage():
     public = medical_account_public(_account(current_period_usage_seconds=90 * 60))
     assert public["allowed"] is True
+    assert public["isMedicalUser"] is True
     assert public["subscriptionPlan"] == "trial"
     assert public["usageSeconds"] == 90 * 60
     assert public["usageHours"] == 1.5
     assert public["remainingHours"] == 28.5
+
+
+def test_expired_trial_still_flags_medical_user():
+    public = medical_account_public(
+        _account(trial_expires_at=(NOW - timedelta(seconds=1)).isoformat())
+    )
+    assert public["allowed"] is False
+    assert public["isMedicalUser"] is True
+    assert public["onboardingRequired"] is False
+
+
+def test_normalize_default_signature_preserves_line_breaks():
+    assert normalize_default_signature("  ד\"ר כהן  ") == "ד\"ר כהן"
+    assert normalize_default_signature("בברכה,\r\nד\"ר כהן") == "בברכה,\nד\"ר כהן"
+    assert normalize_default_signature(None) == ""
+    assert len(normalize_default_signature("א" * 800)) == 500
+
+
+def test_medical_invoice_description_is_hebrew():
+    from cardcom_payments import _cardcom_medical_invoice_description
+
+    text = _cardcom_medical_invoice_description("starter", 30, True)
+    assert "Starter" in text
+    assert "30" in text
+    assert "QuickScribe Medical" in text

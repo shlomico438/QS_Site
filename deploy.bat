@@ -1,63 +1,59 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
-:: Define configuration variables
+:: ECS deploy. Defaults: cluster default, service quickscribe-site,
+:: profile quickscribe-ecs. If that profile is missing or still the Koyeb
+:: uploader, you are prompted for infra IAM keys once, then deploy runs.
+::
+::   deploy.bat
+::   deploy.bat default quickscribe-site
+
 set AWS_REGION=eu-north-1
 set AWS_ACCOUNT_ID=760351563015
 set IMAGE_NAME=quickscribe-site
 set ECR_REPO=%AWS_ACCOUNT_ID%.dkr.ecr.%AWS_REGION%.amazonaws.com
 set IMAGE_REPOSITORY=%ECR_REPO%/%IMAGE_NAME%
 set "KOYEB_UPLOAD_USER=QuickScribe_Koyeb_Uploader"
+if not defined AWS_PROFILE set "AWS_PROFILE=quickscribe-ecs"
 
-:: AWS CLI uses the default chain (env keys, then ~/.aws/credentials [default]).
-:: On this machine [default] is the Koyeb S3 upload user. Do not widen that
-:: user's IAM. ECS deploy must use a named infra profile:
-::   set AWS_PROFILE=quickscribe-ecs
-::   python scripts/migrate_express_to_classic_ecs.py --apply
-::   deploy.bat default quickscribe-site
-if not defined AWS_PROFILE (
-    echo AWS_PROFILE is not set. The AWS CLI default profile is the Koyeb upload user.
-    echo Set a named infra profile before deploy, for example:
-    echo   aws configure --profile quickscribe-ecs
-    echo   set AWS_PROFILE=quickscribe-ecs
-    echo Do not grant ECS deploy IAM to QuickScribe_Koyeb_Uploader.
+:: Env static keys override --profile and often point at the Koyeb uploader.
+set "AWS_ACCESS_KEY_ID="
+set "AWS_SECRET_ACCESS_KEY="
+set "AWS_SESSION_TOKEN="
+
+if not "%~1"=="" (set "ECS_CLUSTER=%~1") else if not defined ECS_CLUSTER set "ECS_CLUSTER=default"
+if not "%~2"=="" (set "ECS_SERVICE=%~2") else if not defined ECS_SERVICE set "ECS_SERVICE=quickscribe-site"
+
+echo Deploying %ECS_CLUSTER%/%ECS_SERVICE% in %AWS_REGION% via AWS profile [%AWS_PROFILE%]
+call :resolve_identity
+if not defined AWS_CALLER_ARN goto :prompt_keys
+echo %AWS_CALLER_ARN% | findstr /I /C:"%KOYEB_UPLOAD_USER%" >nul
+if !errorlevel! == 0 goto :prompt_keys
+goto :have_identity
+
+:prompt_keys
+echo.
+echo AWS profile [%AWS_PROFILE%] is missing or is %KOYEB_UPLOAD_USER%.
+echo Paste the IAM access keys for user quickscribe-ecs.
+python scripts\aws_profile_prompt_keys.py "%AWS_PROFILE%" "%AWS_REGION%"
+if errorlevel 1 (
+    echo Error: Could not save AWS keys.
     exit /b 1
 )
-
-echo Using AWS_PROFILE=%AWS_PROFILE%
-for /f "delims=" %%I in ('aws sts get-caller-identity --query Arn --output text --region %AWS_REGION% --no-cli-pager 2^>nul') do set "AWS_CALLER_ARN=%%I"
+call :resolve_identity
 if not defined AWS_CALLER_ARN (
     echo Error: Could not resolve AWS identity for profile %AWS_PROFILE%.
-    echo Run: aws sts get-caller-identity --profile %AWS_PROFILE%
     exit /b 1
 )
-echo AWS identity: %AWS_CALLER_ARN%
 echo %AWS_CALLER_ARN% | findstr /I /C:"%KOYEB_UPLOAD_USER%" >nul
-if %errorlevel%==0 (
+if !errorlevel! == 0 (
     echo Error: Refusing to deploy as %KOYEB_UPLOAD_USER%.
-    echo That user is the public/Koyeb upload identity. Use AWS_PROFILE with an infra user.
+    echo Those keys are the public/Koyeb upload identity. Use user quickscribe-ecs.
     exit /b 1
 )
 
-:: Pass cluster/service as arguments, or define ECS_CLUSTER and ECS_SERVICE
-:: before running this script:
-::   deploy.bat my-cluster my-service
-if not "%~1"=="" set "ECS_CLUSTER=%~1"
-if not "%~2"=="" set "ECS_SERVICE=%~2"
-if not defined ECS_CLUSTER (
-    set /p "ECS_CLUSTER=ECS cluster name: "
-)
-if not defined ECS_SERVICE (
-    set /p "ECS_SERVICE=ECS service name: "
-)
-if not defined ECS_CLUSTER (
-    echo Error: ECS cluster name is required.
-    exit /b 1
-)
-if not defined ECS_SERVICE (
-    echo Error: ECS service name is required.
-    exit /b 1
-)
+:have_identity
+echo AWS identity: %AWS_CALLER_ARN%
 
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "IMAGE_TAG=%%I"
 set "IMMUTABLE_IMAGE=%IMAGE_REPOSITORY%:%IMAGE_TAG%"
@@ -72,7 +68,7 @@ if %errorlevel% neq 0 (
 )
 
 echo [2/6] Logging into AWS ECR...
-aws ecr get-login-password --region %AWS_REGION% | docker login --username AWS --password-stdin %ECR_REPO%
+aws ecr get-login-password --region %AWS_REGION% --profile %AWS_PROFILE% --no-cli-pager | docker login --username AWS --password-stdin %ECR_REPO%
 if %errorlevel% neq 0 (
     echo Error: AWS ECR login failed!
     exit /b %errorlevel%
@@ -114,7 +110,7 @@ if not defined NEW_TASK_DEF (
 )
 
 echo [6/6] Rolling the classic ECS service (minimumHealthyPercent=100)...
-aws ecs update-service --cluster "%ECS_CLUSTER%" --service "%ECS_SERVICE%" --task-definition "%NEW_TASK_DEF%" --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200" --health-check-grace-period-seconds 120 --force-new-deployment --region "%AWS_REGION%" --query "service.serviceArn" --output text --no-cli-pager
+aws ecs update-service --cluster "%ECS_CLUSTER%" --service "%ECS_SERVICE%" --task-definition "%NEW_TASK_DEF%" --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200" --health-check-grace-period-seconds 120 --force-new-deployment --region "%AWS_REGION%" --profile %AWS_PROFILE% --query "service.serviceArn" --output text --no-cli-pager
 if %errorlevel% neq 0 (
     echo Error: ecs update-service failed.
     echo Classic service name is quickscribe-site, not the Express c259 name.
@@ -125,6 +121,11 @@ echo Deployment started.
 echo Image %IMMUTABLE_IMAGE%
 echo Task definition %NEW_TASK_DEF%
 echo Service %ECS_CLUSTER%/%ECS_SERVICE%
-echo Monitor with: aws ecs describe-services --cluster %ECS_CLUSTER% --services %ECS_SERVICE%
+echo Monitor with: aws ecs describe-services --cluster %ECS_CLUSTER% --services %ECS_SERVICE% --profile %AWS_PROFILE% --region %AWS_REGION%
 pause
-endlocal
+exit /b 0
+
+:resolve_identity
+set "AWS_CALLER_ARN="
+for /f "delims=" %%I in ('aws sts get-caller-identity --profile %AWS_PROFILE% --query Arn --output text --region %AWS_REGION% --no-cli-pager 2^>nul') do set "AWS_CALLER_ARN=%%I"
+exit /b 0

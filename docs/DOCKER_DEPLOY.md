@@ -40,7 +40,9 @@ required configuration.
 - Cloudflare R2 is separate from AWS IAM. When `S3_BUCKET` is an R2 bucket, set
   `R2_ENDPOINT_URL` (or `S3_ENDPOINT_URL`), `R2_ACCESS_KEY_ID`, and
   `R2_SECRET_ACCESS_KEY`; these explicit R2 credentials are used only for R2.
-- Inject other secrets at runtime with AWS Secrets Manager or SSM Parameter Store.
+- Deploy with `deploy.bat` (defaults to cluster `default`, service `quickscribe-site`,
+  profile `quickscribe-ecs`). If that profile is missing or still the Koyeb
+  uploader, it prompts for infra IAM keys once and saves them to the profile.
 - Configure the load balancer health check to use `GET /health` on the
   container port (success matcher `200`). Do not use `/` — production mode
   redirects plain HTTP to HTTPS and the checker will see `301` instead of `200`.
@@ -59,6 +61,9 @@ required configuration.
   target group. Express Mode canary (two TGs) 503s sticky browsers after deploy.
   Migrate with `python scripts/migrate_express_to_classic_ecs.py` (dry-run;
   add `--apply` to change AWS). Then `deploy.bat default quickscribe-site`.
+- Autoscaling: min **1** / max **2** tasks at 1 vCPU. Idle stays at one task.
+  Maximum CPU ≥70% for 2 minutes adds a spare; Maximum CPU <20% for 10 minutes
+  removes it. Re-apply with `python scripts/setup_ecs_site_autoscaling.py --apply`.
 - The image includes FFmpeg for the existing media probing and local fallback
   paths.
 - Set `PUBLIC_BASE_URL` and `QS_CANONICAL_ORIGIN` to the public HTTPS origin.

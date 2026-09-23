@@ -210,12 +210,14 @@ def _utc_now_iso() -> str:
 
 
 def _use_memory_store() -> bool:
-    if _simulation_mode():
-        return True
+    """Use process memory only when Supabase is unavailable.
+
+    Simulation checkout on multi-task ECS must still persist to
+    cardcom_credit_purchases — otherwise /cardcom/sim-checkout 404s
+    on a different task («הזמנה לא נמצאה»).
+    """
     global _cardcom_db_available
-    if _cardcom_db_available is False:
-        return True
-    return False
+    return _cardcom_db_available is False
 
 
 def _mark_db_unavailable() -> None:
@@ -231,12 +233,25 @@ def _supabase_deps():
     return sa._supabase_rest_config()
 
 
+def _hydrate_sim_token(row: Optional[dict]) -> Optional[dict]:
+    """Recover sim_token from low_profile_id when the DB column was dropped."""
+    if not row:
+        return row
+    out = dict(row)
+    if str(out.get('sim_token') or '').strip():
+        return out
+    lp = str(out.get('low_profile_id') or '')
+    if lp.startswith('sim:'):
+        out['sim_token'] = lp[4:]
+    return out
+
+
 def _cardcom_purchase_get(order_id: str) -> Optional[dict]:
     order_id = str(order_id or '').strip()
     if not order_id:
         return None
     if order_id in _cardcom_memory_store:
-        return dict(_cardcom_memory_store[order_id])
+        return _hydrate_sim_token(dict(_cardcom_memory_store[order_id]))
     if _use_memory_store():
         return None
     try:
@@ -257,10 +272,11 @@ def _cardcom_purchase_get(order_id: str) -> Optional[dict]:
         rows = r.json() if r.text else []
         global _cardcom_db_available
         _cardcom_db_available = True
-        return rows[0] if rows else None
+        return _hydrate_sim_token(rows[0] if rows else None)
     except Exception as e:
         logger.warning('cardcom purchase get failed, trying memory: %s', e)
-        return _cardcom_memory_store.get(order_id)
+        mem = _cardcom_memory_store.get(order_id)
+        return _hydrate_sim_token(dict(mem) if mem else None)
 
 
 def _cardcom_purchase_get_by_low_profile(low_profile_id: str) -> Optional[dict]:
@@ -307,19 +323,17 @@ def _cardcom_purchase_insert(row: dict) -> Optional[dict]:
             json=row,
             timeout=15,
         )
-        if (
-            r.status_code == 400
-            and 'user_name' in row
-            and 'user_name' in (r.text or '')
-        ):
-            row_wo = {k: v for k, v in row.items() if k != 'user_name'}
-            r = requests.post(
-                f"{supabase_url}/rest/v1/cardcom_credit_purchases",
-                headers={**headers, 'Prefer': 'return=representation'},
-                json=row_wo,
-                timeout=15,
-            )
-            row = row_wo
+        if r.status_code == 400:
+            drop = [k for k in ('user_name', 'sim_token') if k in row and k in (r.text or '')]
+            if drop:
+                row_wo = {k: v for k, v in row.items() if k not in drop}
+                r = requests.post(
+                    f"{supabase_url}/rest/v1/cardcom_credit_purchases",
+                    headers={**headers, 'Prefer': 'return=representation'},
+                    json=row_wo,
+                    timeout=15,
+                )
+                row = row_wo
         if r.status_code == 409:
             return _cardcom_purchase_get(order_id)
         if r.status_code in (400, 404) and 'cardcom_credit_purchases' in (r.text or ''):
@@ -464,6 +478,23 @@ def _cardcom_invoice_line_description(bundle: dict, is_he: bool) -> str:
     return f'QuickScribe credit bundle — {minutes} transcription minutes'
 
 
+def _medical_invoices_enabled() -> bool:
+    """Medical subscriptions always issue a tax invoice unless explicitly disabled."""
+    if _simulation_mode():
+        return False
+    if _env_flag('CARDCOM_INVOICES') is False:
+        return False
+    return True
+
+
+def _cardcom_medical_invoice_description(plan: str, included_hours: int, is_he: bool = True) -> str:
+    label = str(plan or 'medical').strip().title() or 'Medical'
+    hours = int(included_hours or 0)
+    if is_he:
+        return f'מנוי QuickScribe Medical — {label} ({hours} שעות תמלול)'
+    return f'QuickScribe Medical {label} subscription ({hours} transcription hours)'
+
+
 def _cardcom_normalize_tax_id(raw: str) -> str:
     return ''.join(ch for ch in str(raw or '') if ch.isdigit())[:9]
 
@@ -512,6 +543,47 @@ def _cardcom_validate_invoice_billing(billing: Optional[dict]) -> dict:
     return {'tax_id': tax_id, 'city': city[:100]}
 
 
+def _cardcom_build_invoice_document(
+    product_id: str,
+    description: str,
+    amount_ils: float,
+    contact: dict,
+    billing: Optional[dict] = None,
+    schema: str = 'lp',
+) -> dict:
+    """Invoice payload for LowProfile (`lp`), token Transaction, or standalone CreateDocument."""
+    normalized_billing = _cardcom_validate_invoice_billing(billing)
+    doc: Dict[str, Any] = {
+        'DocumentTypeToCreate': _cardcom_invoice_document_type(),
+        'Products': [{
+            'ProductID': str(product_id or 'qs-item')[:50],
+            'Description': str(description or 'QuickScribe')[:200],
+            'Quantity': 1,
+            'UnitCost': float(amount_ils),
+        }],
+        'TaxId': normalized_billing['tax_id'],
+        'City': normalized_billing['city'],
+    }
+    name = str((contact or {}).get('name') or '').strip()
+    email = str((contact or {}).get('email') or '').strip()
+    if name:
+        doc['Name'] = name[:50] if schema != 'lp' else name[:100]
+    if email:
+        doc['Email'] = email
+        if _env_flag('CARDCOM_INVOICE_EMAIL', True) is not False:
+            doc['IsSendByEmail'] = True
+    ext_id = str((contact or {}).get('external_id') or '').strip()
+    if ext_id:
+        doc['ExternalId'] = ext_id[:64]
+    if schema == 'lp':
+        if _env_flag('CARDCOM_INVOICE_ALLOW_EDIT', True) is not False:
+            doc['IsAllowEditDocument'] = True
+    else:
+        doc['Languge'] = 'he'
+        doc['ISOCoinID'] = 1
+    return doc
+
+
 def _cardcom_build_checkout_document(
     bundle: dict,
     bundle_id: str,
@@ -521,32 +593,66 @@ def _cardcom_build_checkout_document(
     billing: Optional[dict] = None,
 ) -> dict:
     """Document block for LowProfile/Create (invoice at charge time)."""
-    doc: Dict[str, Any] = {
-        'DocumentTypeToCreate': _cardcom_invoice_document_type(),
-        'Products': [{
-            'ProductID': f'qs-{bundle_id}',
-            'Description': _cardcom_invoice_line_description(bundle, is_he),
-            'Quantity': 1,
-            'UnitCost': float(amount_ils),
-        }],
-    }
-    name = str((contact or {}).get('name') or '').strip()
-    email = str((contact or {}).get('email') or '').strip()
-    if name:
-        doc['Name'] = name[:100]
-    if email:
-        doc['Email'] = email
-        if _env_flag('CARDCOM_INVOICE_EMAIL', True) is not False:
-            doc['IsSendByEmail'] = True
-    ext_id = str((contact or {}).get('external_id') or '').strip()
-    if ext_id:
-        doc['ExternalId'] = ext_id[:64]
-    normalized_billing = _cardcom_validate_invoice_billing(billing)
-    doc['TaxId'] = normalized_billing['tax_id']
-    doc['City'] = normalized_billing['city']
-    if _env_flag('CARDCOM_INVOICE_ALLOW_EDIT', True) is not False:
-        doc['IsAllowEditDocument'] = True
-    return doc
+    return _cardcom_build_invoice_document(
+        product_id=f'qs-{bundle_id}',
+        description=_cardcom_invoice_line_description(bundle, is_he),
+        amount_ils=amount_ils,
+        contact=contact,
+        billing=billing,
+        schema='lp',
+    )
+
+
+def _cardcom_issue_standalone_invoice(
+    *,
+    description: str,
+    amount_ils: float,
+    contact: dict,
+    billing: dict,
+    product_id: str = 'qs-medical',
+    comments: str = '',
+    tranzaction_id: str = '',
+) -> dict:
+    """Issue a tax invoice/receipt after a charge that did not include a Document block."""
+    doc = _cardcom_build_invoice_document(
+        product_id=product_id,
+        description=description,
+        amount_ils=amount_ils,
+        contact=contact,
+        billing=billing,
+        schema='standalone',
+    )
+    if comments:
+        doc['Comments'] = str(comments)[:250]
+    if tranzaction_id:
+        raw_tid = str(tranzaction_id).strip()
+        if raw_tid.isdigit():
+            doc['TransactionId'] = int(raw_tid)
+    payload = {**_cardcom_auth_fields(), 'Document': doc}
+    try:
+        result = _cardcom_api_post('Documents/CreateDocument', payload)
+    except RuntimeError:
+        if 'TransactionId' not in doc:
+            raise
+        doc.pop('TransactionId', None)
+        result = _cardcom_api_post('Documents/CreateDocument', {**_cardcom_auth_fields(), 'Document': doc})
+    info = _cardcom_extract_document_info(result)
+    nested = result.get('DocumentInfo') if isinstance(result.get('DocumentInfo'), dict) else {}
+    if not info.get('invoice_number'):
+        number = result.get('DocumentNumber')
+        if number is None:
+            number = nested.get('DocumentNumber')
+        if number is not None:
+            info['invoice_number'] = str(number).strip()
+    if not info.get('invoice_url'):
+        info['invoice_url'] = str(result.get('DocumentUrl') or nested.get('DocumentUrl') or '').strip()
+    if not info.get('invoice_type'):
+        info['invoice_type'] = str(result.get('DocumentType') or nested.get('DocumentType') or '').strip()
+    if not info.get('invoice_number') and info.get('invoice_error'):
+        raise RuntimeError(info['invoice_error'])
+    if not info.get('invoice_number'):
+        raise RuntimeError(str(result.get('Description') or 'Cardcom did not return an invoice number'))
+    return info
 
 
 def _cardcom_extract_document_info(lp_result: dict) -> dict:
@@ -622,11 +728,14 @@ def _cardcom_create_low_profile(
     }
     if sim_token:
         row['sim_token'] = sim_token
+        # Survives when cardcom_credit_purchases.sim_token column is missing.
+        row['low_profile_id'] = f'sim:{sim_token}'
 
     if _simulation_mode():
         _cardcom_purchase_insert(row)
         sim_q = f"order_id={quote(order_id, safe='')}&sim_token={quote(sim_token or '', safe='')}"
-        sim_url = f"{base}/cardcom/sim-checkout?{sim_q}"
+        # Same host the buyer is on (do not bounce via PUBLIC_BASE_URL).
+        sim_url = f"/cardcom/sim-checkout?{sim_q}"
         logger.info('cardcom simulation checkout order=%s bundle=%s', order_id, bundle_id)
         return {
             'url': sim_url,
@@ -772,6 +881,16 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
             user_name=str(purchase.get('user_name') or '').strip() or None,
             credit_minutes_after=int((row or {}).get('credit_minutes') or 0),
         )
+        try:
+            from referrals import maybe_grant_after_paid_purchase
+            maybe_grant_after_paid_purchase(
+                user_id=user_id,
+                order_ref=order_id,
+                simulation=True,
+                provider='cardcom',
+            )
+        except Exception:
+            logger.exception('referral reward after cardcom simulation skipped')
         return {
             'ok': True,
             'already_credited': False,
@@ -848,6 +967,20 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         **{k: v for k, v in invoice_patch.items() if v},
     })
     row = sa._user_credits_add_minutes(user_id, minutes)
+    try:
+        from referrals import maybe_grant_after_paid_purchase, payment_fingerprint_from_cardcom
+        fingerprint = payment_fingerprint_from_cardcom(
+            tranz_info if isinstance(tranz_info, dict) else None
+        ) or ''
+        maybe_grant_after_paid_purchase(
+            user_id=user_id,
+            order_ref=order_id,
+            fingerprint=fingerprint,
+            provider='cardcom',
+        )
+        row = sa._user_credits_get(user_id) or row
+    except Exception:
+        logger.exception('referral reward after cardcom purchase failed')
     purchase_after = _cardcom_purchase_get(order_id) or purchase
     sa._schedule_admin_payment_notify(
         user_id=user_id,
@@ -999,7 +1132,12 @@ def register_cardcom_routes(app: Flask) -> None:
             if not purchase:
                 return jsonify({'error': 'Unknown order'}), 404
             expected_token = str(purchase.get('sim_token') or '').strip()
-            if not expected_token or sim_token != expected_token:
+            status = str(purchase.get('status') or 'pending').strip().lower()
+            token_ok = bool(sim_token) and (
+                (expected_token and sim_token == expected_token)
+                or (not expected_token and status == 'pending')
+            )
+            if not token_ok:
                 user_id = sa._supabase_user_id_from_request()
                 if not user_id or str(purchase.get('user_id') or '') != user_id:
                     return jsonify({'error': 'Invalid simulation token or authorization'}), 403
@@ -1029,7 +1167,8 @@ def register_cardcom_routes(app: Flask) -> None:
         amount = purchase.get('amount_ils')
         minutes = purchase.get('credit_minutes')
         name = (bundle or {}).get('name', 'Credit bundle')
-        if sim_token and str(purchase.get('sim_token') or '') != sim_token:
+        stored_token = str(purchase.get('sim_token') or '').strip()
+        if stored_token and sim_token and stored_token != sim_token:
             return 'Invalid simulation token.', 403
         html = f"""<!DOCTYPE html>
 <html lang="he" dir="rtl">

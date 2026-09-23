@@ -27,7 +27,7 @@
                     <li data-i18n="products_core_f3">Pay-as-you-go minute bundles and a free Starter welcome pack</li>
                     <li data-i18n="products_core_f4">Priority AI queue and advanced noise cleanup on paid credits</li>
                 </ul>
-                <a href="/en" class="seo-btn seo-btn-primary product-card-cta" data-i18n="products_core_cta">Open QuickScribe Core</a>
+                <a href="{% if qs_is_en %}/en{% else %}/{% endif %}" class="seo-btn seo-btn-primary product-card-cta" data-i18n="products_core_cta">Open QuickScribe Core</a>
             </article>
             <article class="product-card product-card--medical">
                 <header class="product-card-header">

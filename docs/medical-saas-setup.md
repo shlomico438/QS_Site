@@ -64,3 +64,33 @@ The partial unique index on user, payment kind, and billing-cycle start prevents
 - Run the renewal endpoint against a due sandbox account.
 - Verify that a signed-out `/medical` user cannot presign an upload, trigger processing, start live transcription, or warm the medical endpoint.
 - Verify that `/` and `/en` still allow the regular anonymous transcription flow.
+
+## 5. Invoices (tax invoice + receipt)
+
+Medical checkout now attaches a Cardcom `Document` (`TaxInvoiceAndReceipt`) and emails it to the doctor (`CARDCOM_INVOICE_EMAIL`, default on). The doctor is asked for **ת.ז. / ח.פ.** and **ישוב** before Cardcom redirect — same modal as regular credit purchases.
+
+Apply `migrations/add_medical_invoice_columns.sql` so `invoice_number` / `invoice_url` persist on `medical_subscription_payments`.
+
+Ops also get the same “payment received” email as regular Cardcom purchases.
+
+### Issue an invoice for a charge that already completed without a document
+
+You need the doctor's ID/company number and city:
+
+```http
+POST /api/medical/cardcom/issue-invoice
+X-Medical-Billing-Secret: <MEDICAL_BILLING_CRON_SECRET>
+Content-Type: application/json
+
+{
+  "order_id": "qs_med_4839ce6ea6ec4003a0f07c524290ba7b",
+  "tax_id": "123456789",
+  "city": "תל אביב"
+}
+```
+
+Or locally with production env:
+
+```text
+python scripts/issue_medical_invoice.py --order-id qs_med_... --tax-id 123456789 --city "תל אביב"
+```

@@ -95,7 +95,7 @@
       html.qs-medical-entry #main-btn,
       html.qs-medical-entry #regular-record-wrap,
       html.qs-medical-entry #regular-record-btn { display: none !important; }
-      html.qs-medical-entry #medical-session-header,
+      html.qs-medical-entry #medical-session-header { display: flex !important; }
       html.qs-medical-entry #medical-recording-wrap { display: block !important; }
       html.qs-medical-entry body.medical-onboarding-pending .medical-header-tools { display: none !important; }
     </style>
@@ -123,15 +123,9 @@
     <meta name="twitter:description" content="{{ self.page_description()|striptags|trim }}">
     {% endif %}
     <link rel="canonical" href="{{ qs_canonical_url }}">
-    {% if qs_is_locale_home %}
-    <link rel="alternate" hreflang="he" href="{{ qs_canonical_origin }}/">
-    <link rel="alternate" hreflang="en" href="{{ qs_canonical_origin }}/en">
-    <link rel="alternate" hreflang="x-default" href="{{ qs_canonical_origin }}/">
-    {% else %}
-    <link rel="alternate" hreflang="he" href="{{ qs_canonical_url }}">
-    <link rel="alternate" hreflang="en" href="{{ qs_canonical_url }}">
-    <link rel="alternate" hreflang="x-default" href="{{ qs_canonical_url }}">
-    {% endif %}
+    <link rel="alternate" hreflang="he" href="{{ qs_hreflang_he }}">
+    <link rel="alternate" hreflang="en" href="{{ qs_hreflang_en }}">
+    <link rel="alternate" hreflang="x-default" href="{{ qs_hreflang_default }}">
 
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ static_asset_version }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app_custom.css') }}?v={{ static_asset_version }}">
@@ -252,11 +246,13 @@
                     {% set nav_blog_href = '/en/medical/blog' if (medical_entry | default(false) or _nav_on_medical_path) else '/blog' %}
                     {% set nav_about_href = '/en/medical/about' if (medical_entry | default(false) or _nav_on_medical_path) else '/about' %}
                     {% set nav_contact_href = '/en/medical/contact' if (medical_entry | default(false) or _nav_on_medical_path) else '/contact' %}
+                    {% set nav_products_href = '/en/products' %}
                 {% else %}
                     {% set nav_pricing_href = '/medical/pricing' if (medical_entry | default(false) or _nav_on_medical_path) else '/pricing' %}
                     {% set nav_blog_href = '/medical/blog' if (medical_entry | default(false) or _nav_on_medical_path) else '/blog' %}
                     {% set nav_about_href = '/medical/about' if (medical_entry | default(false) or _nav_on_medical_path) else '/about' %}
                     {% set nav_contact_href = '/medical/contact' if (medical_entry | default(false) or _nav_on_medical_path) else '/contact' %}
+                    {% set nav_products_href = '/products' %}
                 {% endif %}
                 <a href="{% if medical_entry | default(false) %}{% if qs_is_en %}/en/medical{% else %}/medical{% endif %}{% else %}{% if qs_is_en %}/en{% else %}/{% endif %}{% endif %}" class="nav-logo" id="nav-logo-link">
                     <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="nav-logo-image" width="48" height="48">
@@ -265,7 +261,7 @@
                 <nav class="nav-menu nav-menu-desktop" id="nav-menu-desktop" aria-label="Primary navigation">
                     <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
                     {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
-                    <a href="/products" class="nav-item nav-products-link" id="nav-products-link" data-i18n="nav_products">Products</a>
+                    <a href="{{ nav_products_href }}" class="nav-item nav-products-link" id="nav-products-link" data-i18n="nav_products">Products</a>
                     <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">Accuracy</a>
                     {% endif %}
                     <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">About Us</a>
@@ -287,7 +283,7 @@
             <nav class="nav-menu nav-menu-mobile" id="nav-menu" aria-label="Mobile navigation" hidden>
                 <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
                 {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
-                <a href="/products" class="nav-item nav-products-link nav-products-link-mobile" data-i18n="nav_products">Products</a>
+                <a href="{{ nav_products_href }}" class="nav-item nav-products-link nav-products-link-mobile" data-i18n="nav_products">Products</a>
                 <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">Accuracy</a>
                 {% endif %}
                 <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">About Us</a>
@@ -316,6 +312,17 @@
             <div id="user-menu-credits" class="user-menu-credits" style="display: none;" aria-live="polite">
                 <span data-i18n="nav_credits">יתרת דקות</span>:
                 <strong id="user-menu-credit-minutes">0</strong>
+            </div>
+            <div id="user-menu-referral" class="user-menu-referral" hidden>
+                <div class="user-menu-referral-title" data-i18n="referral_title">Invite a friend</div>
+                <p class="user-menu-referral-hint" data-i18n="referral_hint">Share your link. After they sign up and buy their first pack, you both get bonus minutes.</p>
+                <label class="user-menu-profile-label" for="user-menu-referral-link" data-i18n="referral_link_label">Your referral link</label>
+                <input type="text" id="user-menu-referral-link" class="user-menu-profile-input" readonly>
+                <div class="user-menu-referral-actions">
+                    <button type="button" id="user-menu-referral-copy-link" class="user-menu-referral-btn" data-i18n="referral_copy_link">Copy link</button>
+                    <button type="button" id="user-menu-referral-copy-email" class="user-menu-referral-btn" data-i18n="referral_copy_email">Copy email</button>
+                </div>
+                <p id="user-menu-referral-stats" class="user-menu-referral-stats"></p>
             </div>
             <div class="user-menu-profile-medical" style="margin-bottom:10px;">
                 <label for="user-menu-medical-mode" style="display:flex; align-items:center; gap:8px; font-weight:600;">

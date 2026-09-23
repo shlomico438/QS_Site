@@ -934,6 +934,8 @@ app.config['SECRET_KEY'] = 'secret_scribe_key_123'
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 # Fingerprinted CSS/JS use ?v= — allow long browser/CDN cache for /static.
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000
+# Default True 308s /en// → /en/. Canonical English home is /en (no trailing slash).
+app.url_map.merge_slashes = False
 
 # ECS/Gunicorn SIGTERM: fail ALB health so the target deregisters before kill.
 _draining = False
@@ -1071,7 +1073,31 @@ def _get_static_asset_version():
     return _static_asset_version_cache['value']
 
 
-QS_CANONICAL_ORIGIN = (os.environ.get('QS_CANONICAL_ORIGIN') or 'https://www.getquickscribe.com').rstrip('/')
+QS_PUBLIC_SITE_ORIGIN = 'https://www.getquickscribe.com'
+QS_CANONICAL_ORIGIN = (os.environ.get('QS_CANONICAL_ORIGIN') or QS_PUBLIC_SITE_ORIGIN).rstrip('/')
+
+
+def _seo_canonical_origin():
+    """Public site origin for canonical / Open Graph / Twitter / hreflang.
+
+    Never emit ECS Express (*.on.aws) or ALB hostnames — those are internal
+    simulation URLs, not the indexed domain.
+    """
+    raw = (os.environ.get('QS_CANONICAL_ORIGIN') or QS_CANONICAL_ORIGIN or QS_PUBLIC_SITE_ORIGIN).strip().rstrip('/')
+    if not raw:
+        return QS_PUBLIC_SITE_ORIGIN
+    host = raw.split('://', 1)[-1].split('/', 1)[0].split(':')[0].lower()
+    if (
+        host.endswith('.on.aws')
+        or host.endswith('.elb.amazonaws.com')
+        or host.endswith('.amazonaws.com')
+        or host in ('localhost', '127.0.0.1')
+        or not host.endswith('getquickscribe.com')
+    ):
+        return QS_PUBLIC_SITE_ORIGIN
+    if raw.startswith('http://'):
+        raw = 'https://' + raw[len('http://'):]
+    return raw.rstrip('/')
 
 
 def _seo_canonical_path():
@@ -1079,6 +1105,32 @@ def _seo_canonical_path():
     if path != '/' and path.endswith('/'):
         path = path.rstrip('/') or '/'
     return path
+
+
+def _seo_path_without_locale(path):
+    p = path if path is not None else _seo_canonical_path()
+    if p == '/en':
+        return '/'
+    if p.startswith('/en/'):
+        rest = p[3:]
+        return rest if rest else '/'
+    return p
+
+
+def _seo_absolute_url(origin, path):
+    if path == '/':
+        return origin + '/'
+    if not path.startswith('/'):
+        path = '/' + path
+    return origin + path
+
+
+def _seo_hreflang_urls(path=None):
+    origin = _seo_canonical_origin()
+    bare = _seo_path_without_locale(path)
+    he = _seo_absolute_url(origin, bare)
+    en = _seo_absolute_url(origin, '/en' if bare == '/' else '/en' + bare)
+    return {'he': he, 'en': en, 'x-default': he}
 
 
 def _qs_locale_from_path(path=None):
@@ -1093,11 +1145,16 @@ def _qs_locale_from_path(path=None):
 def _inject_static_asset_version():
     path = _seo_canonical_path()
     locale = _qs_locale_from_path(path)
-    canonical_url = QS_CANONICAL_ORIGIN + ('/' if path == '/' else path)
+    origin = _seo_canonical_origin()
+    canonical_url = _seo_absolute_url(origin, path)
+    hreflang = _seo_hreflang_urls(path)
     return {
         'static_asset_version': _get_static_asset_version(),
-        'qs_canonical_origin': QS_CANONICAL_ORIGIN,
+        'qs_canonical_origin': origin,
         'qs_canonical_url': canonical_url,
+        'qs_hreflang_he': hreflang['he'],
+        'qs_hreflang_en': hreflang['en'],
+        'qs_hreflang_default': hreflang['x-default'],
         'qs_is_locale_home': path in ('/', '/en'),
         'qs_locale': locale,
         'qs_is_en': locale == 'en',
@@ -1145,6 +1202,14 @@ def _env_flag_true(name):
 def _audio_preprocessing_enabled():
     """Tier-1 RunPod CPU preprocessing; enabled unless explicitly disabled."""
     raw = os.environ.get('ENABLE_AUDIO_PREPROCESSING')
+    if raw is None or str(raw).strip() == '':
+        return True
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _site_video_audio_extract_enabled():
+    """Extract video audio on the site container. Off restores the RunPod CPU extract."""
+    raw = os.environ.get('SITE_VIDEO_AUDIO_EXTRACT')
     if raw is None or str(raw).strip() == '':
         return True
     return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
@@ -2143,6 +2208,8 @@ def _guess_upload_content_type(filename, file_type):
         return ft or 'audio/flac'
     if name.endswith('.webm') and (not ft or ft.lower().startswith('audio/')):
         return ft or 'audio/webm'
+    if name.endswith(('.mp4', '.m4v', '.mov', '.mkv')):
+        return ft if ft.lower().startswith('video/') else 'video/mp4'
     return ft or 'application/octet-stream'
 
 
@@ -3249,7 +3316,7 @@ def _mark_audio_preprocess_finished(job_id, status):
         return True
 
 
-def _apply_audio_preprocess_result(trigger_payload, job_id, source_s3_key, output_s3_key, *, timing=None, error=None):
+def _apply_audio_preprocess_result(trigger_payload, job_id, source_s3_key, output_s3_key, *, timing=None, error=None, engine='runpod_cpu'):
     input_payload = trigger_payload.get('input') if isinstance(trigger_payload, dict) else {}
     if not isinstance(input_payload, dict):
         input_payload = {}
@@ -3259,7 +3326,7 @@ def _apply_audio_preprocess_result(trigger_payload, job_id, source_s3_key, outpu
     options.update({
         'preprocessed_audio': succeeded,
         'preprocess': 'audio_loudnorm',
-        'preprocess_engine': 'runpod_cpu',
+        'preprocess_engine': engine or 'runpod_cpu',
         'preprocess_failed': not succeeded,
         'preprocess_error': str(error or '')[:300] or None,
         'preprocess_timing': dict(timing or {}),
@@ -3424,7 +3491,7 @@ def _cleanup_audio_preprocess_intermediate(job_id, pending_info=None):
     ).strip()
     source_key = str(info.get('input_s3_key') or info.get('source_s3_key') or '').strip()
     bucket = str(info.get('bucket') or '').strip()
-    if not output_key or output_key == source_key or not output_key.endswith('.preprocessed.wav'):
+    if not output_key or output_key == source_key or not _is_audio_preprocess_intermediate_key(output_key):
         return
     try:
         _s3_boto_client(bucket=bucket).delete_object(Bucket=bucket, Key=output_key)
@@ -3441,12 +3508,107 @@ def _music_vocals_s3_key(source_s3_key, job_id):
     return f"{parent}/{name}" if parent else name
 
 
+def _is_audio_preprocess_intermediate_key(s3_key):
+    key = str(s3_key or '')
+    return key.endswith('.preprocessed.wav') or key.endswith('.preprocessed.mp3')
+
+
+def _site_should_extract_video_audio(s3_key):
+    """Regular video containers are demuxed on the site so RunPod never downloads the picture."""
+    return _site_video_audio_extract_enabled() and _s3_key_likely_video_container(s3_key)
+
+
 def _audio_preprocessed_s3_key(source_s3_key, job_id):
     src = pathlib.PurePosixPath(str(source_s3_key or ''))
     parent = str(src.parent).strip('.')
     stem = src.stem or str(job_id or uuid.uuid4())
-    name = f"{stem}.preprocessed.wav"
+    ext = '.mp3' if _site_should_extract_video_audio(source_s3_key) else '.wav'
+    name = f"{stem}.preprocessed{ext}"
     return f"{parent}/{name}" if parent else name
+
+
+def _site_video_extract_nice():
+    """OS nice for ffmpeg. Higher yields CPU to the medical/web worker (nice 0)."""
+    try:
+        nice = int(os.environ.get('SITE_VIDEO_AUDIO_EXTRACT_NICE') or '19')
+    except (TypeError, ValueError):
+        nice = 19
+    return max(0, min(nice, 19))
+
+
+def _subprocess_low_priority_kwargs():
+    """Run a child below the site worker so live medical work keeps the CPU.
+
+    Linux nice is applied only to the ffmpeg process, not the reused threadpool
+    thread. Windows uses BELOW_NORMAL_PRIORITY_CLASS on that same child.
+    """
+    if os.name == 'nt':
+        return {'creationflags': 0x00004000}
+    nice = _site_video_extract_nice()
+    if nice <= 0:
+        return {}
+
+    def _lower():
+        try:
+            os.nice(nice)
+        except OSError:
+            pass
+
+    return {'preexec_fn': _lower}
+
+
+def _extract_video_audio_mp3_ffmpeg(input_path, output_path, timeout_sec=None):
+    """Mono 16 kHz MP3 plus loudnorm. Drops the video stream."""
+    ffmpeg_path = _resolve_ffmpeg()
+    try:
+        timeout = int(timeout_sec if timeout_sec is not None else (os.environ.get('SITE_VIDEO_AUDIO_EXTRACT_TIMEOUT_SEC') or '1800'))
+    except (TypeError, ValueError):
+        timeout = 1800
+    timeout = max(30, timeout)
+    cmd = [
+        ffmpeg_path, '-y', '-hide_banner', '-loglevel', 'error', '-nostdin',
+        '-i', str(input_path),
+        '-vn', '-ac', '1', '-ar', '16000',
+        '-af', 'loudnorm',
+        '-c:a', 'libmp3lame', '-b:a', '64k',
+        str(output_path),
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        timeout=timeout,
+        **_subprocess_low_priority_kwargs(),
+    )
+    if result.returncode != 0 or not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
+        err = (result.stderr or b'').decode('utf-8', errors='replace')[-500:]
+        raise RuntimeError(err or f'ffmpeg extract failed ({result.returncode})')
+
+
+def _site_extract_video_audio_to_s3(bucket, source_s3_key, output_s3_key):
+    """Download the original video, write a small MP3, upload it. Original object stays."""
+    if not bucket or not source_s3_key or not output_s3_key:
+        raise RuntimeError('bucket and s3 keys are required for site video extract')
+    if output_s3_key == source_s3_key:
+        raise RuntimeError('refusing to overwrite the original upload')
+    s3_client = _s3_boto_client(bucket=bucket)
+    suffix = pathlib.Path(str(source_s3_key)).suffix or '.mp4'
+    with tempfile.TemporaryDirectory(prefix='qs_vid_') as tmp:
+        src_path = os.path.join(tmp, 'input' + suffix)
+        out_path = os.path.join(tmp, 'audio.mp3')
+        s3_client.download_file(bucket, source_s3_key, src_path)
+        _extract_video_audio_mp3_ffmpeg(src_path, out_path)
+        s3_client.upload_file(
+            out_path,
+            bucket,
+            output_s3_key,
+            ExtraArgs={'ContentType': 'audio/mpeg'},
+        )
+
+
+def _run_on_os_thread(fn, *args):
+    """Real OS thread. threading.Thread is a greenlet after gevent monkey patch."""
+    import gevent
+    return gevent.get_hub().threadpool.spawn(fn, *args).get()
 
 
 def _should_preprocess_music_vocals(is_medical, audio_profile_info):
@@ -3736,6 +3898,44 @@ def _media_stream_token_serializer():
 def _is_local_host(host):
     h = str(host or '').split(':')[0].strip().lower()
     return h in ('localhost', '127.0.0.1', '::1') or h.endswith('.local')
+
+
+@app.before_request
+def _redirect_duplicate_slashes():
+    """Collapse /en// (and similar) to the canonical path.
+
+    Flask merge_slashes turns /en// into /en/ first. Canonical English home is /en.
+    """
+    if request.method not in ('GET', 'HEAD'):
+        return None
+    path = request.path or '/'
+    if '//' not in path:
+        return None
+    collapsed = re.sub(r'/{2,}', '/', path)
+    if collapsed != '/' and collapsed.endswith('/'):
+        collapsed = collapsed.rstrip('/') or '/'
+    if collapsed == path:
+        return None
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    return redirect(collapsed + (('?' + qs) if qs else ''), code=301)
+
+
+@app.before_request
+def _redirect_medical_user_off_core_home():
+    """Doctors locked to Medical must never receive the regular Core app at `/` or `/en`."""
+    if request.method not in ('GET', 'HEAD'):
+        return None
+    path = request.path or '/'
+    if path not in ('/', '/en'):
+        return None
+    flag = str(request.cookies.get('qs_medical_user') or '').strip().lower()
+    if flag not in ('1', 'true', 'yes'):
+        return None
+    dest = '/en/medical' if path == '/en' else '/medical'
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    resp = redirect(dest + (('?' + qs) if qs else ''), code=302)
+    resp.headers['Cache-Control'] = 'private, no-store'
+    return resp
 
 
 @app.before_request
@@ -4661,6 +4861,7 @@ def _apply_clean_transcript_to_segments(segments, clean_text, is_music=False):
             copy['words'] = [dict(w) if isinstance(w, dict) else w for w in words]
         out.append(copy)
 
+    originals = _snapshot_segments_for_script_guard(out)
     word_refs = []  # (seg_idx, word_idx, orig_token)
     for si, seg in enumerate(out):
         if not isinstance(seg, dict):
@@ -4701,12 +4902,14 @@ def _apply_clean_transcript_to_segments(segments, clean_text, is_music=False):
                     kept.append(w)
             seg['words'] = kept
             seg['text'] = ' '.join(_word_token_from_dict(w) for w in kept if isinstance(w, dict)).strip()
+        restored = _restore_segments_whose_script_flipped(out, originals)
         return out, {
             "source": "clean_transcript_projection",
             "changed_count": changed_count,
             "mode": "words",
             "orig_tokens": len(orig_tokens),
             "clean_tokens": len(clean_tokens),
+            "script_flips_restored": restored,
         }
 
     # No word timings: align flat segment tokens, then rebuild each segment text.
@@ -4737,12 +4940,14 @@ def _apply_clean_transcript_to_segments(segments, clean_text, is_music=False):
         new_text = ' '.join(new_parts).strip()
         if new_text:
             out[si]['text'] = new_text
+    restored = _restore_segments_whose_script_flipped(out, originals)
     return out, {
         "source": "clean_transcript_projection",
         "changed_count": changed_count,
         "mode": "segments",
         "orig_tokens": len(flat_orig),
         "clean_tokens": len(clean_tokens),
+        "script_flips_restored": restored,
     }
 
 
@@ -5600,17 +5805,48 @@ def _send_admin_payment_email(payload):
             balance_line = f"Wallet balance after credit: {int(balance)} minutes\n"
         except (TypeError, ValueError):
             balance_line = f"Wallet balance after credit: {balance}\n"
-    subject = f"QuickScribe — payment received ({email or user_id[:8] or 'user'})"
-    body = (
-        "A user completed a credit purchase on QuickScribe.\n\n"
+    plan = str(payload.get('plan') or '').strip()
+    payment_kind = str(payload.get('payment_kind') or '').strip()
+    invoice_url = str(payload.get('invoice_url') or '').strip()
+    invoice_number = str(payload.get('invoice_number') or '').strip()
+    tranz_id = str(payload.get('cardcom_transaction_id') or '').strip()
+    is_medical = str(payload.get('product') or '').strip().lower() == 'medical'
+    product_line = ''
+    if is_medical:
+        product_line = (
+            f"Product: QuickScribe Medical\n"
+            f"Plan: {plan or '(unknown)'}\n"
+            f"Payment kind: {payment_kind or 'initial'}\n"
+        )
+        if not bundle_id or bundle_id == '(unknown)':
+            bundle_id = plan or 'medical'
+    invoice_line = ''
+    if invoice_number or invoice_url:
+        invoice_line = (
+            f"Invoice number: {invoice_number or '(none)'}\n"
+            f"Invoice URL: {invoice_url or '(none)'}\n"
+        )
+    tranz_line = f"Cardcom transaction: {tranz_id}\n" if tranz_id else ''
+    subject_kind = 'Medical payment received' if is_medical else 'payment received'
+    subject = f"QuickScribe — {subject_kind} ({email or user_id[:8] or 'user'})"
+    intro = (
+        "A doctor completed a Medical subscription payment on QuickScribe.\n\n"
+        if is_medical
+        else "A user completed a credit purchase on QuickScribe.\n\n"
+    )
+    minutes_line = '' if is_medical else f"Minutes credited: {minutes}\n"
+    body = intro + (
         f"Provider: {provider}\n"
         f"User id: {user_id or '(unknown)'}\n"
         f"Email: {email or '(none)'}\n"
         f"Name: {name}\n"
+        f"{product_line}"
         f"Bundle: {bundle_id}\n"
-        f"Minutes credited: {minutes}\n"
+        f"{minutes_line}"
         f"{amount_line}"
         f"Order / session: {order_ref}\n"
+        f"{tranz_line}"
+        f"{invoice_line}"
         f"{balance_line}"
     )
     return _send_email_via_zoho(recipients, subject, body, reply_to=email or None)
@@ -5649,13 +5885,18 @@ def _schedule_admin_payment_notify(**kwargs):
     """Fire-and-forget ops email after a successful (newly credited) payment."""
     try:
         payload = dict(kwargs or {})
-        if not payload.get('user_id') or int(payload.get('minutes') or 0) <= 0:
+        user_id = str(payload.get('user_id') or '').strip()
+        minutes = int(payload.get('minutes') or 0)
+        has_amount = payload.get('amount') is not None and str(payload.get('amount')).strip() != ''
+        if not user_id or (minutes <= 0 and not has_amount):
             return
         threading.Thread(
             target=_maybe_notify_admin_payment,
             args=(payload,),
             daemon=True,
         ).start()
+        if payload.get('skip_capi'):
+            return
         # Meta Conversions API Purchase (server-side) — same payload keys.
         _schedule_meta_capi_purchase(**payload)
     except Exception as e:
@@ -6632,6 +6873,24 @@ def _media_duration_seconds_from_s3(bucket, s3_key, client_duration_sec=0.0):
     return 0.0
 
 
+_PROFILE_VTT_USER_ID = 'profile'
+
+
+def _is_profile_vtt_s3_key(s3_key):
+    """True for cmd profiling uploads under users/profile/... (regular pipeline, no credits)."""
+    k = str(s3_key or '').strip().replace('\\', '/')
+    return k.startswith('users/profile/')
+
+
+def _merge_profile_pending_flags(job_id, new_info):
+    prev = pending_job_info.get(job_id) or {}
+    if isinstance(prev, dict) and isinstance(new_info, dict) and prev.get('profile_vtt'):
+        for k, v in prev.items():
+            if str(k).startswith('profile_') and k not in new_info:
+                new_info[k] = v
+    return new_info
+
+
 def _credits_gate_applies(is_medical=False):
     if not _credits_billing_enabled():
         return False
@@ -6805,6 +7064,8 @@ def _reserve_credits_before_gpu(user_id, job_id, bucket, s3_key, is_medical=Fals
     s3_key = str(s3_key or '').strip()
     if not user_id or not job_id or not s3_key:
         return {"ok": True, "skipped": True}
+    if _is_profile_vtt_s3_key(s3_key) or user_id == _PROFILE_VTT_USER_ID:
+        return {"ok": True, "skipped": True, "profile_vtt": True}
     if _job_is_medical_for_credits(s3_key):
         return {"ok": True, "skipped": True}
 
@@ -7077,6 +7338,13 @@ def _charge_credits_on_gpu_finalize(user_id, job_id, segments, input_s3_key, pen
     key = str(input_s3_key or '').strip()
     try:
         pending = dict(pending_info) if isinstance(pending_info, dict) else {}
+        if (
+            pending.get('profile_vtt')
+            or uid == _PROFILE_VTT_USER_ID
+            or _is_profile_vtt_s3_key(key)
+            or (pending_job_info.get(jid) or {}).get('profile_vtt')
+        ):
+            return None
         file_duration = None
         try:
             stored = float(pending.get('credit_file_duration_sec') or 0)
@@ -8799,6 +9067,66 @@ def api_user_credits():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/referral/me', methods=['GET'])
+def api_referral_me():
+    """Return (and create) the signed-in user's referral link and stored invite email."""
+    try:
+        from referrals import ensure_profile, profile_public_payload, request_client_ip
+        auth_user = _supabase_auth_user_from_request()
+        if not auth_user:
+            return jsonify({"error": "Authorization required"}), 401
+        user_id = str(auth_user.get('id') or '').strip()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        locale = str(request.args.get('locale') or '').strip() or _user_locale_from_request(auth_user)
+        display_name = _user_display_name_from_auth_payload(auth_user) or ''
+        profile = ensure_profile(user_id, display_name=display_name, created_ip=request_client_ip())
+        if not profile:
+            return jsonify({"error": "Referral program is not available yet"}), 503
+        return jsonify(profile_public_payload(profile, locale)), 200
+    except Exception as e:
+        logging.exception("api_referral_me failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/referral/claim', methods=['POST'])
+def api_referral_claim():
+    """Attach a new account to a referral code captured from ?ref=."""
+    try:
+        from referrals import claim_referral, request_client_ip
+        auth_user = _supabase_auth_user_from_request()
+        if not auth_user:
+            return jsonify({"error": "Authorization required"}), 401
+        user_id = str(auth_user.get('id') or '').strip()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        body = request.get_json(silent=True) or {}
+        result = claim_referral(
+            referee_user_id=user_id,
+            code=body.get('code') or body.get('ref') or '',
+            referee_email=str(auth_user.get('email') or ''),
+            referee_created_at=auth_user.get('created_at'),
+            referee_ip=request_client_ip(),
+        )
+        status = 200 if result.get('ok') else 400
+        return jsonify(result), status
+    except Exception as e:
+        logging.exception("api_referral_claim failed")
+        return jsonify({"error": str(e)}), 500
+
+
+def _user_locale_from_request(auth_user=None):
+    raw = str(request.args.get('locale') or request.args.get('lang') or '').lower()
+    if raw.startswith('en'):
+        return 'en'
+    if raw.startswith('he'):
+        return 'he'
+    path = str(getattr(request, 'path', '') or '')
+    if path == '/en' or path.startswith('/en/'):
+        return 'en'
+    return 'he'
+
+
 @app.route('/api/user/credits/ensure-welcome', methods=['POST'])
 def api_user_credits_ensure_welcome():
     """Ensure the one-time welcome credit pack exists for the signed-in user."""
@@ -8994,6 +9322,26 @@ def api_stripe_confirm_checkout_session():
             order_ref=session_id,
             credit_minutes_after=int((row or {}).get('credit_minutes') or 0),
         )
+        try:
+            from referrals import maybe_grant_after_paid_purchase, payment_fingerprint_from_stripe
+            fingerprint = ''
+            payment_intent = session.get('payment_intent')
+            if payment_intent:
+                intent = _stripe_api(
+                    'GET',
+                    f'payment_intents/{payment_intent}',
+                    params={'expand[]': 'payment_method'},
+                )
+                fingerprint = payment_fingerprint_from_stripe(intent.get('payment_method')) or ''
+            maybe_grant_after_paid_purchase(
+                user_id=user_id,
+                order_ref=session_id,
+                fingerprint=fingerprint,
+                provider='stripe',
+            )
+            row = _user_credits_get(user_id) or row
+        except Exception:
+            logging.exception('referral reward after stripe purchase failed')
         return jsonify({
             "ok": True,
             "added_minutes": minutes,
@@ -9124,6 +9472,8 @@ def add_security_headers(resp):
     elif resp.mimetype and 'html' in (resp.mimetype or ''):
         # HTML must stay fresh so deploys and medical shell updates show immediately.
         resp.headers.setdefault('Cache-Control', 'no-cache')
+        if path in ('/', '/en'):
+            resp.headers['Vary'] = 'Cookie, Accept-Encoding'
 
     return resp
 
@@ -9242,13 +9592,13 @@ def pricing_en():
 @app.route('/medical/pricing')
 @app.route('/medical/pricing/')
 def medical_pricing():
-    return render_template('medical_pricing.html')
+    return render_template('medical_pricing.html', medical_entry=True)
 
 
 @app.route('/en/medical/pricing')
 @app.route('/en/medical/pricing/')
 def medical_pricing_en():
-    return render_template('medical_pricing.html')
+    return render_template('medical_pricing.html', medical_entry=True)
 
 
 @app.route('/about')
@@ -9259,12 +9609,12 @@ def about():
 @app.route('/medical/about')
 @app.route('/medical/about/')
 def medical_about():
-    return render_template('about.html')
+    return render_template('about.html', medical_entry=True)
 
 
 @app.route('/en/medical/about')
 def medical_about_en():
-    return render_template('about.html')
+    return render_template('about.html', medical_entry=True)
 
 
 @app.route('/en/medical/about/')
@@ -9284,8 +9634,23 @@ def free_landing():
 
 
 @app.route('/products')
+@app.route('/products/')
 def products():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/products', code=301)
     return render_template('products.html')
+
+
+@app.route('/en/products')
+def products_en():
+    return render_template('products.html')
+
+
+@app.route('/en/products/')
+def products_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/products' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
 
 @app.route('/blog')
 def blog():
@@ -9295,12 +9660,12 @@ def blog():
 @app.route('/medical/blog')
 @app.route('/medical/blog/')
 def medical_blog():
-    return render_template('medical_blog.html')
+    return render_template('medical_blog.html', medical_entry=True)
 
 
 @app.route('/en/medical/blog')
 def medical_blog_en():
-    return render_template('medical_blog.html')
+    return render_template('medical_blog.html', medical_entry=True)
 
 
 @app.route('/en/medical/blog/')
@@ -9330,12 +9695,12 @@ def contact():
 @app.route('/medical/contact')
 @app.route('/medical/contact/')
 def medical_contact():
-    return render_template('contact.html')
+    return render_template('contact.html', medical_entry=True)
 
 
 @app.route('/en/medical/contact')
 def medical_contact_en():
-    return render_template('contact.html')
+    return render_template('contact.html', medical_entry=True)
 
 
 @app.route('/en/medical/contact/')
@@ -10970,6 +11335,54 @@ def _finalize_medical_typo_fix_text(text):
     return re.sub(r'\n{2,}', '\n', clean).strip()
 
 
+_HEBREW_LETTERS = re.compile(r'[\u0590-\u05FF]')
+_LATIN_LETTERS = re.compile(r'[A-Za-z]')
+
+
+def _dominant_letter_script(text):
+    """'he' or 'lat' when one alphabet clearly dominates, else ''."""
+    raw = str(text or '')
+    he = len(_HEBREW_LETTERS.findall(raw))
+    lat = len(_LATIN_LETTERS.findall(raw))
+    if he >= 4 and he >= lat * 2:
+        return 'he'
+    if lat >= 4 and lat >= he * 2:
+        return 'lat'
+    return ''
+
+
+def _snapshot_segments_for_script_guard(segments):
+    snap = []
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            snap.append(None)
+            continue
+        words = seg.get('words')
+        snap.append({
+            'text': seg.get('text'),
+            'words': [dict(w) if isinstance(w, dict) else w for w in words] if isinstance(words, list) else None,
+        })
+    return snap
+
+
+def _restore_segments_whose_script_flipped(segments, originals):
+    """Drop a cleanup rewrite that changed Hebrew into English or English into Hebrew."""
+    restored = 0
+    for si, seg in enumerate(segments or []):
+        if not isinstance(seg, dict) or si >= len(originals or []) or not originals[si]:
+            continue
+        orig = originals[si]
+        old_script = _dominant_letter_script(orig.get('text'))
+        new_script = _dominant_letter_script(seg.get('text'))
+        if not old_script or not new_script or old_script == new_script:
+            continue
+        seg['text'] = orig.get('text')
+        if orig.get('words') is not None:
+            seg['words'] = orig['words']
+        restored += 1
+    return restored
+
+
 def _format_transcript_cleanup_openai(
     transcript_text,
     target_lang='he',
@@ -10994,6 +11407,9 @@ def _format_transcript_cleanup_openai(
         read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
     if typo_fix and is_medical:
         # UI locale is Hebrew; spoken English must stay English.
+        target_lang = 'preserve'
+    if not is_music:
+        # Transcript cleanup has no target language. Summaries are a separate call.
         target_lang = 'preserve'
     output_lang_label, lang_hint, _want_hebrew = _format_output_lang_label(target_lang)
     preserve_source_languages = str(target_lang or '').strip().lower() in (
@@ -11080,10 +11496,20 @@ def _format_transcript_cleanup_openai(
             "* Do not add information.\n"
             "* Keep paragraph structure when possible.\n"
             "* Do not rewrite sentences for style.\n\n"
-            f"Output language: {output_lang_label}.\n\n"
-            f"Language hint: {lang_hint}\n\n"
-            "Transcript:\n\n"
-            f"{transcript_text}"
+            + (
+                "LANGUAGE LOCK: Do not translate. English stays English. Hebrew stays Hebrew. "
+                "Only fix spelling and punctuation inside the same language.\n\n"
+                if preserve_source_languages
+                else f"Output language: {output_lang_label}.\n\nLanguage hint: {lang_hint}\n\n"
+            )
+            + "Transcript:\n\n"
+            f"{transcript_text}\n\n"
+            + (
+                "LANGUAGE LOCK again: do not translate any sentence. "
+                "If a sentence is English, return it in English. If it is Hebrew, return it in Hebrew.\n"
+                if preserve_source_languages
+                else ""
+            )
         )
     clean = _openai_chat_text_completion(
         system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
@@ -11219,7 +11645,9 @@ def _format_unified_transcript_openai(
         f"{task1_clean}"
         f"{task2}"
         f"{json_tail}"
-        f"Output language must be {output_lang_label} for all fields.\n\n"
+        f"Summary language (overview, key_points, action_items, and medical summary fields): {output_lang_label}.\n"
+        "clean_transcript LANGUAGE LOCK: do not translate. Keep every passage in the language it was spoken. "
+        "English stays English. Hebrew stays Hebrew.\n\n"
         f"Language hint: {lang_hint}\n\n"
         "Transcript:\n\n"
         f"{transcript_text}"
@@ -13402,17 +13830,15 @@ def _finalize_gpu_callback_background(job_id, data, segments, result, input_s3_k
             to_email = (notify.get("user_email") or "").strip()
             open_job_id = (notify.get("job_id") or job_id)
             is_medical_job = _job_is_medical_for_credits(input_s3_key, pending_info)
-            if to_email and open_job_id:
+            # Medical: doctors stay on the session page; do not email a link after each visit.
+            if to_email and open_job_id and not is_medical_job:
                 from urllib.parse import quote
-                if is_medical_job:
-                    open_url = f"{public_base}/medical?open={quote(str(open_job_id), safe='')}"
-                else:
-                    open_url = f"{public_base}/?open={quote(str(open_job_id), safe='')}"
+                open_url = f"{public_base}/?open={quote(str(open_job_id), safe='')}"
                 sent_ok = _send_transcription_ready_email(
                     to_email,
                     notify.get("user_name"),
                     open_url,
-                    is_medical=is_medical_job,
+                    is_medical=False,
                 )
                 if sent_ok:
                     transcription_email_sent.add(job_id)
@@ -15574,9 +16000,50 @@ def _finish_audio_preprocess_and_trigger_gpu(job_id, trigger_payload, endpoint_i
 
 
 def _preprocess_audio_then_trigger(job_id, payload, endpoint_id, api_key, bucket, source_s3_key, output_s3_key):
-    """CPU ffmpeg stage. Fail-open to the original upload on any dispatch/worker error."""
+    """CPU ffmpeg stage. Video is extracted on the site; other speech stays on RunPod CPU.
+
+    Fail-open to the original upload on any extract/dispatch error.
+    """
     pending_trigger[job_id] = 'preprocessing'
     _set_trigger_state(job_id, 'preprocessing')
+    if _site_should_extract_video_audio(source_s3_key):
+        try:
+            _run_on_os_thread(_site_extract_video_audio_to_s3, bucket, source_s3_key, output_s3_key)
+            trigger_payload = _apply_audio_preprocess_result(
+                payload,
+                job_id,
+                source_s3_key,
+                output_s3_key,
+                engine='site_ffmpeg',
+            )
+            logging.info(
+                "Site video audio extract complete job_id=%s key_suffix=%s",
+                job_id,
+                str(output_s3_key or '')[-100:],
+            )
+            _finish_audio_preprocess_and_trigger_gpu(
+                job_id,
+                trigger_payload,
+                endpoint_id,
+                api_key,
+            )
+        except Exception as error:
+            logging.exception("Site video audio extract failed open job_id=%s", job_id)
+            trigger_payload = _apply_audio_preprocess_result(
+                payload,
+                job_id,
+                source_s3_key,
+                output_s3_key,
+                error=str(error),
+                engine='site_ffmpeg',
+            )
+            _finish_audio_preprocess_and_trigger_gpu(
+                job_id,
+                trigger_payload,
+                endpoint_id,
+                api_key,
+            )
+        return
     try:
         _queue_audio_preprocess_on_runpod(
             job_id,
@@ -16092,7 +16559,7 @@ def trigger_processing():
             _mark_upload_complete(job_id)
             pending_trigger[job_id] = "triggered"
             _set_trigger_state(job_id, "triggered")
-            pending_job_info[job_id] = {
+            pending_job_info[job_id] = _merge_profile_pending_flags(job_id, {
                 "input_s3_key": s3_key,
                 "bucket": target_bucket,
                 "is_medical": bool(is_medical),
@@ -16100,7 +16567,7 @@ def trigger_processing():
                 "task": task,
                 "language": language,
                 "transcription_options": transcription_options or {},
-            }
+            })
             public_base = _public_base_url(request)
             t = threading.Thread(
                 target=_submit_simulation_job,
@@ -16416,7 +16883,7 @@ def trigger_processing():
 
         # So gpu_callback can save raw JSON even when RunPod does not echo input; store task/language for retry
         _lang_fields = _runpod_input_language_fields(language, transcription_options, data)
-        pending_job_info[job_id] = {
+        pending_job_info[job_id] = _merge_profile_pending_flags(job_id, {
             "input_s3_key": s3_key,
             "transcription_s3_key": transcription_s3_key,
             "bucket": target_bucket,
@@ -16431,7 +16898,7 @@ def trigger_processing():
                 else ("audio_loudnorm" if use_audio_preprocess else None)
             ),
             "audio_preprocessed_s3_key": audio_preprocessed_s3_key,
-        }
+        })
         if credit_reserve.get('required_minutes'):
             pending_job_info[job_id]['credit_required_minutes'] = float(credit_reserve['required_minutes'])
         if credit_reserve.get('file_duration_seconds'):
@@ -16666,6 +17133,354 @@ def get_simulation_mode():
 
 # --- BURN SUBTITLES (SERVER-SIDE ON KOYEB) ---
 burn_tasks = {}  # task_id -> { status, output_s3_key?, error? }
+_burn_tasks_lock = threading.Lock()
+_BURN_TASK_KEEP_KEYS = (
+    'runpod_run_id', 'output_s3_key', 'endpoint_id', 'notify_email', 'user_id',
+    'job_id', 'subtitle_s3_key', 'safe_name', 'mode', 'bucket', 'started_at',
+    'subtitle_format',
+)
+
+
+def _burn_task_s3_key(task_id):
+    return f"tmp/burn_tasks/{task_id}.json"
+
+
+def _burn_status_rank(status):
+    s = str(status or '').strip().lower()
+    if s == 'completed':
+        return 3
+    if s == 'failed':
+        return 2
+    if s == 'processing':
+        return 1
+    return 0
+
+
+def _merge_burn_info(a, b):
+    """Merge two burn-task dicts. Terminal status wins; otherwise newer updated_at."""
+    a = dict(a or {})
+    b = dict(b or {})
+    if not a:
+        return b
+    if not b:
+        return a
+    ra, rb = _burn_status_rank(a.get('status')), _burn_status_rank(b.get('status'))
+    if rb > ra:
+        winner, loser = b, a
+    elif ra > rb:
+        winner, loser = a, b
+    else:
+        ta = float(a.get('updated_at') or 0)
+        tb = float(b.get('updated_at') or 0)
+        winner, loser = (b, a) if tb >= ta else (a, b)
+    merged = {**loser, **winner}
+    for k in _BURN_TASK_KEEP_KEYS:
+        if not merged.get(k):
+            merged[k] = loser.get(k) or winner.get(k)
+    return merged
+
+
+def _persist_burn_task_s3(task_id, info):
+    bucket = (info.get('bucket') or os.environ.get('S3_BUCKET') or '').strip()
+    if not bucket or not task_id:
+        return
+    try:
+        s3_client = _s3_boto_client(bucket=bucket)
+        body = json.dumps(info or {}, default=str).encode('utf-8')
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=_burn_task_s3_key(task_id),
+            Body=body,
+            ContentType='application/json',
+        )
+        runpod_run_id = str((info or {}).get('runpod_run_id') or '').strip()
+        if runpod_run_id:
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=f"tmp/burn_tasks/runpod/{runpod_run_id}.json",
+                Body=json.dumps({"task_id": task_id}).encode('utf-8'),
+                ContentType='application/json',
+            )
+    except Exception:
+        logging.warning("persist burn task to S3 failed task_id=%s", task_id, exc_info=True)
+
+
+def _load_burn_task_s3(task_id, bucket=None):
+    bucket = (bucket or os.environ.get('S3_BUCKET') or '').strip()
+    if not bucket or not task_id:
+        return {}
+    try:
+        s3_client = _s3_boto_client(bucket=bucket)
+        obj = s3_client.get_object(Bucket=bucket, Key=_burn_task_s3_key(task_id))
+        raw = obj['Body'].read()
+        data = json.loads(raw.decode('utf-8') if isinstance(raw, (bytes, bytearray)) else raw)
+        return data if isinstance(data, dict) else {}
+    except ClientError:
+        return {}
+    except Exception:
+        logging.warning("load burn task from S3 failed task_id=%s", task_id, exc_info=True)
+        return {}
+
+
+def _save_burn_task(task_id, info, persist=True):
+    info = dict(info or {})
+    info['updated_at'] = time.time()
+    with _burn_tasks_lock:
+        prev = dict(burn_tasks.get(task_id) or {})
+        merged = _merge_burn_info(prev, info)
+        burn_tasks[task_id] = merged
+    if persist:
+        _persist_burn_task_s3(task_id, merged)
+    return merged
+
+
+def _load_burn_task(task_id):
+    with _burn_tasks_lock:
+        mem = dict(burn_tasks.get(task_id) or {})
+    disk = _load_burn_task_s3(task_id, mem.get('bucket'))
+    merged = _merge_burn_info(mem, disk)
+    if merged:
+        with _burn_tasks_lock:
+            burn_tasks[task_id] = _merge_burn_info(burn_tasks.get(task_id) or {}, merged)
+    return dict(burn_tasks.get(task_id) or merged or {})
+
+
+def _task_id_for_runpod_run(runpod_run_id):
+    rid = str(runpod_run_id or '').strip()
+    if not rid:
+        return None
+    with _burn_tasks_lock:
+        for tid, info in burn_tasks.items():
+            if str((info or {}).get('runpod_run_id') or '') == rid:
+                return tid
+    bucket = (os.environ.get('S3_BUCKET') or '').strip()
+    if not bucket:
+        return None
+    try:
+        s3_client = _s3_boto_client(bucket=bucket)
+        obj = s3_client.get_object(Bucket=bucket, Key=f"tmp/burn_tasks/runpod/{rid}.json")
+        raw = obj['Body'].read()
+        data = json.loads(raw.decode('utf-8') if isinstance(raw, (bytes, bytearray)) else raw)
+        tid = (data or {}).get('task_id') if isinstance(data, dict) else None
+        return str(tid).strip() or None
+    except ClientError:
+        return None
+    except Exception:
+        return None
+
+
+def _parse_burn_callback_task_id(data):
+    """Resolve our burn task_id from a worker or RunPod-wrapped callback body.
+
+    RunPod often posts `{id: <runpod job id>, output: {task_id, ...}}`. Treating
+    top-level `id` as task_id stores completion under the wrong key.
+    """
+    if not isinstance(data, dict):
+        return None
+    nested = []
+    for key in ('output', 'result', 'input'):
+        v = data.get(key)
+        if isinstance(v, dict):
+            nested.append(v)
+
+    def _from(obj, keys):
+        if not isinstance(obj, dict):
+            return None
+        for k in keys:
+            v = obj.get(k)
+            if v not in (None, ''):
+                return str(v).strip()
+        return None
+
+    for obj in nested + [data]:
+        tid = _from(obj, ('task_id', 'taskId'))
+        if tid:
+            return tid
+    envelope_id = _from(data, ('id',))
+    mapped = _task_id_for_runpod_run(envelope_id)
+    if mapped:
+        return mapped
+    for obj in nested:
+        nested_id = _from(obj, ('id',))
+        if nested_id:
+            return nested_id
+    return None
+
+
+def _s3_object_mtime_unix(bucket, key):
+    if not bucket or not key:
+        return None
+    try:
+        s3_client = _s3_boto_client(bucket=bucket)
+        ho = s3_client.head_object(Bucket=bucket, Key=key)
+        lm = ho.get('LastModified')
+        if lm is None:
+            return None
+        if hasattr(lm, 'timestamp'):
+            return float(lm.timestamp())
+        return None
+    except ClientError:
+        return None
+    except Exception:
+        return None
+
+
+def _s3_object_is_fresh(bucket, key, started_at, skew_sec=120):
+    mtime = _s3_object_mtime_unix(bucket, key)
+    if mtime is None:
+        return False
+    try:
+        started = float(started_at or 0)
+    except (TypeError, ValueError):
+        started = 0.0
+    if started <= 0:
+        return True
+    return mtime >= (started - max(0, int(skew_sec)))
+
+
+def _burn_output_fallback_key(user_id, task_id):
+    if not user_id or not task_id:
+        return None
+    return f"users/{user_id}/output/burn_{task_id}.mp4"
+
+
+def _burn_callback_base(req):
+    """Origin RunPod should POST movie-burn completion to.
+
+    Simulation ECS must not inherit production PUBLIC_BASE_URL — that sends the
+    callback to another cluster while the browser keeps polling this one.
+    """
+    if SIMULATION_MODE:
+        sim = (os.environ.get('SIMULATION_PUBLIC_BASE_URL') or '').strip().rstrip('/')
+        if sim:
+            return sim
+        root = (req.url_root or '').rstrip('/')
+        host = str(req.host or '')
+        xfp = (req.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+        publicish = (
+            xfp == 'https'
+            or host.endswith('getquickscribe.com')
+            or '.on.aws' in host
+            or host.endswith('amazonaws.com')
+        )
+        if root.startswith('http://') and publicish:
+            root = 'https://' + root[len('http://'):]
+        return root
+    return _public_base_url(req)
+
+
+def _maybe_notify_burn_ready(task_id, info):
+    if not info or info.get('notify_sent') or str(info.get('status') or '') != 'completed':
+        return info
+    email = (info.get('notify_email') or '').strip()
+    output_s3_key = info.get('output_s3_key')
+    bucket = (info.get('bucket') or os.environ.get('S3_BUCKET') or '').strip()
+    if not email or not output_s3_key or not bucket:
+        return info
+    try:
+        s3_client = _s3_boto_client(bucket=bucket)
+        presigned = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': output_s3_key},
+            ExpiresIn=86400,
+        )
+        _send_burn_ready_email(email, presigned, info.get('safe_name') or 'video')
+        info = {**info, 'notify_sent': True}
+        _save_burn_task(task_id, info)
+    except Exception:
+        logging.warning("burn ready email failed task_id=%s", task_id, exc_info=True)
+    return info
+
+
+def _reconcile_burn_task(task_id, info, allow_fail_on_runpod_complete_missing_s3=False):
+    """If callback missed this instance, recover from S3 output and/or RunPod status."""
+    info = dict(info or {})
+    status = str(info.get('status') or 'processing').strip().lower()
+    if status in ('completed', 'failed'):
+        return info
+
+    bucket = (info.get('bucket') or os.environ.get('S3_BUCKET') or '').strip()
+    started_at = info.get('started_at')
+    candidates = [info.get('output_s3_key'), _burn_output_fallback_key(info.get('user_id'), task_id)]
+    for key in candidates:
+        if key and bucket and _s3_object_is_fresh(bucket, key, started_at):
+            info['status'] = 'completed'
+            info['output_s3_key'] = key
+            logging.info("burn task completed via S3 probe task_id=%s key=%s", task_id, key)
+            return _save_burn_task(task_id, info)
+
+    run_id = (info.get('runpod_run_id') or '').strip()
+    endpoint_id = (info.get('endpoint_id') or _runpod_burn_endpoint_id() or '').strip()
+    if not run_id or not endpoint_id:
+        return info
+
+    last_poll = float(info.get('last_runpod_poll_at') or 0)
+    if (not allow_fail_on_runpod_complete_missing_s3) and last_poll and (time.time() - last_poll) < 8:
+        return info
+    info['last_runpod_poll_at'] = time.time()
+    with _burn_tasks_lock:
+        cur = dict(burn_tasks.get(task_id) or {})
+        cur['last_runpod_poll_at'] = info['last_runpod_poll_at']
+        burn_tasks[task_id] = cur
+
+    rp_status, output, err = _fetch_runpod_job_status(endpoint_id, run_id)
+    status_u = str(rp_status or '').upper()
+    out = output if isinstance(output, dict) else {}
+    out_key = out.get('output_s3_key') or out.get('outputS3Key') or info.get('output_s3_key')
+    if status_u in ('FAILED', 'ERROR', 'CANCELLED', 'TIMED_OUT'):
+        info['status'] = 'failed'
+        info['error'] = str(err or out.get('error') or f'RunPod burn job {status_u}')[:500]
+        logging.error("burn task failed via RunPod poll task_id=%s status=%s error=%s", task_id, status_u, info['error'])
+        return _save_burn_task(task_id, info)
+    if status_u in ('COMPLETED', 'DONE', 'SUCCESS'):
+        if out_key and bucket and _s3_object_is_fresh(bucket, out_key, started_at):
+            info['status'] = 'completed'
+            info['output_s3_key'] = out_key
+            logging.info("burn task completed via RunPod poll task_id=%s", task_id)
+            return _save_burn_task(task_id, info)
+        for key in candidates:
+            if key and bucket and _s3_object_is_fresh(bucket, key, started_at):
+                info['status'] = 'completed'
+                info['output_s3_key'] = key
+                return _save_burn_task(task_id, info)
+        if allow_fail_on_runpod_complete_missing_s3:
+            info['status'] = 'failed'
+            info['error'] = str(out.get('error') or err or 'RunPod burn completed but output is missing from S3')[:500]
+            return _save_burn_task(task_id, info)
+    return info
+
+
+def _watch_runpod_burn(task_id):
+    """Poll RunPod + S3 when the CPU worker callback is delayed or hits another Site instance."""
+    try:
+        timeout_sec = max(120, int(os.environ.get('RUNPOD_BURN_WATCH_TIMEOUT_SEC', '1800') or 1800))
+        poll_sec = max(5, int(os.environ.get('RUNPOD_BURN_WATCH_POLL_SEC', '15') or 15))
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            info = _load_burn_task(task_id)
+            if str(info.get('status') or '').lower() in ('completed', 'failed'):
+                if str(info.get('status') or '').lower() == 'completed':
+                    _maybe_notify_burn_ready(task_id, info)
+                return
+            remaining = deadline - time.time()
+            allow_fail = remaining <= (poll_sec * 2)
+            info = _reconcile_burn_task(task_id, info, allow_fail_on_runpod_complete_missing_s3=allow_fail)
+            if str(info.get('status') or '').lower() == 'completed':
+                _maybe_notify_burn_ready(task_id, info)
+                return
+            if str(info.get('status') or '').lower() == 'failed':
+                return
+            time.sleep(poll_sec)
+        info = _load_burn_task(task_id)
+        if str(info.get('status') or '').lower() in ('completed', 'failed'):
+            return
+        info['status'] = 'failed'
+        info['error'] = f'RunPod burn timed out after {timeout_sec}s'
+        _save_burn_task(task_id, info)
+        logging.error("burn task watcher timeout task_id=%s", task_id)
+    except Exception:
+        logging.exception("_watch_runpod_burn failed task_id=%s", task_id)
+
 
 def _resolve_ffmpeg():
     """Return an executable ffmpeg path.
@@ -17115,45 +17930,31 @@ def _get_job_notification_info(runpod_job_id, user_id=None):
 
 
 def _send_transcription_ready_email(to_email, user_name, open_url, is_medical=False):
-    """Send transcription-complete email via Zoho SMTP."""
-    if not to_email:
+    """Send transcription-complete email via Zoho SMTP. Medical jobs never email."""
+    if not to_email or is_medical:
         return False
-    display_name = str(user_name or '').strip() or 'שם המשתמש'
-    if is_medical:
-        subject = "סיכום המפגש מוכן לסקירה (זמין ל-72 שעות)"
-        body = (
-            f"שלום {display_name},\n\n"
-            "הקלטת המפגש האחרון עובדה בהצלחה. התמלול והסיכום הקליני זמינים כעת לסקירה ועריכה בקישור הבא:\n\n"
-            f"{open_url}\n\n"
-            "לתשומת לבך: מטעמי אבטחת מידע והגנה על פרטיות המטופל, ההקלטה והסיכום יימחקו לצמיתות מהשרת בעוד 72 שעות. "
-            "מומלץ לעבור על הטקסט ולהטמיעו ברשומה הרפואית בהקדם.\n\n"
-            "בברכה,\n"
-            "צוות QuickScribe Medical"
-        )
-    else:
-        subject = "הכתוביות לוידאו שלך מוכנות"
-        body = (
-            "התימלול והכתוביות לוידאו שלך מוכנים כעת. אפשר לצפות בתוצאה, לבצע תיקונים אחרונים ולהוריד את הוידאו בקישור הבא:\n\n"
-            f"{open_url}\n\n"
-            "אנחנו עומדים על כ-94% דיוק, לכן כדאי לעבור על הטקסט ולוודא שהכל מושלם.\n\n"
-            "נשמח לעזור בכל שאלה במענה למייל זה.\n\n"
-            "יצירה נעימה,\n"
-            "QuickScribe"
-        )
-        href = html_module.escape(open_url, quote=True)
-        body_html = (
-            '<div dir="rtl" style="text-align: right; font-family: Arial, Helvetica, sans-serif; '
-            'font-size: 15px; line-height: 1.6;">'
-            '<p>התימלול והכתוביות לוידאו שלך מוכנים כעת. אפשר לצפות בתוצאה, לבצע תיקונים אחרונים '
-            "ולהוריד את הוידאו בקישור הבא:</p>"
-            f'<p><a href="{href}">קישור</a></p>'
-            "<p>אנחנו עומדים על כ-94% דיוק, לכן כדאי לעבור על הטקסט ולוודא שהכל מושלם.</p>"
-            "<p>נשמח לעזור בכל שאלה במענה למייל זה.</p>"
-            "<p>יצירה נעימה,<br>QuickScribe</p>"
-            "</div>"
-        )
-        return _send_email_via_zoho(to_email, subject, body, body_html)
-    return _send_email_via_zoho(to_email, subject, body)
+    subject = "הכתוביות לוידאו שלך מוכנות"
+    body = (
+        "התימלול והכתוביות לוידאו שלך מוכנים כעת. אפשר לצפות בתוצאה, לבצע תיקונים אחרונים ולהוריד את הוידאו בקישור הבא:\n\n"
+        f"{open_url}\n\n"
+        "אנחנו עומדים על כ-94% דיוק, לכן כדאי לעבור על הטקסט ולוודא שהכל מושלם.\n\n"
+        "נשמח לעזור בכל שאלה במענה למייל זה.\n\n"
+        "יצירה נעימה,\n"
+        "QuickScribe"
+    )
+    href = html_module.escape(open_url, quote=True)
+    body_html = (
+        '<div dir="rtl" style="text-align: right; font-family: Arial, Helvetica, sans-serif; '
+        'font-size: 15px; line-height: 1.6;">'
+        '<p>התימלול והכתוביות לוידאו שלך מוכנים כעת. אפשר לצפות בתוצאה, לבצע תיקונים אחרונים '
+        "ולהוריד את הוידאו בקישור הבא:</p>"
+        f'<p><a href="{href}">קישור</a></p>'
+        "<p>אנחנו עומדים על כ-94% דיוק, לכן כדאי לעבור על הטקסט ולוודא שהכל מושלם.</p>"
+        "<p>נשמח לעזור בכל שאלה במענה למייל זה.</p>"
+        "<p>יצירה נעימה,<br>QuickScribe</p>"
+        "</div>"
+    )
+    return _send_email_via_zoho(to_email, subject, body, body_html)
 
 
 def _segments_to_srt_text(segments, max_chars_per_line=None):
@@ -17309,14 +18110,31 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
             raise RuntimeError(f"RunPod movie dispatch failed after {max_attempts} attempts: {last_err}")
         raise RuntimeError(f"RunPod movie dispatch failed after {max_attempts} attempts")
 
-    burn_tasks[task_id] = {
+    runpod_run_id = None
+    try:
+        runpod_run_id = (r.json() or {}).get('id') if r.content else None
+    except Exception:
+        runpod_run_id = None
+    _save_burn_task(task_id, {
         'status': 'processing',
         'mode': 'runpod',
         'subtitle_format': subtitle_ext,
         'output_s3_key': output_s3_key,
         'subtitle_s3_key': subtitle_s3_key,
-        'safe_name': safe_name
-    }
+        'safe_name': safe_name,
+        'bucket': bucket,
+        'user_id': user_id,
+        'job_id': job_id,
+        'notify_email': notify_email,
+        'endpoint_id': endpoint_id,
+        'runpod_run_id': runpod_run_id,
+        'started_at': time.time(),
+    })
+    logging.info(
+        "RunPod burn dispatched task_id=%s endpoint=%s runpod_run_id=%s callback=%s",
+        task_id, endpoint_id, runpod_run_id, callback_url,
+    )
+    threading.Thread(target=_watch_runpod_burn, args=(task_id,), daemon=True).start()
 
 def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
     """Background task: download from S3, check duration limit, burn subtitles, upload to S3, optional email."""
@@ -17335,7 +18153,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
 
             ffmpeg_path = _resolve_ffmpeg()
             if not (os.path.isfile(ffmpeg_path) or shutil.which(ffmpeg_path)):
-                burn_tasks[task_id] = {'status': 'failed', 'error': 'ffmpeg not found. Install ffmpeg, set FFMPEG_PATH, or add it to PATH.'}
+                _save_burn_task(task_id, {'status': 'failed', 'error': 'ffmpeg not found. Install ffmpeg, set FFMPEG_PATH, or add it to PATH.'})
                 return
             use_ass = subtitle_style in ('tiktok', 'clean', 'cinematic')
             if use_ass:
@@ -17371,10 +18189,10 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
-                burn_tasks[task_id] = {'status': 'failed', 'error': (result.stderr or 'ffmpeg failed')[-500:]}
+                _save_burn_task(task_id, {'status': 'failed', 'error': (result.stderr or 'ffmpeg failed')[-500:]})
                 return
             if not os.path.exists(out_path):
-                burn_tasks[task_id] = {'status': 'failed', 'error': 'No output file'}
+                _save_burn_task(task_id, {'status': 'failed', 'error': 'No output file'})
                 return
 
             # Friendly base name from input key (e.g. job_123_video.mp4 -> job_123_video)
@@ -17390,7 +18208,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
             except Exception:
                 out_key = out_key_fallback
                 s3_client.upload_file(out_path, bucket, out_key, ExtraArgs={'ContentType': 'video/mp4'})
-            burn_tasks[task_id] = {'status': 'completed', 'output_s3_key': out_key}
+            _save_burn_task(task_id, {'status': 'completed', 'output_s3_key': out_key, 'user_id': user_id})
 
             if notify_email:
                 try:
@@ -17404,7 +18222,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
                     logging.warning("Notify email failed: %s", e)
     except Exception as e:
         logging.exception("burn task failed")
-        burn_tasks[task_id] = {'status': 'failed', 'error': str(e)}
+        _save_burn_task(task_id, {'status': 'failed', 'error': str(e)})
 
 
 @app.route('/api/burn_subtitles_server', methods=['POST'])
@@ -17427,10 +18245,17 @@ def burn_subtitles_server():
             return jsonify({"error": "Access denied"}), 403
 
         task_id = str(uuid.uuid4())
-        burn_tasks[task_id] = {'status': 'processing'}
+        _save_burn_task(task_id, {
+            'status': 'processing',
+            'user_id': user_id,
+            'job_id': job_id,
+            'notify_email': notify_email,
+            'bucket': os.environ.get('S3_BUCKET'),
+            'started_at': time.time(),
+        })
 
         if _burn_use_runpod(force_local=force_local_burn):
-            public_base = _public_base_url(request)
+            public_base = _burn_callback_base(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"
             try:
                 _queue_burn_task_on_runpod(
@@ -17454,7 +18279,7 @@ def burn_subtitles_server():
             except Exception as e:
                 logging.warning("RunPod burn dispatch failed: %s", e)
                 if not _burn_allow_local_fallback():
-                    burn_tasks[task_id] = {'status': 'failed', 'mode': 'runpod', 'error': f'RunPod dispatch failed: {e}'}
+                    _save_burn_task(task_id, {'status': 'failed', 'mode': 'runpod', 'error': f'RunPod dispatch failed: {e}'})
                     return jsonify({
                         "task_id": task_id,
                         "status": "failed",
@@ -17464,11 +18289,11 @@ def burn_subtitles_server():
                     }), 503
 
         if not _burn_allow_local_fallback():
-            burn_tasks[task_id] = {
+            _save_burn_task(task_id, {
                 'status': 'failed',
                 'mode': 'runpod',
                 'error': 'RunPod burn CPU endpoint is required',
-            }
+            })
             return jsonify({
                 "error": "Subtitle burn runs on RunPod CPU, not on Koyeb.",
                 "detail": "Set RUNPOD_CPU_ENDPOINT_ID (or RUNPOD_MOVIE_ENDPOINT_ID) and RUNPOD_API_KEY on Koyeb.",
@@ -17483,7 +18308,7 @@ def burn_subtitles_server():
         )
         t.daemon = True
         t.start()
-        burn_tasks[task_id]['mode'] = 'local'
+        _save_burn_task(task_id, {'mode': 'local', 'status': 'processing'})
         return jsonify({"task_id": task_id, "status": "processing", "mode": "local"}), 202
     except Exception as e:
         logging.exception("burn_subtitles_server")
@@ -17495,6 +18320,10 @@ def burn_subtitles_callback():
     """RunPod worker callback for movie burn completion/failure."""
     try:
         data = request.json or {}
+        logging.info(
+            "burn_subtitles_callback received body=%s",
+            json.dumps(data, ensure_ascii=False)[:2000] if isinstance(data, dict) else str(data)[:2000],
+        )
         candidates = [
             data,
             data.get('input') if isinstance(data.get('input'), dict) else {},
@@ -17510,7 +18339,7 @@ def burn_subtitles_callback():
                         return v
             return None
 
-        task_id = _pick(['task_id', 'taskId', 'id'])
+        task_id = _parse_burn_callback_task_id(data)
         if not task_id:
             return jsonify({"error": "task_id required"}), 400
 
@@ -17518,21 +18347,25 @@ def burn_subtitles_callback():
         output_s3_key = _pick(['output_s3_key', 'outputS3Key'])
         error_text = _pick(['error', 'message']) or ''
 
-        info = burn_tasks.get(task_id) or {}
+        info = _load_burn_task(task_id)
         if status_raw in ('completed', 'done', 'success', 'succeeded'):
             info['status'] = 'completed'
             if output_s3_key:
                 info['output_s3_key'] = output_s3_key
-            burn_tasks[task_id] = info
         elif status_raw in ('failed', 'error'):
             info['status'] = 'failed'
             info['error'] = str(error_text or 'RunPod burn failed')
-            burn_tasks[task_id] = info
         else:
             info['status'] = 'processing'
-            burn_tasks[task_id] = info
+        _save_burn_task(task_id, info)
+        if str(info.get('status') or '') == 'completed':
+            info = _maybe_notify_burn_ready(task_id, info)
 
-        return jsonify({"ok": True, "task_id": task_id, "status": burn_tasks[task_id].get('status')}), 200
+        logging.info(
+            "burn_subtitles_callback task_id=%s status=%s output_s3_key=%s",
+            task_id, info.get('status'), info.get('output_s3_key'),
+        )
+        return jsonify({"ok": True, "task_id": task_id, "status": info.get('status')}), 200
     except Exception as e:
         logging.exception("burn_subtitles_callback")
         return jsonify({"error": str(e)}), 500
@@ -17649,7 +18482,9 @@ def burn_subtitles_status():
         task_id = request.args.get('task_id')
         if not task_id:
             return jsonify({"error": "task_id required"}), 400
-        info = burn_tasks.get(task_id)
+        info = _load_burn_task(task_id)
+        if info:
+            info = _reconcile_burn_task(task_id, info)
         if not info:
             return jsonify({"status": "not_found"}), 404
         status = info.get('status', 'processing')
@@ -17660,10 +18495,11 @@ def burn_subtitles_status():
             output_s3_key = info.get('output_s3_key')
             if output_s3_key:
                 out["output_s3_key"] = output_s3_key
-                s3_client = _s3_boto_client(bucket=os.environ.get('S3_BUCKET'))
+                bucket = (info.get('bucket') or os.environ.get('S3_BUCKET') or '').strip()
+                s3_client = _s3_boto_client(bucket=bucket)
                 url = s3_client.generate_presigned_url(
                     'get_object',
-                    Params={'Bucket': os.environ.get('S3_BUCKET'), 'Key': output_s3_key},
+                    Params={'Bucket': bucket, 'Key': output_s3_key},
                     ExpiresIn=3600
                 )
                 out["output_url"] = url
@@ -17848,7 +18684,387 @@ def upload_full_file_legacy():
     # For API callers, keep an explicit deprecation status.
     return jsonify(payload), 410
 
+
+# --- PROFILE / CMD VTT (regular pipeline: ASR + GPT + screen layout) ---
+_PROFILE_VTT_MAX_BYTES = max(1, int(os.environ.get('QS_PROFILE_VTT_MAX_BYTES', str(400 * 1024 * 1024)) or (400 * 1024 * 1024)))
+_PROFILE_GPT_WAIT_SEC = max(15, int(os.environ.get('QS_PROFILE_GPT_WAIT_SEC', '180') or 180))
+
+
+def _profile_vtt_sidecar_key(job_id):
+    return f"users/{_PROFILE_VTT_USER_ID}/output/{str(job_id or '').strip()}.profile.json"
+
+
+def _profile_api_authorized():
+    expected = str(os.environ.get('QS_PROFILE_API_SECRET') or '').strip()
+    given = str(
+        request.headers.get('X-QS-Profile-Secret')
+        or request.args.get('secret')
+        or request.form.get('secret')
+        or ''
+    ).strip()
+    if expected:
+        if not given or len(given) != len(expected):
+            return False
+        return secrets.compare_digest(given, expected)
+    return _is_local_host(request.host)
+
+
+def _profile_vtt_unauthorized():
+    return jsonify({
+        "ok": False,
+        "error": "unauthorized",
+        "message": "Set QS_PROFILE_API_SECRET and send X-QS-Profile-Secret, or call from localhost.",
+    }), 401
+
+
+def _put_profile_vtt_sidecar(bucket, job_id, payload):
+    key = _profile_vtt_sidecar_key(job_id)
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
+    s3_client.put_object(Bucket=bucket, Key=key, Body=body, ContentType='application/json')
+    return key
+
+
+def _get_profile_vtt_sidecar(job_id):
+    key = _profile_vtt_sidecar_key(job_id)
+    data = _get_json_object_from_s3_key(key, user_id=_PROFILE_VTT_USER_ID)
+    return data if isinstance(data, dict) else {}
+
+
+def _profile_extract_segments(payload):
+    if not isinstance(payload, dict):
+        return []
+    segs = payload.get('segments')
+    if isinstance(segs, list) and segs:
+        return segs
+    result = payload.get('result') if isinstance(payload.get('result'), dict) else {}
+    segs = result.get('segments')
+    return segs if isinstance(segs, list) else []
+
+
+def _profile_extract_formatted(payload):
+    if not isinstance(payload, dict):
+        return {}
+    fmt = payload.get('formatted')
+    if isinstance(fmt, dict):
+        return fmt
+    result = payload.get('result') if isinstance(payload.get('result'), dict) else {}
+    fmt = result.get('formatted')
+    return fmt if isinstance(fmt, dict) else {}
+
+
+def _profile_gpt_ready(payload):
+    if _gpt_disabled():
+        return True
+    if not isinstance(payload, dict):
+        return False
+    if payload.get('post_summary_formatting_done') or payload.get('transcript_cleanup_done'):
+        return True
+    if payload.get('subtitle_grammar_done') and str(
+        _profile_extract_formatted(payload).get('clean_transcript') or ''
+    ).strip():
+        return True
+    if payload.get('server_gpt_pending'):
+        return False
+    return bool(str(_profile_extract_formatted(payload).get('clean_transcript') or '').strip())
+
+
+def _profile_check_job(job_id):
+    with app.test_request_context(f'/api/check_status/{job_id}'):
+        resp = check_job_status(job_id)
+    data = resp.get_json(silent=True) or {}
+    return data, int(resp.status_code or 200)
+
+
+def _profile_build_vtt(segments, sidecar, req_args=None):
+    from qs_subtitle_server import segments_to_adapted_vtt
+
+    args = req_args if isinstance(req_args, dict) else {}
+    side = sidecar if isinstance(sidecar, dict) else {}
+
+    def _num(name, default):
+        raw = args.get(name)
+        if raw is None or str(raw).strip() == '':
+            raw = side.get(name)
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return int(default)
+
+    width = max(160, min(_num('width', 1920), 7680))
+    height = max(90, min(_num('height', 1080), 4320))
+    style = str(args.get('style') or side.get('style') or 'tiktok').strip().lower()
+    if style not in ('tiktok', 'clean', 'cinematic'):
+        style = 'tiktok'
+    locale = str(args.get('locale') or side.get('locale') or 'he').strip().lower()
+    direction = 'rtl' if locale.startswith(('he', 'ar')) else 'ltr'
+    vtt, cues = segments_to_adapted_vtt(
+        segments,
+        width_px=width,
+        height_px=height,
+        style_key=style,
+        direction=direction,
+    )
+    return vtt, cues, {
+        "width": width,
+        "height": height,
+        "style": style,
+        "locale": locale,
+        "direction": direction,
+        "cue_count": len(cues or []),
+    }
+
+
+@app.route('/api/profile/vtt', methods=['POST'])
+def api_profile_vtt_start():
+    """Upload media from cmd and start the regular (non-medical) VTT pipeline."""
+    if not _profile_api_authorized():
+        return _profile_vtt_unauthorized()
+    upload = request.files.get('file') or request.files.get('media')
+    if upload is None or not str(upload.filename or '').strip():
+        return jsonify({
+            "ok": False,
+            "error": "file_required",
+            "message": "multipart field 'file' is required",
+        }), 400
+    filename = os.path.basename(str(upload.filename))
+    try:
+        declared_len = int(request.content_length or 0)
+    except (TypeError, ValueError):
+        declared_len = 0
+    if declared_len > _PROFILE_VTT_MAX_BYTES:
+        return jsonify({
+            "ok": False,
+            "error": "file_too_large",
+            "max_bytes": _PROFILE_VTT_MAX_BYTES,
+        }), 413
+
+    storage_profile = _resolve_storage_profile(_PROFILE_VTT_USER_ID, is_medical=False)
+    bucket = storage_profile.get('bucket')
+    if not bucket:
+        return jsonify({"ok": False, "error": "S3_BUCKET missing"}), 500
+    if not _s3_storage_credentials_configured(bucket):
+        return jsonify({"ok": False, "error": _s3_credentials_error_message(bucket)}), 500
+
+    job_id = _build_transcription_job_id(filename)
+    _base, extension = os.path.splitext(filename)
+    if not extension:
+        extension = '.bin'
+    s3_key = f"{storage_profile['input_prefix']}/{job_id}{extension}"
+    content_type = _guess_upload_content_type(filename, upload.mimetype)
+
+    try:
+        s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
+        s3_client.upload_fileobj(
+            upload.stream,
+            bucket,
+            s3_key,
+            ExtraArgs={'ContentType': content_type},
+        )
+    except Exception as e:
+        logging.exception("profile_vtt upload failed job_id=%s", job_id)
+        return jsonify({"ok": False, "error": "upload_failed", "message": str(e)[:300]}), 500
+
+    def _form_int(name, default):
+        raw = request.form.get(name)
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return int(default)
+
+    width = max(160, min(_form_int('width', 1920), 7680))
+    height = max(90, min(_form_int('height', 1080), 4320))
+    style = str(request.form.get('style') or 'tiktok').strip().lower()
+    if style not in ('tiktok', 'clean', 'cinematic'):
+        style = 'tiktok'
+    locale = str(request.form.get('locale') or 'he').strip().lower() or 'he'
+    language = str(request.form.get('language') or request.form.get('lang') or '').strip()
+    diarization = str(request.form.get('diarization') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+    sidecar = {
+        "job_id": job_id,
+        "s3_key": s3_key,
+        "bucket": bucket,
+        "filename": filename,
+        "width": width,
+        "height": height,
+        "style": style,
+        "locale": locale,
+        "language": language,
+        "diarization": diarization,
+        "created_at": time.time(),
+        "profile_vtt": True,
+    }
+    try:
+        _put_profile_vtt_sidecar(bucket, job_id, sidecar)
+    except Exception as e:
+        logging.warning("profile_vtt sidecar write failed job_id=%s: %s", job_id, e)
+
+    pending_job_info[job_id] = {
+        "input_s3_key": s3_key,
+        "bucket": bucket,
+        "is_medical": False,
+        "user_id": _PROFILE_VTT_USER_ID,
+        "profile_vtt": True,
+        "profile_width": width,
+        "profile_height": height,
+        "profile_style": style,
+        "profile_locale": locale,
+    }
+
+    trigger_payload = {
+        "jobId": job_id,
+        "s3Key": s3_key,
+        "bucket": bucket,
+        "userId": _PROFILE_VTT_USER_ID,
+        "task": "transcribe",
+        "isMedical": False,
+        "diarization": diarization,
+    }
+    if language:
+        trigger_payload["language"] = language
+
+    fwd_proto = (request.headers.get('X-Forwarded-Proto') or request.scheme or 'https').split(',')[0].strip()
+    with app.test_request_context(
+        '/api/trigger_processing',
+        method='POST',
+        json=trigger_payload,
+        headers={
+            'Host': request.host,
+            'X-Forwarded-Proto': fwd_proto,
+            'Content-Type': 'application/json',
+        },
+    ):
+        trig_resp = trigger_processing()
+    trig_data = trig_resp.get_json(silent=True) or {}
+    trig_status = int(trig_resp.status_code or 500)
+    if trig_status >= 400:
+        logging.warning("profile_vtt trigger failed job_id=%s status=%s body=%s", job_id, trig_status, trig_data)
+        return jsonify({
+            "ok": False,
+            "error": "trigger_failed",
+            "job_id": job_id,
+            "s3_key": s3_key,
+            "trigger": trig_data,
+        }), trig_status
+
+    status_path = f"/api/profile/vtt/{job_id}"
+    return jsonify({
+        "ok": True,
+        "job_id": job_id,
+        "status": "processing",
+        "s3_key": s3_key,
+        "poll_url": status_path,
+        "download_url": f"{status_path}?download=1",
+        "screen": {"width": width, "height": height, "style": style, "locale": locale},
+        "trigger": {
+            "status": trig_data.get("status"),
+            "engine": trig_data.get("engine"),
+            "simulation": trig_data.get("simulation"),
+        },
+    }), 202
+
+
+@app.route('/api/profile/vtt/<job_id>', methods=['GET'])
+def api_profile_vtt_status(job_id):
+    """Poll a profiling job; when GPT + layout finish, return WebVTT."""
+    if not _profile_api_authorized():
+        return _profile_vtt_unauthorized()
+    job_id = str(job_id or '').strip()
+    if not job_id:
+        return jsonify({"ok": False, "error": "job_id required"}), 400
+
+    sidecar = _get_profile_vtt_sidecar(job_id)
+    payload, status_code = _profile_check_job(job_id)
+    job_status = str(payload.get('status') or '').strip().lower()
+    if job_status == 'failed' or payload.get('error'):
+        return jsonify({
+            "ok": False,
+            "job_id": job_id,
+            "status": "failed",
+            "error": payload.get('error') or 'Processing failed',
+        }), 200
+
+    segments = _profile_extract_segments(payload)
+    completed = job_status == 'completed' or bool(segments)
+    gpt_ready = _profile_gpt_ready(payload) if completed else False
+    wait_gpt = str(request.args.get('wait_gpt') or '1').strip().lower() not in ('0', 'false', 'no', 'off')
+
+    first_completed = sidecar.get('first_completed_at')
+    if completed and not first_completed:
+        sidecar['first_completed_at'] = time.time()
+        first_completed = sidecar['first_completed_at']
+        try:
+            bucket = sidecar.get('bucket') or _resolve_storage_profile(
+                _PROFILE_VTT_USER_ID, is_medical=False
+            ).get('bucket')
+            if bucket:
+                _put_profile_vtt_sidecar(bucket, job_id, sidecar)
+        except Exception:
+            logging.debug("profile_vtt sidecar completed_at write skipped job_id=%s", job_id, exc_info=True)
+
+    gpt_wait_elapsed = 0.0
+    if first_completed:
+        try:
+            gpt_wait_elapsed = max(0.0, time.time() - float(first_completed))
+        except (TypeError, ValueError):
+            gpt_wait_elapsed = 0.0
+    gpt_timed_out = bool(completed and wait_gpt and gpt_wait_elapsed >= _PROFILE_GPT_WAIT_SEC)
+    if completed and wait_gpt and not gpt_ready and not gpt_timed_out:
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "status": "processing",
+            "stage": "gpt_postprocess",
+            "gpt_pending": True,
+            "segments_ready": bool(segments),
+            "elapsed_since_asr_sec": round(gpt_wait_elapsed, 2),
+        }), 202
+
+    if not completed or not segments:
+        return jsonify({
+            "ok": True,
+            "job_id": job_id,
+            "status": "processing",
+            "stage": "transcribe",
+        }), 202
+
+    try:
+        vtt, cues, layout_meta = _profile_build_vtt(segments, sidecar, request.args)
+    except Exception as e:
+        logging.exception("profile_vtt layout failed job_id=%s", job_id)
+        return jsonify({"ok": False, "job_id": job_id, "error": "layout_failed", "message": str(e)[:300]}), 500
+
+    download = str(request.args.get('download') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+    want_vtt = download or ('text/vtt' in (request.headers.get('Accept') or '').lower())
+    if want_vtt:
+        filename = str(sidecar.get('filename') or job_id)
+        base = os.path.splitext(os.path.basename(filename))[0] or job_id
+        return Response(
+            vtt,
+            mimetype='text/vtt; charset=utf-8',
+            headers={
+                'Content-Disposition': f'attachment; filename="{base}.vtt"',
+                'X-QS-Job-Id': job_id,
+                'X-QS-Cue-Count': str(layout_meta.get('cue_count') or 0),
+            },
+        )
+
+    fmt = _profile_extract_formatted(payload)
+    return jsonify({
+        "ok": True,
+        "job_id": job_id,
+        "status": "completed",
+        "stage": "done",
+        "gpt_applied": bool(gpt_ready and not gpt_timed_out),
+        "gpt_timed_out": gpt_timed_out,
+        "layout": layout_meta,
+        "cue_count": layout_meta.get('cue_count'),
+        "clean_transcript": str(fmt.get('clean_transcript') or ''),
+        "vtt": vtt,
+    }), 200
+
 # --- WEBSOCKET EVENT HANDLERS ---
+
 try:
     from aws_transcribe_stream import (
         register_transcribe_socketio_handlers,

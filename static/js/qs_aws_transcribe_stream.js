@@ -115,9 +115,9 @@ function qsWaitForSocketConnected(sock, timeoutMs = 20000) {
 /** Max PCM held before transport is armed (~45s @ 16 kHz mono int16). */
 const QS_PRE_READY_BUFFER_MAX_BYTES = 16000 * 2 * 45;
 /** When Socket.IO is on HTTP polling, batch PCM for fewer POSTs.
- * Server splits to ~100ms AWS frames. 300ms batches cut poll overlap vs 150–250ms. */
-const QS_POLLING_BATCH_MAX_BYTES = 16000; // ~0.5s @ 16 kHz mono int16
-const QS_POLLING_BATCH_MAX_MS = 300;
+ * Server splits to ~100ms AWS frames. 900ms batches cut poll rate vs 300ms. */
+const QS_POLLING_BATCH_MAX_BYTES = 32000; // ~1s @ 16 kHz mono int16; let the 900ms timer win
+const QS_POLLING_BATCH_MAX_MS = 900;
 /** Cold start: no server audio/partials at all. Mid-session gaps of 5–8s are normal for AWS. */
 const QS_STARVATION_RESTART_MS = 8000;
 /** After live text has started, only treat a stall as real if AWS is silent this long. */

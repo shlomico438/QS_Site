@@ -45,6 +45,36 @@ MEDICAL_PLANS: Dict[str, Dict[str, Any]] = {
 }
 
 OVERAGE_ILS_PER_HOUR = 6
+QS_MEDICAL_USER_COOKIE = "qs_medical_user"
+
+
+def attach_medical_user_lock_cookie(resp):
+    """Persist doctor product lock so Core `/` and `/en` cannot render the regular app."""
+    secure = False
+    try:
+        xfp = str(request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+        secure = bool(request.is_secure or xfp == "https")
+    except Exception:
+        pass
+    resp.set_cookie(
+        QS_MEDICAL_USER_COOKIE,
+        "1",
+        max_age=34560000,
+        path="/",
+        samesite="Lax",
+        secure=secure,
+        httponly=False,
+    )
+    return resp
+
+
+def jsonify_medical_account(account, extra=None):
+    payload = {
+        **medical_account_public(account),
+        **(extra or {}),
+    }
+    resp = jsonify(payload)
+    return attach_medical_user_lock_cookie(resp)
 
 
 def _sa():
@@ -206,6 +236,7 @@ def medical_account_public(account: dict) -> dict:
     )
     return {
         **entitlement,
+        "isMedicalUser": True,
         "fullName": str(account.get("full_name") or ""),
         "professionalSpecialty": str(account.get("professional_specialty") or ""),
         "subscriptionPlan": plan,
@@ -226,6 +257,40 @@ def medical_account_public(account: dict) -> dict:
         "overageAmountIls": round(overage_seconds / 3600.0 * OVERAGE_ILS_PER_HOUR, 2),
         "seatLimit": int(account.get("seat_limit") or 1),
     }
+
+
+_DEFAULT_SIGNATURE_MAX_CHARS = 500
+
+
+def normalize_default_signature(raw) -> str:
+    """Store a trimmed standing signature while preserving intentional line breaks."""
+    text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) > _DEFAULT_SIGNATURE_MAX_CHARS:
+        text = text[:_DEFAULT_SIGNATURE_MAX_CHARS].rstrip()
+    return text
+
+
+def _medical_account_set_default_signature(user_id: str, signature: str) -> str:
+    """Persist default_signature on the authenticated medical account row."""
+    sa = _sa()
+    supabase_url, _, headers = sa._supabase_rest_config()
+    h = dict(headers)
+    h["Prefer"] = "return=representation"
+    uid = quote(user_id, safe="")
+    stored = normalize_default_signature(signature)
+    r = sa._supabase_http_request(
+        "PATCH",
+        f"{supabase_url}/rest/v1/medical_accounts?user_id=eq.{uid}",
+        headers=h,
+        json={"default_signature": stored},
+        timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise RuntimeError(r.text or f"medical default signature update HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    if isinstance(rows, list) and rows:
+        return normalize_default_signature(rows[0].get("default_signature"))
+    return stored
 
 
 def require_medical_entitlement(req, data: Optional[dict] = None) -> Tuple[Optional[str], Optional[dict], Optional[Tuple[Any, int]]]:
@@ -379,7 +444,125 @@ def _medical_payment_update(order_id: str, patch: dict) -> None:
         timeout=10,
     )
     if r.status_code not in (200, 204):
+        invoice_keys = {"invoice_number", "invoice_type", "invoice_url"}
+        if invoice_keys.intersection((patch or {}).keys()) and (
+            "invoice_" in (r.text or "") or r.status_code == 400
+        ):
+            slim = {k: v for k, v in (patch or {}).items() if k not in invoice_keys}
+            if slim:
+                r2 = sa._supabase_http_request(
+                    "PATCH",
+                    f"{supabase_url}/rest/v1/medical_subscription_payments"
+                    f"?order_id=eq.{quote(order_id, safe='')}",
+                    headers=headers,
+                    json=slim,
+                    timeout=10,
+                )
+                if r2.status_code in (200, 204):
+                    logging.warning(
+                        "medical payment invoice columns missing; applied status patch without invoice fields"
+                    )
+                    return
         raise RuntimeError(r.text or f"medical payment update HTTP {r.status_code}")
+
+
+def _medical_invoice_contact(user_id: str, account: Optional[dict] = None) -> dict:
+    sa = _sa()
+    account = account if isinstance(account, dict) else (_medical_account_get(user_id) or {})
+    email = str(account.get("email") or "").strip()
+    name = str(account.get("full_name") or "").strip()
+    if (not email or not name) and hasattr(sa, "_supabase_admin_get_user"):
+        auth_user = sa._supabase_admin_get_user(user_id)
+        if isinstance(auth_user, dict):
+            email = email or str(auth_user.get("email") or "").strip()
+            if not name and hasattr(sa, "_user_display_name_from_auth_payload"):
+                name = str(sa._user_display_name_from_auth_payload(auth_user) or "").strip()
+    return {"email": email, "name": name, "external_id": user_id[:64]}
+
+
+def _medical_notify_paid(payment: dict, extra: Optional[dict] = None) -> None:
+    extra = extra if isinstance(extra, dict) else {}
+    sa = _sa()
+    plan = str(extra.get("plan") or payment.get("plan") or "")
+    config = MEDICAL_PLANS.get(plan) or {}
+    sa._schedule_admin_payment_notify(
+        user_id=str(payment.get("user_id") or ""),
+        provider="cardcom",
+        product="medical",
+        plan=plan,
+        payment_kind=str(payment.get("payment_kind") or extra.get("payment_kind") or "initial"),
+        amount=extra.get("amount") if extra.get("amount") is not None else payment.get("amount_ils"),
+        currency="ILS",
+        order_ref=str(payment.get("order_id") or extra.get("order_id") or ""),
+        cardcom_transaction_id=str(
+            extra.get("cardcom_transaction_id") or payment.get("cardcom_transaction_id") or ""
+        ),
+        invoice_number=extra.get("invoice_number") or payment.get("invoice_number"),
+        invoice_url=extra.get("invoice_url") or payment.get("invoice_url"),
+        minutes=int(config.get("included_hours") or 0) * 60,
+        skip_capi=True,
+    )
+
+
+def _medical_issue_invoice_for_payment(order_id: str, billing: dict, email_override: str = "") -> dict:
+    from cardcom_payments import (
+        _cardcom_issue_standalone_invoice,
+        _cardcom_medical_invoice_description,
+        _medical_invoices_enabled,
+    )
+
+    if not _medical_invoices_enabled():
+        raise ValueError("Cardcom invoices are disabled")
+    payment = _medical_payment_get(order_id)
+    if not payment:
+        raise ValueError("Unknown medical payment")
+    if str(payment.get("status") or "") != "paid":
+        raise ValueError("Payment is not paid yet")
+    if str(payment.get("invoice_number") or "").strip():
+        return {
+            "ok": True,
+            "alreadyIssued": True,
+            "order_id": order_id,
+            "invoice_number": payment.get("invoice_number"),
+            "invoice_type": payment.get("invoice_type"),
+            "invoice_url": payment.get("invoice_url"),
+        }
+    user_id = str(payment.get("user_id") or "")
+    plan = str(payment.get("plan") or "")
+    config = MEDICAL_PLANS.get(plan) or {}
+    contact = _medical_invoice_contact(user_id)
+    if email_override:
+        contact["email"] = str(email_override).strip()
+    if not contact.get("email"):
+        raise ValueError("Doctor email is required to send the invoice")
+    try:
+        amount = float(payment.get("amount_ils") or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    info = _cardcom_issue_standalone_invoice(
+        description=_cardcom_medical_invoice_description(
+            plan, int(config.get("included_hours") or 0), True
+        ),
+        amount_ils=amount,
+        contact=contact,
+        billing=billing,
+        product_id=f"qs-med-{plan}",
+        comments=f"order {order_id} txn {payment.get('cardcom_transaction_id') or ''}".strip(),
+        tranzaction_id=str(payment.get("cardcom_transaction_id") or ""),
+    )
+    invoice_patch = {
+        k: v
+        for k, v in {
+            "invoice_number": info.get("invoice_number"),
+            "invoice_type": info.get("invoice_type") or "TaxInvoiceAndReceipt",
+            "invoice_url": info.get("invoice_url"),
+        }.items()
+        if v
+    }
+    if invoice_patch:
+        _medical_payment_update(order_id, invoice_patch)
+    _medical_notify_paid(payment, {**invoice_patch, "amount": amount, "plan": plan})
+    return {"ok": True, "alreadyIssued": False, "order_id": order_id, **invoice_patch}
 
 
 def _medical_billing_method_upsert(user_id: str, token_info: dict) -> None:
@@ -460,8 +643,8 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
 
 def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str] = None) -> dict:
     from cardcom_payments import (
+        _cardcom_extract_document_info,
         _cardcom_get_lp_result,
-        _cardcom_low_profile_from_mapping,
         _simulation_mode,
     )
 
@@ -516,6 +699,22 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         or (result.get("TranzactionInfo") or {}).get("TranzactionId")
         or ""
     )
+    invoice_info = _cardcom_extract_document_info(result) if isinstance(result, dict) else {}
+    if invoice_info.get("invoice_error"):
+        logging.warning(
+            "medical invoice not issued order=%s: %s",
+            order_id,
+            invoice_info.get("invoice_error"),
+        )
+    invoice_patch = {
+        k: v
+        for k, v in {
+            "invoice_number": invoice_info.get("invoice_number"),
+            "invoice_type": invoice_info.get("invoice_type"),
+            "invoice_url": invoice_info.get("invoice_url"),
+        }.items()
+        if v
+    }
     _medical_payment_update(
         order_id,
         {
@@ -524,6 +723,7 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
             "paid_at": datetime.now(timezone.utc).isoformat(),
             "billing_cycle_started_at": account.get("billing_cycle_started_at"),
             "billing_cycle_ends_at": account.get("billing_cycle_ends_at"),
+            **invoice_patch,
         },
     )
     try:
@@ -540,6 +740,15 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         order_ref=order_id,
         event_source_url="https://quickscribe.co.il/medical",
     )
+    _medical_notify_paid(
+        payment,
+        {
+            "plan": plan,
+            "amount": amount,
+            "cardcom_transaction_id": str(transaction_id or ""),
+            **invoice_patch,
+        },
+    )
     return {
         "ok": True,
         "alreadyActivated": False,
@@ -547,6 +756,7 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         "amount_ils": amount,
         "currency": "ILS",
         "plan": plan,
+        **invoice_patch,
         **medical_account_public(account),
     }
 
@@ -660,6 +870,30 @@ def _charge_medical_renewal(account: dict) -> dict:
         "ExternalId": order_id,
         "ProductName": f"QuickScribe Medical {config['name']}"[:50],
     }
+    from cardcom_payments import (
+        _cardcom_build_invoice_document,
+        _cardcom_extract_document_info,
+        _cardcom_medical_invoice_description,
+        _cardcom_resolve_invoice_billing,
+        _medical_invoices_enabled,
+    )
+    if _medical_invoices_enabled():
+        try:
+            resolved_billing = _cardcom_resolve_invoice_billing(user_id, {})
+            contact = _medical_invoice_contact(user_id)
+            contact["external_id"] = order_id
+            payload["Document"] = _cardcom_build_invoice_document(
+                product_id=f"qs-med-{plan}",
+                description=_cardcom_medical_invoice_description(
+                    plan, int(config.get("included_hours") or 0), True
+                ),
+                amount_ils=amount_ils,
+                contact=contact,
+                billing=resolved_billing,
+                schema="transaction",
+            )
+        except Exception as exc:
+            logging.warning("medical renewal invoice skipped user=%s: %s", user_id[:8], exc)
     try:
         result = (
             {"ResponseCode": 0, "TranzactionId": "simulation-renewal"}
@@ -676,6 +910,16 @@ def _charge_medical_renewal(account: dict) -> dict:
             or result.get("InternalDealNumber")
             or ""
         )
+        invoice_info = _cardcom_extract_document_info(result) if isinstance(result, dict) else {}
+        invoice_patch = {
+            k: v
+            for k, v in {
+                "invoice_number": invoice_info.get("invoice_number"),
+                "invoice_type": invoice_info.get("invoice_type"),
+                "invoice_url": invoice_info.get("invoice_url"),
+            }.items()
+            if v
+        }
         _medical_payment_update(
             order_id,
             {
@@ -684,6 +928,7 @@ def _charge_medical_renewal(account: dict) -> dict:
                 "paid_at": datetime.now(timezone.utc).isoformat(),
                 "billing_cycle_started_at": account_after.get("billing_cycle_started_at"),
                 "billing_cycle_ends_at": account_after.get("billing_cycle_ends_at"),
+                **invoice_patch,
             },
         )
         sa = _sa()
@@ -696,12 +941,24 @@ def _charge_medical_renewal(account: dict) -> dict:
             order_ref=order_id,
             event_source_url="https://quickscribe.co.il/medical",
         )
+        _medical_notify_paid(
+            {
+                "user_id": user_id,
+                "order_id": order_id,
+                "plan": plan,
+                "amount_ils": amount_ils,
+                "payment_kind": "renewal",
+                "cardcom_transaction_id": str(transaction_id),
+            },
+            invoice_patch,
+        )
         return {
             "ok": True,
             "userId": user_id,
             "plan": plan,
             "amountIls": amount_ils,
             "overageAmountIls": overage_amount,
+            **invoice_patch,
         }
     except Exception:
         _medical_payment_update(order_id, {"status": "failed"})
@@ -722,21 +979,51 @@ def register_medical_saas_routes(app) -> None:
                 return jsonify(
                     {
                         "allowed": False,
+                        "isMedicalUser": False,
                         "onboardingRequired": True,
                         "reason": "medical_onboarding_required",
                         "plans": MEDICAL_PLANS,
                         "overageIlsPerHour": OVERAGE_ILS_PER_HOUR,
                     }
                 ), 200
-            return jsonify(
-                {
-                    **medical_account_public(account),
-                    "plans": MEDICAL_PLANS,
-                    "overageIlsPerHour": OVERAGE_ILS_PER_HOUR,
-                }
+            return jsonify_medical_account(
+                account,
+                extra={"plans": MEDICAL_PLANS, "overageIlsPerHour": OVERAGE_ILS_PER_HOUR},
             ), 200
         except Exception as exc:
             logging.exception("api_medical_account_status failed")
+            return jsonify({"error": str(exc)}), 500
+
+    @app.route("/api/medical/default-signature", methods=["GET"])
+    def api_medical_default_signature_get():
+        sa = _sa()
+        user_id = sa._supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        try:
+            account = _medical_account_get(user_id) or {}
+            signature = normalize_default_signature(account.get("default_signature"))
+            return jsonify({"ok": True, "defaultSignature": signature}), 200
+        except Exception as exc:
+            logging.exception("api_medical_default_signature_get failed")
+            return jsonify({"error": str(exc)}), 500
+
+    @app.route("/api/medical/default-signature", methods=["POST", "PUT"])
+    def api_medical_default_signature_set():
+        sa = _sa()
+        user_id = sa._supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        data = request.get_json(silent=True) or {}
+        raw = data.get("defaultSignature", data.get("default_signature", data.get("signature", "")))
+        try:
+            account = _medical_account_get(user_id)
+            if not account:
+                return jsonify({"error": "Medical account required"}), 404
+            signature = _medical_account_set_default_signature(user_id, raw)
+            return jsonify({"ok": True, "defaultSignature": signature}), 200
+        except Exception as exc:
+            logging.exception("api_medical_default_signature_set failed")
             return jsonify({"error": str(exc)}), 500
 
     @app.route("/api/medical/activate-trial", methods=["POST"])
@@ -766,12 +1053,9 @@ def register_medical_saas_routes(app) -> None:
                 )
             )
             # Never restart an expired/consumed trial through this endpoint.
-            return jsonify(
-                {
-                    **medical_account_public(account),
-                    "plans": MEDICAL_PLANS,
-                    "overageIlsPerHour": OVERAGE_ILS_PER_HOUR,
-                }
+            return jsonify_medical_account(
+                account,
+                extra={"plans": MEDICAL_PLANS, "overageIlsPerHour": OVERAGE_ILS_PER_HOUR},
             ), 200
         except Exception as exc:
             logging.exception("api_medical_activate_trial failed")
@@ -782,8 +1066,13 @@ def register_medical_saas_routes(app) -> None:
         from cardcom_payments import (
             _cardcom_api_post,
             _cardcom_auth_fields,
+            _cardcom_build_invoice_document,
             _cardcom_enabled,
+            _cardcom_medical_invoice_description,
+            _cardcom_persist_invoice_billing,
+            _cardcom_resolve_invoice_billing,
             _simulation_mode,
+            _medical_invoices_enabled,
         )
 
         sa = _sa()
@@ -841,6 +1130,34 @@ def register_medical_saas_routes(app) -> None:
             ),
             "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
         }
+        if _medical_invoices_enabled():
+            invoice_billing = {
+                "tax_id": data.get("invoice_tax_id") or data.get("tax_id"),
+                "city": data.get("invoice_city") or data.get("city"),
+            }
+            resolved_billing = _cardcom_resolve_invoice_billing(user_id, invoice_billing)
+            try:
+                _cardcom_persist_invoice_billing(user_id, resolved_billing)
+            except Exception:
+                logging.warning("medical invoice billing persist failed user=%s", user_id[:8])
+            account = _medical_account_get(user_id) or {}
+            contact = _medical_invoice_contact(user_id, account)
+            contact["external_id"] = order_id
+            try:
+                payload["Document"] = _cardcom_build_invoice_document(
+                    product_id=f"qs-med-{plan}",
+                    description=_cardcom_medical_invoice_description(
+                        plan, int(config.get("included_hours") or 0), True
+                    ),
+                    amount_ils=amount_ils,
+                    contact=contact,
+                    billing=resolved_billing,
+                    schema="lp",
+                )
+            except ValueError as exc:
+                _medical_payment_update(order_id, {"status": "failed"})
+                return jsonify({"error": str(exc), "invoice_billing_required": True}), 400
+            logging.info("medical invoice document order=%s plan=%s", order_id, plan)
         try:
             result = _cardcom_api_post("LowProfile/Create", payload)
             actual_lp = str(result.get("LowProfileId") or low_profile_id).strip()
@@ -860,6 +1177,36 @@ def register_medical_saas_routes(app) -> None:
         except Exception as exc:
             _medical_payment_update(order_id, {"status": "failed"})
             logging.exception("medical Cardcom subscription checkout failed")
+            return jsonify({"error": str(exc)}), 502
+
+    @app.route("/api/medical/cardcom/issue-invoice", methods=["POST"])
+    def api_medical_cardcom_issue_invoice():
+        """Ops: issue a Cardcom tax invoice for an already-paid medical order and email the doctor."""
+        expected = str(os.environ.get("MEDICAL_BILLING_CRON_SECRET") or "").strip()
+        supplied = str(request.headers.get("X-Medical-Billing-Secret") or "").strip()
+        if not expected:
+            return jsonify({"error": "MEDICAL_BILLING_CRON_SECRET is not configured"}), 503
+        if not supplied or not hmac.compare_digest(supplied, expected):
+            return jsonify({"error": "Forbidden"}), 403
+        data = request.get_json(silent=True) or {}
+        order_id = str(data.get("orderId") or data.get("order_id") or "").strip()
+        if not order_id:
+            return jsonify({"error": "order_id is required"}), 400
+        billing = {
+            "tax_id": data.get("invoice_tax_id") or data.get("tax_id"),
+            "city": data.get("invoice_city") or data.get("city"),
+        }
+        try:
+            result = _medical_issue_invoice_for_payment(
+                order_id,
+                billing,
+                str(data.get("email") or "").strip(),
+            )
+            return jsonify(result), 200
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            logging.exception("medical issue-invoice failed order=%s", order_id[:24])
             return jsonify({"error": str(exc)}), 502
 
     @app.route("/api/medical/cardcom/confirm-subscription", methods=["POST"])

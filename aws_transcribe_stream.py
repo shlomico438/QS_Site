@@ -321,6 +321,7 @@ def _mark_transcribe_active(session: 'AwsTranscribeStreamSession') -> None:
         }
         active = len(_ACTIVE_TRANSCRIBE_SESSIONS)
     logger.info('AWS Transcribe active sessions=%d session=%s', active, session.session_id)
+    _refresh_ecs_scale_in_protection(active)
 
 
 def _mark_transcribe_inactive(session: 'AwsTranscribeStreamSession', reason: str) -> None:
@@ -328,6 +329,20 @@ def _mark_transcribe_inactive(session: 'AwsTranscribeStreamSession', reason: str
         _ACTIVE_TRANSCRIBE_SESSIONS.pop(session.session_id, None)
         active = len(_ACTIVE_TRANSCRIBE_SESSIONS)
     logger.info('AWS Transcribe inactive sessions=%d session=%s reason=%s', active, session.session_id, reason)
+    _refresh_ecs_scale_in_protection(active)
+
+
+def _refresh_ecs_scale_in_protection(active: int) -> None:
+    """Keep the live task from being the one ECS kills on scale-in (2→1)."""
+
+    def _run() -> None:
+        try:
+            from ecs_task_protection import sync_ecs_scale_in_protection
+            sync_ecs_scale_in_protection(active)
+        except Exception:
+            logger.debug('ECS scale-in protection sync failed', exc_info=True)
+
+    _REAL_THREAD(target=_run, name='ecs-scale-in-protection', daemon=True).start()
 
 
 def active_transcribe_sessions_snapshot() -> dict:

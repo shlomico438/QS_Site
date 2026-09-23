@@ -534,6 +534,47 @@ html[dir="rtl"] .user-menu-credits {
     direction: rtl;
     text-align: right;
 }
+.user-menu-referral {
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+}
+.user-menu-referral-title {
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 4px;
+}
+.user-menu-referral-hint,
+.user-menu-referral-stats {
+    font-size: 0.8rem;
+    line-height: 1.45;
+    color: #475569;
+    margin: 0 0 8px;
+}
+.user-menu-referral-stats {
+    margin: 8px 0 0;
+}
+.user-menu-referral-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.user-menu-referral-btn {
+    flex: 1;
+    min-width: 120px;
+    padding: 8px 10px;
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+}
+.user-menu-referral-btn:hover {
+    background: #dbeafe;
+}
 
 /* =========================
    FINAL HEADER LAYOUT RESET
@@ -2663,11 +2704,95 @@ body.qs-video-transcript-session.has-transcript-actions:not(.medical-mode) #subt
 }
 
 .main-app-container.medical-mode .controls-bar .toolbar-group {
-    justify-content: center;
+    justify-content: space-between;
+    width: 100%;
+    flex-wrap: nowrap;
+    direction: ltr;
+    gap: 10px;
 }
 
 .main-app-container.medical-mode .controls-bar .generate-btn-wrap {
     margin-inline: 0;
+}
+
+.medical-toolbar-docs {
+    display: contents;
+}
+
+.main-app-container.medical-mode .medical-toolbar-docs {
+    display: flex;
+    flex-direction: row-reverse;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    flex: 0 0 auto;
+    order: 2;
+}
+
+.medical-toolbar-new-session-btn {
+    display: none;
+}
+
+.main-app-container.medical-mode .medical-toolbar-new-session-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    order: 1;
+    margin: 0 auto 0 0;
+    padding: 9px 16px;
+    border: 1px solid #0b6973;
+    border-radius: 10px;
+    background: #0b6973;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.2;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(11, 105, 115, 0.28);
+}
+
+.main-app-container.medical-mode .medical-toolbar-new-session-btn:hover {
+    background: #08545c;
+    border-color: #08545c;
+}
+
+.main-app-container.medical-mode .medical-toolbar-new-session-btn[hidden] {
+    display: none !important;
+}
+
+.btn-translate-label {
+    display: none;
+}
+
+.main-app-container.medical-mode #btn-translate.btn-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    padding: 8px 14px;
+    border: 1px solid #94a3b8;
+    border-radius: 10px;
+    background: #fff;
+    color: #0f172a;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.main-app-container.medical-mode #btn-translate.btn-icon:hover {
+    background: #f8fafc;
+    border-color: #64748b;
+}
+
+.main-app-container.medical-mode #btn-translate .btn-translate-label {
+    display: inline;
+}
+
+.main-app-container.medical-mode #btn-edit {
+    display: none !important;
 }
 
 .medical-upload-new-session-btn {
@@ -2685,20 +2810,16 @@ body.qs-video-transcript-session.has-transcript-actions:not(.medical-mode) #subt
 }
 
 .main-app-container.medical-mode.medical-has-session-result > .upload-zone .medical-upload-new-session-btn {
-    display: block;
+    display: none !important;
 }
 
-/* Session result: only "סשן חדש" in the bottom bar — shrink unused chrome so the
-   transcript/training pane can use ~3cm more height (paste + learn buttons stay in view). */
+/* Session result: new session lives in the compact toolbar — hide the upload-zone bar
+   so the summary can use the freed vertical space. */
 .main-app-container.medical-mode.medical-has-session-result {
-    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)) !important;
 }
 .main-app-container.medical-mode.medical-has-session-result > .upload-zone {
-    padding: 6px 12px calc(6px + env(safe-area-inset-bottom, 0px)) !important;
-}
-.main-app-container.medical-mode.medical-has-session-result > .upload-zone .medical-upload-new-session-btn {
-    margin: 0 auto;
-    min-height: 44px;
+    display: none !important;
 }
 .main-app-container.medical-mode.medical-has-session-result > .upload-zone .mobile-new-session-btn,
 .main-app-container.medical-mode.medical-has-session-result > .upload-zone .qs-pipeline-phase-wrap,
@@ -2736,6 +2857,21 @@ body.qs-video-transcript-session.has-transcript-actions:not(.medical-mode) #subt
 /* Medical: no כתוביות/מסמך format switch or Aa subtitle styling — transcript vs summary uses medical tabs */
 .main-app-container.medical-mode #format-mode-switch {
     display: none !important;
+}
+
+body.has-transcript-actions:not(.qs-app-busy) .main-app-container.medical-mode .transcription-wrapper .switches-top-bar,
+body.has-transcript-actions:not(.qs-app-busy) .main-app-container.medical-mode .transcription-wrapper .switches-top-bar.is-visible,
+body.has-transcript-actions .main-app-container.medical-mode .switches-top-bar,
+body.has-transcript-actions .main-app-container.medical-mode .switches-top-bar.is-visible,
+.main-app-container.medical-mode .switches-top-bar {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    overflow: hidden !important;
+    background: transparent !important;
 }
 
 .main-app-container.medical-mode #subtitle-style-selector {
@@ -2819,10 +2955,57 @@ input:checked + .slider:before { transform: translateX(16px); }
     font-weight: 600;
 }
 
+/* Regular mode: larger centered view switcher above the transcript card. */
+.main-app-container:not(.medical-mode) .switches-top-bar .toggles-group {
+    width: 100%;
+    justify-content: center;
+    position: relative;
+    gap: 12px;
+}
+
+.main-app-container:not(.medical-mode) #format-mode-switch {
+    margin: 0 auto;
+}
+
+.main-app-container:not(.medical-mode) #format-mode-switch .format-ab-option {
+    font-size: 14px;
+    padding: 8px 16px;
+    color: #4b5563;
+}
+
+.main-app-container:not(.medical-mode) #format-mode-switch .format-ab-option:first-child,
+.main-app-container:not(.medical-mode) #format-mode-switch .format-ab-option:last-child {
+    padding-inline: 18px;
+}
+
+.main-app-container:not(.medical-mode) #format-mode-switch .format-ab-option.is-active {
+    background: #4f46e5;
+    color: #fff;
+    font-weight: 600;
+}
+
+.main-app-container:not(.medical-mode) #toggle-speaker-wrap {
+    position: absolute;
+    inset-inline-end: 0;
+}
+
+@media (max-width: 640px) {
+    .main-app-container:not(.medical-mode) #toggle-speaker-wrap {
+        position: static;
+        width: 100%;
+        justify-content: center;
+    }
+}
+
 html[dir="rtl"] .switches-top-bar .toggles-group,
 html[lang="he"] .switches-top-bar .toggles-group {
     direction: rtl;
     justify-content: flex-start;
+}
+
+html[dir="rtl"] .main-app-container:not(.medical-mode) .switches-top-bar .toggles-group,
+html[lang="he"] .main-app-container:not(.medical-mode) .switches-top-bar .toggles-group {
+    justify-content: center;
 }
 
 html[dir="rtl"] .switches-top-bar #format-mode-switch,
@@ -3136,13 +3319,20 @@ html[lang="he"] .switches-top-bar #format-mode-switch {
 }
 
 .main-app-container.medical-mode #btn-download.generate-select-btn {
-    border-color: #0f766e;
-    background: #0d9488;
+    border-color: #94a3b8;
+    background: #fff;
+    color: #334155;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    box-shadow: none;
+    font-weight: 700;
 }
 
 .main-app-container.medical-mode #btn-download.generate-select-btn:hover {
-    border-color: #0f766e;
-    background: #0f766e;
+    border-color: #64748b;
+    background: #f8fafc;
+    color: #0f172a;
 }
 
 #btn-download.generate-select-btn .btn-download-icon {
@@ -3845,11 +4035,11 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 4px;
+  gap: 4px;
+  padding: 3px;
   border-radius: 999px;
   background: #f1f5f9;
-  margin: 0 auto 10px;
+  margin: 4px auto 6px;
 }
 
 #medical-result-tabs .format-ab-option {
@@ -3857,9 +4047,9 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
   border-radius: 999px;
   background: transparent;
   color: #374151;
-  font-size: 0.86rem;
-  padding: 8px 16px;
-  min-width: 120px;
+  font-size: 0.82rem;
+  padding: 5px 12px;
+  min-width: 0;
   text-align: center;
 }
 
@@ -3885,6 +4075,63 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
   direction: ltr;
 }
 
+.medical-style-learn-badge {
+  display: none;
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid #2dd4bf;
+  border-radius: 999px;
+  background: #f0fdfa;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: none;
+  white-space: nowrap;
+  max-width: calc(100% - 96px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.main-app-container.medical-mode .medical-style-learn-badge:not([hidden]) {
+  display: inline-flex;
+}
+
+.medical-style-learn-badge:hover {
+  background: #ccfbf1;
+}
+
+.medical-training-modal {
+  max-width: min(640px, calc(100vw - 32px));
+  width: 100%;
+  max-height: min(86vh, 760px);
+  overflow: auto;
+}
+
+.medical-training-modal-body {
+  margin-top: 4px;
+}
+
+.medical-training-modal-body #medical-training-panel {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.medical-training-modal-body .qs-medical-training-actions {
+  position: static;
+  background: transparent;
+}
+
 .main-app-container.medical-mode .medical-transcript-shell > .medical-transcript-top-actions,
 body.has-transcript-actions:not(.medical-mode) .medical-transcript-shell > .medical-transcript-top-actions {
   display: inline-flex;
@@ -3907,6 +4154,10 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
   align-items: center;
   gap: 4px;
   min-width: 52px;
+}
+.medical-side-action-spacer {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .medical-side-action-label {
@@ -4005,9 +4256,70 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
 }
 
 #medical-session-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  text-align: start;
   background: linear-gradient(180deg, rgba(13, 148, 136, 0.11) 0%, rgba(13, 148, 136, 0.04) 100%);
   border-radius: 12px;
-  padding: 10px 12px;
+}
+
+#medical-session-header .medical-session-header-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#medical-session-title {
+  margin: 0;
+  color: #0f766e;
+  font-size: 1.2rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+#medical-session-header .medical-hipaa-badge {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ccfbf1;
+  color: #0f766e;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+#medical-session-header .medical-session-header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: auto;
+}
+
+#medical-session-header .medical-usage-status {
+  margin-top: 0;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+}
+
+#medical-session-header .medical-usage-status:empty {
+  display: none;
+}
+
+#medical-session-header .medical-open-pricing-btn {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 0.78rem;
 }
 
 .medical-warmup-banner {
@@ -4083,7 +4395,7 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
 
 .main-app-container.medical-mode #audio-player-container {
   background: transparent !important;
-  margin-bottom: 18px !important;
+  margin-bottom: 0 !important;
 }
 
 .main-app-container.medical-mode #main-audio {
@@ -4224,6 +4536,136 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
 .medical-transcript-shell > #transcript-window {
     flex: 1 1 auto;
     min-height: 0;
+}
+
+.medical-default-signature,
+.medical-save-signature-row {
+    direction: rtl;
+    color: #9aa0a6;
+    font-size: 12.5px;
+    line-height: 1.45;
+    margin: 0;
+}
+
+.medical-transcript-shell:not(.has-finished-transcript) .medical-default-signature {
+    position: absolute;
+    bottom: 12px;
+    inset-inline: 18px;
+    z-index: 2;
+}
+
+.medical-transcript-shell.has-finished-transcript .medical-save-signature-row {
+    position: absolute;
+    inset-inline-start: 18px;
+    z-index: 3;
+    max-width: calc(100% - 36px);
+    background: rgba(255, 255, 255, 0.94);
+    pointer-events: auto;
+}
+
+.medical-default-signature {
+    background: rgba(255, 255, 255, 0.94);
+    pointer-events: auto;
+}
+
+.main-app-container.medical-mode #transcript-window .qs-medical-transcript-signature {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin: 1.72em 0 10px;
+    padding: 8px 14px 12px;
+    color: inherit;
+    font: inherit;
+    line-height: 1.72;
+    white-space: pre-wrap;
+    direction: inherit;
+    text-align: inherit;
+}
+
+.qs-medical-transcript-signature-edit,
+.qs-medical-transcript-signature-save {
+    border: 0;
+    background: transparent;
+    color: #9aa0a6;
+    font: inherit;
+    cursor: pointer;
+    margin-inline-start: 8px;
+    padding: 0;
+}
+
+.qs-medical-transcript-signature-form {
+    display: inline-flex;
+    align-items: center;
+    width: min(100%, 32rem);
+    gap: 8px;
+}
+
+.qs-medical-transcript-signature-form[hidden] {
+    display: none !important;
+}
+
+.qs-medical-transcript-signature-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 3px 7px;
+    color: inherit;
+    font: inherit;
+}
+
+.medical-default-signature[hidden],
+.medical-save-signature-row[hidden],
+.medical-default-signature-form[hidden],
+.medical-default-signature-view[hidden] {
+    display: none !important;
+}
+
+.medical-default-signature-view,
+.medical-default-signature-form,
+.medical-save-signature-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-start;
+}
+
+.medical-default-signature-edit,
+.medical-default-signature-save {
+    border: 0;
+    background: transparent;
+    color: #9aa0a6;
+    font: inherit;
+    cursor: pointer;
+    padding: 0;
+}
+
+.medical-default-signature-edit:hover,
+.medical-default-signature-save:hover {
+    color: #6b7280;
+}
+
+.medical-default-signature-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 28rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    background: #fff;
+    color: #4b5563;
+    font: inherit;
+    padding: 2px 6px;
+    resize: vertical;
+    white-space: pre-wrap;
+}
+
+.medical-default-signature-text {
+    white-space: pre-wrap;
+}
+
+.medical-save-signature-row input {
+    margin: 0;
+    accent-color: #9aa0a6;
 }
 
 /* 5b. The Window ITSELF handles the scroll */
@@ -5267,9 +5709,9 @@ html[dir="rtl"] .qs-pipeline-phase-label {
     top: 10px;
     inset-inline-start: 10px;
     z-index: 1;
-    padding: 4px 10px;
+    padding: 6px 14px;
     border-radius: 999px;
-    font-size: 0.72rem;
+    font-size: 1rem;
     font-weight: 800;
     letter-spacing: 0.03em;
     text-transform: uppercase;
@@ -6238,9 +6680,29 @@ html[dir="rtl"] .upload-status {
     .toolbar-group > * {
         flex: 0 0 auto;
     }
+    .main-app-container.medical-mode .controls-bar .toolbar-group {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+    }
+
+    .main-app-container.medical-mode .medical-toolbar-docs,
+    .main-app-container.medical-mode .medical-toolbar-new-session-btn {
+        order: unset;
+        margin: 0;
+    }
+
+    .main-app-container.medical-mode .medical-toolbar-docs {
+        width: 100%;
+        justify-content: flex-start;
+    }
     .toolbar-group .btn-icon {
         width: 34px;
         height: 34px;
+    }
+    .main-app-container.medical-mode #btn-translate.btn-icon {
+        width: auto;
+        height: auto;
+        min-height: 34px;
     }
     #btn-download.generate-select-btn {
         width: 100%;
@@ -6249,6 +6711,14 @@ html[dir="rtl"] .upload-status {
         height: 34px;
         padding: 0 10px;
         font-size: 0.76rem;
+    }
+    .main-app-container.medical-mode #btn-download.generate-select-btn {
+        width: auto;
+        flex: 0 0 auto;
+    }
+    .main-app-container.medical-mode .generate-btn-wrap {
+        flex: 0 0 auto;
+        max-width: none;
     }
     .generate-btn-wrap {
         flex: 1 1 auto;
@@ -6381,10 +6851,7 @@ html[dir="rtl"] .upload-status {
     }
 
     .main-app-container.medical-mode.medical-has-session-result > .upload-zone .medical-upload-new-session-btn {
-        display: block !important;
-        width: calc(100% - 24px);
-        max-width: none;
-        margin: 0 auto;
+        display: none !important;
     }
 
     .main-app-container.medical-mode {
@@ -6392,7 +6859,7 @@ html[dir="rtl"] .upload-status {
     }
 
     .main-app-container.medical-mode.medical-has-session-result {
-        padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)) !important;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
     }
 
     /* 6. HIDE EXTRAS */
@@ -6549,10 +7016,18 @@ html[dir="rtl"] .upload-status {
         padding-top: 46px !important;
     }
     .main-app-container.medical-mode #audio-player-container {
-        margin-bottom: 10px !important;
+        margin-bottom: 0 !important;
     }
     #medical-session-header {
-        margin-bottom: 8px !important;
+        margin-bottom: 6px !important;
+        padding: 8px 12px;
+    }
+    #medical-session-title {
+        font-size: 1.1rem;
+    }
+    #medical-session-header .medical-hipaa-badge {
+        font-size: 0.9rem;
+        white-space: normal;
     }
     body.has-transcript-actions .main-app-container.medical-mode .transcription-wrapper {
         margin-bottom: 6px !important;
@@ -7317,6 +7792,7 @@ html[dir="rtl"] .upload-status {
     gap: 8px;
   }
   body.has-transcript-actions:not(.medical-mode) .controls-bar .toolbar-group > .btn-icon,
+  body.has-transcript-actions:not(.medical-mode) .controls-bar .medical-toolbar-docs > .btn-icon,
   body.has-transcript-actions:not(.medical-mode) .controls-bar .toolbar-group > #subtitle-style-selector,
   body.has-transcript-actions:not(.medical-mode) .controls-bar .toolbar-group > #subtitle-style-selector.is-visible {
     flex: 0 0 auto !important;
@@ -7659,7 +8135,7 @@ html[dir="rtl"] .upload-status {
   justify-content: space-between;
   gap: 10px;
   margin: 14px 0 6px;
-  direction: rtl;
+  direction: ltr;
 }
 .medical-summary-section-head:first-of-type {
   margin-top: 0;
@@ -7668,11 +8144,13 @@ html[dir="rtl"] .upload-status {
   font-weight: 700;
   flex: 1;
   text-align: right;
+  direction: rtl;
 }
 .medical-summary-section-copy {
   width: 32px;
   height: 32px;
   flex-shrink: 0;
+  order: 2;
   border: 1px solid #d1d5db;
   border-radius: 8px;
   background: #ffffff;
@@ -7851,7 +8329,7 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
   }
 
   .main-app-container.medical-mode.medical-has-session-result {
-    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
   }
 
   .main-app-container.medical-mode > .upload-zone {
@@ -8125,7 +8603,7 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
   html[lang="he"] body.mobile-video-session:not(.medical-mode) .transcription-wrapper .switches-top-bar .toggles-group,
   html[lang="he"] body.qs-mobile-transcript-layout .transcription-wrapper .switches-top-bar .toggles-group {
     direction: rtl !important;
-    justify-content: flex-start !important;
+    justify-content: center !important;
   }
   html[dir="rtl"] body.has-transcript-actions:not(.medical-mode) .transcription-wrapper #format-mode-switch,
   html[dir="rtl"] body.mobile-video-session:not(.medical-mode) .transcription-wrapper #format-mode-switch,
@@ -8134,9 +8612,10 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
   html[lang="he"] body.mobile-video-session:not(.medical-mode) .transcription-wrapper #format-mode-switch,
   html[lang="he"] body.qs-mobile-transcript-layout .transcription-wrapper #format-mode-switch {
     direction: rtl;
-    flex: 0 0 auto !important;
-    width: auto !important;
+    flex: 1 1 auto !important;
+    width: 100% !important;
     max-width: 100%;
+    justify-content: center;
   }
   body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .toolbar-group,
   body.mobile-video-session:not(.medical-mode) .transcription-wrapper .toolbar-group,
@@ -8150,12 +8629,20 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
   body.mobile-video-session:not(.medical-mode) .transcription-wrapper #format-mode-switch {
     flex: 1 1 auto !important;
     min-width: 0 !important;
+    justify-content: center;
   }
   body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .format-ab-option,
   body.mobile-video-session:not(.medical-mode) .transcription-wrapper .format-ab-option {
+    flex: 1 1 0 !important;
     min-width: 0 !important;
-    padding: 6px 8px !important;
-    font-size: 0.78rem !important;
+    padding: 8px 16px !important;
+    font-size: 14px !important;
+  }
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .format-ab-option:first-child,
+  body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .format-ab-option:last-child,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .format-ab-option:first-child,
+  body.mobile-video-session:not(.medical-mode) .transcription-wrapper .format-ab-option:last-child {
+    padding-inline: 18px !important;
   }
   body.has-transcript-actions:not(.medical-mode) .transcription-wrapper .generate-btn-wrap,
   body.mobile-video-session:not(.medical-mode) .transcription-wrapper .generate-btn-wrap {

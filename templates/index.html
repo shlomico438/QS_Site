@@ -284,13 +284,17 @@ try {
             <p class="medical-aws-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</p>
         </section>
 
-        <section id="medical-session-header" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:14px; text-align:center;">
-            <h2 id="medical-session-title" style="margin:0; color:#0f766e;" data-i18n="medical_session_secure_recording">Secure medical recording session</h2>
-            <p id="medical-session-subtitle" style="margin:4px 0 0; color:#0f766e;" data-i18n="medical_session_hipaa_active">Clinical transcription with HIPAA mode active</p>
-            <div id="medical-usage-status" class="medical-usage-status" aria-live="polite"></div>
-            <button type="button" id="medical-open-pricing-btn" class="medical-open-pricing-btn" hidden data-i18n="medical_choose_plan">
-                Choose plan
-            </button>
+        <section id="medical-session-header"{% if not medical_entry %} style="display:none;"{% endif %}>
+            <div class="medical-session-header-main">
+                <h2 id="medical-session-title" data-i18n="medical_session_secure_recording">Secure medical recording session</h2>
+                <span id="medical-session-subtitle" class="medical-hipaa-badge" data-i18n="medical_session_hipaa_active">Clinical transcription with HIPAA mode active</span>
+            </div>
+            <div class="medical-session-header-meta">
+                <div id="medical-usage-status" class="medical-usage-status" aria-live="polite"></div>
+                <button type="button" id="medical-open-pricing-btn" class="medical-open-pricing-btn" hidden data-i18n="medical_choose_plan">
+                    Choose plan
+                </button>
+            </div>
         </section>
         <div id="medical-warmup-banner" class="medical-warmup-banner" style="display:none;" role="status" aria-live="polite" dir="rtl">
             <span id="medical-warmup-banner-icon" class="medical-warmup-banner-icon" aria-hidden="true">💤</span>
@@ -407,6 +411,12 @@ try {
                 <button type="button" id="medical-guest-try-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
             </div>
         </div>
+        <div id="medical-training-modal" class="medical-confirm-modal-backdrop medical-training-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="medical-confirm-modal medical-training-modal" role="dialog" aria-modal="true" aria-labelledby="medical-training-modal-title">
+                <h3 id="medical-training-modal-title" data-i18n="medical_training_modal_title">מצב אימון: סגנון ותבנית סיכום אישית</h3>
+                <div id="medical-training-modal-body" class="medical-training-modal-body"></div>
+            </div>
+        </div>
         <div id="medical-mic-test-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="medical-confirm-modal medical-mic-test-card" role="dialog" aria-modal="true" aria-labelledby="medical-mic-test-title">
                 <h3 id="medical-mic-test-title" data-i18n="medical_mic_title">Microphone</h3>
@@ -458,9 +468,9 @@ try {
             <div class="switches-top-bar">
                 <div class="toggles-group">
                     <div class="format-ab-switch" id="format-mode-switch" role="group" data-i18n-aria-label="format_view_aria" aria-label="פורמט תצוגה">
-        <button type="button" class="format-ab-option is-active" id="format-mode-summary" data-i18n="tab_summary">סיכום</button>
-                        <button type="button" class="format-ab-option" id="format-mode-doc" data-i18n="tab_doc">מסמך</button>
-                        <button type="button" class="format-ab-option" id="format-mode-subtitle" data-i18n="tab_subtitle">כתוביות</button>
+        <button type="button" class="format-ab-option is-active" id="format-mode-summary" data-i18n="tab_summary">📝 סיכום</button>
+                        <button type="button" class="format-ab-option" id="format-mode-doc" data-i18n="tab_doc">📄 תמלול</button>
+                        <button type="button" class="format-ab-option" id="format-mode-subtitle" data-i18n="tab_subtitle">⏱️ חותמות זמן</button>
                     </div>
                     <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
                 </div>
@@ -470,12 +480,13 @@ try {
                 <span class="translation-progress-spinner" aria-hidden="true"></span>
                 <span id="translation-progress-text" class="translation-progress-text"></span>
             </div>
-            <div id="medical-result-tabs" style="display:none; margin-bottom:8px; gap:8px;">
+            <div id="medical-result-tabs" style="display:none;">
                 <button type="button" id="medical-tab-transcript" class="format-ab-option is-active" data-i18n="medical_tab_transcript">תמלול מלא</button>
                 <button type="button" id="medical-tab-summary" class="format-ab-option" data-i18n="medical_tab_summary">סיכום רפואי</button>
             </div>
-            <div class="medical-transcript-shell">
-                <div class="medical-transcript-top-actions">
+                <div class="medical-transcript-shell">
+                    <button type="button" id="medical-style-learn-badge" class="medical-style-learn-badge" hidden data-i18n="medical_learn_my_style">✨ למד את הסגנון שלי</button>
+                    <div class="medical-transcript-top-actions">
                     <button type="button" id="medical-typo-fix-btn" class="medical-typo-fix-btn" data-i18n-aria-label="medical_fix_typos" data-i18n-title="medical_fix_typos_tooltip" title="ממיר מונחים רפואיים שנכתבו פונטית בעברית לאיות האנגלי הנכון, ומתקן שגיאות כתיב" hidden>
                         <span class="medical-typo-fix-icon" aria-hidden="true">🪄</span>
                         <span class="medical-typo-fix-label" data-i18n="medical_fix_typos">התאמה רפואית</span>
@@ -486,6 +497,16 @@ try {
                 </div>
                 <div id="transcript-window" contenteditable="false"></div>
                 <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
+                <div id="medical-default-signature" class="medical-default-signature" hidden>
+                    <span class="medical-default-signature-view">
+                        <span class="medical-default-signature-text"></span>
+                        <button type="button" class="medical-default-signature-edit" aria-label="ערוך חתימה קבועה">✎ ערוך</button>
+                    </span>
+                    <form class="medical-default-signature-form" hidden>
+                        <textarea class="medical-default-signature-input" maxlength="500" rows="2" autocomplete="off" aria-label="חתימה קבועה"></textarea>
+                        <button type="submit" class="medical-default-signature-save">שמור</button>
+                    </form>
+                </div>
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}" data-showcase-version="{{ static_asset_version }}">
@@ -525,6 +546,8 @@ try {
             </div>
             <div class="controls-bar">
                 <div class="toolbar-group">
+                    <button type="button" id="medical-toolbar-new-session-btn" class="medical-toolbar-new-session-btn" hidden data-i18n="new_session">סשן חדש</button>
+                    <div class="medical-toolbar-docs">
                     <div class="generate-btn-wrap" style="position: relative;">
                         <button class="generate-select-btn" id="btn-download" type="button">
                             <svg class="btn-download-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -604,7 +627,8 @@ try {
                         </div>
                     </div>
                     <button class="btn-icon" id="btn-edit" onclick="window.toggleEditMode()" data-i18n-title="edit" title="Edit"><img src="{{ url_for('static', filename='images/edit.png') }}" alt="Edit" style="width:20px; height:20px; object-fit:contain;"></button>
-                    <button class="btn-icon" id="btn-translate" type="button" title="Translate" aria-label="Translate">🌐</button>
+                    <button class="btn-icon" id="btn-translate" type="button" title="Translate" aria-label="Translate">🌐 <span class="btn-translate-label" data-i18n="translate">תרגום</span></button>
+                    </div>
                     <div id="subtitle-style-selector" class="subtitle-style-drawer-host" style="display: none;">
                         <button id="subtitle-style-toggle" class="subtitle-style-toggle-btn" type="button" aria-label="Subtitle styles" title="Subtitle styles">Aa</button>
                         <div id="subtitle-style-drawer" class="subtitle-style-drawer-panel">
@@ -713,16 +737,7 @@ try {
                     <div id="medical-live-level-meter" class="medical-live-level-meter" aria-hidden="true" hidden>
                         <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
                     </div>
-                    <div id="medical-confirm-stack" class="medical-side-action-stack" style="display:none;">
-                        <button id="medical-confirm-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_save_recording" aria-label="שמור הקלטה">
-                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                <polyline points="14 2 14 8 20 8"></polyline>
-                                <line x1="9" y1="15" x2="15" y2="15"></line>
-                            </svg>
-                        </button>
-                        <span class="medical-side-action-label" data-i18n="medical_save">שמור</span>
-                    </div>
+                    <div id="medical-confirm-stack" class="medical-side-action-stack medical-side-action-spacer" style="display:none;" aria-hidden="true"></div>
                 </div>
                 <div id="medical-record-timer" class="medical-record-timer" style="visibility:hidden;"></div>
             </div>

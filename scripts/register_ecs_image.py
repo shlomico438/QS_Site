@@ -3,6 +3,9 @@
 
 Prints the new task definition ARN on stdout. Used by deploy.bat (avoids
 PowerShell UTF-8 BOM breaking `aws ... --cli-input-json`).
+
+Always registers with 1 vCPU / 2 GB so a console-only size change that was
+never attached to the service cannot restore 2 vCPU / 4 GB on the next deploy.
 """
 from __future__ import annotations
 
@@ -34,6 +37,12 @@ KEEP = (
 # and drop in-memory Socket.IO sessions. 120s is the Fargate maximum.
 FARGATE_STOP_TIMEOUT_SEC = 120
 
+# Pin task size on every deploy so console-only revisions (or an older
+# service task definition) cannot silently restore 2 vCPU / 4 GB.
+# Fargate units: cpu 1024 = 1 vCPU, memory 2048 = 2 GB.
+PINNED_TASK_CPU = '1024'
+PINNED_TASK_MEMORY = '2048'
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -58,12 +67,30 @@ def main() -> int:
 
     td = ecs.describe_task_definition(taskDefinition=current)['taskDefinition']
     payload = {k: td[k] for k in KEEP if k in td and td[k] not in (None, [], {})}
+    payload['cpu'] = PINNED_TASK_CPU
+    payload['memory'] = PINNED_TASK_MEMORY
     for container in payload.get('containerDefinitions') or []:
         container['image'] = args.image
         container['stopTimeout'] = max(
             int(container.get('stopTimeout') or 0),
             FARGATE_STOP_TIMEOUT_SEC,
         )
+        # Container reservations cannot exceed the pinned task size.
+        if 'cpu' in container:
+            container['cpu'] = int(PINNED_TASK_CPU)
+        if 'memory' in container:
+            container['memory'] = int(PINNED_TASK_MEMORY)
+        if 'memoryReservation' in container:
+            container['memoryReservation'] = min(
+                int(container.get('memoryReservation') or PINNED_TASK_MEMORY),
+                int(PINNED_TASK_MEMORY),
+            )
+
+    print(
+        f'Pinning task size cpu={PINNED_TASK_CPU} memory={PINNED_TASK_MEMORY} '
+        f'(cloned from {current})',
+        file=sys.stderr,
+    )
 
     registered = ecs.register_task_definition(**payload)['taskDefinition']
     arn = registered.get('taskDefinitionArn') or ''
