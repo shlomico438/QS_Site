@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block structured_data %}{% include "snippets/product_json_ld.html" %}{% endblock %}
+{% block structured_data %}{% include "snippets/product_json_ld.html" %}{% if not medical_entry %}{% include "snippets/faq_json_ld.html" %}{% endif %}{% endblock %}
 {% block page_title %}{% if medical_entry %}{% if qs_is_en %}QuickScribe Medical | Clinical documentation that understands mixed languages{% else %}QuickScribe Medical | תיעוד רפואי חכם{% endif %}{% elif qs_is_en %}AI transcription that understands you — in any language you speak, even if you switch mid-recording | QuickScribe{% else %}תמלול AI שמבין אתכם - בכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה | QuickScribe{% endif %}{% endblock %}
 {% block page_description %}{% if medical_entry %}{% if qs_is_en %}Medical transcription that detects language switching in real time — including English prescriptions. Accurate, HIPAA-aligned, results in seconds.{% else %}מערכת תמלול רפואי המזהה שילוב שפות בזמן אמת - כולל מרשמים באנגלית. מדויקת, מאובטחת (HIPAA), ותוצאות תוך שניות.{% endif %}{% elif qs_is_en %}Automatic recognition of 99 languages, including switching languages in the same recording. Summary and action items ready in minutes. Built to handle background noise, multiple speakers, and field recordings.{% else %}זיהוי אוטומטי של 99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות. המערכת בנויה להתמודד עם רעשי רקע, ריבוי דוברים והקלטות מהשטח.{% endif %}{% endblock %}
 {% block content %}
@@ -204,6 +204,22 @@ try {
                 <details>
                     <summary>{% if qs_is_en %}How do you protect my data?{% else %}איך אתם מגנים על הנתונים שלי?{% endif %}</summary>
                     {% if qs_is_en %}<p>Security is built into our core. All files are uploaded via encrypted protocols to secure storage buckets and are processed automatically without human intervention. For medical or sensitive workflows, we offer fully isolated, HIPAA-aligned environments.</p>{% else %}<p>האבטחה מובנית בליבה: כל הקבצים מועלים בפרוטוקולים מוצפנים לדליי אחסון מאובטחים ומעובדים אוטומטית ללא התערבות אנושית. עבור תהליכים רפואיים או רגישים מוצעות סביבות מבודדות התואמות HIPAA.</p>{% endif %}
+                </details>
+                <details>
+                    <summary>{% if qs_is_en %}Can I include multiple languages in the same video file without creating duplicate content?{% else %}האם אפשר לכלול כמה שפות באותו קובץ וידאו בלי ליצור תוכן כפול?{% endif %}</summary>
+                    {% if qs_is_en %}<p>Yes. Our platform allows you to embed multiple languages within the exact same media file. This eliminates the need to upload, manage, and track analytics for duplicate videos across different regions. Your audience can easily toggle to their preferred language in one seamless player experience, keeping all your views and engagement consolidated.</p>{% else %}<p>כן. הפלטפורמה מאפשרת להטמיע כמה שפות באותו קובץ מדיה בדיוק. כך אין צורך להעלות, לנהל ולעקוב אחרי נתוני צפייה של סרטונים כפולים לאזורים שונים. הקהל יכול לעבור בקלות לשפה המועדפת בנגן אחד ורציף, וכל הצפיות והמעורבות נשארות מרוכזות במקום אחד.</p>{% endif %}
+                </details>
+                <details>
+                    <summary>{% if qs_is_en %}Do the subtitles automatically adjust for mobile (vertical) and desktop (horizontal) screens?{% else %}האם הכתוביות מתאימות את עצמן אוטומטית למסך מובייל (אנכי) ולמסך מחשב (אופקי)?{% endif %}</summary>
+                    {% if qs_is_en %}<p>Absolutely. Subtitles that look great on a TV can be unreadable or cut off on a smartphone. Our engine automatically adapts subtitle placement, screen orientation, and font size based on the viewer’s device. Whether your content is being watched on a widescreen monitor or swiped on mobile reels, the text remains perfectly formatted, legible, and visually balanced.</p>{% else %}<p>בהחלט. כתוביות שנראות מצוין בטלוויזיה עלולות להיות בלתי קריאות או להיחתך בטלפון. המנוע מתאים אוטומטית את מיקום הכתוביות, כיוון המסך וגודל הגופן לפי המכשיר של הצופה. בין אם התוכן נצפה במסך רחב או ברילס במובייל, הטקסט נשאר מעוצב, קריא ומאוזן.</p>{% endif %}
+                </details>
+                <details>
+                    <summary>{% if qs_is_en %}How do you handle Right-to-Left (RTL) languages like Arabic and Hebrew?{% else %}איך אתם מטפלים בשפות מימין לשמאל (RTL) כמו ערבית ועברית?{% endif %}</summary>
+                    {% if qs_is_en %}<p>We provide native, flawless RTL support. A common frustration with traditional video editors is that RTL languages render backward or with broken punctuation. Our formatting engine is built to correctly align, sequence, and display RTL text instantly, ensuring your Arabic, Hebrew, or Persian subtitles look professional and culturally accurate without any manual workarounds.</p>{% else %}<p>יש תמיכה מובנית ומלאה ב-RTL. תסכול נפוץ בעורכי וידאו מסורתיים הוא ששפות מימין לשמאל מוצגות הפוך או עם פיסוק שבור. מנוע העיצוב שלנו נבנה ליישר, לסדר ולהציג טקסט RTL מיידית, כך שכתוביות בערבית, בעברית או בפרסית נראות מקצועיות ומדויקות תרבותית, בלי פתרונות ידניים.</p>{% endif %}
+                </details>
+                <details>
+                    <summary>{% if qs_is_en %}Can I rely on your system for professional-grade accuracy?{% else %}האם אפשר לסמוך על המערכת לדיוק ברמה מקצועית?{% endif %}</summary>
+                    {% if qs_is_en %}<p>Yes. We prioritize high-fidelity transcription and translation. Whether you are dealing with complex industry terminology, rapid dialogue, or nuanced phrasing, our system ensures that your subtitles and localized audio are highly accurate, protecting your brand's credibility and keeping your global audience fully engaged.</p>{% else %}<p>כן. אנחנו שמים דגש על תמלול ותרגום בנאמנות גבוהה. גם במונחים מקצועיים מורכבים, בדיאלוג מהיר או בניסוח עדין, המערכת שומרת על כתוביות ואודיו מתורגם מדויקים, כדי להגן על אמינות המותג ולהשאיר את הקהל הגלובלי מעורב.</p>{% endif %}
                 </details>
                 </div>
             </section>
@@ -702,8 +718,17 @@ try {
                 <div class="upload-main-cluster">
                     <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
                     <div class="regular-asr-lang-wrap" id="regular-asr-lang-wrap"{% if medical_entry %} hidden{% endif %}>
-                        <label class="regular-asr-lang-label" for="regular-asr-lang-select" data-i18n="regular_asr_lang_label">שפת תמלול</label>
-                        <select id="regular-asr-lang-select" class="regular-asr-lang-select" data-i18n-aria-label="regular_asr_lang_aria" aria-label="שפת תמלול"></select>
+                        <div class="regular-asr-lang-field">
+                            <label class="regular-asr-lang-label" for="regular-asr-lang-select" data-i18n="regular_asr_lang_label">שפת תמלול</label>
+                            <select id="regular-asr-lang-select" class="regular-asr-lang-select" data-i18n-aria-label="regular_asr_lang_aria" aria-label="שפת תמלול"></select>
+                        </div>
+                        <label class="regular-speaker-switch" for="diarization-toggle">
+                            <span class="regular-asr-lang-label" data-i18n="detect_speakers">זיהוי דוברים</span>
+                            <span class="toggle-switch">
+                                <input type="checkbox" id="diarization-toggle">
+                                <span class="slider"></span>
+                            </span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -749,7 +774,6 @@ try {
                     <div id="progress-bar-legacy"></div>
                 </div>
             </div>
-            <!-- diarization toggle removed on mobile upload UI -->
             <div class="upload-zone-app-footer" dir="ltr">
                 <span class="site-footer-copy" data-i18n="footer_copyright">© 2026 QuickScribe. All rights reserved.</span>
                 <span class="medical-aws-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</span>
@@ -757,498 +781,11 @@ try {
         </div>
     </div>
 </div>
+    <script src="{{ url_for('static', filename='js/regular_pricing.js') }}?v={{ static_asset_version }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const smoothTo = (id) => {
-            const target = document.getElementById(id);
-            if (!target) return;
-            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        };
-        const getAuthedJsonHeaders = async () => {
-            const headers = { 'Content-Type': 'application/json' };
-            try {
-                if (window.supabase && window.supabase.auth) {
-                    const { data: { session } } = await window.supabase.auth.getSession();
-                    if (session && session.access_token) {
-                        headers.Authorization = 'Bearer ' + session.access_token;
-                    }
-                }
-            } catch (_) {}
-            return headers.Authorization ? headers : null;
-        };
-        const creditCheckoutUsesStripe = () => {
-            const loc = String(window.currentLocale || document.documentElement.lang || 'he').toLowerCase();
-            return loc.startsWith('en');
-        };
-        const invoiceBillingStorageKeys = { taxId: 'qs_invoice_tax_id', city: 'qs_invoice_city' };
-        const cacheInvoiceBillingLocal = (taxId, city) => {
-            try {
-                if (taxId) localStorage.setItem(invoiceBillingStorageKeys.taxId, taxId);
-                if (city) localStorage.setItem(invoiceBillingStorageKeys.city, city);
-            } catch (_) {}
-        };
-        const fetchServerInvoiceBilling = async (headers) => {
-            try {
-                const res = await fetch('/api/user/invoice-billing', { headers });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) return null;
-                const taxId = String(data.invoice_tax_id || '').replace(/\D/g, '').trim();
-                const city = String(data.invoice_city || '').trim();
-                if (!taxId || !city) return null;
-                return { invoice_tax_id: taxId, invoice_city: city };
-            } catch (_) {
-                return null;
-            }
-        };
-        const saveServerInvoiceBilling = async (headers, taxId, city) => {
-            try {
-                await fetch('/api/user/invoice-billing', {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({
-                        invoice_tax_id: taxId,
-                        invoice_city: city,
-                    }),
-                });
-            } catch (_) {}
-        };
-        let cardcomInvoicesEnabledCache = null;
-        const cardcomCheckoutNeedsBilling = async () => {
-            if (creditCheckoutUsesStripe()) return false;
-            if (cardcomInvoicesEnabledCache !== null) return cardcomInvoicesEnabledCache;
-            try {
-                const res = await fetch('/api/cardcom/status');
-                const data = await res.json().catch(() => ({}));
-                cardcomInvoicesEnabledCache = !!data.invoices_enabled;
-            } catch (_) {
-                cardcomInvoicesEnabledCache = true;
-            }
-            return cardcomInvoicesEnabledCache;
-        };
-        const invoiceBillingModal = document.getElementById('invoice-billing-modal');
-        const invoiceTaxIdInput = document.getElementById('invoice-tax-id-input');
-        const invoiceCityInput = document.getElementById('invoice-city-input');
-        const invoiceBillingContinueBtn = document.getElementById('invoice-billing-continue-btn');
-        const invoiceBillingCancelBtn = document.getElementById('invoice-billing-cancel-btn');
-        const invoiceBillingCloseBtn = document.getElementById('invoice-billing-close');
-        const closeInvoiceBillingModal = () => {
-            if (!invoiceBillingModal) return;
-            invoiceBillingModal.style.display = 'none';
-            invoiceBillingModal.setAttribute('aria-hidden', 'true');
-        };
-        const promptInvoiceBillingIfNeeded = (headers) => new Promise((resolve) => {
-            void (async () => {
-                if (!(await cardcomCheckoutNeedsBilling())) {
-                    resolve({});
-                    return;
-                }
-                const serverBilling = headers ? await fetchServerInvoiceBilling(headers) : null;
-                if (serverBilling) {
-                    cacheInvoiceBillingLocal(serverBilling.invoice_tax_id, serverBilling.invoice_city);
-                    resolve(serverBilling);
-                    return;
-                }
-                let taxId = '';
-                let city = '';
-                try {
-                    taxId = String(localStorage.getItem(invoiceBillingStorageKeys.taxId) || '').replace(/\D/g, '').trim();
-                    city = String(localStorage.getItem(invoiceBillingStorageKeys.city) || '').trim();
-                } catch (_) {}
-                if (taxId && city) {
-                    if (headers) await saveServerInvoiceBilling(headers, taxId, city);
-                    resolve({ invoice_tax_id: taxId, invoice_city: city });
-                    return;
-                }
-                if (!invoiceBillingModal || !invoiceTaxIdInput || !invoiceCityInput) {
-                    resolve(null);
-                    return;
-                }
-                invoiceTaxIdInput.value = taxId;
-                invoiceCityInput.value = city;
-                const cleanup = () => {
-                    invoiceBillingContinueBtn && invoiceBillingContinueBtn.removeEventListener('click', onContinue);
-                    invoiceBillingCancelBtn && invoiceBillingCancelBtn.removeEventListener('click', onCancel);
-                    invoiceBillingCloseBtn && invoiceBillingCloseBtn.removeEventListener('click', onCancel);
-                    invoiceBillingModal.removeEventListener('click', onBackdrop);
-                };
-                const onCancel = () => {
-                    cleanup();
-                    closeInvoiceBillingModal();
-                    resolve(null);
-                };
-                const onBackdrop = (e) => {
-                    if (e.target === invoiceBillingModal) onCancel();
-                };
-                const onContinue = () => {
-                    void (async () => {
-                        const nextTaxId = String(invoiceTaxIdInput.value || '').replace(/\D/g, '').trim();
-                        const nextCity = String(invoiceCityInput.value || '').trim();
-                        if (!nextTaxId || nextTaxId.length < 5) {
-                            if (typeof showStatus === 'function') showStatus('נא להזין ת.ז. / ח.פ. תקין.', true, { duration: 4000 });
-                            return;
-                        }
-                        if (!nextCity) {
-                            if (typeof showStatus === 'function') showStatus('נא להזין ישוב (עיר).', true, { duration: 4000 });
-                            return;
-                        }
-                        cacheInvoiceBillingLocal(nextTaxId, nextCity);
-                        if (headers) await saveServerInvoiceBilling(headers, nextTaxId, nextCity);
-                        cleanup();
-                        closeInvoiceBillingModal();
-                        resolve({ invoice_tax_id: nextTaxId, invoice_city: nextCity });
-                    })();
-                };
-                invoiceBillingContinueBtn && invoiceBillingContinueBtn.addEventListener('click', onContinue);
-                invoiceBillingCancelBtn && invoiceBillingCancelBtn.addEventListener('click', onCancel);
-                invoiceBillingCloseBtn && invoiceBillingCloseBtn.addEventListener('click', onCancel);
-                invoiceBillingModal.addEventListener('click', onBackdrop);
-                invoiceBillingModal.style.display = 'flex';
-                invoiceBillingModal.setAttribute('aria-hidden', 'false');
-                setTimeout(() => { try { invoiceTaxIdInput.focus(); } catch (_) {} }, 50);
-            })();
-        });
-        const startCreditCheckout = async (bundleId, sourceBtn) => {
-            const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
-            const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-            const checkoutWaitMsg = isHe ? 'מעביר לדף התשלום…' : 'Opening secure checkout…';
-            const headers = await getAuthedJsonHeaders();
-            if (!headers) {
-                if (typeof showStatus === 'function') showStatus(T('sign_in_to_save') || 'Sign in to continue.', true, { duration: 4500 });
-                try { if (typeof window.toggleModal === 'function') window.toggleModal(true); } catch (_) {}
-                return;
-            }
-            const billing = await promptInvoiceBillingIfNeeded(headers);
-            if (billing === null) return;
-            const locale = (window.currentLocale || document.documentElement.lang || 'he');
-            const useStripe = creditCheckoutUsesStripe();
-            const endpoint = useStripe
-                ? '/api/stripe/create-checkout-session'
-                : '/api/cardcom/create-payment';
-            const btnLabel = sourceBtn ? sourceBtn.textContent : '';
-            if (sourceBtn) {
-                sourceBtn.disabled = true;
-                sourceBtn.setAttribute('aria-busy', 'true');
-                sourceBtn.textContent = checkoutWaitMsg;
-            }
-            if (typeof showStatus === 'function') {
-                showStatus(checkoutWaitMsg, false, { duration: 120000 });
-            }
-            try {
-                const res = await fetch(endpoint, {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({
-                        bundle: bundleId || 'standard',
-                        locale: locale,
-                        ...(billing || {}),
-                    }),
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || !data.url) throw new Error(data.error || 'checkout failed');
-                window.location.assign(data.url);
-            } catch (err) {
-                if (typeof showStatus === 'function') {
-                    showStatus((err && err.message) || 'Could not start checkout.', true, { duration: 6000 });
-                }
-                if (sourceBtn) {
-                    sourceBtn.disabled = false;
-                    sourceBtn.removeAttribute('aria-busy');
-                    if (btnLabel) sourceBtn.textContent = btnLabel;
-                }
-            }
-        };
-        const confirmReturnedStripeCheckout = async () => {
-            const params = new URLSearchParams(window.location.search || '');
-            const sessionId = params.get('session_id');
-            if (!sessionId || params.get('stripe_success') !== '1') return;
-            const headers = await getAuthedJsonHeaders();
-            if (!headers) return;
-            try {
-                const res = await fetch('/api/stripe/confirm-checkout-session', {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({ session_id: sessionId }),
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
-                try {
-                    if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
-                } catch (_) {}
-                if (typeof showStatus === 'function') {
-                    const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                    const added = Number(data.added_minutes || 0);
-                    const msg = added > 0
-                        ? (isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`)
-                        : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
-                    showStatus(msg, false, { duration: 6000 });
-                }
-                try {
-                    if (typeof window.qsTrackGa4Purchase === 'function') {
-                        window.qsTrackGa4Purchase({
-                            transaction_id: sessionId,
-                            value: data.amount ?? data.amount_ils,
-                            currency: data.currency || 'ILS',
-                            items: data.bundle_id
-                                ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
-                                : undefined,
-                        });
-                    }
-                } catch (_) {}
-                params.delete('stripe_success');
-                params.delete('session_id');
-                const cleanQuery = params.toString();
-                history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
-            } catch (err) {
-                if (typeof showStatus === 'function') {
-                    showStatus((err && err.message) || 'Could not confirm checkout.', true, { duration: 8000 });
-                }
-            }
-        };
-        const cardcomReturnQueryKeys = [
-            'cardcom_success', 'cardcom_cancelled', 'order_id', 'terminalnumber',
-            'lowprofilecode', 'LowProfileCode', 'ResponeCode', 'ResponseCode',
-            'Operation', 'Status', 'internalDealNumber', 'IssuerAuthCodeDescription', 'traceid',
-        ];
-        const cleanCardcomReturnQuery = (params) => {
-            cardcomReturnQueryKeys.forEach((key) => params.delete(key));
-            return params.toString();
-        };
-        const confirmReturnedCardcomCheckout = async () => {
-            const params = new URLSearchParams(window.location.search || '');
-            const orderId = params.get('order_id');
-            if (!orderId || params.get('cardcom_success') !== '1') return;
-            const headers = await getAuthedJsonHeaders();
-            if (!headers) return;
-            const lowProfileId = (
-                params.get('lowprofilecode')
-                || params.get('LowProfileCode')
-                || params.get('low_profile_id')
-                || ''
-            ).trim();
-            try {
-                const res = await fetch('/api/cardcom/confirm-payment', {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({
-                        order_id: orderId,
-                        low_profile_id: lowProfileId || undefined,
-                        lowprofilecode: lowProfileId || undefined,
-                    }),
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
-                try {
-                    if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
-                } catch (_) {}
-                if (typeof showStatus === 'function') {
-                    const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                    const added = Number(data.added_minutes || 0);
-                    const msg = added > 0
-                        ? (isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`)
-                        : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
-                    showStatus(msg, false, { duration: 6000 });
-                }
-                try {
-                    if (typeof window.qsTrackGa4Purchase === 'function') {
-                        window.qsTrackGa4Purchase({
-                            transaction_id: orderId,
-                            value: data.amount ?? data.amount_ils,
-                            currency: data.currency || 'ILS',
-                            items: data.bundle_id
-                                ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
-                                : undefined,
-                        });
-                    }
-                } catch (_) {}
-                const cleanQuery = cleanCardcomReturnQuery(params);
-                history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
-            } catch (err) {
-                if (typeof showStatus === 'function') {
-                    showStatus((err && err.message) || 'Could not confirm checkout.', true, { duration: 8000 });
-                }
-            }
-        };
-        void confirmReturnedStripeCheckout();
-        void confirmReturnedCardcomCheckout();
-        const creditBundleIds = ['light', 'standard', 'plus'];
-        const creditBundleStorageKey = 'qs_selected_credit_bundle';
-        const creditBundlePriceMeta = {
-            light: { he: '₪19', en: '$7', noteHe: ' / 90 דקות', noteEn: ' / 90 min' },
-            standard: { he: '₪45', en: '$13', noteHe: ' / 300 דקות', noteEn: ' / 300 min' },
-            plus: { he: '₪79', en: '$27', noteHe: ' / 720 דקות', noteEn: ' / 720 min' },
-        };
-        const creditBundleMinutesMeta = {
-            light: { he: '90 דקות תמלול', en: '90 transcription minutes' },
-            standard: { he: '300 דקות תמלול', en: '300 transcription minutes' },
-            plus: { he: '720 דקות תמלול', en: '720 transcription minutes' },
-        };
-        const buyCreditsBtn = document.getElementById('seo-buy-credits-btn');
-        const creditBundlePriceEl = document.getElementById('seo-credit-bundle-price');
-        const creditBundleDetailEl = document.getElementById('seo-credit-bundle-detail');
-        const creditBundleItems = Array.from(
-            document.querySelectorAll('#seo-pricing-pro .seo-credit-bundle-item[data-bundle]')
-        );
-        const creditBundlePanes = creditBundleDetailEl
-            ? Array.from(creditBundleDetailEl.querySelectorAll('.seo-credit-bundle-pane[data-bundle-pane]'))
-            : [];
-        const syncCreditBundleDisplay = (bundleId) => {
-            const meta = creditBundlePriceMeta[bundleId] || creditBundlePriceMeta.standard;
-            const minutesMeta = creditBundleMinutesMeta[bundleId] || creditBundleMinutesMeta.standard;
-            const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
-            if (creditBundlePriceEl) {
-                const priceEl = creditBundlePriceEl.querySelector('[data-bundle-price]');
-                const noteEl = creditBundlePriceEl.querySelector('[data-bundle-price-note]');
-                if (priceEl) priceEl.textContent = isEn ? meta.en : meta.he;
-                if (noteEl) noteEl.textContent = isEn ? meta.noteEn : meta.noteHe;
-            }
-            document.querySelectorAll('#seo-pricing-pro [data-bundle-minutes]').forEach((el) => {
-                el.textContent = isEn ? minutesMeta.en : minutesMeta.he;
-            });
-            creditBundlePanes.forEach((pane) => {
-                const on = pane.dataset.bundlePane === bundleId;
-                pane.hidden = !on;
-                pane.classList.toggle('is-active', on);
-            });
-            if (creditBundleDetailEl) {
-                creditBundleDetailEl.setAttribute('aria-labelledby', 'seo-credit-tab-' + bundleId);
-            }
-        };
-        const getSelectedCreditBundle = () => {
-            try {
-                const stored = String(localStorage.getItem(creditBundleStorageKey) || '').trim();
-                if (creditBundleIds.includes(stored)) return stored;
-            } catch (_) {}
-            const selected = document.querySelector('#seo-pricing-pro .seo-credit-bundle-item.is-selected');
-            const fromDom = selected && selected.dataset ? String(selected.dataset.bundle || '').trim() : '';
-            return creditBundleIds.includes(fromDom) ? fromDom : 'standard';
-        };
-        const setSelectedCreditBundle = (bundleId) => {
-            if (!creditBundleIds.includes(bundleId)) return;
-            try { localStorage.setItem(creditBundleStorageKey, bundleId); } catch (_) {}
-            creditBundleItems.forEach((item) => {
-                const on = item.dataset.bundle === bundleId;
-                item.classList.toggle('is-selected', on);
-                item.setAttribute('aria-selected', on ? 'true' : 'false');
-                item.setAttribute('aria-pressed', on ? 'true' : 'false');
-                item.tabIndex = on ? 0 : -1;
-            });
-            if (buyCreditsBtn) buyCreditsBtn.dataset.bundle = bundleId;
-            syncCreditBundleDisplay(bundleId);
-        };
-        setSelectedCreditBundle(getSelectedCreditBundle());
-        creditBundleItems.forEach((item) => {
-            const pickBundle = (e) => {
-                if (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
-                setSelectedCreditBundle(item.dataset.bundle);
-                setSelectedPlan('pro');
-            };
-            item.addEventListener('click', pickBundle);
-            item.addEventListener('keydown', (e) => {
-                if (e.key !== 'Enter' && e.key !== ' ') return;
-                pickBundle(e);
-            });
-        });
-        document.querySelectorAll('.seo-bridge-action').forEach((el) => {
-            el.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (el.closest('#seo-pricing-pro')) {
-                    setSelectedPlan('pro');
-                    if (el.id === 'seo-buy-credits-btn') {
-                        void startCreditCheckout(getSelectedCreditBundle(), el);
-                        return;
-                    }
-                }
-                if (el.closest('#seo-pricing-starter') || el.id === 'seo-starter-signup-btn') {
-                    setSelectedPlan('starter');
-                }
-                smoothTo('main-btn');
-            });
-        });
-        const planStorageKey = 'qs_selected_plan';
-        const legacyStarterKey = 'qs_starter_plan_selected';
-        const planIds = ['starter', 'pro', 'enterprise'];
-        const planCards = {
-            starter: document.getElementById('seo-pricing-starter'),
-            pro: document.getElementById('seo-pricing-pro'),
-            enterprise: document.getElementById('seo-pricing-enterprise'),
-        };
-        const getSelectedPlan = () => {
-            if (typeof window.qsGetSelectedPlan === 'function') {
-                return window.qsGetSelectedPlan();
-            }
-            try {
-                const current = String(localStorage.getItem(planStorageKey) || '').trim();
-                if (planIds.includes(current)) return current;
-                if (localStorage.getItem(legacyStarterKey) === '1') return 'starter';
-            } catch (_) {}
-            return 'starter';
-        };
-        const setSelectedPlan = (planId) => {
-            if (!planIds.includes(planId)) return;
-            try {
-                localStorage.setItem(planStorageKey, planId);
-                localStorage.removeItem(legacyStarterKey);
-            } catch (_) {}
-            syncPlanCardsUi();
-            if (planId === 'starter') smoothTo('main-btn');
-        };
-        const syncPlanCardsUi = () => {
-            const selected = getSelectedPlan();
-            planIds.forEach((id) => {
-                const card = planCards[id];
-                if (!card) return;
-                const on = selected === id;
-                card.classList.toggle('is-selected', on);
-                card.setAttribute('aria-pressed', on ? 'true' : 'false');
-                const label = card.querySelector('.seo-plan-selected-label');
-                if (label) {
-                    label.classList.toggle('is-visible', on);
-                    label.hidden = !on;
-                }
-                card.classList.toggle('is-plan-muted', selected !== id);
-            });
-            if (typeof window.qsSyncStarterPlanUploadGate === 'function') {
-                window.qsSyncStarterPlanUploadGate();
-            }
-        };
-        window.syncPlanCardsUi = syncPlanCardsUi;
-        const wirePlanCard = (planId) => {
-            const card = planCards[planId];
-            if (!card) return;
-            const activate = (e) => {
-                if (e && e.target && e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn, .seo-pricing-medical-teaser-link')) return;
-                if (planId === 'enterprise') {
-                    const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
-                    window.location.href = isEn ? '/en/medical/pricing' : '/medical/pricing';
-                    return;
-                }
-                setSelectedPlan(planId);
-            };
-            card.addEventListener('click', activate);
-            card.addEventListener('keydown', (e) => {
-                if (e.key !== 'Enter' && e.key !== ' ') return;
-                if (e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn, .seo-pricing-medical-teaser-link')) return;
-                e.preventDefault();
-                if (planId === 'enterprise') {
-                    const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
-                    window.location.href = isEn ? '/en/medical/pricing' : '/medical/pricing';
-                    return;
-                }
-                setSelectedPlan(planId);
-            });
-        };
-        planIds.forEach(wirePlanCard);
-        if (typeof window.qsEnsureDefaultStarterPlan === 'function') window.qsEnsureDefaultStarterPlan();
-        syncPlanCardsUi();
-        if (typeof window.qsRefreshUserCredits === 'function') {
-            void window.qsRefreshUserCredits({ ensureWelcome: true }).then(() => {
-                if (typeof window.qsSyncStarterPlanUploadGate === 'function') {
-                    window.qsSyncStarterPlanUploadGate();
-                }
-            });
+        if (typeof window.qsInitRegularPricingPage === 'function') {
+            window.qsInitRegularPricingPage({ standalone: !document.getElementById('main-btn') });
         }
 
         const salesModal = document.getElementById('sales-contact-modal');

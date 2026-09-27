@@ -1,5 +1,5 @@
 /**
- * Regular (non-medical) pricing section: prepaid bundle tabs + Cardcom/Stripe checkout.
+ * Regular (non-medical) pricing: free month, unlimited, and pay-per-use checkout.
  * Used on /pricing and anywhere #pricing-section exists without index inline wiring.
  */
 (function () {
@@ -195,7 +195,60 @@
             })();
         });
 
-        const startCreditCheckout = async (bundleId, sourceBtn) => {
+        const checkoutSuccessMessage = (data) => {
+            const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+            const plan = String((data && data.plan) || '');
+            if (plan === 'unlimited_monthly' || plan === 'unlimited_annual') {
+                return isHe ? 'המסלול ללא הגבלה הופעל.' : 'Unlimited plan is active.';
+            }
+            if (plan === 'pay_per_use') {
+                const hours = Number(data.hours || 1);
+                return isHe
+                    ? (hours === 1 ? 'שולם עבור קובץ של עד שעה.' : `שולם עבור קובץ של עד ${hours} שעות.`)
+                    : (hours === 1 ? 'Paid for a file of up to 1 hour.' : `Paid for a file of up to ${hours} hours.`);
+            }
+            const added = Number(data && data.added_minutes || 0);
+            if (added > 0) {
+                return isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`;
+            }
+            return isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.';
+        };
+
+        let payUseHours = 1;
+        const syncPayUseHours = (hours) => {
+            const next = Math.max(1, Math.min(24, Number(hours) || 1));
+            payUseHours = next;
+            const valueEl = document.getElementById('seo-pay-hours-value');
+            const priceEl = document.getElementById('seo-pay-use-price');
+            if (valueEl) {
+                valueEl.textContent = String(next);
+                valueEl.dataset.hours = String(next);
+            }
+            if (priceEl) {
+                const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
+                const amount = isEn ? (3 * next) : (9 * next);
+                const symbol = isEn ? '$' : '₪';
+                const unit = isEn ? '/ hour' : 'לשעה';
+                priceEl.innerHTML = `${symbol}${amount} <small>${next === 1 ? unit : (isEn ? `for ${next} hours` : `עבור ${next} שעות`)}</small>`;
+            }
+            const btn = document.getElementById('seo-buy-payg-btn');
+            if (btn) btn.dataset.hours = String(next);
+            const noteEl = document.getElementById('seo-pay-hours-note');
+            if (noteEl) {
+                const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
+                noteEl.textContent = isEn
+                    ? (next === 1 ? 'Up to 1 hour file' : `Up to ${next} hours`)
+                    : (next === 1 ? 'קובץ של עד שעה' : `קובץ של עד ${next} שעות`);
+            }
+        };
+        window.qsSetPayPerUseHours = (hours) => {
+            syncPayUseHours(hours);
+            const section = document.getElementById('pricing-section');
+            if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        };
+        syncPayUseHours(1);
+
+        const startCreditCheckout = async (planId, sourceBtn, hours) => {
             const T = typeof window.t === 'function' ? window.t : function (k) { return k; };
             const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
             const checkoutWaitMsg = isHe ? 'מעביר לדף התשלום…' : 'Opening secure checkout…';
@@ -228,7 +281,9 @@
                     method: 'POST',
                     headers,
                     body: JSON.stringify({
-                        bundle: bundleId || 'standard',
+                        bundle: planId || 'unlimited_monthly',
+                        plan: planId || 'unlimited_monthly',
+                        hours: planId === 'pay_per_use' ? (Number(hours) || payUseHours || 1) : 1,
                         locale: locale,
                         ...(billing || {}),
                     }),
@@ -267,12 +322,7 @@
                     if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
                 } catch (_) {}
                 if (typeof showStatus === 'function') {
-                    const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                    const added = Number(data.added_minutes || 0);
-                    const msg = added > 0
-                        ? (isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`)
-                        : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
-                    showStatus(msg, false, { duration: 6000 });
+                    showStatus(checkoutSuccessMessage(data), false, { duration: 6000 });
                 }
                 try {
                     if (typeof window.qsTrackGa4Purchase === 'function') {
@@ -335,12 +385,7 @@
                     if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
                 } catch (_) {}
                 if (typeof showStatus === 'function') {
-                    const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-                    const added = Number(data.added_minutes || 0);
-                    const msg = added > 0
-                        ? (isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`)
-                        : (isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.');
-                    showStatus(msg, false, { duration: 6000 });
+                    showStatus(checkoutSuccessMessage(data), false, { duration: 6000 });
                 }
                 try {
                     if (typeof window.qsTrackGa4Purchase === 'function') {
@@ -366,184 +411,30 @@
         void confirmReturnedStripeCheckout();
         void confirmReturnedCardcomCheckout();
 
-        const creditBundleIds = ['light', 'standard', 'plus'];
-        const creditBundleStorageKey = 'qs_selected_credit_bundle';
-        const creditBundlePriceMeta = {
-            light: { he: '₪19', en: '$7', noteHe: ' / 90 דקות', noteEn: ' / 90 min' },
-            standard: { he: '₪45', en: '$13', noteHe: ' / 300 דקות', noteEn: ' / 300 min' },
-            plus: { he: '₪79', en: '$27', noteHe: ' / 720 דקות', noteEn: ' / 720 min' },
-        };
-        const creditBundleMinutesMeta = {
-            light: { he: '90 דקות תמלול', en: '90 transcription minutes' },
-            standard: { he: '300 דקות תמלול', en: '300 transcription minutes' },
-            plus: { he: '720 דקות תמלול', en: '720 transcription minutes' },
-        };
-        const buyCreditsBtn = document.getElementById('seo-buy-credits-btn');
-        const creditBundlePriceEl = document.getElementById('seo-credit-bundle-price');
-        const creditBundleDetailEl = document.getElementById('seo-credit-bundle-detail');
-        const creditBundleItems = Array.from(
-            document.querySelectorAll('#seo-pricing-pro .seo-credit-bundle-item[data-bundle]')
-        );
-        const creditBundlePanes = creditBundleDetailEl
-            ? Array.from(creditBundleDetailEl.querySelectorAll('.seo-credit-bundle-pane[data-bundle-pane]'))
-            : [];
-
-        const planStorageKey = 'qs_selected_plan';
-        const legacyStarterKey = 'qs_starter_plan_selected';
-        const planIds = ['starter', 'pro', 'enterprise'];
-        const planCards = {
-            starter: document.getElementById('seo-pricing-starter'),
-            pro: document.getElementById('seo-pricing-pro'),
-            enterprise: document.getElementById('seo-pricing-enterprise'),
-        };
-
-        const getSelectedPlan = () => {
-            if (typeof window.qsGetSelectedPlan === 'function') {
-                return window.qsGetSelectedPlan();
-            }
-            try {
-                const current = String(localStorage.getItem(planStorageKey) || '').trim();
-                if (planIds.includes(current)) return current;
-                if (localStorage.getItem(legacyStarterKey) === '1') return 'starter';
-            } catch (_) {}
-            return 'starter';
-        };
-
-        const syncPlanCardsUi = () => {
-            const selected = getSelectedPlan();
-            planIds.forEach((id) => {
-                const card = planCards[id];
-                if (!card) return;
-                const on = selected === id;
-                card.classList.toggle('is-selected', on);
-                card.setAttribute('aria-pressed', on ? 'true' : 'false');
-                card.classList.toggle('is-plan-muted', selected !== id);
-            });
-            if (typeof window.qsSyncStarterPlanUploadGate === 'function') {
-                window.qsSyncStarterPlanUploadGate();
-            }
-        };
-
-        const setSelectedPlan = (planId) => {
-            if (!planIds.includes(planId)) return;
-            try {
-                localStorage.setItem(planStorageKey, planId);
-                localStorage.removeItem(legacyStarterKey);
-            } catch (_) {}
-            syncPlanCardsUi();
-            if (planId === 'starter') smoothTo('main-btn');
-        };
-
-        window.syncPlanCardsUi = syncPlanCardsUi;
-
-        const syncCreditBundleDisplay = (bundleId) => {
-            const meta = creditBundlePriceMeta[bundleId] || creditBundlePriceMeta.standard;
-            const minutesMeta = creditBundleMinutesMeta[bundleId] || creditBundleMinutesMeta.standard;
-            const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
-            if (creditBundlePriceEl) {
-                const priceEl = creditBundlePriceEl.querySelector('[data-bundle-price]');
-                const noteEl = creditBundlePriceEl.querySelector('[data-bundle-price-note]');
-                if (priceEl) priceEl.textContent = isEn ? meta.en : meta.he;
-                if (noteEl) noteEl.textContent = isEn ? meta.noteEn : meta.noteHe;
-            }
-            document.querySelectorAll('#seo-pricing-pro [data-bundle-minutes]').forEach((el) => {
-                el.textContent = isEn ? minutesMeta.en : minutesMeta.he;
-            });
-            creditBundlePanes.forEach((pane) => {
-                const on = pane.dataset.bundlePane === bundleId;
-                pane.hidden = !on;
-                pane.classList.toggle('is-active', on);
-            });
-            if (creditBundleDetailEl) {
-                creditBundleDetailEl.setAttribute('aria-labelledby', 'seo-credit-tab-' + bundleId);
-            }
-        };
-
-        const getSelectedCreditBundle = () => {
-            try {
-                const stored = String(localStorage.getItem(creditBundleStorageKey) || '').trim();
-                if (creditBundleIds.includes(stored)) return stored;
-            } catch (_) {}
-            const selected = document.querySelector('#seo-pricing-pro .seo-credit-bundle-item.is-selected');
-            const fromDom = selected && selected.dataset ? String(selected.dataset.bundle || '').trim() : '';
-            return creditBundleIds.includes(fromDom) ? fromDom : 'standard';
-        };
-
-        const setSelectedCreditBundle = (bundleId) => {
-            if (!creditBundleIds.includes(bundleId)) return;
-            try { localStorage.setItem(creditBundleStorageKey, bundleId); } catch (_) {}
-            creditBundleItems.forEach((item) => {
-                const on = item.dataset.bundle === bundleId;
-                item.classList.toggle('is-selected', on);
-                item.setAttribute('aria-selected', on ? 'true' : 'false');
-                item.setAttribute('aria-pressed', on ? 'true' : 'false');
-                item.tabIndex = on ? 0 : -1;
-            });
-            if (buyCreditsBtn) buyCreditsBtn.dataset.bundle = bundleId;
-            syncCreditBundleDisplay(bundleId);
-        };
-
-        setSelectedCreditBundle(getSelectedCreditBundle());
-        creditBundleItems.forEach((item) => {
-            const pickBundle = (e) => {
-                if (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
-                setSelectedCreditBundle(item.dataset.bundle);
-                setSelectedPlan('pro');
-            };
-            item.addEventListener('click', pickBundle);
-            item.addEventListener('keydown', (e) => {
-                if (e.key !== 'Enter' && e.key !== ' ') return;
-                pickBundle(e);
-            });
-        });
+        const minusBtn = document.getElementById('seo-pay-hours-minus');
+        const plusBtn = document.getElementById('seo-pay-hours-plus');
+        if (minusBtn) minusBtn.addEventListener('click', (e) => { e.stopPropagation(); syncPayUseHours(payUseHours - 1); });
+        if (plusBtn) plusBtn.addEventListener('click', (e) => { e.stopPropagation(); syncPayUseHours(payUseHours + 1); });
 
         document.querySelectorAll('.seo-bridge-action').forEach((el) => {
             el.addEventListener('click', (e) => {
                 e.stopPropagation();
-                if (el.closest('#seo-pricing-pro')) {
-                    setSelectedPlan('pro');
-                    if (el.id === 'seo-buy-credits-btn') {
-                        void startCreditCheckout(getSelectedCreditBundle(), el);
-                        return;
+                const plan = el.dataset ? el.dataset.plan : '';
+                if (plan === 'unlimited_annual' || plan === 'unlimited_monthly' || plan === 'pay_per_use') {
+                    if (plan === 'pay_per_use') {
+                        const fileSec = Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC) || 0;
+                        if (fileSec > 3600) {
+                            syncPayUseHours(Math.max(payUseHours, Math.ceil(fileSec / 3600)));
+                        }
                     }
-                }
-                if (el.closest('#seo-pricing-starter') || el.id === 'seo-starter-signup-btn') {
-                    setSelectedPlan('starter');
+                    const hours = plan === 'pay_per_use' ? payUseHours : 1;
+                    void startCreditCheckout(plan, el, hours);
+                    return;
                 }
                 smoothTo('main-btn');
             });
         });
 
-        const wirePlanCard = (planId) => {
-            const card = planCards[planId];
-            if (!card) return;
-            const activate = (e) => {
-                if (e && e.target && e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn, .seo-pricing-medical-teaser-link')) return;
-                if (planId === 'enterprise') {
-                    window.location.href = qsMedicalPricingUrl();
-                    return;
-                }
-                setSelectedPlan(planId);
-            };
-            card.addEventListener('click', activate);
-            card.addEventListener('keydown', (e) => {
-                if (e.key !== 'Enter' && e.key !== ' ') return;
-                if (e.target.closest('.seo-bridge-action, .seo-credit-bundle-item, #seo-go-medical-btn, .seo-pricing-medical-teaser-link')) return;
-                e.preventDefault();
-                if (planId === 'enterprise') {
-                    window.location.href = qsMedicalPricingUrl();
-                    return;
-                }
-                setSelectedPlan(planId);
-            });
-        };
-
-        planIds.forEach(wirePlanCard);
-        if (typeof window.qsEnsureDefaultStarterPlan === 'function') window.qsEnsureDefaultStarterPlan();
-        syncPlanCardsUi();
         if (typeof window.qsRefreshUserCredits === 'function') {
             void window.qsRefreshUserCredits({ ensureWelcome: true }).then(() => {
                 if (typeof window.qsSyncStarterPlanUploadGate === 'function') {

@@ -853,6 +853,25 @@ main.main-content:has(.blog-page) {
     overflow-y: auto !important;
     overflow-x: hidden !important;
 }
+.blog-table-wrap {
+    overflow-x: auto;
+    margin: 0.8rem 0 1.2rem;
+}
+.blog-compare {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+}
+.blog-compare th,
+.blog-compare td {
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    padding: 8px 10px;
+    text-align: start;
+    vertical-align: top;
+}
+.blog-compare thead th {
+    background: rgba(15, 23, 42, 0.04);
+}
 
 /* Auth + post-export optional feedback: align questions with app direction */
 .registration-feedback-block .reg-feedback-label,
@@ -1182,6 +1201,44 @@ html[dir="rtl"] .product-card-features {
 .seo-use-cases-grid,
 .seo-pricing-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.seo-pricing-grid.seo-pricing-grid--plans {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
+    align-items: stretch;
+}
+.seo-pay-hours {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin: 8px 0 12px;
+    font-size: 1.25rem;
+    font-weight: 700;
+}
+.seo-pay-hours-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid rgba(15, 23, 42, 0.18);
+    background: #fff;
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.seo-pay-hours-btn:hover {
+    background: #f4f7fb;
+}
+@media (max-width: 1100px) {
+    .seo-pricing-grid.seo-pricing-grid--plans {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@media (max-width: 640px) {
+    .seo-pricing-grid.seo-pricing-grid--plans {
+        grid-template-columns: 1fr;
+    }
 }
 .seo-pricing-grid.seo-pricing-grid--two {
     display: flex;
@@ -6095,9 +6152,9 @@ html[dir="ltr"] #main-btn::before {
 .regular-asr-lang-wrap {
     display: inline-flex;
     flex: 0 0 auto;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 10px;
     margin: 0;
     min-width: 0;
     direction: ltr;
@@ -6106,6 +6163,38 @@ html[dir="ltr"] #main-btn::before {
     top: 50%;
     transform: translateY(-50%);
     z-index: 2;
+}
+.regular-asr-lang-field {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    min-width: 0;
+}
+.regular-speaker-switch {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    margin: 0;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+.regular-speaker-switch .toggle-switch {
+    display: inline-block;
+    width: 22px;
+    height: 12px;
+    flex: none;
+}
+.regular-speaker-switch .slider:before {
+    height: 8px;
+    width: 8px;
+    left: 2px;
+    bottom: 2px;
+}
+.regular-speaker-switch input:checked + .slider:before {
+    transform: translateX(10px);
 }
 .regular-asr-lang-wrap[hidden] {
     display: none !important;
@@ -7910,10 +7999,10 @@ html[dir="rtl"] .upload-status {
     top: auto;
     transform: none;
     display: inline-flex;
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: flex-end;
     justify-content: center;
-    gap: 4px;
+    gap: 10px;
     max-width: none;
     min-width: 0;
     z-index: 1;
@@ -8434,14 +8523,15 @@ body.mobile-video-session .main-app-container:not(.medical-mode) > .upload-zone 
     position: static;
     transform: none;
     display: inline-flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
     grid-column: 3;
     grid-row: 1;
     justify-self: end;
     align-self: end;
-    max-width: 32vw;
+    max-width: none;
     min-width: 0;
     z-index: 1;
   }

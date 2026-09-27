@@ -689,9 +689,9 @@ def _cardcom_invoice_fields_for_client(purchase: Optional[dict]) -> dict:
     return out
 
 
-def _bundle_for_id(bundle_id: str) -> Optional[dict]:
+def _bundle_for_id(bundle_id: str, hours: int = 1) -> Optional[dict]:
     import siteapp as sa
-    return sa.STRIPE_CREDIT_BUNDLES.get(str(bundle_id or '').strip().lower())
+    return sa._resolve_checkout_bundle(bundle_id, hours)
 
 
 def _cardcom_create_low_profile(
@@ -700,11 +700,12 @@ def _cardcom_create_low_profile(
     locale: str,
     req,
     invoice_billing: Optional[dict] = None,
+    hours: int = 1,
 ) -> dict:
     user_id = str((user or {}).get('user_id') or '').strip()
     if not user_id:
         raise ValueError('Authorization required')
-    bundle = _bundle_for_id(bundle_id)
+    bundle = _bundle_for_id(bundle_id, hours)
     if not bundle:
         raise ValueError('Unknown credit bundle')
     t0 = time.monotonic()
@@ -858,8 +859,10 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
     lp_id = str(low_profile_id or purchase.get('low_profile_id') or '').strip()
     user_id = str(purchase.get('user_id') or '').strip()
     bundle_id = str(purchase.get('bundle_id') or '').strip().lower()
-    bundle = _bundle_for_id(bundle_id)
-    minutes = int(purchase.get('credit_minutes') or (bundle or {}).get('credit_minutes') or 0)
+    minutes = int(purchase.get('credit_minutes') or 0)
+    bundle = _bundle_for_id(bundle_id, max(1, minutes // 60))
+    if minutes <= 0:
+        minutes = int((bundle or {}).get('credit_minutes') or 0)
 
     if _simulation_mode():
         tranz_id = purchase.get('tranzaction_id') or int(uuid.uuid4().int % 10_000_000_000)
@@ -868,7 +871,7 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
             'tranzaction_id': tranz_id,
             'credited_at': _utc_now_iso(),
         })
-        row = sa._user_credits_add_minutes(user_id, minutes)
+        row, applied = sa._user_credits_apply_purchased_bundle(user_id, bundle_id, minutes)
         sa._schedule_admin_payment_notify(
             user_id=user_id,
             provider='cardcom',
@@ -894,7 +897,9 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         return {
             'ok': True,
             'already_credited': False,
-            'added_minutes': minutes,
+            'added_minutes': int((applied or {}).get('added_minutes') or 0),
+            'plan': (applied or {}).get('plan'),
+            'hours': (applied or {}).get('hours') or 0,
             'order_id': order_id,
             'credit_minutes': int((row or {}).get('credit_minutes') or 0),
             'simulation': True,
@@ -966,7 +971,7 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         'credited_at': _utc_now_iso(),
         **{k: v for k, v in invoice_patch.items() if v},
     })
-    row = sa._user_credits_add_minutes(user_id, minutes)
+    row, applied = sa._user_credits_apply_purchased_bundle(user_id, bundle_id, minutes)
     try:
         from referrals import maybe_grant_after_paid_purchase, payment_fingerprint_from_cardcom
         fingerprint = payment_fingerprint_from_cardcom(
@@ -997,7 +1002,9 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
     return {
         'ok': True,
         'already_credited': False,
-        'added_minutes': minutes,
+        'added_minutes': int((applied or {}).get('added_minutes') or 0),
+        'plan': (applied or {}).get('plan'),
+        'hours': (applied or {}).get('hours') or 0,
         'order_id': order_id,
         'amount': float(purchase.get('amount_ils') or paid_amount or 0),
         'currency': 'ILS',
@@ -1025,14 +1032,18 @@ def register_cardcom_routes(app: Flask) -> None:
             if not user:
                 return jsonify({'error': 'Authorization required'}), 401
             data = request.get_json(silent=True) or {}
-            bundle_id = str(data.get('bundle') or data.get('bundle_id') or 'standard').strip().lower()
+            bundle_id = str(data.get('bundle') or data.get('bundle_id') or data.get('plan') or 'standard').strip().lower()
             locale = str(data.get('locale') or '').strip().lower()
+            try:
+                hours = int(data.get('hours') or 1)
+            except (TypeError, ValueError):
+                hours = 1
             invoice_billing = {
                 'tax_id': data.get('invoice_tax_id') or data.get('tax_id'),
                 'city': data.get('invoice_city') or data.get('city'),
             }
             out = _cardcom_create_low_profile(
-                user, bundle_id, locale, request, invoice_billing=invoice_billing,
+                user, bundle_id, locale, request, invoice_billing=invoice_billing, hours=hours,
             )
             return jsonify(out), 200
         except ValueError as e:

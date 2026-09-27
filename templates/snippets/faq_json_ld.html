@@ -1,0 +1,65 @@
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "inLanguage": "{{ qs_locale }}",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": {% if qs_is_en %}"How does automatic transcription work?"{% else %}"איך עובד תמלול אוטומטי?"{% endif %},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {% if qs_is_en %}"Upload a video or audio file, and our fine-tuned AI architecture isolates the speech and generates editable text and subtitles automatically."{% else %}"מעלים קובץ אודיו או וידאו, וארכיטקטורת AI מותאמת מבודדת את הדיבור ומייצרת תמלול וכתוביות לעריכה אוטומטית."{% endif %}
+      }
+    },
+    {
+      "@type": "Question",
+      "name": {% if qs_is_en %}"Can I download an SRT file?"{% else %}"אפשר להוריד קובץ SRT?"{% endif %},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {% if qs_is_en %}"Yes. You can export industry-standard SRT subtitles to use immediately on YouTube, Premiere Pro, and social platforms."{% elif faq_signup_note %}"כן. ניתן לייצא כתוביות SRT בתקן תעשייתי ולהשתמש בהן מיידית ביוטיוב, Premiere Pro וברשתות החברתיות. להורדה נדרשת הרשמה חינם."{% else %}"כן. ניתן לייצא כתוביות SRT בתקן תעשייתי ולהשתמש בהן מיידית ביוטיוב, Premiere Pro וברשתות החברתיות."{% endif %}
+      }
+    },
+    {
+      "@type": "Question",
+      "name": {% if qs_is_en %}"How do you protect my data?"{% else %}"איך אתם מגנים על הנתונים שלי?"{% endif %},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {% if qs_is_en %}"Security is built into our core. All files are uploaded via encrypted protocols to secure storage buckets and are processed automatically without human intervention. For medical or sensitive workflows, we offer fully isolated, HIPAA-aligned environments."{% else %}"האבטחה מובנית בליבה: כל הקבצים מועלים בפרוטוקולים מוצפנים לדליי אחסון מאובטחים ומעובדים אוטומטית ללא התערבות אנושית. עבור תהליכים רפואיים או רגישים מוצעות סביבות מבודדות התואמות HIPAA."{% endif %}
+      }
+    },
+    {
+      "@type": "Question",
+      "name": {% if qs_is_en %}"Can I include multiple languages in the same video file without creating duplicate content?"{% else %}"האם אפשר לכלול כמה שפות באותו קובץ וידאו בלי ליצור תוכן כפול?"{% endif %},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {% if qs_is_en %}"Yes. Our platform allows you to embed multiple languages within the exact same media file. This eliminates the need to upload, manage, and track analytics for duplicate videos across different regions. Your audience can easily toggle to their preferred language in one seamless player experience, keeping all your views and engagement consolidated."{% else %}"כן. הפלטפורמה מאפשרת להטמיע כמה שפות באותו קובץ מדיה בדיוק. כך אין צורך להעלות, לנהל ולעקוב אחרי נתוני צפייה של סרטונים כפולים לאזורים שונים. הקהל יכול לעבור בקלות לשפה המועדפת בנגן אחד ורציף, וכל הצפיות והמעורבות נשארות מרוכזות במקום אחד."{% endif %}
+      }
+    },
+    {
+      "@type": "Question",
+      "name": {% if qs_is_en %}"Do the subtitles automatically adjust for mobile (vertical) and desktop (horizontal) screens?"{% else %}"האם הכתוביות מתאימות את עצמן אוטומטית למסך מובייל (אנכי) ולמסך מחשב (אופקי)?"{% endif %},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {% if qs_is_en %}"Absolutely. Subtitles that look great on a TV can be unreadable or cut off on a smartphone. Our engine automatically adapts subtitle placement, screen orientation, and font size based on the viewer’s device. Whether your content is being watched on a widescreen monitor or swiped on mobile reels, the text remains perfectly formatted, legible, and visually balanced."{% else %}"בהחלט. כתוביות שנראות מצוין בטלוויזיה עלולות להיות בלתי קריאות או להיחתך בטלפון. המנוע מתאים אוטומטית את מיקום הכתוביות, כיוון המסך וגודל הגופן לפי המכשיר של הצופה. בין אם התוכן נצפה במסך רחב או ברילס במובייל, הטקסט נשאר מעוצב, קריא ומאוזן."{% endif %}
+      }
+    },
+    {
+      "@type": "Question",
+      "name": {% if qs_is_en %}"How do you handle Right-to-Left (RTL) languages like Arabic and Hebrew?"{% else %}"איך אתם מטפלים בשפות מימין לשמאל (RTL) כמו ערבית ועברית?"{% endif %},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {% if qs_is_en %}"We provide native, flawless RTL support. A common frustration with traditional video editors is that RTL languages render backward or with broken punctuation. Our formatting engine is built to correctly align, sequence, and display RTL text instantly, ensuring your Arabic, Hebrew, or Persian subtitles look professional and culturally accurate without any manual workarounds."{% else %}"יש תמיכה מובנית ומלאה ב-RTL. תסכול נפוץ בעורכי וידאו מסורתיים הוא ששפות מימין לשמאל מוצגות הפוך או עם פיסוק שבור. מנוע העיצוב שלנו נבנה ליישר, לסדר ולהציג טקסט RTL מיידית, כך שכתוביות בערבית, בעברית או בפרסית נראות מקצועיות ומדויקות תרבותית, בלי פתרונות ידניים."{% endif %}
+      }
+    },
+    {
+      "@type": "Question",
+      "name": {% if qs_is_en %}"Can I rely on your system for professional-grade accuracy?"{% else %}"האם אפשר לסמוך על המערכת לדיוק ברמה מקצועית?"{% endif %},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {% if qs_is_en %}"Yes. We prioritize high-fidelity transcription and translation. Whether you are dealing with complex industry terminology, rapid dialogue, or nuanced phrasing, our system ensures that your subtitles and localized audio are highly accurate, protecting your brand's credibility and keeping your global audience fully engaged."{% else %}"כן. אנחנו שמים דגש על תמלול ותרגום בנאמנות גבוהה. גם במונחים מקצועיים מורכבים, בדיאלוג מהיר או בניסוח עדין, המערכת שומרת על כתוביות ואודיו מתורגם מדויקים, כדי להגן על אמינות המותג ולהשאיר את הקהל הגלובלי מעורב."{% endif %}
+      }
+    }
+  ]
+}
+</script>

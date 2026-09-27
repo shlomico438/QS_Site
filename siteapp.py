@@ -32,7 +32,7 @@ import uuid
 import pathlib
 import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import zipfile
 from io import BytesIO
 import smtplib
@@ -2868,6 +2868,7 @@ def _worker_upload_status_response(job_id):
     hint = str(hint or "").strip()
     if hint:
         out["language_hint"] = hint
+    out["diarization"] = bool(pinfo.get("diarization"))
     return out
 
 
@@ -5419,6 +5420,9 @@ def _supabase_http_request(method, url, *, timeout=None, retries=1, acquire_time
 
 
 WELCOME_CREDIT_MINUTES = 60
+FREE_MONTHLY_MINUTES = 30
+_USER_CREDITS_PLAN_FIELDS = ("billing_plan", "plan_period_end", "pay_use_minutes")
+_USER_CREDITS_PLAN_COLUMNS = None
 
 STRIPE_CREDIT_BUNDLES = {
     "light": {
@@ -6102,6 +6106,26 @@ def _entitlement_ledger_upsert(payload):
     return rows[0] if isinstance(rows, list) and rows else payload
 
 
+def _user_credits_plan_columns_enabled():
+    return _USER_CREDITS_PLAN_COLUMNS is not False
+
+
+def _user_credits_select_fields():
+    base = "user_id,credit_minutes,welcome_granted,user_name,updated_at"
+    if _user_credits_plan_columns_enabled():
+        return base + ",billing_plan,plan_period_end,pay_use_minutes"
+    return base
+
+
+def _user_credits_note_missing_plan_columns(response_text):
+    global _USER_CREDITS_PLAN_COLUMNS
+    text = str(response_text or "")
+    if any(name in text for name in _USER_CREDITS_PLAN_FIELDS):
+        _USER_CREDITS_PLAN_COLUMNS = False
+        return True
+    return False
+
+
 def _user_credits_get(user_id):
     user_id = str(user_id or '').strip()
     if not user_id:
@@ -6109,12 +6133,182 @@ def _user_credits_get(user_id):
     from urllib.parse import quote
     supabase_url, _service_key, headers = _supabase_rest_config()
     uid = quote(user_id, safe='')
-    url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}&select=user_id,credit_minutes,welcome_granted,user_name,updated_at&limit=1"
-    r = _supabase_http_request('GET', url, headers=headers)
+
+    def _fetch(select_fields):
+        url = (
+            f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}"
+            f"&select={select_fields}&limit=1"
+        )
+        return _supabase_http_request('GET', url, headers=headers)
+
+    r = _fetch(_user_credits_select_fields())
+    if r.status_code == 400 and _user_credits_note_missing_plan_columns(r.text):
+        r = _fetch(_user_credits_select_fields())
     if r.status_code != 200:
         raise RuntimeError(r.text or f"Supabase user_credits lookup HTTP {r.status_code}")
+    global _USER_CREDITS_PLAN_COLUMNS
+    if _USER_CREDITS_PLAN_COLUMNS is None and _user_credits_plan_columns_enabled():
+        _USER_CREDITS_PLAN_COLUMNS = True
     rows = r.json() if r.text else []
     return rows[0] if rows else None
+
+
+def _user_credits_patch_row(user_id, payload, existing=None):
+    """Update or insert a user_credits row. Drops plan columns if they are not migrated yet."""
+    global _USER_CREDITS_PLAN_COLUMNS
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        raise ValueError("userId required")
+    body = dict(payload or {})
+    body["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    if not _user_credits_plan_columns_enabled():
+        for key in _USER_CREDITS_PLAN_FIELDS:
+            body.pop(key, None)
+    from urllib.parse import quote
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    uid = quote(user_id, safe='')
+    prefer = {**headers, "Prefer": "return=representation"}
+    if existing is None:
+        existing = _user_credits_get(user_id)
+    if not existing:
+        body.setdefault("user_id", user_id)
+        body.setdefault("credit_minutes", 0)
+        body.setdefault("welcome_granted", False)
+        r = _supabase_http_request(
+            'POST',
+            f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
+            headers={**prefer, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json=body,
+        )
+    else:
+        r = _supabase_http_request(
+            'PATCH',
+            f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
+            headers=prefer,
+            json=body,
+        )
+    if r.status_code == 400 and _user_credits_note_missing_plan_columns(r.text):
+        for key in _USER_CREDITS_PLAN_FIELDS:
+            body.pop(key, None)
+        if existing:
+            r = _supabase_http_request(
+                'PATCH',
+                f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
+                headers=prefer,
+                json=body,
+            )
+        else:
+            r = _supabase_http_request(
+                'POST',
+                f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
+                headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+                json=body,
+            )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(r.text or f"Supabase user_credits write HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if rows else body
+
+
+def _user_credits_public_fields(row):
+    from regular_billing import unlimited_is_active
+    row = row if isinstance(row, dict) else {}
+    plan = str(row.get("billing_plan") or "")
+    active_unlimited = unlimited_is_active(row)
+    return {
+        "credit_minutes": int(row.get("credit_minutes") or 0),
+        "welcome_granted": bool(row.get("welcome_granted")),
+        "billing_plan": plan or None,
+        "plan_period_end": row.get("plan_period_end"),
+        "pay_use_minutes": int(row.get("pay_use_minutes") or 0),
+        "unlimited": active_unlimited,
+    }
+
+
+def _user_credits_start_free_period(user_id, existing=None):
+    from regular_billing import FREE_MONTHLY_MINUTES, FREE_PERIOD_DAYS, period_end_iso
+    existing = existing if isinstance(existing, dict) else _user_credits_get(user_id)
+    return _user_credits_patch_row(user_id, {
+        "credit_minutes": int(FREE_MONTHLY_MINUTES),
+        "welcome_granted": True,
+        "billing_plan": "free",
+        "plan_period_end": period_end_iso(FREE_PERIOD_DAYS),
+    }, existing=existing)
+
+
+def _credits_row_for_gate(user_id):
+    """Apply period reset / legacy-exhausted transition, then return the wallet row."""
+    from regular_billing import gate_action
+    user_id = str(user_id or "").strip()
+    if not user_id or _is_anonymous_credit_user(user_id):
+        return None
+    row = _user_credits_get(user_id)
+    if not row or not _user_credits_plan_columns_enabled():
+        return row
+    action = gate_action(row)
+    if action == "start_free":
+        return _user_credits_start_free_period(user_id, existing=row)
+    if action == "resume_legacy":
+        return _user_credits_patch_row(user_id, {"billing_plan": "legacy"}, existing=row)
+    if not str(row.get("billing_plan") or "") and int(row.get("credit_minutes") or 0) > 0:
+        return _user_credits_patch_row(user_id, {"billing_plan": "legacy"}, existing=row)
+    return row
+
+
+def _resolve_checkout_bundle(bundle_id, hours=1):
+    from regular_billing import resolve_offer
+    offer = resolve_offer(bundle_id, hours)
+    if offer:
+        return offer
+    legacy = STRIPE_CREDIT_BUNDLES.get(str(bundle_id or "").strip().lower())
+    if not legacy:
+        return None
+    return {**legacy, "plan": "legacy_bundle", "hours": 0, "period_days": 0}
+
+
+def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0):
+    """Grant a checkout. Legacy bundles add minutes. New plans do not stack a wallet."""
+    from regular_billing import unlimited_is_active
+    user_id = str(user_id or "").strip()
+    bundle = _resolve_checkout_bundle(bundle_id, max(1, int(minutes or 0) // 60 or 1))
+    plan = str((bundle or {}).get("plan") or "legacy_bundle")
+    existing = _user_credits_get(user_id)
+    if plan in ("unlimited_monthly", "unlimited_annual"):
+        days = int((bundle or {}).get("period_days") or 30)
+        current_end = None
+        if unlimited_is_active(existing) and str((existing or {}).get("billing_plan") or "") == plan:
+            from regular_billing import parse_utc
+            current_end = parse_utc((existing or {}).get("plan_period_end"))
+        start = current_end or datetime.now(timezone.utc)
+        end = start + timedelta(days=days)
+        payload = {
+            "billing_plan": plan,
+            "plan_period_end": end.isoformat().replace("+00:00", "Z"),
+            "pay_use_minutes": 0,
+            "welcome_granted": True,
+        }
+        plan_now = str((existing or {}).get("billing_plan") or "")
+        balance_now = int((existing or {}).get("credit_minutes") or 0)
+        keep_prepaid = plan_now == "legacy" or (not plan_now and balance_now > 0)
+        if not keep_prepaid:
+            payload["credit_minutes"] = 0
+        row = _user_credits_patch_row(user_id, payload, existing=existing)
+        return row, {"plan": plan, "added_minutes": 0, "hours": 0}
+    if plan == "pay_per_use":
+        bought = int((bundle or {}).get("credit_minutes") or minutes or 60)
+        bought = max(60, bought)
+        row = _user_credits_patch_row(user_id, {
+            "pay_use_minutes": bought,
+            "welcome_granted": True,
+        }, existing=existing)
+        return row, {"plan": plan, "added_minutes": 0, "hours": bought // 60}
+    row = _user_credits_add_minutes(user_id, int(minutes or 0))
+    if _user_credits_plan_columns_enabled():
+        try:
+            row = _user_credits_patch_row(user_id, {"billing_plan": "legacy"}, existing=row) or row
+        except Exception:
+            logging.warning("legacy bundle plan mark failed user=%s", user_id[:8], exc_info=True)
+    return row, {"plan": "legacy_bundle", "added_minutes": int(minutes or 0), "hours": 0}
 
 
 def _user_credits_sync_user_name(user_id, user_name):
@@ -6191,47 +6385,34 @@ def _user_credits_ensure_welcome(user_id, minutes=WELCOME_CREDIT_MINUTES, user_n
         ledger = None
 
     restoring = is_returning_welcome(ledger)
-    grant_minutes = welcome_minutes_for_ledger(ledger, minutes)
-
-    supabase_url, _service_key, headers = _supabase_rest_config()
-    if not existing:
-        payload = {
-            "user_id": user_id,
-            "credit_minutes": int(grant_minutes),
-            "welcome_granted": True,
-            "updated_at": datetime.utcnow().isoformat() + "Z",
-        }
-        if user_name:
-            payload["user_name"] = user_name
-        url = f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id"
-        r = _supabase_http_request(
-            'POST',
-            url,
-            headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
-            json=payload,
-        )
+    from regular_billing import FREE_MONTHLY_MINUTES, FREE_PERIOD_DAYS, period_end_iso
+    if restoring:
+        grant_minutes = welcome_minutes_for_ledger(ledger, minutes)
+        plan_fields = {"billing_plan": "legacy" if int(grant_minutes) > 0 else "free"}
+        if int(grant_minutes) <= 0:
+            grant_minutes = int(FREE_MONTHLY_MINUTES)
+            plan_fields["plan_period_end"] = period_end_iso(FREE_PERIOD_DAYS)
+            plan_fields["billing_plan"] = "free"
     else:
-        from urllib.parse import quote
-        uid = quote(user_id, safe='')
-        new_balance = int(existing.get('credit_minutes') or 0) + int(grant_minutes)
-        payload = {
-            "credit_minutes": new_balance,
-            "welcome_granted": True,
-            "updated_at": datetime.utcnow().isoformat() + "Z",
+        grant_minutes = int(FREE_MONTHLY_MINUTES)
+        plan_fields = {
+            "billing_plan": "free",
+            "plan_period_end": period_end_iso(FREE_PERIOD_DAYS),
+            "pay_use_minutes": 0,
         }
-        if user_name:
-            payload["user_name"] = user_name
-        url = f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}"
-        r = _supabase_http_request(
-            'PATCH',
-            url,
-            headers={**headers, "Prefer": "return=representation"},
-            json=payload,
-        )
-    if r.status_code not in (200, 201):
-        raise RuntimeError(r.text or f"Supabase user_credits upsert HTTP {r.status_code}")
-    rows = r.json() if r.text else []
-    row = rows[0] if rows else payload
+
+    payload = {
+        "credit_minutes": int(existing.get("credit_minutes") or 0) + int(grant_minutes) if existing else int(grant_minutes),
+        "welcome_granted": True,
+        **plan_fields,
+    }
+    if not restoring and not existing:
+        payload["credit_minutes"] = int(grant_minutes)
+    if user_name:
+        payload["user_name"] = user_name
+    if not existing:
+        payload["user_id"] = user_id
+    row = _user_credits_patch_row(user_id, payload, existing=existing)
     if email_key:
         try:
             _entitlement_ledger_upsert(
@@ -6914,19 +7095,24 @@ def _is_anonymous_credit_user(user_id):
 
 
 def _guest_trial_credit_minutes():
-    """Anonymous uploads are capped at the welcome pack (charged on signup/claim)."""
-    return max(1, int(WELCOME_CREDIT_MINUTES or 60))
+    """Anonymous uploads are capped at the free monthly allowance."""
+    return max(1, int(FREE_MONTHLY_MINUTES or 30))
 
 
 def _wallet_minutes_for_credit_check(user_id):
-    """Balance for pre-GPU gates. Guests are treated as having the welcome pack only."""
+    """Balance for pre-GPU gates. Guests are treated as having the free monthly allowance."""
+    from regular_billing import unlimited_is_active
     uid = str(user_id or '').strip()
     if not uid:
         return None
     if _is_anonymous_credit_user(uid):
         return _guest_trial_credit_minutes()
-    wallet = _user_credits_get(uid)
-    return int((wallet or {}).get('credit_minutes') or 0)
+    wallet = _credits_row_for_gate(uid)
+    if unlimited_is_active(wallet):
+        return 10 ** 9
+    balance = int((wallet or {}).get('credit_minutes') or 0)
+    pay_use = int((wallet or {}).get('pay_use_minutes') or 0)
+    return max(balance, pay_use)
 
 
 def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
@@ -6953,6 +7139,44 @@ def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
             "message": msg,
             "http_status": 400,
         }
+    if not _is_anonymous_credit_user(user_id):
+        from regular_billing import coverage_for_minutes
+        gated = _credits_row_for_gate(user_id)
+        covered = coverage_for_minutes(gated, minutes)
+        if covered.get("error") == "pay_per_use_short":
+            required_hours = int(covered.get("required_hours") or 1)
+            if prefer_hebrew:
+                msg = (
+                    f"הקובץ דורש {required_hours} שעות בתשלום לפי שימוש. "
+                    f"הגדל את מספר השעות (9₪ לשעה) ושלם שוב לפני התמלול."
+                )
+            else:
+                msg = (
+                    f"This file needs {required_hours} pay-per-use hours. "
+                    f"Increase the hours and pay again before transcribing."
+                )
+            return {
+                "ok": False,
+                "error": "pay_per_use_short",
+                "message": msg,
+                "http_status": 402,
+                "credit_minutes": int(covered.get("credit_minutes") or 0),
+                "required_minutes": minutes,
+                "required_hours": required_hours,
+                "pay_use_minutes": int(covered.get("pay_use_minutes") or 0),
+                "file_duration_seconds": duration_sec,
+            }
+        if covered.get("ok"):
+            return {
+                "ok": True,
+                "credit_minutes": int(covered.get("credit_minutes") or 0),
+                "required_minutes": minutes,
+                "file_duration_seconds": duration_sec,
+                "guest_trial": False,
+                "billing_source": covered.get("source"),
+                "unlimited": covered.get("source") == "unlimited",
+                "pay_use_minutes": int((gated or {}).get("pay_use_minutes") or 0),
+            }
     balance = _wallet_minutes_for_credit_check(user_id)
     if balance is None:
         return {"ok": True, "skipped": True}
@@ -7279,18 +7503,40 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
             "file_duration_seconds": duration_sec,
         }
 
-    wallet = _user_credits_get(user_id)
+    from regular_billing import coverage_for_minutes
+    wallet = _credits_row_for_gate(user_id)
+    covered = coverage_for_minutes(wallet, minutes)
     balance = int((wallet or {}).get('credit_minutes') or 0)
     prefer_he = True
-    if balance < minutes:
+    if not covered.get("ok"):
         logging.warning(
-            "credit_charge insufficient_at_success job=%s user=%s required=%s balance=%s file_duration_sec=%.1f",
+            "credit_charge insufficient_at_success job=%s user=%s required=%s balance=%s file_duration_sec=%.1f error=%s",
             runpod_job_id,
             user_id[:8],
             minutes,
             balance,
             duration_sec,
+            covered.get("error"),
         )
+        if covered.get("error") == "pay_per_use_short":
+            required_hours = int(covered.get("required_hours") or 1)
+            msg = (
+                f"הקובץ דורש {required_hours} שעות בתשלום לפי שימוש. "
+                f"הגדל את מספר השעות (9₪ לשעה) ושלם שוב לפני התמלול."
+                if prefer_he else
+                f"This file needs {required_hours} pay-per-use hours. "
+                f"Increase the hours and pay again before transcribing."
+            )
+            return {
+                "ok": False,
+                "error": "pay_per_use_short",
+                "message": msg,
+                "credit_minutes": balance,
+                "required_minutes": minutes,
+                "required_hours": required_hours,
+                "credit_minutes_used": 0,
+                "file_duration_seconds": duration_sec,
+            }
         return {
             "ok": False,
             "error": "insufficient_credits",
@@ -7301,7 +7547,14 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
             "file_duration_seconds": duration_sec,
         }
 
-    wallet = _user_credits_deduct_minutes(user_id, minutes)
+    if covered.get("source") == "pay_use":
+        wallet = _user_credits_patch_row(user_id, {"pay_use_minutes": 0}, existing=wallet)
+        balance = int((wallet or {}).get('credit_minutes') or 0)
+    elif covered.get("source") == "unlimited":
+        balance = int((wallet or {}).get('credit_minutes') or 0)
+    else:
+        wallet = _user_credits_deduct_minutes(user_id, minutes)
+        balance = int((wallet or {}).get('credit_minutes') or 0)
     _jobs_patch_by_runpod_job_id(
         runpod_job_id,
         user_id,
@@ -9055,13 +9308,8 @@ def api_user_credits():
         user_id = _supabase_user_id_from_request()
         if not user_id:
             return jsonify({"error": "Authorization required"}), 401
-        row = _user_credits_get(user_id)
-        credit_minutes = int((row or {}).get('credit_minutes') or 0)
-        welcome_granted = bool((row or {}).get('welcome_granted'))
-        return jsonify({
-            "credit_minutes": credit_minutes,
-            "welcome_granted": welcome_granted,
-        })
+        row = _credits_row_for_gate(user_id)
+        return jsonify(_user_credits_public_fields(row))
     except Exception as e:
         logging.exception("api_user_credits failed")
         return jsonify({"error": str(e)}), 500
@@ -9152,7 +9400,8 @@ def api_user_credits_ensure_welcome():
             "welcome_granted": bool((row or {}).get('welcome_granted')),
             "welcome_newly_granted": not already_welcomed,
             "user_name": (row or {}).get('user_name'),
-            "granted_minutes": WELCOME_CREDIT_MINUTES,
+            "granted_minutes": 0 if already_welcomed else int((row or {}).get('credit_minutes') or FREE_MONTHLY_MINUTES),
+            **_user_credits_public_fields(row),
         })
     except (requests.exceptions.RequestException, TimeoutError, OSError) as e:
         logging.warning("api_user_credits_ensure_welcome supabase unavailable: %s", e)
@@ -9200,8 +9449,12 @@ def api_stripe_create_checkout_session():
         if not user_id:
             return jsonify({"error": "Authorization required"}), 401
         data = request.get_json(silent=True) or {}
-        bundle_id = str(data.get("bundle") or data.get("bundle_id") or "standard").strip().lower()
-        bundle = STRIPE_CREDIT_BUNDLES.get(bundle_id)
+        bundle_id = str(data.get("bundle") or data.get("bundle_id") or data.get("plan") or "standard").strip().lower()
+        try:
+            hours = int(data.get("hours") or 1)
+        except (TypeError, ValueError):
+            hours = 1
+        bundle = _resolve_checkout_bundle(bundle_id, hours)
         if not bundle:
             return jsonify({"error": "Unknown credit bundle"}), 400
         locale = str(data.get("locale") or "").strip().lower()
@@ -9221,13 +9474,16 @@ def api_stripe_create_checkout_session():
                 "metadata[user_id]": user_id,
                 "metadata[bundle_id]": bundle_id,
                 "metadata[credit_minutes]": str(bundle["credit_minutes"]),
+                "metadata[plan]": str(bundle.get("plan") or ""),
+                "metadata[hours]": str(bundle.get("hours") or 0),
                 "metadata[currency]": pricing["currency"],
                 "line_items[0][quantity]": "1",
                 "line_items[0][price_data][currency]": pricing["currency"],
                 "line_items[0][price_data][unit_amount]": str(pricing["unit_amount"]),
                 "line_items[0][price_data][product_data][name]": bundle["name"],
                 "line_items[0][price_data][product_data][description]": (
-                    f"{bundle['credit_minutes']} QuickScribe transcription minutes"
+                    bundle["name"] if bundle.get("plan") in ("unlimited_monthly", "unlimited_annual", "pay_per_use")
+                    else f"{bundle['credit_minutes']} QuickScribe transcription minutes"
                 ),
             },
         )
@@ -9272,7 +9528,11 @@ def api_stripe_confirm_checkout_session():
         if session.get("payment_status") != "paid":
             return jsonify({"error": "Checkout session is not paid"}), 400
         bundle_id = str(metadata.get("bundle_id") or "").strip().lower()
-        bundle = STRIPE_CREDIT_BUNDLES.get(bundle_id)
+        try:
+            hours = int(metadata.get("hours") or 1)
+        except (TypeError, ValueError):
+            hours = 1
+        bundle = _resolve_checkout_bundle(bundle_id, hours)
         if not bundle:
             return jsonify({"error": "Unknown checkout bundle"}), 400
         minutes = int(bundle["credit_minutes"])
@@ -9301,7 +9561,7 @@ def api_stripe_confirm_checkout_session():
                     "transaction_id": session_id,
                     "bundle_id": bundle_id,
                 }), 200
-        row = _user_credits_add_minutes(user_id, minutes)
+        row, applied = _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes)
         _stripe_credit_purchase_mark_credited(session_id)
         try:
             amount_total = session.get('amount_total')
@@ -9344,12 +9604,15 @@ def api_stripe_confirm_checkout_session():
             logging.exception('referral reward after stripe purchase failed')
         return jsonify({
             "ok": True,
-            "added_minutes": minutes,
+            "added_minutes": int((applied or {}).get("added_minutes") or 0),
+            "plan": (applied or {}).get("plan"),
+            "hours": (applied or {}).get("hours") or 0,
             "credit_minutes": int((row or {}).get("credit_minutes") or 0),
             "amount": amount,
             "currency": currency,
             "transaction_id": session_id,
             "bundle_id": bundle_id,
+            **_user_credits_public_fields(row),
         }), 200
     except Exception as e:
         logging.exception("api_stripe_confirm_checkout_session failed")
@@ -15640,6 +15903,7 @@ def _start_trigger_if_configured(
             "start_callback_url": start_callback_url,
             "upload_status_url": upload_status_url,
             "job_options_url": job_options_url,
+            "diarization": bool(diarization),
         }
     }
     pending_job_info[job_id] = {
@@ -15652,6 +15916,7 @@ def _start_trigger_if_configured(
         "language": lang_fields.get("language") or language,
         "language_hint": lang_fields.get("language_hint"),
         "transcription_options": transcription_options or {},
+        "diarization": bool(diarization),
         "options_finalized": not defer_final_options,
         "worker_ready": not defer_final_options,
         "early_gpu_dispatched": True,
@@ -16721,6 +16986,7 @@ def trigger_processing():
                 "task": task,
                 "language": language,
                 "transcription_options": transcription_options or {},
+                "diarization": bool(diarization),
                 "preprocess": (
                     "vocal_separation" if use_music_vocal_preprocess
                     else ("audio_loudnorm" if use_audio_preprocess else None)
@@ -16756,6 +17022,7 @@ def trigger_processing():
                     "start_callback_url": start_callback_url,
                     "upload_status_url": upload_status_url,
                     "job_options_url": job_options_url,
+                    "diarization": bool(diarization),
                 }
             }
             endpoint_id = os.environ.get('RUNPOD_ENDPOINT_ID')
@@ -16878,6 +17145,7 @@ def trigger_processing():
                 "start_callback_url": start_callback_url,
                 "upload_status_url": upload_status_url,
                 "job_options_url": job_options_url,
+                "diarization": bool(diarization),
             }
         }
 
@@ -16893,6 +17161,7 @@ def trigger_processing():
             "language": _lang_fields.get("language") or language,
             "language_hint": _lang_fields.get("language_hint"),
             "transcription_options": transcription_options or {},
+            "diarization": bool(diarization),
             "preprocess": (
                 "vocal_separation" if use_music_vocal_preprocess
                 else ("audio_loudnorm" if use_audio_preprocess else None)
@@ -17094,6 +17363,7 @@ def retry_trigger():
                 "task": task,
                 "language": language,
                 "transcription_options": info.get("transcription_options") or {},
+                "diarization": bool(info.get("diarization")),
                 "callback_url": callback_url,
                 "start_callback_url": start_callback_url,
                 "upload_status_url": upload_status_url,

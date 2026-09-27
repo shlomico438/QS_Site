@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block page_title %}{% if qs_is_en %}Pricing | QuickScribe{% else %}תמחור | QuickScribe{% endif %}{% endblock %}
-{% block page_description %}{% if qs_is_en %}Simple, transparent pricing for QuickScribe transcription — free starter month, prepaid minute bundles, and medical plans.{% else %}תמחור פשוט ושקוף לתמלול QuickScribe — חודש ראשון חינם, חבילות דקות ומסלולים רפואיים.{% endif %}{% endblock %}
+{% block page_description %}{% if qs_is_en %}Simple, transparent pricing for QuickScribe transcription — 30 free minutes each month, unlimited plans, or pay per hour.{% else %}תמחור פשוט ושקוף לתמלול QuickScribe — 30 דקות חינם בכל חודש, מסלול ללא הגבלה, או תשלום לפי שעה.{% endif %}{% endblock %}
 
 {% block head_extra %}
 <script src="{{ url_for('static', filename='js/regular_pricing.js') }}?v={{ static_asset_version }}" defer></script>

@@ -4988,6 +4988,13 @@ window.qsRecallMediaDurationSec = qsRecallMediaDurationSec;
 function qsCreditsTriggerErrorMessage(triggerData) {
     const td = triggerData || {};
     const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (td.error === 'pay_per_use_short') {
+        const hours = Number(td.required_hours);
+        if (Number.isFinite(hours) && hours > 0 && typeof window.qsSetPayPerUseHours === 'function') {
+            window.qsSetPayPerUseHours(hours);
+        }
+        return td.message || (T('pay_per_use_short_msg') || 'Increase pay-per-use hours for this file.');
+    }
     if (td.error === 'insufficient_credits') {
         const req = td.required_minutes;
         const bal = td.credit_minutes;
@@ -7110,6 +7117,8 @@ async function qsEnsureWelcomeCredits() {
         if (Number.isFinite(minutes)) {
             try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
         }
+        try { window.__QS_BILLING_UNLIMITED = data.unlimited === true; } catch (_) {}
+        try { window.__QS_BILLING_PLAN = data.billing_plan || ''; } catch (_) {}
         qsSyncUserCreditsUi();
         qsApplyDefaultPlanFromCredits();
         try {
@@ -7152,6 +7161,8 @@ async function qsRefreshUserCredits(options = {}) {
         if (Number.isFinite(minutes)) {
             try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
         }
+        try { window.__QS_BILLING_UNLIMITED = data.unlimited === true; } catch (_) {}
+        try { window.__QS_BILLING_PLAN = data.billing_plan || ''; } catch (_) {}
         qsSyncUserCreditsUi();
         if (!silent) {
             qsApplyDefaultPlanFromCredits();
@@ -7195,7 +7206,8 @@ function qsSyncUserCreditsUi() {
     const showCredits = signedIn && qsShouldShowCreditBalance();
     const minutes = Number(window.__QS_USER_CREDIT_MINUTES);
     const hasValue = Number.isFinite(minutes);
-    const displayMinutes = hasValue ? String(Math.max(0, Math.floor(minutes))) : '0';
+    const unlimited = window.__QS_BILLING_UNLIMITED === true;
+    const displayMinutes = unlimited ? '∞' : (hasValue ? String(Math.max(0, Math.floor(minutes))) : '0');
     const navWrap = document.getElementById('nav-credit-balance');
     const navMinutes = document.getElementById('nav-credit-minutes');
     const navWrapMobile = document.getElementById('nav-credit-balance-mobile');

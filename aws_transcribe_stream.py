@@ -537,12 +537,14 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         transcript_result_stream,
         *,
         on_partial: Optional[Callable[[str], None]] = None,
+        on_final: Optional[Callable[[str], None]] = None,
     ):
         super().__init__(transcript_result_stream)
         self._final_parts: List[str] = []
         self._partial_history: List[str] = []
         self._current_partial = ''
         self._on_partial = on_partial
+        self._on_final = on_final
         self._event_count = 0
         self._results: dict = {}
         self._result_order: List[str] = []
@@ -572,6 +574,17 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         except Exception:
             logger.debug('partial callback failed', exc_info=True)
 
+    def _notify_final(self) -> None:
+        if not self._on_final:
+            return
+        text = self._frozen_text()
+        if not text:
+            return
+        try:
+            self._on_final(text)
+        except Exception:
+            logger.debug('final callback failed', exc_info=True)
+
     def _fork_previous_language(self, rid: str, prev_text: str, prev_lang: str) -> None:
         self._fork_seq += 1
         clone_id = f'{rid}__keep{self._fork_seq}'
@@ -585,6 +598,7 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
         self._result_starts[clone_id] = self._result_starts.get(rid)
         self._result_ends[clone_id] = self._result_ends.get(rid)
         self._frozen_ids.add(clone_id)
+        self._notify_final()
 
     def _overlapping_other_language_text(self, rid: str, start: Optional[float], new_text: str) -> str:
         if start is None:
@@ -684,6 +698,7 @@ class _CollectingTranscriptHandler(TranscriptResultStreamHandler):
                 for i in self._result_order
                 if i in self._frozen_ids and str(self._results.get(i) or '').strip()
             ]
+            self._notify_final()
 
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
         results = transcript_event.transcript.results
@@ -749,6 +764,7 @@ class AwsTranscribeStreamSession:
         language_options: Optional[List[str]] = None,
         preferred_language: Optional[str] = None,
         on_partial: Optional[Callable[[str], None]] = None,
+        on_final: Optional[Callable[[str], None]] = None,
         on_ready: Optional[Callable[[], None]] = None,
         on_error: Optional[Callable[[BaseException], None]] = None,
         on_finished: Optional[Callable[['AwsTranscribeStreamSession', str], None]] = None,
@@ -770,6 +786,7 @@ class AwsTranscribeStreamSession:
             or DEFAULT_LANGUAGE
         )
         self.on_partial = on_partial
+        self.on_final = on_final
         self.on_ready = on_ready
         self.on_error = on_error
         self.on_finished = on_finished
@@ -1047,6 +1064,7 @@ class AwsTranscribeStreamSession:
         self._handler = _CollectingTranscriptHandler(
             stream.output_stream,
             on_partial=self.on_partial,
+            on_final=self.on_final,
         )
 
         async def _feed_aws() -> None:
@@ -1270,12 +1288,35 @@ def _yield_hub() -> None:
         pass
 
 
+def final_phrase_delta(previous: str, frozen: str) -> str:
+    """New finalized words only. A rewrite of earlier text returns ''."""
+    prev = str(previous or '').strip()
+    current = str(frozen or '').strip()
+    if not current or current == prev:
+        return ''
+    if prev and not current.startswith(prev):
+        return ''
+    delta = current[len(prev):].strip()
+    if not delta:
+        return ''
+    if not delta[-1].isspace():
+        delta += ' '
+    return delta
+
+
 class TranscribeStreamBridge:
     """Shared orchestration for one live transcribe client (WS or Socket.IO)."""
 
-    def __init__(self, send_json: Callable[[dict], None], on_fatal: Optional[Callable[[], None]] = None):
+    def __init__(
+        self,
+        send_json: Callable[[dict], None],
+        on_fatal: Optional[Callable[[], None]] = None,
+        send_watch: Optional[Callable[[dict], None]] = None,
+    ):
         self._send = send_json
         self._on_fatal = on_fatal
+        self._send_watch = send_watch
+        self._session_frozen = ''
         self._alive = True
         self.region = transcribe_stream_region()
         self.language_code = DEFAULT_LANGUAGE
@@ -1504,6 +1545,13 @@ class TranscribeStreamBridge:
 
     def handle_client_pause(self) -> None:
         """Park AWS from the Socket.IO hub so the waiting GET is flushed immediately."""
+        current = ''
+        sess = self.session
+        if sess is not None:
+            current = str(getattr(sess, 'best_transcript', '') or '')
+        heard = self._combined_transcript(current) or str(self._last_partial_text or '')
+        if heard:
+            self._on_frozen(heard)
         if self.session_live or self.session is not None:
             self._park_dead_session('client_pause')
             return
@@ -1530,6 +1578,7 @@ class TranscribeStreamBridge:
             with self.start_lock:
                 self.start_scheduled = False
             self.session = self._make_session()
+            self._session_frozen = ''
             self._rollover_count += 1
             logger.info(
                 'transcribe starting replacement aws session #%d after %s (committed_len=%d pending_audio=%d idle=%.1fs)',
@@ -1580,6 +1629,20 @@ class TranscribeStreamBridge:
                 self._emit({'type': 'partial', 'text': combined})
         except Exception:
             logger.debug('Failed to send partial transcript to client', exc_info=True)
+
+    def _on_frozen(self, frozen: str) -> None:
+        """Emit only the newly frozen phrase. Partials stay on the browser ack path."""
+        phrase = final_phrase_delta(self._session_frozen, frozen)
+        frozen_text = str(frozen or '').strip()
+        if frozen_text and (not self._session_frozen or frozen_text.startswith(self._session_frozen.strip())):
+            self._session_frozen = frozen_text
+        if not phrase or not self._send_watch:
+            return
+        self._send_watch({
+            'type': 'final',
+            'text': phrase,
+            'transcript': frozen_text,
+        })
 
     def _on_session_finished(self, session: 'AwsTranscribeStreamSession', reason: str) -> None:
         if not self._alive:
@@ -1692,6 +1755,7 @@ class TranscribeStreamBridge:
             language_options=list(self.language_options),
             preferred_language=self.preferred_language,
             on_partial=self._on_partial,
+            on_final=self._on_frozen,
             on_ready=self._on_session_ready,
             on_error=self._on_session_error,
             on_finished=self._on_session_finished,
@@ -1749,6 +1813,7 @@ class TranscribeStreamBridge:
                 'region': self.region,
             })
             self.session = self._make_session()
+            self._session_frozen = ''
             self._schedule_session_start()
 
     def handle_audio(self, chunk: bytes) -> None:
@@ -1781,6 +1846,7 @@ class TranscribeStreamBridge:
             )
         if self.session is None:
             self.session = self._make_session()
+            self._session_frozen = ''
             self._emit({
                 'type': 'resuming' if self._ever_ready else 'starting',
                 'language_code': self.language_code,
@@ -1895,6 +1961,7 @@ def register_transcribe_socketio_handlers(socketio) -> None:
         cfg = data if isinstance(data, dict) else {}
         token = str(cfg.get('access_token') or cfg.get('accessToken') or '').strip()
         guest_try = bool(cfg.get('guest_try') or cfg.get('guestTry'))
+        _user_id = None
         try:
             if not token and guest_try:
                 # Live try-only stream: no persistence/save (upload APIs still require auth).
@@ -1913,13 +1980,43 @@ def register_transcribe_socketio_handlers(socketio) -> None:
             return
         logger.info('transcribe socketio start sid=%s', sid)
         cleanup_transcribe_socketio_bridge(sid)
+        user_room = f'qs_medical_live:{_user_id}' if _user_id else ''
+
+        def _emit_watch(payload: dict) -> None:
+            if not user_room:
+                return
+            _emit_to_sid(user_room, payload)
+
         bridge = TranscribeStreamBridge(
             lambda payload: _emit_to_sid(sid, payload),
             on_fatal=lambda: _SOCKETIO_BRIDGES.pop(sid, None),
+            send_watch=_emit_watch if user_room else None,
         )
         _SOCKETIO_BRIDGES[sid] = bridge
         bridge.send_connected()
         bridge.handle_start_config({**cfg, 'action': 'start'})
+
+    @socketio.on('medical_transcribe_watch')
+    def on_medical_transcribe_watch(data):
+        """Second client (Citrix typer) joins the doctor's finalized-text room."""
+        from flask_socketio import join_room
+        sid = request.sid
+        cfg = data if isinstance(data, dict) else {}
+        token = str(cfg.get('access_token') or cfg.get('accessToken') or '').strip()
+        try:
+            from medical_saas import medical_entitlement_for_access_token
+            allowed, user_id, reason = medical_entitlement_for_access_token(token)
+        except Exception:
+            logger.exception('transcribe watch entitlement check failed sid=%s', sid)
+            allowed, user_id, reason = False, None, 'medical_entitlement_unavailable'
+        if not allowed or not user_id:
+            logger.warning('transcribe watch rejected sid=%s reason=%s', sid, reason)
+            _emit_to_sid(sid, {'type': 'error', 'error': reason or 'medical_auth_required'})
+            return
+        room = f'qs_medical_live:{user_id}'
+        join_room(room)
+        logger.info('transcribe watch joined sid=%s room=%s', sid, room)
+        _emit_to_sid(sid, {'type': 'watching'})
 
     @socketio.on('medical_transcribe_audio')
     def on_medical_transcribe_audio(data):

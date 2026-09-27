@@ -396,8 +396,17 @@
                 <div class="upload-main-cluster">
                     <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
                     <div class="regular-asr-lang-wrap" id="regular-asr-lang-wrap"{% if medical_entry %} hidden{% endif %}>
-                        <label class="regular-asr-lang-label" for="regular-asr-lang-select" data-i18n="regular_asr_lang_label">שפת תמלול</label>
-                        <select id="regular-asr-lang-select" class="regular-asr-lang-select" data-i18n-aria-label="regular_asr_lang_aria" aria-label="שפת תמלול"></select>
+                        <div class="regular-asr-lang-field">
+                            <label class="regular-asr-lang-label" for="regular-asr-lang-select" data-i18n="regular_asr_lang_label">שפת תמלול</label>
+                            <select id="regular-asr-lang-select" class="regular-asr-lang-select" data-i18n-aria-label="regular_asr_lang_aria" aria-label="שפת תמלול"></select>
+                        </div>
+                        <label class="regular-speaker-switch" for="diarization-toggle">
+                            <span class="regular-asr-lang-label" data-i18n="detect_speakers">זיהוי דוברים</span>
+                            <span class="toggle-switch">
+                                <input type="checkbox" id="diarization-toggle">
+                                <span class="slider"></span>
+                            </span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -443,7 +452,6 @@
                     <div id="progress-bar-legacy"></div>
                 </div>
             </div>
-            <!-- diarization toggle removed on mobile upload UI -->
             <div class="upload-zone-app-footer" dir="ltr">
                 <span class="site-footer-copy" data-i18n="footer_copyright">© 2026 QuickScribe. All rights reserved.</span>
             </div>
