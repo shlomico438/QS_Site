@@ -5423,6 +5423,8 @@ WELCOME_CREDIT_MINUTES = 60
 FREE_MONTHLY_MINUTES = 30
 _USER_CREDITS_PLAN_FIELDS = ("billing_plan", "plan_period_end", "pay_use_minutes")
 _USER_CREDITS_PLAN_COLUMNS = None
+# Separate from the plan columns so a missing renew flag does not disable billing_plan.
+_USER_CREDITS_RENEW_COLUMN = None
 
 STRIPE_CREDIT_BUNDLES = {
     "light": {
@@ -5831,14 +5833,17 @@ def _send_admin_payment_email(payload):
             f"Invoice URL: {invoice_url or '(none)'}\n"
         )
     tranz_line = f"Cardcom transaction: {tranz_id}\n" if tranz_id else ''
-    subject_kind = 'Medical payment received' if is_medical else 'payment received'
+    if is_medical:
+        subject_kind = 'Medical payment received'
+        intro = "A doctor completed a Medical subscription payment on QuickScribe.\n\n"
+    elif payment_kind == 'renewal':
+        subject_kind = 'Unlimited renewal'
+        intro = "A QuickScribe Unlimited subscription renewed on Cardcom.\n\n"
+    else:
+        subject_kind = 'payment received'
+        intro = "A user completed a credit purchase on QuickScribe.\n\n"
     subject = f"QuickScribe — {subject_kind} ({email or user_id[:8] or 'user'})"
-    intro = (
-        "A doctor completed a Medical subscription payment on QuickScribe.\n\n"
-        if is_medical
-        else "A user completed a credit purchase on QuickScribe.\n\n"
-    )
-    minutes_line = '' if is_medical else f"Minutes credited: {minutes}\n"
+    minutes_line = '' if (is_medical or payment_kind == 'renewal') else f"Minutes credited: {minutes}\n"
     body = intro + (
         f"Provider: {provider}\n"
         f"User id: {user_id or '(unknown)'}\n"
@@ -6113,7 +6118,10 @@ def _user_credits_plan_columns_enabled():
 def _user_credits_select_fields():
     base = "user_id,credit_minutes,welcome_granted,user_name,updated_at"
     if _user_credits_plan_columns_enabled():
-        return base + ",billing_plan,plan_period_end,pay_use_minutes"
+        extra = ",billing_plan,plan_period_end,pay_use_minutes"
+        if _USER_CREDITS_RENEW_COLUMN is not False:
+            extra += ",unlimited_renew"
+        return base + extra
     return base
 
 
@@ -6124,6 +6132,18 @@ def _user_credits_note_missing_plan_columns(response_text):
         _USER_CREDITS_PLAN_COLUMNS = False
         return True
     return False
+
+
+def _user_credits_note_missing_renew_column(response_text):
+    """True only when unlimited_renew is the missing column, not the plan fields."""
+    global _USER_CREDITS_RENEW_COLUMN
+    text = str(response_text or "")
+    if "unlimited_renew" not in text:
+        return False
+    if any(name in text for name in _USER_CREDITS_PLAN_FIELDS):
+        return False
+    _USER_CREDITS_RENEW_COLUMN = False
+    return True
 
 
 def _user_credits_get(user_id):
@@ -6142,6 +6162,8 @@ def _user_credits_get(user_id):
         return _supabase_http_request('GET', url, headers=headers)
 
     r = _fetch(_user_credits_select_fields())
+    if r.status_code == 400 and _user_credits_note_missing_renew_column(r.text):
+        r = _fetch(_user_credits_select_fields())
     if r.status_code == 400 and _user_credits_note_missing_plan_columns(r.text):
         r = _fetch(_user_credits_select_fields())
     if r.status_code != 200:
@@ -6164,6 +6186,8 @@ def _user_credits_patch_row(user_id, payload, existing=None):
     if not _user_credits_plan_columns_enabled():
         for key in _USER_CREDITS_PLAN_FIELDS:
             body.pop(key, None)
+    if _USER_CREDITS_RENEW_COLUMN is False:
+        body.pop("unlimited_renew", None)
     from urllib.parse import quote
     supabase_url, _service_key, headers = _supabase_rest_config()
     uid = quote(user_id, safe='')
@@ -6187,9 +6211,26 @@ def _user_credits_patch_row(user_id, payload, existing=None):
             headers=prefer,
             json=body,
         )
+    if r.status_code == 400 and _user_credits_note_missing_renew_column(r.text):
+        body.pop("unlimited_renew", None)
+        if existing:
+            r = _supabase_http_request(
+                'PATCH',
+                f"{supabase_url}/rest/v1/user_credits?user_id=eq.{uid}",
+                headers=prefer,
+                json=body,
+            )
+        else:
+            r = _supabase_http_request(
+                'POST',
+                f"{supabase_url}/rest/v1/user_credits?on_conflict=user_id",
+                headers={**headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+                json=body,
+            )
     if r.status_code == 400 and _user_credits_note_missing_plan_columns(r.text):
         for key in _USER_CREDITS_PLAN_FIELDS:
             body.pop(key, None)
+        body.pop("unlimited_renew", None)
         if existing:
             r = _supabase_http_request(
                 'PATCH',
@@ -6222,6 +6263,7 @@ def _user_credits_public_fields(row):
         "plan_period_end": row.get("plan_period_end"),
         "pay_use_minutes": int(row.get("pay_use_minutes") or 0),
         "unlimited": active_unlimited,
+        "unlimited_renew": str(row.get("unlimited_renew") or "off"),
     }
 
 
@@ -6266,8 +6308,12 @@ def _resolve_checkout_bundle(bundle_id, hours=1):
     return {**legacy, "plan": "legacy_bundle", "hours": 0, "period_days": 0}
 
 
-def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0):
-    """Grant a checkout. Legacy bundles add minutes. New plans do not stack a wallet."""
+def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0, recurring=False):
+    """Grant a checkout. Legacy bundles add minutes. New plans do not stack a wallet.
+
+    recurring=True is Cardcom ChargeAndCreateToken (and later token renewals).
+    Stripe and one-time Cardcom charges leave auto-renew off.
+    """
     from regular_billing import unlimited_is_active
     user_id = str(user_id or "").strip()
     bundle = _resolve_checkout_bundle(bundle_id, max(1, int(minutes or 0) // 60 or 1))
@@ -6286,6 +6332,7 @@ def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0):
             "plan_period_end": end.isoformat().replace("+00:00", "Z"),
             "pay_use_minutes": 0,
             "welcome_granted": True,
+            "unlimited_renew": "on" if recurring else "off",
         }
         plan_now = str((existing or {}).get("billing_plan") or "")
         balance_now = int((existing or {}).get("credit_minutes") or 0)
@@ -6309,6 +6356,20 @@ def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0):
         except Exception:
             logging.warning("legacy bundle plan mark failed user=%s", user_id[:8], exc_info=True)
     return row, {"plan": "legacy_bundle", "added_minutes": int(minutes or 0), "hours": 0}
+
+
+def _user_credits_cancel_unlimited_renewal(user_id):
+    """Stop future Cardcom token charges. Paid access lasts until plan_period_end."""
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        raise ValueError("Authorization required")
+    row = _user_credits_get(user_id)
+    plan = str((row or {}).get("billing_plan") or "")
+    if plan not in ("unlimited_monthly", "unlimited_annual"):
+        raise ValueError("No Unlimited plan to cancel")
+    if str((row or {}).get("unlimited_renew") or "") != "on":
+        return row
+    return _user_credits_patch_row(user_id, {"unlimited_renew": "off"}, existing=row)
 
 
 def _user_credits_sync_user_name(user_id, user_name):

@@ -5777,18 +5777,34 @@ function qsSyncMedicalDefaultSignatureUi() {
         if (view) view.hidden = false;
     }
     const transcriptTab = String(window.medicalActiveTab || 'transcript') === 'transcript';
-    const showInitialSignature = medical && !finished && !live && !paused && !!signature;
+    const showSignatureEditor = medical && !finished && !live && !paused;
     if (root && root.dataset.editing !== '1') {
-        root.hidden = !showInitialSignature;
+        root.hidden = !showSignatureEditor;
         const label = root.querySelector('.medical-default-signature-text');
-        if (label) label.textContent = showInitialSignature ? ('חתימה קבועה: "' + signature + '"') : '';
+        if (label) {
+            label.textContent = signature
+                ? ('חתימה קבועה: "' + signature + '"')
+                : 'חתימה קבועה';
+        }
     }
     qsSyncMedicalTranscriptSignatureNode(
         medical && transcriptTab && !!signature && (live || showSave),
         signature
     );
     if (row) {
-        row.hidden = true;
+        row.hidden = !showSave;
+        if (!showSave) {
+            row.dataset.editing = '0';
+            const form = row.querySelector('.medical-save-signature-form');
+            if (form) form.hidden = true;
+            const box = document.getElementById('medical-save-signature-check');
+            if (box) box.checked = false;
+        }
+    }
+    if (showSave) {
+        requestAnimationFrame(() => {
+            try { qsAnchorMedicalSaveSignatureRow(); } catch (_) {}
+        });
     }
 }
 
@@ -5925,11 +5941,48 @@ function qsBindMedicalDefaultSignatureUi() {
             }
         });
     }
+    const saveRow = document.getElementById('medical-save-signature-row');
     const saveBox = document.getElementById('medical-save-signature-check');
+    const saveEdit = saveRow ? saveRow.querySelector('.medical-save-signature-edit') : null;
+    const saveForm = saveRow ? saveRow.querySelector('.medical-save-signature-form') : null;
+    const saveInput = saveRow ? saveRow.querySelector('.medical-save-signature-input') : null;
+    const openTranscriptSignatureEditor = () => {
+        if (!saveRow) return;
+        saveRow.dataset.editing = '1';
+        if (saveForm) saveForm.hidden = false;
+        if (saveInput) {
+            const last = qsExtractLastSignatureLine(qsMedicalTranscriptTextForSignature());
+            saveInput.value = last || String(window._qsMedicalDefaultSignature || '');
+            saveInput.focus();
+            saveInput.select();
+        }
+        requestAnimationFrame(() => {
+            try { qsAnchorMedicalSaveSignatureRow(); } catch (_) {}
+        });
+    };
+    if (saveEdit && saveEdit.dataset.bound !== '1') {
+        saveEdit.dataset.bound = '1';
+        saveEdit.addEventListener('click', openTranscriptSignatureEditor);
+    }
+    if (saveForm && saveForm.dataset.bound !== '1') {
+        saveForm.dataset.bound = '1';
+        saveForm.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const next = saveInput ? String(saveInput.value || '').trim() : '';
+            void qsSaveMedicalDefaultSignature(next).then(() => {
+                if (saveRow) saveRow.dataset.editing = '0';
+                saveForm.hidden = true;
+                if (saveBox) saveBox.checked = true;
+            }).catch(() => {
+                if (typeof showStatus === 'function') showStatus('לא ניתן לשמור את החתימה', true);
+            });
+        });
+    }
     if (saveBox && saveBox.dataset.bound !== '1') {
         saveBox.dataset.bound = '1';
         saveBox.addEventListener('change', () => {
             if (!saveBox.checked) return;
+            openTranscriptSignatureEditor();
             void qsMaybeSaveDefaultSignatureFromExport(qsMedicalTranscriptTextForSignature()).catch(() => {
                 saveBox.checked = false;
                 if (typeof showStatus === 'function') showStatus('לא ניתן לשמור את החתימה', true);
@@ -7119,6 +7172,8 @@ async function qsEnsureWelcomeCredits() {
         }
         try { window.__QS_BILLING_UNLIMITED = data.unlimited === true; } catch (_) {}
         try { window.__QS_BILLING_PLAN = data.billing_plan || ''; } catch (_) {}
+        try { window.__QS_BILLING_RENEW = data.unlimited_renew || 'off'; } catch (_) {}
+        try { window.__QS_BILLING_PERIOD_END = data.plan_period_end || ''; } catch (_) {}
         qsSyncUserCreditsUi();
         qsApplyDefaultPlanFromCredits();
         try {
@@ -7163,6 +7218,8 @@ async function qsRefreshUserCredits(options = {}) {
         }
         try { window.__QS_BILLING_UNLIMITED = data.unlimited === true; } catch (_) {}
         try { window.__QS_BILLING_PLAN = data.billing_plan || ''; } catch (_) {}
+        try { window.__QS_BILLING_RENEW = data.unlimited_renew || 'off'; } catch (_) {}
+        try { window.__QS_BILLING_PERIOD_END = data.plan_period_end || ''; } catch (_) {}
         qsSyncUserCreditsUi();
         if (!silent) {
             qsApplyDefaultPlanFromCredits();
@@ -7171,6 +7228,79 @@ async function qsRefreshUserCredits(options = {}) {
     } catch (err) {
         if (!silent) console.warn('qsRefreshUserCredits failed:', err);
         return null;
+    }
+}
+
+function qsFormatBillingDate(iso) {
+    const d = new Date(iso);
+    if (!Number.isFinite(d.getTime())) return '';
+    const he = document.documentElement.lang === 'he' || document.documentElement.dir === 'rtl';
+    try {
+        return d.toLocaleDateString(he ? 'he-IL' : 'en-GB');
+    } catch (_) {
+        return '';
+    }
+}
+
+function qsSyncUnlimitedRenewUi() {
+    const btn = document.getElementById('user-menu-cancel-renewal');
+    const note = document.getElementById('user-menu-renewal-note');
+    if (!btn && !note) return;
+    const plan = String(window.__QS_BILLING_PLAN || '');
+    const renew = String(window.__QS_BILLING_RENEW || '');
+    const unlimitedPlan = plan === 'unlimited_monthly' || plan === 'unlimited_annual';
+    const showCancel = !!window.__QS_UX_USER_SIGNED_IN && qsShouldShowCreditBalance() && unlimitedPlan && renew === 'on';
+    if (btn) btn.hidden = !showCancel;
+    if (note) {
+        let text = '';
+        if (unlimitedPlan && qsShouldShowCreditBalance() && window.__QS_UX_USER_SIGNED_IN) {
+            const date = qsFormatBillingDate(window.__QS_BILLING_PERIOD_END);
+            if (renew === 'on' && date) {
+                text = qsTranslateOr('billing_renewal_until', 'This plan renews automatically. The current period ends on {date}.').replace('{date}', date);
+            } else if (renew === 'off' && window.__QS_BILLING_UNLIMITED === true) {
+                text = qsTranslateOr('billing_renewal_cancelled', 'Auto-renewal is cancelled. Access continues until the end of the paid period.');
+            }
+        }
+        note.hidden = !text;
+        note.textContent = text;
+    }
+    if (btn && !btn.dataset.bound) {
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', function () { qsCancelUnlimitedRenewal(); });
+    }
+}
+
+async function qsCancelUnlimitedRenewal() {
+    const btn = document.getElementById('user-menu-cancel-renewal');
+    const confirmText = qsTranslateOr(
+        'billing_cancel_renewal_confirm',
+        'Cancel auto-renewal? Access continues until the end of the paid period, and the card will not be charged again.'
+    );
+    if (!window.confirm(confirmText)) return;
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session && session.access_token ? session.access_token : '';
+        if (!token) return;
+        if (btn) btn.disabled = true;
+        const res = await fetch('/api/user/billing/cancel-renewal', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: '{}',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            window.alert(data.error || 'Could not cancel auto-renewal');
+            return;
+        }
+        try { window.__QS_BILLING_RENEW = data.unlimited_renew || 'off'; } catch (_) {}
+        try { window.__QS_BILLING_PLAN = data.billing_plan || window.__QS_BILLING_PLAN || ''; } catch (_) {}
+        try { window.__QS_BILLING_UNLIMITED = data.unlimited === true; } catch (_) {}
+        try { window.__QS_BILLING_PERIOD_END = data.plan_period_end || window.__QS_BILLING_PERIOD_END || ''; } catch (_) {}
+        qsSyncUserCreditsUi();
+    } catch (err) {
+        window.alert(err && err.message ? err.message : 'Could not cancel auto-renewal');
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 
@@ -7220,6 +7350,7 @@ function qsSyncUserCreditsUi() {
     if (navMinutesMobile) navMinutesMobile.textContent = displayMinutes;
     if (menuWrap) menuWrap.style.display = showCredits ? '' : 'none';
     if (menuMinutes) menuMinutes.textContent = displayMinutes;
+    try { qsSyncUnlimitedRenewUi(); } catch (_) {}
     try { qsSyncReferralMenuUi(); } catch (_) {}
     try { if (typeof qsSyncStarterPlanUploadGate === 'function') qsSyncStarterPlanUploadGate(); } catch (_) {}
 }

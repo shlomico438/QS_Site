@@ -165,9 +165,12 @@ def coverage_for_minutes(row, minutes, now=None):
 def gate_action(row, now=None):
     """What to do to a stored row before a credit check.
 
-    keep: use the row as stored.
+    keep: use the row as stored. An unlimited plan with auto-renew still on
+    stays keep after the period ends so a token charge can extend it; access
+    is already off because the period end has passed.
     start_free: recurring 30-minute period should begin (legacy wallet is empty,
-    free period elapsed, or an unlimited period ended with no leftover minutes).
+    free period elapsed, or an unlimited period ended with renew off or past due
+    and no leftover minutes).
     resume_legacy: an unlimited period ended and prepaid minutes are still there.
     """
     row = row if isinstance(row, dict) else {}
@@ -182,6 +185,10 @@ def gate_action(row, now=None):
 
     if plan in UNLIMITED_PLANS:
         if period_open:
+            return "keep"
+        # Auto-renew stays in place until the token charge extends the period
+        # or a failed charge marks the row past_due.
+        if str(row.get("unlimited_renew") or "") == "on":
             return "keep"
         if balance > 0:
             return "resume_legacy"

@@ -2,14 +2,18 @@
 
 Simulation (SIMULATION_MODE=true): internal /cardcom/sim-checkout page — no Cardcom API or webhook.
 Production/sandbox: POST LowProfile/Create → redirect → WebHook → GetLpResult → credit wallet.
+
+Unlimited monthly/annual uses ChargeAndCreateToken. Renewals charge that token
+with Transactions/Transaction until the user cancels.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import quote
 
@@ -472,6 +476,16 @@ def _cardcom_user_contact_from_request(req) -> dict:
 
 
 def _cardcom_invoice_line_description(bundle: dict, is_he: bool) -> str:
+    plan = str((bundle or {}).get('plan') or '')
+    if plan == 'unlimited_monthly':
+        return 'מנוי QuickScribe Unlimited — חודשי' if is_he else 'QuickScribe Unlimited — monthly'
+    if plan == 'unlimited_annual':
+        return 'מנוי QuickScribe Unlimited — שנתי' if is_he else 'QuickScribe Unlimited — annual'
+    if plan == 'pay_per_use':
+        hours = int((bundle or {}).get('hours') or 0) or max(1, int((bundle or {}).get('credit_minutes') or 0) // 60)
+        if is_he:
+            return f'QuickScribe תשלום לפי שימוש — {hours} שעות'
+        return f'QuickScribe pay-per-use — {hours} hours'
     minutes = int(bundle.get('credit_minutes') or 0)
     if is_he:
         return f'חבילת קרדיט QuickScribe — {minutes} דקות תמלול'
@@ -747,7 +761,7 @@ def _cardcom_create_low_profile(
 
     payload = {
         **_cardcom_auth_fields(),
-        'Operation': 'ChargeOnly',
+        'Operation': cardcom_low_profile_operation(str(bundle.get('plan') or bundle_id)),
         'ReturnValue': order_id,
         'Amount': amount_ils,
         'ISOCoinId': 1,
@@ -866,12 +880,16 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
 
     if _simulation_mode():
         tranz_id = purchase.get('tranzaction_id') or int(uuid.uuid4().int % 10_000_000_000)
+        if _regular_plan_needs_token(bundle_id):
+            _regular_billing_method_upsert(user_id, _simulation_billing_token(user_id))
         _cardcom_purchase_update(order_id, {
             'status': 'paid',
             'tranzaction_id': tranz_id,
             'credited_at': _utc_now_iso(),
         })
-        row, applied = sa._user_credits_apply_purchased_bundle(user_id, bundle_id, minutes)
+        row, applied = sa._user_credits_apply_purchased_bundle(
+            user_id, bundle_id, minutes, recurring=_regular_plan_needs_token(bundle_id),
+        )
         sa._schedule_admin_payment_notify(
             user_id=user_id,
             provider='cardcom',
@@ -958,6 +976,13 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
     if isinstance(tranz_info, dict) and tranz_info.get('TranzactionId'):
         tranz_id = tranz_info.get('TranzactionId')
 
+    if _regular_plan_needs_token(bundle_id):
+        from medical_saas import _cardcom_token_info
+        token_info = _cardcom_token_info(result)
+        if not token_info:
+            raise ValueError('Cardcom did not return a reusable billing token')
+        _regular_billing_method_upsert(user_id, token_info)
+
     invoice_patch = _cardcom_extract_document_info(result)
     if invoice_patch.get('invoice_error'):
         logger.warning(
@@ -971,7 +996,9 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         'credited_at': _utc_now_iso(),
         **{k: v for k, v in invoice_patch.items() if v},
     })
-    row, applied = sa._user_credits_apply_purchased_bundle(user_id, bundle_id, minutes)
+    row, applied = sa._user_credits_apply_purchased_bundle(
+        user_id, bundle_id, minutes, recurring=_regular_plan_needs_token(bundle_id),
+    )
     try:
         from referrals import maybe_grant_after_paid_purchase, payment_fingerprint_from_cardcom
         fingerprint = payment_fingerprint_from_cardcom(
@@ -1012,6 +1039,409 @@ def _cardcom_verify_and_credit(order_id: str, low_profile_id: Optional[str] = No
         'credit_minutes': int((row or {}).get('credit_minutes') or 0),
         **_cardcom_invoice_fields_for_client(purchase_after),
     }
+
+
+def _regular_plan_needs_token(bundle_id: str) -> bool:
+    from regular_billing import UNLIMITED_PLANS
+    return str(bundle_id or '').strip().lower() in UNLIMITED_PLANS
+
+
+def cardcom_low_profile_operation(plan: str) -> str:
+    """Unlimited plans create a reusable Cardcom token. Other checkouts charge once."""
+    if _regular_plan_needs_token(plan):
+        return 'ChargeAndCreateToken'
+    return 'ChargeOnly'
+
+
+def _simulation_billing_token(user_id: str) -> dict:
+    return {
+        'token': f'simulation-{user_id}',
+        'validity_mmyy': '1299',
+        'last_four': '0000',
+    }
+
+
+_regular_billing_memory: Dict[str, dict] = {}
+_regular_renewal_memory: Dict[str, dict] = {}
+_regular_billing_db: Optional[bool] = None
+_regular_renewal_db: Optional[bool] = None
+
+
+class _RenewalExists(Exception):
+    pass
+
+
+def _regular_billing_method_upsert(user_id: str, token_info: dict) -> None:
+    user_id = str(user_id or '').strip()
+    token = str((token_info or {}).get('token') or '').strip()
+    validity = str((token_info or {}).get('validity_mmyy') or '').strip()
+    if not user_id or not token or len(validity) != 4:
+        raise ValueError('Cardcom did not return a reusable billing token')
+    row = {
+        'user_id': user_id,
+        'cardcom_token': token,
+        'card_validity_mmyy': validity,
+        'card_last_four': (token_info or {}).get('last_four'),
+        'updated_at': _utc_now_iso(),
+    }
+    _regular_billing_memory[user_id] = dict(row)
+    global _regular_billing_db
+    if _regular_billing_db is False:
+        return
+    try:
+        supabase_url, _service_key, headers = _supabase_deps()
+        r = requests.post(
+            f"{supabase_url}/rest/v1/regular_billing_methods?on_conflict=user_id",
+            headers={**headers, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+            json=row,
+            timeout=15,
+        )
+        if r.status_code in (400, 404) and 'regular_billing_methods' in (r.text or ''):
+            _regular_billing_db = False
+            logger.warning('regular_billing_methods table missing — token kept in memory for this process')
+            return
+        if r.status_code not in (200, 201, 204):
+            raise RuntimeError(r.text or f"regular billing method upsert HTTP {r.status_code}")
+        _regular_billing_db = True
+    except Exception:
+        if _regular_billing_db is False:
+            return
+        logger.exception('regular billing token save failed user=%s', user_id[:8])
+        raise
+
+
+def _regular_billing_method_get(user_id: str) -> Optional[dict]:
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        return None
+    global _regular_billing_db
+    if _regular_billing_db is not False:
+        try:
+            supabase_url, _service_key, headers = _supabase_deps()
+            r = requests.get(
+                f"{supabase_url}/rest/v1/regular_billing_methods"
+                f"?user_id=eq.{quote(user_id, safe='')}&select=*&limit=1",
+                headers=headers,
+                timeout=10,
+            )
+            if r.status_code in (400, 404) and 'regular_billing_methods' in (r.text or ''):
+                _regular_billing_db = False
+            elif r.status_code == 200:
+                _regular_billing_db = True
+                rows = r.json() if r.text else []
+                if isinstance(rows, list) and rows:
+                    return rows[0]
+                return None
+            elif r.status_code not in (200,):
+                raise RuntimeError(r.text or f"regular billing method lookup HTTP {r.status_code}")
+        except Exception:
+            if _regular_billing_db is not False:
+                logger.warning('regular billing method lookup failed user=%s', user_id[:8], exc_info=True)
+                raise
+    return _regular_billing_memory.get(user_id)
+
+
+def _renewal_memory_key(user_id: str, period_end_key: str) -> str:
+    return f"{user_id}|{period_end_key}"
+
+
+def _regular_renewal_get(user_id: str, period_end_key: str) -> Optional[dict]:
+    user_id = str(user_id or '').strip()
+    period_end_key = str(period_end_key or '').strip()
+    global _regular_renewal_db
+    if _regular_renewal_db is not False and user_id and period_end_key:
+        try:
+            supabase_url, _service_key, headers = _supabase_deps()
+            r = requests.get(
+                f"{supabase_url}/rest/v1/regular_cardcom_renewals"
+                f"?user_id=eq.{quote(user_id, safe='')}"
+                f"&period_end_key=eq.{quote(period_end_key, safe='')}"
+                f"&select=*&limit=1",
+                headers=headers,
+                timeout=10,
+            )
+            if r.status_code in (400, 404) and 'regular_cardcom_renewals' in (r.text or ''):
+                _regular_renewal_db = False
+            elif r.status_code == 200:
+                _regular_renewal_db = True
+                rows = r.json() if r.text else []
+                return rows[0] if isinstance(rows, list) and rows else None
+            else:
+                raise RuntimeError(r.text or f"regular renewal lookup HTTP {r.status_code}")
+        except Exception:
+            if _regular_renewal_db is not False:
+                logger.warning('regular renewal lookup failed', exc_info=True)
+                raise
+    return _regular_renewal_memory.get(_renewal_memory_key(user_id, period_end_key))
+
+
+def _regular_renewal_insert(row: dict) -> dict:
+    user_id = str(row.get('user_id') or '').strip()
+    period_end_key = str(row.get('period_end_key') or '').strip()
+    key = _renewal_memory_key(user_id, period_end_key)
+    global _regular_renewal_db
+    if _regular_renewal_db is False:
+        if key in _regular_renewal_memory:
+            raise _RenewalExists()
+        _regular_renewal_memory[key] = dict(row)
+        return _regular_renewal_memory[key]
+    try:
+        supabase_url, _service_key, headers = _supabase_deps()
+        r = requests.post(
+            f"{supabase_url}/rest/v1/regular_cardcom_renewals",
+            headers={**headers, 'Prefer': 'return=representation'},
+            json=row,
+            timeout=15,
+        )
+        if r.status_code == 409:
+            raise _RenewalExists()
+        if r.status_code in (400, 404) and 'regular_cardcom_renewals' in (r.text or ''):
+            _regular_renewal_db = False
+            return _regular_renewal_insert(row)
+        if r.status_code not in (200, 201):
+            raise RuntimeError(r.text or f"regular renewal insert HTTP {r.status_code}")
+        _regular_renewal_db = True
+        rows = r.json() if r.text else []
+        saved = rows[0] if rows else row
+        _regular_renewal_memory[key] = dict(saved)
+        return saved
+    except _RenewalExists:
+        raise
+    except Exception:
+        if _regular_renewal_db is False:
+            return _regular_renewal_insert(row)
+        raise
+
+
+def _regular_renewal_update(order_id: str, patch: dict) -> None:
+    order_id = str(order_id or '').strip()
+    if not order_id:
+        return
+    for row in _regular_renewal_memory.values():
+        if str(row.get('order_id') or '') == order_id:
+            row.update(patch)
+    global _regular_renewal_db
+    if _regular_renewal_db is False:
+        return
+    try:
+        supabase_url, _service_key, headers = _supabase_deps()
+        r = requests.patch(
+            f"{supabase_url}/rest/v1/regular_cardcom_renewals?order_id=eq.{quote(order_id, safe='')}",
+            headers={**headers, 'Prefer': 'return=minimal'},
+            json=patch,
+            timeout=15,
+        )
+        if r.status_code in (400, 404) and 'regular_cardcom_renewals' in (r.text or ''):
+            _regular_renewal_db = False
+            return
+        if r.status_code not in (200, 204):
+            raise RuntimeError(r.text or f"regular renewal update HTTP {r.status_code}")
+    except Exception:
+        logger.warning('regular renewal update failed order=%s', order_id, exc_info=True)
+        if _regular_renewal_db is not False:
+            raise
+
+
+def _extend_regular_unlimited(user_id: str, plan: str):
+    import siteapp as sa
+    return sa._user_credits_apply_purchased_bundle(user_id, plan, 0, recurring=True)
+
+
+def _set_regular_renew_status(user_id: str, status: str) -> None:
+    import siteapp as sa
+    sa._user_credits_patch_row(user_id, {'unlimited_renew': status})
+
+
+def _notify_regular_renewal(user_id: str, plan: str, amount, order_id: str, transaction_id: str = '') -> None:
+    try:
+        import siteapp as sa
+        sa._schedule_admin_payment_notify(
+            user_id=user_id,
+            provider='cardcom',
+            minutes=0,
+            amount=amount,
+            currency='ILS',
+            bundle_id=plan,
+            order_ref=order_id,
+            plan=plan,
+            payment_kind='renewal',
+            cardcom_transaction_id=str(transaction_id or ''),
+        )
+    except Exception:
+        logger.exception('regular renewal notify failed user=%s', user_id[:8])
+
+
+def _regular_renewal_contact(user_id: str, order_id: str) -> dict:
+    email = ''
+    name = ''
+    try:
+        import siteapp as sa
+        if hasattr(sa, '_supabase_admin_get_user'):
+            auth_user = sa._supabase_admin_get_user(user_id)
+            if isinstance(auth_user, dict):
+                email = str(auth_user.get('email') or '').strip()
+                if hasattr(sa, '_user_display_name_from_auth_payload'):
+                    name = str(sa._user_display_name_from_auth_payload(auth_user) or '').strip()
+    except Exception:
+        logger.warning('regular renewal contact lookup failed user=%s', user_id[:8], exc_info=True)
+    return {'email': email, 'name': name, 'external_id': order_id}
+
+
+def _charge_regular_renewal(row: dict) -> dict:
+    """Charge a saved Cardcom token and extend one Unlimited period."""
+    from regular_billing import parse_utc, resolve_offer
+
+    user_id = str((row or {}).get('user_id') or '').strip()
+    plan = str((row or {}).get('billing_plan') or '').strip()
+    offer = resolve_offer(plan)
+    if not user_id or not offer:
+        raise ValueError('Invalid renewal account')
+    if str((row or {}).get('unlimited_renew') or '') != 'on':
+        return {'ok': True, 'skipped': 'renew_off', 'userId': user_id}
+    period_key = str((row or {}).get('plan_period_end') or '').strip()
+    if not period_key:
+        raise ValueError('Missing plan period end')
+
+    existing = _regular_renewal_get(user_id, period_key)
+    status = str((existing or {}).get('status') or '')
+    if status == 'paid':
+        return {'ok': True, 'skipped': 'already_renewed', 'userId': user_id, 'order_id': existing.get('order_id')}
+    if status == 'failed':
+        return {'ok': True, 'skipped': 'renewal_failed', 'userId': user_id}
+    if status == 'charged':
+        current_end = parse_utc((row or {}).get('plan_period_end'))
+        key_end = parse_utc(period_key)
+        if not (current_end and key_end and current_end > key_end):
+            _extend_regular_unlimited(user_id, plan)
+        _regular_renewal_update(existing['order_id'], {'status': 'paid', 'paid_at': _utc_now_iso()})
+        return {'ok': True, 'extended_only': True, 'userId': user_id, 'order_id': existing.get('order_id')}
+
+    order_id = str((existing or {}).get('order_id') or f"qs_ren_{uuid.uuid4().hex}")
+    if not existing:
+        try:
+            _regular_renewal_insert({
+                'order_id': order_id,
+                'user_id': user_id,
+                'plan': plan,
+                'amount_ils': float(offer['amount_ils']),
+                'period_end_key': period_key,
+                'status': 'pending',
+            })
+        except _RenewalExists:
+            return {'ok': True, 'skipped': 'renewal_already_created', 'userId': user_id}
+
+    billing = _regular_billing_method_get(user_id)
+    if not billing or not str(billing.get('cardcom_token') or '').strip():
+        _regular_renewal_update(order_id, {'status': 'failed'})
+        _set_regular_renew_status(user_id, 'past_due')
+        raise ValueError('No Cardcom billing token')
+
+    amount_ils = float(offer['amount_ils'])
+    payload = {
+        **_cardcom_auth_fields(),
+        'Amount': amount_ils,
+        'ISOCoinId': 1,
+        'Token': billing['cardcom_token'],
+        'CardExpirationMMYY': billing['card_validity_mmyy'],
+        'IsAutoRecurringPayment': True,
+        'TransactionType': 'Recurring',
+        'ExternalId': order_id,
+        'ProductName': str(offer['name'])[:50],
+    }
+    if _cardcom_invoices_enabled():
+        try:
+            resolved_billing = _cardcom_resolve_invoice_billing(user_id, {})
+            payload['Document'] = _cardcom_build_invoice_document(
+                product_id=f'qs-{plan}',
+                description=_cardcom_invoice_line_description(offer, True),
+                amount_ils=amount_ils,
+                contact=_regular_renewal_contact(user_id, order_id),
+                billing=resolved_billing,
+                schema='transaction',
+            )
+        except Exception as exc:
+            logger.warning('regular renewal invoice skipped user=%s: %s', user_id[:8], exc)
+
+    result = (
+        {'ResponseCode': 0, 'TranzactionId': 'simulation-renewal'}
+        if _simulation_mode()
+        else _cardcom_api_post('Transactions/Transaction', payload)
+    )
+    response_code = int(result.get('ResponseCode') if result.get('ResponseCode') is not None else -1)
+    if response_code != 0:
+        _regular_renewal_update(order_id, {'status': 'failed'})
+        _set_regular_renew_status(user_id, 'past_due')
+        raise RuntimeError(str(result.get('Description') or 'Cardcom recurring charge failed'))
+
+    transaction_id = str(
+        result.get('TranzactionId')
+        or result.get('TransactionId')
+        or result.get('InternalDealNumber')
+        or ''
+    )
+    _regular_renewal_update(order_id, {
+        'status': 'charged',
+        'cardcom_transaction_id': transaction_id,
+    })
+    _extend_regular_unlimited(user_id, plan)
+    invoice_info = _cardcom_extract_document_info(result) if isinstance(result, dict) else {}
+    paid_patch = {'status': 'paid', 'paid_at': _utc_now_iso()}
+    if invoice_info.get('invoice_number'):
+        paid_patch['invoice_number'] = invoice_info['invoice_number']
+    if invoice_info.get('invoice_url'):
+        paid_patch['invoice_url'] = invoice_info['invoice_url']
+    _regular_renewal_update(order_id, paid_patch)
+    _notify_regular_renewal(user_id, plan, amount_ils, order_id, transaction_id)
+    return {
+        'ok': True,
+        'userId': user_id,
+        'order_id': order_id,
+        'plan': plan,
+        'amount_ils': amount_ils,
+    }
+
+
+def _regular_due_renewals(limit: int = 50) -> list:
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    try:
+        supabase_url, _service_key, headers = _supabase_deps()
+        r = requests.get(
+            f"{supabase_url}/rest/v1/user_credits"
+            f"?billing_plan=in.(unlimited_monthly,unlimited_annual)"
+            f"&unlimited_renew=eq.on"
+            f"&plan_period_end=lte.{quote(now, safe='')}"
+            f"&select=user_id,billing_plan,plan_period_end,unlimited_renew,credit_minutes"
+            f"&order=plan_period_end.asc&limit={max(1, min(200, int(limit)))}",
+            headers=headers,
+            timeout=12,
+        )
+        if r.status_code in (400, 404):
+            logger.warning('regular renewal scan skipped: %s', (r.text or '')[:240])
+            return []
+        if r.status_code != 200:
+            raise RuntimeError(r.text or f"regular renewal scan HTTP {r.status_code}")
+        rows = r.json() if r.text else []
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        logger.exception('regular renewal scan failed')
+        raise
+
+
+def _billing_cron_authorized(req) -> Optional[str]:
+    """Return an error code ('missing' or 'forbidden'), or None when the secret matches."""
+    supplied = str(
+        req.headers.get('X-Billing-Secret') or req.headers.get('X-Medical-Billing-Secret') or ''
+    ).strip()
+    expected = [
+        str(os.environ.get('REGULAR_BILLING_CRON_SECRET') or '').strip(),
+        str(os.environ.get('MEDICAL_BILLING_CRON_SECRET') or '').strip(),
+    ]
+    expected = [item for item in expected if item]
+    if not expected:
+        return 'missing'
+    if supplied and any(hmac.compare_digest(supplied, item) for item in expected):
+        return None
+    return 'forbidden'
 
 
 def register_cardcom_routes(app: Flask) -> None:
@@ -1126,6 +1556,60 @@ def register_cardcom_routes(app: Flask) -> None:
         except Exception as e:
             logger.exception('api_cardcom_confirm_payment failed')
             return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/user/billing/cancel-renewal', methods=['POST'])
+    def api_cancel_unlimited_renewal():
+        """Stop future Unlimited token charges. Access lasts until the paid period ends."""
+        import siteapp as sa
+        try:
+            user_id = sa._supabase_user_id_from_request()
+            if not user_id:
+                return jsonify({'error': 'Authorization required'}), 401
+            row = sa._user_credits_cancel_unlimited_renewal(user_id)
+            return jsonify({'ok': True, **sa._user_credits_public_fields(row)}), 200
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        except Exception as e:
+            logger.exception('api_cancel_unlimited_renewal failed')
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/cardcom/run-renewals', methods=['POST'])
+    def api_cardcom_run_renewals():
+        """Charge due Unlimited plans with the stored Cardcom token."""
+        auth_error = _billing_cron_authorized(request)
+        if auth_error == 'missing':
+            return jsonify({'error': 'REGULAR_BILLING_CRON_SECRET is not configured'}), 503
+        if auth_error:
+            return jsonify({'error': 'Forbidden'}), 403
+        data = request.get_json(silent=True) or {}
+        try:
+            limit = int(data.get('limit') or 50)
+        except (TypeError, ValueError):
+            limit = 50
+        results = []
+        try:
+            due = _regular_due_renewals(limit)
+        except Exception as exc:
+            logger.exception('regular renewal scan failed')
+            return jsonify({'error': str(exc)}), 502
+        for row in due:
+            try:
+                results.append(_charge_regular_renewal(row))
+            except Exception as exc:
+                logger.exception(
+                    'regular recurring charge failed user=%s',
+                    str((row or {}).get('user_id') or '')[:8],
+                )
+                results.append({
+                    'ok': False,
+                    'userId': str((row or {}).get('user_id') or ''),
+                    'error': str(exc),
+                })
+        return jsonify({
+            'ok': all(item.get('ok') for item in results) if results else True,
+            'processed': len(results),
+            'results': results,
+        }), 200
 
     @app.route('/api/cardcom/sim-complete', methods=['POST'])
     def api_cardcom_sim_complete():

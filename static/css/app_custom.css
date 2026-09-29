@@ -529,6 +529,29 @@ body.medical-mode .upload-zone-app-footer .medical-aws-footnote::before,
     color: #1d4ed8;
     font-size: 1.05rem;
 }
+.user-menu-renewal-note {
+    margin: 8px 0 0;
+    font-size: 0.82rem;
+    font-weight: 500;
+    line-height: 1.4;
+    color: #1e3a8a;
+}
+.user-menu-cancel-renewal {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid #93c5fd;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #1d4ed8;
+    font-weight: 600;
+    cursor: pointer;
+}
+.user-menu-cancel-renewal[hidden],
+.user-menu-renewal-note[hidden] {
+    display: none;
+}
 html[dir="rtl"] .nav-credit-balance,
 html[dir="rtl"] .user-menu-credits {
     direction: rtl;
@@ -4674,21 +4697,34 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
 .medical-default-signature[hidden],
 .medical-save-signature-row[hidden],
 .medical-default-signature-form[hidden],
-.medical-default-signature-view[hidden] {
+.medical-default-signature-view[hidden],
+.medical-save-signature-form[hidden] {
     display: none !important;
 }
 
 .medical-default-signature-view,
 .medical-default-signature-form,
-.medical-save-signature-row {
+.medical-save-signature-row,
+.medical-save-signature-label,
+.medical-save-signature-form {
     display: flex;
     align-items: center;
     gap: 8px;
     justify-content: flex-start;
 }
 
+.medical-save-signature-row {
+    flex-wrap: wrap;
+}
+
+.medical-save-signature-form {
+    flex: 1 1 100%;
+}
+
 .medical-default-signature-edit,
-.medical-default-signature-save {
+.medical-default-signature-save,
+.medical-save-signature-edit,
+.medical-save-signature-save {
     border: 0;
     background: transparent;
     color: #9aa0a6;
@@ -4698,11 +4734,14 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
 }
 
 .medical-default-signature-edit:hover,
-.medical-default-signature-save:hover {
+.medical-default-signature-save:hover,
+.medical-save-signature-edit:hover,
+.medical-save-signature-save:hover {
     color: #6b7280;
 }
 
-.medical-default-signature-input {
+.medical-default-signature-input,
+.medical-save-signature-input {
     flex: 1 1 auto;
     min-width: 0;
     max-width: 28rem;

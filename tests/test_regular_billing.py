@@ -75,6 +75,11 @@ class RegularBillingTests(unittest.TestCase):
         self.assertEqual(gate_action(expired_with_prepaid, now=NOW), "resume_legacy")
         expired_empty = dict(expired_with_prepaid, credit_minutes=0)
         self.assertEqual(gate_action(expired_empty, now=NOW), "start_free")
+        waiting_for_token = dict(expired_empty, unlimited_renew="on")
+        self.assertEqual(gate_action(waiting_for_token, now=NOW), "keep")
+        self.assertFalse(unlimited_is_active(waiting_for_token, now=NOW))
+        past_due = dict(expired_empty, unlimited_renew="past_due")
+        self.assertEqual(gate_action(past_due, now=NOW), "start_free")
 
     def test_pay_per_use_covers_one_short_file_and_asks_for_more_hours(self):
         row = {"billing_plan": "free", "credit_minutes": 0, "pay_use_minutes": 60}

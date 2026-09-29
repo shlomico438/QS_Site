@@ -523,6 +523,17 @@ try {
                         <button type="submit" class="medical-default-signature-save">שמור</button>
                     </form>
                 </div>
+                <div id="medical-save-signature-row" class="medical-save-signature-row" hidden>
+                    <label class="medical-save-signature-label">
+                        <input type="checkbox" id="medical-save-signature-check">
+                        <span>שמור את השורה האחרונה כחתימה קבועה</span>
+                    </label>
+                    <button type="button" class="medical-save-signature-edit" aria-label="ערוך חתימה">✎ ערוך</button>
+                    <form class="medical-save-signature-form" hidden>
+                        <textarea class="medical-save-signature-input" maxlength="500" rows="2" autocomplete="off" aria-label="חתימה קבועה"></textarea>
+                        <button type="submit" class="medical-save-signature-save">שמור</button>
+                    </form>
+                </div>
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}" data-showcase-version="{{ static_asset_version }}">
