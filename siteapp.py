@@ -575,11 +575,51 @@ def _doctor_prompt_profile_active_prompt(user_id):
         return ""
 
 
+def _specialty_template_key(specialty):
+    if _is_orthopedics_specialty(specialty):
+        return "orthopedics"
+    if _is_neurology_specialty(specialty):
+        return "neurology"
+    if _is_psychology_specialty(specialty):
+        return "psychology"
+    return ""
+
+
+# Stock section titles. Two or more from another profession means that saved
+# prompt is the other profession's template, not a custom style for this account.
+_OTHER_SPECIALTY_STOCK_HEADINGS = {
+    "psychology": ("תכנים מרכזיים", "התרשמות רגשית", "התרשמות ריגשית", "דגשים להמשך"),
+    "neurology": ("תלונה עיקרית / HPI", "בדיקה נוירולוגית"),
+    "orthopedics": ("בדיקה אורתופדית", "תלונה עיקרית / אנמנזה"),
+}
+
+
+def _prompt_belongs_to_other_specialty(prompt_text, specialty):
+    """True when a saved prompt still uses another profession's stock section titles."""
+    current = _specialty_template_key(specialty)
+    if not current:
+        return False
+    text = str(prompt_text or "")
+    if not text.strip():
+        return False
+    for name, markers in _OTHER_SPECIALTY_STOCK_HEADINGS.items():
+        if name == current:
+            continue
+        if sum(1 for marker in markers if marker in text) >= 2:
+            return True
+    return False
+
+
 def _medical_task2_uses_personal_prompt(user_id=None, prompt_override=None):
     """True when Task 2 will use a request override or an approved doctor profile prompt."""
-    if str(prompt_override or '').strip():
-        return True
-    return bool(_doctor_prompt_profile_active_prompt(user_id))
+    specialty = _medical_professional_specialty(user_id)
+    override = str(prompt_override or '').strip()
+    if override:
+        return not _prompt_belongs_to_other_specialty(override, specialty)
+    prompt = _doctor_prompt_profile_active_prompt(user_id)
+    if not prompt:
+        return False
+    return not _prompt_belongs_to_other_specialty(prompt, specialty)
 
 
 def _resolve_medical_task2_prompt(output_lang_label, lang_hint, user_id=None, prompt_override=None, single_shot=False):
@@ -590,8 +630,20 @@ def _resolve_medical_task2_prompt(output_lang_label, lang_hint, user_id=None, pr
 
 
 def _resolve_medical_task2_prompt_with_source(output_lang_label, lang_hint, user_id=None, prompt_override=None, single_shot=False):
-    """Return (prompt_text, source) where source is request_candidate|doctor_profile|env|psychology|neurology|default."""
-    if prompt_override:
+    """Return (prompt_text, source) where source is request_candidate|doctor_profile|env|psychology|neurology|orthopedics|default."""
+    specialty = _medical_professional_specialty(user_id)
+
+    def _foreign_specialty_prompt(text):
+        if not _prompt_belongs_to_other_specialty(text, specialty):
+            return False
+        logging.info(
+            "medical Task 2 skipped saved prompt: headings belong to another specialty user_id=%s current=%s",
+            str(user_id or '')[:12],
+            _specialty_template_key(specialty) or "default",
+        )
+        return True
+
+    if prompt_override and not _foreign_specialty_prompt(prompt_override):
         rendered = _render_medical_task2_prompt_text(prompt_override, output_lang_label, lang_hint)
         if rendered:
             rendered = _apply_personal_template_runtime_rules(rendered)
@@ -599,6 +651,8 @@ def _resolve_medical_task2_prompt_with_source(output_lang_label, lang_hint, user
             return rendered, "request_candidate"
         logging.warning("medical Task 2 request override present but rendered empty; continuing lookup")
     doctor_prompt = _doctor_prompt_profile_active_prompt(user_id)
+    if doctor_prompt and _foreign_specialty_prompt(doctor_prompt):
+        doctor_prompt = ""
     if doctor_prompt:
         rendered = _render_medical_task2_prompt_text(doctor_prompt, output_lang_label, lang_hint)
         if rendered:
@@ -615,10 +669,11 @@ def _resolve_medical_task2_prompt_with_source(output_lang_label, lang_hint, user
         fallback = _apply_personal_template_runtime_rules(fallback)
         return fallback, "doctor_profile"
     env_prompt = _render_medical_task2_prompt_override(output_lang_label, lang_hint)
+    if env_prompt and _foreign_specialty_prompt(env_prompt):
+        env_prompt = ""
     if env_prompt:
         logging.info("medical Task 2 prompt source=env chars=%s", len(env_prompt))
         return env_prompt, "env"
-    specialty = _medical_professional_specialty(user_id)
     if _is_psychology_specialty(specialty):
         prompt = (
             _default_medical_task2_prompt_psychology_single_shot()
@@ -635,6 +690,14 @@ def _resolve_medical_task2_prompt_with_source(output_lang_label, lang_hint, user
         )
         logging.info("medical Task 2 prompt source=neurology user_id=%s", str(user_id or '')[:12])
         return prompt, "neurology"
+    if _is_orthopedics_specialty(specialty):
+        prompt = (
+            _default_medical_task2_prompt_orthopedics_single_shot()
+            if single_shot
+            else _default_medical_task2_prompt_orthopedics_summary_only()
+        )
+        logging.info("medical Task 2 prompt source=orthopedics user_id=%s", str(user_id or '')[:12])
+        return prompt, "orthopedics"
     prompt = _default_medical_task2_prompt_single_shot() if single_shot else _default_medical_task2_prompt_summary_only()
     logging.info("medical Task 2 prompt source=default user_id=%s", str(user_id or '')[:12])
     return prompt, "default"
@@ -663,6 +726,15 @@ def _is_neurology_specialty(specialty):
     return s in ('neurology', 'neurologist', 'נוירולוגיה', 'נוירולוג')
 
 
+def _is_orthopedics_specialty(specialty):
+    s = str(specialty or '').strip().lower()
+    return s in (
+        'orthopedics', 'orthopedist', 'orthopedic',
+        'orthopaedics', 'orthopaedist', 'orthopaedic',
+        'אורתופדיה', 'אורתופד',
+    )
+
+
 def _medical_summary_section_labels(specialty=None):
     if _is_psychology_specialty(specialty):
         return {
@@ -674,6 +746,12 @@ def _medical_summary_section_labels(specialty=None):
         return {
             'chief': 'תלונה עיקרית / HPI',
             'exam': 'היסטוריה, תרופות ובדיקה נוירולוגית',
+            'rec': 'הערכה ותוכנית',
+        }
+    if _is_orthopedics_specialty(specialty):
+        return {
+            'chief': 'תלונה עיקרית / אנמנזה',
+            'exam': 'בדיקה אורתופדית',
             'rec': 'הערכה ותוכנית',
         }
     return {
@@ -918,6 +996,106 @@ def _default_medical_task2_prompt_neurology_single_shot():
 
 def _default_medical_task2_prompt_neurology_summary_only():
     return _compose_neurology_task2_prompt()
+
+
+# Orthopedics Task 2: musculoskeletal clinic note in the same three JSON keys.
+_GPT_ORTHOPEDICS_SCRIBE_NOTE = (
+    "You are an expert medical scribe for an orthopedic clinic. Process the transcript of a "
+    "patient encounter into a structured orthopedic note. "
+    "Preserve laterality (right/left), joint or bone named, mechanism of injury, pain scores, "
+    "range-of-motion degrees, special-test names, imaging, and treatments exactly as stated. "
+    "If a section was not discussed, write an explicit not-stated phrase in the summary language. "
+    "Do not invent findings, tests, imaging, or a surgical plan.\n\n"
+    "Clinical written style for Task 2 ONLY (never for clean_transcript): "
+    "formal orthopedic chart prose—clear, compact sentences. "
+    "In Hebrew, rewrite clinician→patient speech into passive/third person "
+    "(המטופל / נבדק / הודגם / הומלץ / הופנה). "
+    "Write subsection headings and the note body in the summary language "
+    "(Hebrew headings when the summary language is Hebrew; English headings when it is English).\n\n"
+    "IMPORTANT: Inside each JSON field value, INCLUDE the subsection headings listed below. "
+    "Do NOT also prefix the field with the outer UI title.\n\n"
+)
+
+_ORTHOPEDICS_TASK2_FIELD_PROMPTS = {
+    "cc_hpi": (
+        "chief_complaint — reason for visit and history. Include these headings "
+        "(Hebrew: תלונה עיקרית / אנמנזה של המחלה הנוכחית; English: Chief Complaint / History of Present Illness):\n"
+        "Chief complaint: the main reason for the visit, in the patient's words when possible.\n"
+        "History: joint, limb, or spine region; side; onset (injury or gradual); duration; "
+        "pain character and severity if stated; swelling, locking, catching, giving way, "
+        "instability, or night pain; what worsens or relieves it; effect on walking, stairs, "
+        "work, or sport; prior treatment for this problem only if stated.\n\n"
+    ),
+    "exam": (
+        "examination_transcript — history, medications, and orthopedic examination. Include these headings "
+        "(Hebrew: רקע רפואי / תרופות ואלרגיות / בדיקה אורתופדית; "
+        "English: Past history / Medications & allergies / Orthopedic examination):\n"
+        "Past history: relevant fractures, surgeries, joint replacements, or rheumatologic disease if stated.\n"
+        "Medications and allergies: current medicines, doses if stated, and allergies.\n"
+        "Orthopedic examination, only for what was actually examined:\n"
+        "Inspection: swelling, deformity, scars, alignment, muscle wasting.\n"
+        "Palpation: tenderness and warmth, with the site named.\n"
+        "Range of motion: active and passive, with degrees only if stated.\n"
+        "Strength: of the relevant muscle groups if tested.\n"
+        "Special tests: name the test and the result only if it was performed.\n"
+        "Neurovascular: sensation, pulses, and capillary refill distal to the limb if checked.\n"
+        "Gait: only if it was observed or described.\n\n"
+    ),
+    "assessment_plan": (
+        "patient_recommendations — assessment and plan. Include these headings "
+        "(Hebrew: הערכה / תוכנית; English: Assessment / Plan):\n"
+        "Assessment: the working diagnosis or differential, including the side and the structure, "
+        "only as stated or clearly concluded in the visit.\n"
+        "Plan:\n"
+        "Imaging: X-ray, ultrasound, CT, or MRI only if ordered or discussed.\n"
+        "Conservative care: rest, ice, brace or cast, medication, or injection only if stated.\n"
+        "Rehabilitation: physiotherapy or activity limits only if stated.\n"
+        "Procedure or surgery: only if it was discussed; do not propose an operation that was not mentioned.\n"
+        "Follow-up and red flags: return timing and warning signs only if stated.\n"
+        "End this field with one short line that the text must be verified against the recording "
+        "and the responsible clinician.\n\n"
+    ),
+}
+
+
+def _orthopedics_task2_field_prompt(field_id):
+    """Resolve one orthopedics field prompt; env MEDICAL_ORTHOPEDICS_PROMPT_<FIELD> wins."""
+    fid = str(field_id or "").strip().lower()
+    env_map = {
+        "cc_hpi": "MEDICAL_ORTHOPEDICS_PROMPT_CC_HPI",
+        "exam": "MEDICAL_ORTHOPEDICS_PROMPT_EXAM",
+        "assessment_plan": "MEDICAL_ORTHOPEDICS_PROMPT_ASSESSMENT_PLAN",
+    }
+    env_name = env_map.get(fid)
+    if env_name:
+        override = _env_prompt_override(env_name)
+        if override:
+            return override if override.endswith("\n") else (override + "\n")
+    text = str(_ORTHOPEDICS_TASK2_FIELD_PROMPTS.get(fid) or "").strip()
+    if not text:
+        return ""
+    return text if text.endswith("\n") else (text + "\n")
+
+
+def _compose_orthopedics_task2_prompt():
+    style = _env_prompt_override("MEDICAL_ORTHOPEDICS_STYLE_NOTE") or _GPT_ORTHOPEDICS_SCRIBE_NOTE
+    if style and not style.endswith("\n"):
+        style += "\n"
+    parts = [style]
+    for field_id in ("cc_hpi", "exam", "assessment_plan"):
+        parts.append(_orthopedics_task2_field_prompt(field_id))
+    return "".join(parts)
+
+
+def _default_medical_task2_prompt_orthopedics_single_shot():
+    return (
+        "Task 2 – Orthopedic clinical note (documentation support only; not a substitute for clinical judgment).\n"
+        + _compose_orthopedics_task2_prompt()
+    )
+
+
+def _default_medical_task2_prompt_orthopedics_summary_only():
+    return _compose_orthopedics_task2_prompt()
 
 
 def _safe_rsid(value, fallback):
@@ -3606,10 +3784,13 @@ def _site_extract_video_audio_to_s3(bucket, source_s3_key, output_s3_key):
         )
 
 
-def _run_on_os_thread(fn, *args):
+def _run_on_os_thread(fn, *args, timeout=None):
     """Real OS thread. threading.Thread is a greenlet after gevent monkey patch."""
     import gevent
-    return gevent.get_hub().threadpool.spawn(fn, *args).get()
+    waiter = gevent.get_hub().threadpool.spawn(fn, *args)
+    if timeout is None:
+        return waiter.get()
+    return waiter.get(timeout=timeout)
 
 
 def _should_preprocess_music_vocals(is_medical, audio_profile_info):
@@ -4420,9 +4601,9 @@ def _force_docx_rtl_bytes(docx_bytes):
 
 
 
-# Medical + Site: Socket.IO HTTP long-polling only (no WebSocket upgrade).
-# Hospital/corporate proxies often kill WS mid-session; polling stays reliable.
-# Clients batch many audio packets per POST on polling.
+# Socket.IO: WebSocket first, HTTP long-polling if the upgrade cannot be kept.
+# Hospital proxies often kill WebSocket; the client then stays on polling.
+# Polling clients batch many audio packets per POST.
 # python-engineio defaults to max_decode_packets=16 and rejects the rest.
 try:
     import engineio.payload as _engineio_payload
@@ -4440,7 +4621,7 @@ except Exception:
 socketio = SocketIO(app,
     cors_allowed_origins="*",
     async_mode='gevent',
-    transports=['polling'],
+    transports=['websocket', 'polling'],
     async_handlers=True,
     ping_timeout=120,
     ping_interval=10,
@@ -8636,22 +8817,25 @@ def _doctor_prompt_insert_example(user_id, fields):
 
 
 def _doctor_prompt_current_base(user_id, candidate_prompt=None):
+    specialty = _medical_professional_specialty(user_id)
     cand = str(candidate_prompt or '').strip()
-    if cand:
+    if cand and not _prompt_belongs_to_other_specialty(cand, specialty):
         return cand
     profile = _doctor_prompt_get_profile(user_id)
     if isinstance(profile, dict):
         for key in ('candidate_prompt', 'active_prompt'):
             val = str(profile.get(key) or '').strip()
-            if val:
+            if val and not _prompt_belongs_to_other_specialty(val, specialty):
                 return val
     env_prompt = _env_prompt_override("MEDICAL_TASK2_PROMPT_OVERRIDE")
-    if env_prompt:
+    if env_prompt and not _prompt_belongs_to_other_specialty(env_prompt, specialty):
         return env_prompt
-    if _is_psychology_specialty(_medical_professional_specialty(user_id)):
+    if _is_psychology_specialty(specialty):
         return _default_medical_task2_prompt_psychology_summary_only()
-    if _is_neurology_specialty(_medical_professional_specialty(user_id)):
+    if _is_neurology_specialty(specialty):
         return _default_medical_task2_prompt_neurology_summary_only()
+    if _is_orthopedics_specialty(specialty):
+        return _default_medical_task2_prompt_orthopedics_summary_only()
     return _default_medical_task2_prompt_summary_only()
 
 
@@ -11206,6 +11390,21 @@ def _openai_model_supports_custom_temperature(model: str) -> bool:
     return True
 
 
+def _openai_reasoning_effort_for_model(model: str) -> str:
+    """GPT-5.6 defaults to medium and can think for minutes on a short note.
+
+    low is the fastest effort that still reasons. none is faster. Override with
+    GPT_REASONING_EFFORT. Older models omit the field.
+    """
+    m = (model or "").strip().lower()
+    if not (m.startswith("gpt-5") or re.match(r"^o[0-9]", m)):
+        return ""
+    raw = (os.environ.get("GPT_REASONING_EFFORT") or "low").strip().lower()
+    if raw not in ("none", "low", "medium", "high", "xhigh", "max"):
+        raw = "low"
+    return raw
+
+
 def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=0, model_name=None, temperature=0.2):
     """POST chat completions; return parsed JSON object from message content.
 
@@ -11226,10 +11425,14 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
     }
     if _openai_model_supports_custom_temperature(model):
         payload["temperature"] = temperature
+    reasoning_effort = _openai_reasoning_effort_for_model(model)
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     read_t = max(60, int(timeout_sec))
     connect_t = min(30, max(10, read_t // 8))
     timeout_tuple = (connect_t, read_t)
     last_timeout_exc = None
+    started = time.time()
     for attempt in range(read_retries + 1):
         try:
             resp = requests.post(
@@ -11250,6 +11453,12 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
             content = re.sub(r'^```json\s*', '', content, flags=re.IGNORECASE)
             content = re.sub(r'^```\s*', '', content)
             content = re.sub(r'```$', '', content).strip()
+            logging.info(
+                "OpenAI format model=%s reasoning_effort=%s elapsed=%.1fs",
+                model,
+                reasoning_effort or "default",
+                time.time() - started,
+            )
             return json.loads(content)
         except requests.exceptions.ReadTimeout as e:
             last_timeout_exc = e
@@ -11380,6 +11589,7 @@ def _strip_leading_exam_trace_legacy_prefix(exam_text):
 
 _MEDICAL_SECTION_HEADER_LABELS = {
     "chief": (
+        "תלונה עיקרית / אנמנזה",
         "תלונה עיקרית",
         "תלונה",
         "תלונות",
@@ -11389,6 +11599,7 @@ _MEDICAL_SECTION_HEADER_LABELS = {
     ),
     "exam": (
         "ממצאים",
+        "בדיקה אורתופדית",
         "בדיקה",
         "התרשמות רגשית",
         "היסטוריה, תרופות ובדיקה נוירולוגית",
@@ -11874,37 +12085,62 @@ def _format_unified_transcript_openai(
         specialty = _medical_professional_specialty(user_id)
         psych = _is_psychology_specialty(specialty)
         neuro = _is_neurology_specialty(specialty)
-        # Personal/candidate Task 2 must win over specialty structure (neurology defaults
-        # otherwise force CC/HPI/exam/plan even after the doctor trained a private template).
+        ortho = _is_orthopedics_specialty(specialty)
+        # Personal/candidate Task 2 must win over specialty structure (neurology and
+        # orthopedics defaults otherwise force their section headings even after the
+        # doctor trained a private template).
         personal_task2 = _medical_task2_uses_personal_prompt(
             user_id=user_id,
             prompt_override=medical_task2_prompt_override,
         )
-        if neuro and not personal_task2:
-            # Neurology fields intentionally contain internal subsection headings (CC, HPI, Mental Status, …).
-            forbidden_labels = (
-                "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
-                "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
-            )
+        if (neuro or ortho) and not personal_task2:
+            if neuro:
+                forbidden_labels = (
+                    "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
+                    "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+                )
+                internal_headings = (
+                    "(e.g. Chief Complaint (CC):, History of Present Illness (HPI):, Mental Status:, Plan:)"
+                )
+                specialty_name = "neurology"
+            else:
+                forbidden_labels = (
+                    "'תלונה עיקרית / אנמנזה:', 'בדיקה אורתופדית:', 'הערכה ותוכנית:', "
+                    "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+                )
+                internal_headings = (
+                    "(e.g. תלונה עיקרית:, אנמנזה:, בדיקה אורתופדית:, טווח תנועה:, "
+                    "Chief Complaint:, Range of Motion:, Assessment:, Plan:)"
+                )
+                specialty_name = "orthopedics"
             summary_heading_rule = (
                 "CRITICAL: Do NOT prefix JSON field values with the outer UI labels "
                 f"({forbidden_labels} or English equivalents). "
-                "DO include the internal neurology subsection headings required by Task 2 "
-                "(e.g. Chief Complaint (CC):, History of Present Illness (HPI):, Mental Status:, Plan:). "
+                f"DO include the internal {specialty_name} subsection headings required by Task 2 "
+                f"{internal_headings}. "
             )
-        elif neuro and personal_task2:
-            forbidden_labels = (
-                "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
-                "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
-                "'Chief Complaint', 'History of Present Illness', 'Assessment', 'Plan:', "
-            )
+        elif (neuro or ortho) and personal_task2:
+            if neuro:
+                forbidden_labels = (
+                    "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
+                    "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+                    "'Chief Complaint', 'History of Present Illness', 'Assessment', 'Plan:', "
+                )
+                specialty_name = "neurology"
+            else:
+                forbidden_labels = (
+                    "'תלונה עיקרית / אנמנזה:', 'בדיקה אורתופדית:', 'הערכה ותוכנית:', "
+                    "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
+                    "'Chief Complaint', 'Orthopedic examination', 'Range of Motion', 'Assessment', 'Plan:', "
+                )
+                specialty_name = "orthopedics"
             summary_heading_rule = (
                 "CRITICAL — personal template replaces specialty completely (do NOT combine):\n"
-                "Do NOT use neurology specialty outer titles at all "
-                f"({forbidden_labels} or English CC/HPI/exam/plan equivalents).\n"
+                f"Do NOT use {specialty_name} specialty outer titles at all "
+                f"({forbidden_labels} or English specialty equivalents).\n"
                 "Follow ONLY the doctor's personal Task 2 template for structure and internal headings "
                 "(e.g. ברקע / רגישות / תרופות / לסיכום / המלצות when that is the personal template).\n"
-                "Do NOT wrap personal headings inside neurology section titles.\n"
+                f"Do NOT wrap personal headings inside {specialty_name} section titles.\n"
                 "Fill checklist/body content only from the current transcript; leave undiscussed lines blank or לא צוין. "
                 "Never invent a full clinic letter from the personal template alone. "
             )
@@ -12558,6 +12794,7 @@ def _medical_format_output_hallucinated(raw_text: str, out: dict) -> bool:
             'בכבוד רב', 'Chief Complaint', 'History of Present Illness', 'Neurological Examination',
             'History of Present Illness (HPI)', 'Mental Status', 'Cranial Nerves', 'Assessment',
             'Plan:', 'HPI:', 'CC:', 'אבחנה', 'בדיקה נוירולוגית',
+            'Orthopedic examination', 'Range of Motion', 'בדיקה אורתופדית', 'טווח תנועה',
         )
         hits = sum(1 for m in dump_markers if m in blob)
         if hits >= 2 and len(blob) > max(raw_len * 3, raw_len + 120):
@@ -13019,9 +13256,13 @@ def api_medical_training_profile():
             "resolved_task2_prompt_chars": len(_prompt or ''),
             "specialty": _medical_professional_specialty(user_id),
             "section_labels": (
-                (latest_example or {}).get("section_labels")
-                or _extract_personal_section_labels(
-                    (latest_example or {}).get("doctor_summary_preview") or production or active
+                {}
+                if str(pub.get("status") or "").strip().lower() == "disabled" or not (production or active or candidate)
+                else (
+                    (latest_example or {}).get("section_labels")
+                    or _extract_personal_section_labels(
+                        (latest_example or {}).get("doctor_summary_preview") or production or active
+                    )
                 )
             ),
             "latest_example": latest_example,
@@ -13404,6 +13645,35 @@ def api_medical_training_approve():
         return jsonify({"error": str(e)}), 500
 
 
+def _reset_medical_training_profile(user_id):
+    """Disable the saved personal summary template so the profession template is used."""
+    user_id = str(user_id or '').strip()
+    if not user_id:
+        raise ValueError("userId required")
+    cleared = {
+        "status": "disabled",
+        "active_prompt": "",
+        "candidate_prompt": "",
+        "approved_at": None,
+        "examples_count": 0,
+    }
+    supabase_url, _service_key, headers = _supabase_rest_config()
+    from urllib.parse import quote
+    uid = quote(user_id, safe='')
+    patched = requests.patch(
+        f"{supabase_url}/rest/v1/doctor_prompt_profiles?user_id=eq.{uid}",
+        headers={**headers, "Prefer": "return=representation"},
+        json={**cleared, "updated_at": datetime.utcnow().isoformat() + "Z"},
+        timeout=15,
+    )
+    if patched.status_code not in (200, 204):
+        raise RuntimeError(patched.text or f"Supabase profile reset HTTP {patched.status_code}")
+    rows = patched.json() if patched.text else []
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    return _doctor_prompt_upsert_profile(user_id, cleared)
+
+
 @app.route('/api/medical_training/reset', methods=['POST'])
 def api_medical_training_reset():
     try:
@@ -13411,13 +13681,7 @@ def api_medical_training_reset():
         user_id = str(data.get('userId') or data.get('user_id') or '').strip()
         if not user_id:
             return jsonify({"error": "userId required"}), 400
-        updated = _doctor_prompt_upsert_profile(user_id, {
-            "status": "disabled",
-            "active_prompt": None,
-            "candidate_prompt": None,
-            "approved_at": None,
-            "examples_count": 0,
-        })
+        updated = _reset_medical_training_profile(user_id)
         return jsonify({"ok": True, "profile": _doctor_prompt_public_profile(updated)}), 200
     except Exception as e:
         logging.exception("medical_training_reset failed")
@@ -15425,6 +15689,15 @@ def _medical_transcribe_stream_region():
         return (os.environ.get('MEDICAL_TRANSCRIBE_STREAM_REGION') or os.environ.get('AWS_TRANSCRIBE_REGION') or 'eu-west-1').strip()
 
 
+def _medical_transcribe_batch_region():
+    """Optional batch Transcribe region next to the HIPAA bucket (eu-north-1)."""
+    try:
+        from medical_gap_transcribe import transcribe_batch_region
+        return transcribe_batch_region(_medical_aws_region())
+    except ImportError:
+        return _medical_aws_region()
+
+
 def _medical_transcribe_identify_multiple_languages():
     try:
         from aws_transcribe_stream import medical_transcribe_identify_multiple_languages
@@ -15475,7 +15748,7 @@ def api_medical_transcription_config():
         'transcribe_stream_preferred_language': _medical_transcribe_preferred_language(),
         'transcribe_stream_region': _medical_transcribe_stream_region(),
         'transcribe_stream_sample_rate_hz': 16000,
-        # Socket.IO long-polling only (no WebSocket upgrade, no /ws/transcribe fallback).
+        # Socket.IO starts on WebSocket and falls back to long-polling.
         'transcribe_stream_transport': 'socketio',
         'transcribe_stream_ws_fallback': False,
         'sagemaker_fallback': True,
@@ -15671,6 +15944,149 @@ def api_medical_archive_recording():
         }), 502
     logging.info('medical archive_recording ok job_id=%s bytes=%s content_type=%s', job_id, len(body), content_type)
     return jsonify({'ok': True, 'jobId': job_id, 's3Key': s3_key, 'bytes': len(body)}), 200
+
+
+@app.route('/api/medical/transcribe_gaps', methods=['POST'])
+def api_medical_transcribe_gaps():
+    """Fill live-stream gaps from the archived recording via AWS Transcribe batch."""
+    import base64
+    from medical_gap_transcribe import gap_transcribe_engine, transcribe_medical_gaps
+
+    data = request.json or {}
+    _is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(
+        {**data, 'isMedical': True}
+    )
+    if medical_error:
+        return medical_error
+    user_id = str(authenticated_medical_user or '').strip()
+    job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
+    s3_key = str(data.get('s3Key') or data.get('s3_key') or '').strip()
+    transcript = str(data.get('transcript') or '')
+    gaps = data.get('gaps')
+    pcm_b64 = str(data.get('pcm_base64') or data.get('pcmBase64') or '').strip()
+    pcm_bytes = b''
+    if pcm_b64:
+        try:
+            pcm_bytes = base64.b64decode(pcm_b64, validate=False)
+        except Exception:
+            pcm_bytes = b''
+        if len(pcm_bytes) > 16000 * 2 * 60:
+            pcm_bytes = pcm_bytes[:16000 * 2 * 60]
+    if not job_id or (not s3_key and not pcm_bytes):
+        return jsonify({'error': 'jobId and s3Key required'}), 400
+    if not isinstance(gaps, list) or not gaps:
+        return jsonify({'error': 'gaps required'}), 400
+    if not _medical_use_aws_transcribe_stream():
+        return jsonify({'error': 'aws_transcribe_stream_disabled'}), 400
+    if s3_key:
+        try:
+            _assert_multipart_key_for_user(s3_key, user_id, True)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+    kms_arn = ''
+    if not pcm_bytes:
+        try:
+            kms_arn = _require_medical_kms_or_raise(True)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 400
+    bucket = str(data.get('bucket') or '').strip()
+    if not pcm_bytes:
+        storage = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=True)
+        bucket = str(data.get('bucket') or storage.get('bucket') or '').strip()
+        if not bucket:
+            return jsonify({'error': 'bucket required'}), 400
+    locale = str(data.get('locale') or 'he').strip() or 'he'
+    language_code = str(data.get('language_code') or data.get('languageCode') or _medical_transcribe_stream_language()).strip() or 'he-IL'
+    identify_multiple = data.get('identify_multiple_languages')
+    if identify_multiple is None:
+        identify_multiple = data.get('identifyMultipleLanguages')
+    if identify_multiple is None:
+        identify_multiple = _medical_transcribe_identify_multiple_languages()
+    language_options = data.get('language_options') or data.get('languageOptions') or _medical_transcribe_language_options()
+    try:
+        timeout_sec = float(os.environ.get('MEDICAL_GAP_TRANSCRIBE_TIMEOUT_SEC', '110') or 110)
+    except (TypeError, ValueError):
+        timeout_sec = 110.0
+    if pcm_bytes:
+        timeout_sec = min(timeout_sec, 45.0)
+
+    s3_client = _s3_boto_client(bucket=bucket) if bucket and not pcm_bytes else None
+    recording_bytes = b''
+    if not pcm_bytes:
+        try:
+            obj = s3_client.get_object(Bucket=bucket, Key=s3_key)
+            recording_bytes = obj['Body'].read()
+        except Exception as get_err:
+            aws_code, aws_msg = _public_s3_error(get_err)
+            logging.exception(
+                'medical transcribe_gaps download failed job_id=%s key=%s code=%s msg=%s',
+                job_id,
+                s3_key,
+                aws_code,
+                aws_msg,
+            )
+            return jsonify({'error': 'recording_download_failed', 'aws_code': aws_code}), 502
+        if not recording_bytes:
+            return jsonify({'error': 'empty_recording'}), 400
+    logging.info(
+        'medical transcribe_gaps start job_id=%s gaps=%s pcm_bytes=%s engine=%s',
+        job_id,
+        len(gaps),
+        len(pcm_bytes),
+        gap_transcribe_engine(),
+    )
+
+    suffix = os.path.splitext(s3_key)[1] or '.m4a'
+    engine = gap_transcribe_engine()
+    stream_region = _medical_transcribe_stream_region()
+    region = _medical_transcribe_batch_region() if engine == 'batch' else stream_region
+    transcribe_client = boto3.client('transcribe', region_name=region) if engine == 'batch' else None
+    def _work():
+        return transcribe_medical_gaps(
+            transcript=transcript,
+            gaps=gaps,
+            recording_bytes=recording_bytes,
+            recording_suffix=suffix,
+            ffmpeg_path=_resolve_ffmpeg(),
+            ffprobe_path=_resolve_ffprobe(),
+            s3_client=s3_client,
+            transcribe_client=transcribe_client,
+            bucket=bucket,
+            user_id=user_id,
+            job_id=job_id,
+            kms_arn=kms_arn,
+            language_code=language_code,
+            identify_multiple_languages=bool(identify_multiple),
+            language_options=language_options if isinstance(language_options, list) else ['he-IL', 'en-US'],
+            locale=locale,
+            timeout_sec=timeout_sec,
+            engine=engine,
+            stream_region=stream_region,
+            pcm_bytes=pcm_bytes or None,
+        )
+    try:
+        result = _run_on_os_thread(_work, timeout=timeout_sec + 8)
+    except Exception as exc:
+        logging.exception('medical transcribe_gaps failed job_id=%s: %s', job_id, exc)
+        return jsonify({'error': 'gap_transcribe_failed', 'message': str(exc)[:240]}), 502
+
+    logging.info(
+        'medical transcribe_gaps job_id=%s gaps=%s recovered=%s region=%s engine=%s',
+        job_id,
+        len(result.get('gaps') or []),
+        sum(1 for g in (result.get('gaps') or []) if g.get('status') == 'ok'),
+        region,
+        engine,
+    )
+    return jsonify({
+        'ok': True,
+        'jobId': job_id,
+        's3Key': s3_key,
+        'transcript': result.get('transcript') or transcript,
+        'gaps': result.get('gaps') or [],
+        'duration_ms': result.get('duration_ms') or 0,
+        'region': region,
+    }), 200
 
 
 @app.route('/api/medical_session_warmup', methods=['POST'])

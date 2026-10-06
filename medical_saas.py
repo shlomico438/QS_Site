@@ -259,6 +259,53 @@ def medical_account_public(account: dict) -> dict:
     }
 
 
+MEDICAL_PROFESSIONAL_SPECIALTIES = (
+    "physician",
+    "neurology",
+    "orthopedics",
+    "psychologist",
+    "occupational_therapist",
+    "physiotherapist",
+    "speech_therapist",
+    "nurse",
+    "social_worker",
+    "other",
+)
+
+_PROFESSIONAL_SPECIALTY_ALIASES = {
+    "neurologist": "neurology",
+    "נוירולוגיה": "neurology",
+    "נוירולוג": "neurology",
+    "orthopedic": "orthopedics",
+    "orthopedist": "orthopedics",
+    "orthopaedic": "orthopedics",
+    "orthopaedics": "orthopedics",
+    "orthopaedist": "orthopedics",
+    "אורתופדיה": "orthopedics",
+    "אורתופד": "orthopedics",
+    "psychology": "psychologist",
+    "פסיכולוגיה": "psychologist",
+}
+
+
+def specialty_change_resets_training(previous, new_specialty) -> bool:
+    """A real profession change drops the previous personal summary training."""
+    previous_raw = str(previous or "").strip()
+    new_key = normalize_professional_specialty(new_specialty)
+    if not previous_raw or not new_key:
+        return False
+    return normalize_professional_specialty(previous_raw) != new_key
+
+
+def normalize_professional_specialty(raw) -> str:
+    """Map a profession label to a stored specialty key, or '' if it is not one of the list."""
+    key = str(raw or "").strip().lower()
+    key = _PROFESSIONAL_SPECIALTY_ALIASES.get(key, key)
+    if key not in MEDICAL_PROFESSIONAL_SPECIALTIES:
+        return ""
+    return key
+
+
 _DEFAULT_SIGNATURE_MAX_CHARS = 500
 
 
@@ -291,6 +338,29 @@ def _medical_account_set_default_signature(user_id: str, signature: str) -> str:
     if isinstance(rows, list) and rows:
         return normalize_default_signature(rows[0].get("default_signature"))
     return stored
+
+
+def _medical_account_set_professional_specialty(user_id: str, specialty: str) -> dict:
+    """Persist professional_specialty without rewriting the rest of the medical account."""
+    sa = _sa()
+    supabase_url, _, headers = sa._supabase_rest_config()
+    h = dict(headers)
+    h["Prefer"] = "return=representation"
+    uid = quote(user_id, safe="")
+    stored = normalize_professional_specialty(specialty)
+    if not stored:
+        raise ValueError("Professional specialty is required")
+    r = sa._supabase_http_request(
+        "PATCH",
+        f"{supabase_url}/rest/v1/medical_accounts?user_id=eq.{uid}",
+        headers=h,
+        json={"professional_specialty": stored},
+        timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise RuntimeError(r.text or f"medical specialty update HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if isinstance(rows, list) and rows else (_medical_account_get(user_id) or {})
 
 
 def require_medical_entitlement(req, data: Optional[dict] = None) -> Tuple[Optional[str], Optional[dict], Optional[Tuple[Any, int]]]:
@@ -1024,6 +1094,32 @@ def register_medical_saas_routes(app) -> None:
             return jsonify({"ok": True, "defaultSignature": signature}), 200
         except Exception as exc:
             logging.exception("api_medical_default_signature_set failed")
+            return jsonify({"error": str(exc)}), 500
+
+    @app.route("/api/medical/professional-specialty", methods=["POST", "PUT"])
+    def api_medical_professional_specialty_set():
+        sa = _sa()
+        user_id = sa._supabase_user_id_from_request()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        data = request.get_json(silent=True) or {}
+        raw = data.get("professionalSpecialty", data.get("professional_specialty", ""))
+        specialty = normalize_professional_specialty(raw)
+        if not specialty:
+            return jsonify({"error": "Professional specialty is required"}), 400
+        try:
+            account = _medical_account_get(user_id)
+            if not account:
+                return jsonify({"error": "Medical account required"}), 404
+            previous = str(account.get("professional_specialty") or "")
+            updated = _medical_account_set_professional_specialty(user_id, specialty)
+            training_reset = False
+            if specialty_change_resets_training(previous, specialty):
+                sa._reset_medical_training_profile(user_id)
+                training_reset = True
+            return jsonify_medical_account(updated, extra={"trainingReset": training_reset}), 200
+        except Exception as exc:
+            logging.exception("api_medical_professional_specialty_set failed")
             return jsonify({"error": str(exc)}), 500
 
     @app.route("/api/medical/activate-trial", methods=["POST"])

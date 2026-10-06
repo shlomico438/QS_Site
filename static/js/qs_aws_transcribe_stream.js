@@ -1,6 +1,6 @@
 /**
- * Medical live transcription via Socket.IO HTTP long-polling only.
- * No WebSocket upgrade and no /ws/transcribe fallback (avoids mid-session WS stalls).
+ * Medical live transcription via Socket.IO.
+ * WebSocket first; polling is the fallback when WebSocket cannot be kept.
  * PCM int16 mono @ 16 kHz → AWS Transcribe Streaming.
  */
 
@@ -114,6 +114,9 @@ function qsWaitForSocketConnected(sock, timeoutMs = 20000) {
 
 /** Max PCM held before transport is armed (~45s @ 16 kHz mono int16). */
 const QS_PRE_READY_BUFFER_MAX_BYTES = 16000 * 2 * 45;
+/** Extra audio sent to batch Transcribe on each side of a confirmed gap. */
+const QS_GAP_PAD_MS = 1500;
+const QS_MIN_GAP_MS = 250;
 /** When Socket.IO is on HTTP polling, batch PCM for fewer POSTs.
  * Server splits to ~100ms AWS frames. 900ms batches cut poll rate vs 300ms. */
 const QS_POLLING_BATCH_MAX_BYTES = 32000; // ~1s @ 16 kHz mono int16; let the 900ms timer win
@@ -139,6 +142,7 @@ export class MedicalAwsTranscribeStream {
         this.transport = options.transport || 'socketio';
         this.onPartial = typeof options.onPartial === 'function' ? options.onPartial : null;
         this.onStatus = typeof options.onStatus === 'function' ? options.onStatus : null;
+        this.onGap = typeof options.onGap === 'function' ? options.onGap : null;
         this._ws = null;
         this._socket = null;
         this._socketEventHandler = null;
@@ -191,6 +195,169 @@ export class MedicalAwsTranscribeStream {
         this._httpAudio = true;
         this._httpAudioLogged = false;
         this._httpAudioFailed = false;
+        this._gaps = [];
+        this._openGap = null;
+        this._gapSeq = 0;
+        this._ownRecordingStartedAt = 0;
+        this._ownRecordingAccumMs = 0;
+    }
+
+    _recordingClockMs() {
+        try {
+            if (typeof window.qsMedicalRecordingClockMs === 'function') {
+                const n = Number(window.qsMedicalRecordingClockMs());
+                if (Number.isFinite(n) && n >= 0) return n;
+            }
+        } catch (_) {}
+        try {
+            const last = Number(window.__QS_MEDICAL_LAST_RECORDING_MS || 0);
+            const rec = window._medicalRecorder;
+            const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
+            if (last > 0 && !recActive) return last;
+            const base = Number(window._medicalRecordingAccumMs || 0);
+            const started = Number(window._medicalRecordingStartedAt || 0);
+            const paused = !!window._medicalRecorderPaused;
+            if (started > 0 || base > 0) {
+                const running = paused ? 0 : Math.max(0, Date.now() - started);
+                return Math.max(0, base + running);
+            }
+        } catch (_) {}
+        if (!this._ownRecordingStartedAt) return Math.max(0, this._ownRecordingAccumMs || 0);
+        if (this._feedPaused) return Math.max(0, this._ownRecordingAccumMs || 0);
+        return Math.max(0, (this._ownRecordingAccumMs || 0) + (Date.now() - this._ownRecordingStartedAt));
+    }
+
+    _armOwnRecordingClock() {
+        if (this._ownRecordingStartedAt) return;
+        this._ownRecordingStartedAt = Date.now();
+    }
+
+    _pauseOwnRecordingClock() {
+        if (!this._ownRecordingStartedAt) return;
+        this._ownRecordingAccumMs += Math.max(0, Date.now() - this._ownRecordingStartedAt);
+        this._ownRecordingStartedAt = 0;
+    }
+
+    _emitGap(gap, status) {
+        if (!gap) return;
+        const payload = {
+            id: gap.id,
+            startMs: gap.startMs,
+            endMs: gap.endMs,
+            textOffset: gap.textOffset,
+            placeholder: gap.placeholder || '',
+            status: status || 'closed',
+        };
+        if (this.onGap) {
+            try { this.onGap(payload); } catch (_) {}
+        }
+        if (payload.placeholder) gap.placeholder = payload.placeholder;
+    }
+
+    _beginGapIfNeeded() {
+        if (this._feedPaused) return;
+        if (this._openGap) return;
+        const text = this._snapshotCommittedText();
+        this._gapSeq += 1;
+        this._openGap = {
+            id: `gap_${this._gapSeq}`,
+            startMs: this._recordingClockMs(),
+            endMs: 0,
+            textOffset: String(text || '').length,
+            overflow: false,
+            placeholder: '',
+        };
+        console.warn('[transcribe-stream] gap opened at', this._openGap.startMs, 'ms');
+    }
+
+    _markOpenGapOverflow() {
+        if (!this._openGap) return;
+        const now = this._recordingClockMs();
+        const first = !this._openGap.overflow;
+        if (first) {
+            this._openGap.overflow = true;
+            console.warn('[transcribe-stream] gap confirmed; pre-ready buffer overflow at', now, 'ms');
+        }
+        this._openGap.endMs = Math.max(this._openGap.startMs + 1, now);
+        if (!first) return;
+        this._emitGap(this._openGap, 'open');
+        if (this._socket && this._socket.connected) {
+            try { this._emitStartConfig(); } catch (_) {}
+        }
+    }
+
+    _padGapRange(startMs, endMs) {
+        const start = Math.max(0, Number(startMs) - QS_GAP_PAD_MS);
+        const end = Math.max(start + 1, Number(endMs) + QS_GAP_PAD_MS);
+        return { startMs: start, endMs: end };
+    }
+
+    _commitGap(open, endMs, status) {
+        if (!open) return null;
+        const rawEnd = Math.max(Number(open.startMs) + 1, Number(endMs) || this._recordingClockMs());
+        if ((rawEnd - Number(open.startMs)) < QS_MIN_GAP_MS && !open.overflow) return null;
+        const padded = this._padGapRange(open.startMs, rawEnd);
+        const gap = {
+            id: open.id,
+            startMs: padded.startMs,
+            endMs: padded.endMs,
+            textOffset: open.textOffset,
+            placeholder: open.placeholder || '',
+            overflow: !!open.overflow,
+        };
+        const existing = this._gaps.findIndex((g) => g && g.id === gap.id);
+        if (existing >= 0) this._gaps[existing] = gap;
+        else this._gaps.push(gap);
+        this._emitGap(gap, status || 'closed');
+        return gap;
+    }
+
+    _closeOpenGapOnReady() {
+        const open = this._openGap;
+        if (!open) return;
+        this._openGap = null;
+        if (!open.overflow) {
+            console.info('[transcribe-stream] drop recovered from pre-ready buffer; no gap');
+            return;
+        }
+        const now = this._recordingClockMs();
+        const bytes = Number(this._preReadyBufferBytes || 0);
+        const bufferedMs = this.sampleRateHz
+            ? Math.round((bytes / (this.sampleRateHz * 2)) * 1000)
+            : 0;
+        const endMs = Math.max(open.startMs + 1, now - bufferedMs);
+        this._commitGap(open, endMs, 'closed');
+    }
+
+    _finalizeOpenGapOnStop() {
+        const open = this._openGap;
+        if (!open) return;
+        this._openGap = null;
+        this._commitGap(open, this._recordingClockMs(), 'closed');
+    }
+
+    getGaps() {
+        return this._gaps.map((g) => ({ ...g }));
+    }
+
+    snapshotPreReadyPcm() {
+        const parts = this._preReadyBuffer || [];
+        const total = Number(this._preReadyBufferBytes || 0);
+        if (!total || !parts.length) return new Uint8Array(0);
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const buf of parts) {
+            const view = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+            out.set(view, offset);
+            offset += view.byteLength;
+        }
+        return out;
+    }
+
+    _attachGaps(result) {
+        const out = result && typeof result === 'object' ? result : {};
+        out.gaps = this.getGaps();
+        return out;
     }
 
     _emitStatus(text) {
@@ -261,6 +428,7 @@ export class MedicalAwsTranscribeStream {
             this._restartingAfterReconnect = false;
             this._restartingAfterStall = false;
             this._httpAudioFailed = false;
+            this._closeOpenGapOnReady();
             this._partialsSinceReady = 0;
             this._starvationRestarts = 0;
             this._armTransport();
@@ -506,6 +674,7 @@ export class MedicalAwsTranscribeStream {
             this._transportArmed = false;
             this._clearPollingBatch();
             this._snapshotCommittedText();
+            this._beginGapIfNeeded();
             this._emitStatus('resuming');
         };
         this._onSocketConnect = () => {
@@ -660,14 +829,17 @@ export class MedicalAwsTranscribeStream {
         this._preReadyBuffer.push(buf);
         this._preReadyBufferBytes += bytes;
         this._preReadyChunksBuffered += 1;
+        let overflowed = false;
         while (this._preReadyBufferBytes > QS_PRE_READY_BUFFER_MAX_BYTES && this._preReadyBuffer.length) {
             const dropped = this._preReadyBuffer.shift();
             this._preReadyBufferBytes -= dropped.byteLength;
+            overflowed = true;
             console.warn(
                 '[transcribe-stream] pre-ready buffer overflow; dropped oldest chunk bytes=',
                 dropped && dropped.byteLength
             );
         }
+        if (overflowed) this._markOpenGapOverflow();
     }
 
     _flushPreReadyBuffer() {
@@ -714,6 +886,7 @@ export class MedicalAwsTranscribeStream {
         this._mutedGain.gain.value = 0;
         this._chunksSent = 0;
         this._clearPreReadyBuffer();
+        this._armOwnRecordingClock();
 
         this._processor.onaudioprocess = (ev) => {
             if (!this._canCaptureAudio()) return;
@@ -1010,7 +1183,7 @@ export class MedicalAwsTranscribeStream {
         } catch (err) {
             const transport = qsSocketTransportName(sock) || 'unknown';
             console.warn(
-                '[transcribe-stream] Socket.IO start failed (polling-only; no WS fallback)',
+                '[transcribe-stream] Socket.IO start failed',
                 err,
                 'transport=',
                 transport,
@@ -1038,6 +1211,10 @@ export class MedicalAwsTranscribeStream {
     }
 
     pause() {
+        // Resume starts a new live session and drops the pre-ready buffer, so any
+        // open disconnect has to be closed now or that audio is never transcribed.
+        this._finalizeOpenGapOnStop();
+        this._pauseOwnRecordingClock();
         this._feedPaused = true;
         this._clearStarvationWatch();
         try { this._flushPollingBatch(); } catch (_) {}
@@ -1061,6 +1238,7 @@ export class MedicalAwsTranscribeStream {
     resume() {
         const wasPaused = this._feedPaused;
         this._feedPaused = false;
+        if (wasPaused) this._armOwnRecordingClock();
         if (this._audioCtx && this._audioCtx.state === 'suspended') {
             void this._audioCtx.resume().catch(() => {});
         }
@@ -1165,6 +1343,8 @@ export class MedicalAwsTranscribeStream {
     }
 
     async stop(options = {}) {
+        this._finalizeOpenGapOnStop();
+        this._pauseOwnRecordingClock();
         this._feedPaused = true;
         this._sessionWanted = false;
         this._clearStarvationWatch();
@@ -1187,7 +1367,7 @@ export class MedicalAwsTranscribeStream {
                 }
             } catch (_) {}
             if (quickLocal && stopWaitMs <= 0) {
-                result = { ...local, warning: null };
+                result = this._attachGaps({ ...local, warning: null });
             } else {
                 const resultPromise = new Promise((resolve, reject) => {
                     this._stopResolve = resolve;
@@ -1233,12 +1413,12 @@ export class MedicalAwsTranscribeStream {
                 'transcript chars:',
                 String((result && result.transcript) || '').length
             );
-            return result;
+            return this._attachGaps(result);
         }
 
         if (!this._ws || this._ws.readyState === WebSocket.CLOSED) {
             await this._closeAudioContext();
-            return { transcript: this._finalTranscript, partials: this._partials.slice() };
+            return this._attachGaps({ transcript: this._finalTranscript, partials: this._partials.slice() });
         }
 
         const resultPromise = new Promise((resolve, reject) => {
@@ -1275,11 +1455,21 @@ export class MedicalAwsTranscribeStream {
             'transcript chars:',
             String((result && result.transcript) || '').length
         );
-        return result;
+        return this._attachGaps(result);
     }
 
     abort(options = {}) {
         const emitStop = options.emitStop !== false;
+        this._finalizeOpenGapOnStop();
+        try {
+            const gaps = this.getGaps();
+            if (gaps.length) {
+                const prev = Array.isArray(window._medicalPendingGaps) ? window._medicalPendingGaps : [];
+                const seen = new Set(prev.map((g) => g && g.id));
+                window._medicalPendingGaps = prev.concat(gaps.filter((g) => g && g.id && !seen.has(g.id)));
+            }
+        } catch (_) {}
+        this._pauseOwnRecordingClock();
         this._feedPaused = true;
         this._transportArmed = false;
         this._ready = false;

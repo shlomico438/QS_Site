@@ -193,17 +193,54 @@ const QS_IOS_SAFARI_HINT_TS_KEY = 'qs_ios_safari_hint_ts';
 /** Survive OAuth/magic-link when Supabase lands on Site URL "/" instead of medical/locale path. */
 const QS_AUTH_RETURN_PATH_KEY = 'qs_auth_return_path';
 const QS_AUTH_RETURN_LOCALE_KEY = 'qs_auth_return_locale';
-/** Live AWS Transcribe language: he | en | auto. Default Hebrew-only (Auto flickers). */
+/** Live AWS Transcribe language: he (default) | auto | common AWS-stream codes. */
 const QS_MEDICAL_STREAM_LANG_KEY = 'qs_medical_transcribe_lang';
+/** Common languages under Auto in the medical settings dropdown (Hebrew is pinned above). */
+const QS_MEDICAL_STREAM_COMMON_LANG_CODES = ['en', 'ar', 'ru', 'fr', 'es', 'de', 'it', 'pt'];
+/** Short code -> AWS Transcribe Streaming locale. */
+const QS_MEDICAL_STREAM_LANG_TO_AWS = {
+    he: 'he-IL',
+    en: 'en-US',
+    ar: 'ar-SA',
+    ru: 'ru-RU',
+    fr: 'fr-FR',
+    es: 'es-ES',
+    de: 'de-DE',
+    it: 'it-IT',
+    pt: 'pt-BR',
+};
+const QS_MEDICAL_STREAM_LANG_CODE_SET = new Set(
+    ['he', 'auto'].concat(QS_MEDICAL_STREAM_COMMON_LANG_CODES)
+);
 /** Workstation mic default (device id + label). Not PHI. */
 const QS_MEDICAL_MIC_DEVICE_KEY = 'qs_medical_mic_device_id';
 const QS_MEDICAL_MIC_PREF_KEY = 'qs_medical_mic_pref';
 
+function qsMedicalStreamLangI18n(key, fallback) {
+    try {
+        if (typeof window.t === 'function') {
+            const v = window.t(key);
+            if (v && v !== key) return v;
+        }
+    } catch (_) {}
+    return fallback;
+}
+
 function qsNormalizeMedicalStreamLangMode(raw) {
-    const v = String(raw || '').trim().toLowerCase();
-    if (v === 'en' || v === 'en-us' || v === 'english') return 'en';
+    let v = String(raw || '').trim().toLowerCase();
+    if (!v) return 'he';
     if (v === 'auto' || v === 'mixed' || v === 'both') return 'auto';
+    if (v === 'iw' || v === 'hebrew' || v === 'עברית' || v.startsWith('he-')) return 'he';
+    if (v === 'english' || v.startsWith('en-')) return 'en';
+    if (v.includes('-')) v = v.split('-')[0];
+    if (QS_MEDICAL_STREAM_LANG_CODE_SET.has(v) && v !== 'auto') return v;
     return 'he';
+}
+
+function qsMedicalStreamAwsLocale(code) {
+    const resolved = qsNormalizeMedicalStreamLangMode(code);
+    if (resolved === 'auto') return 'he-IL';
+    return QS_MEDICAL_STREAM_LANG_TO_AWS[resolved] || 'he-IL';
 }
 
 function qsGetMedicalStreamLangMode() {
@@ -226,14 +263,6 @@ function qsMedicalStreamOptionsForMode(mode, cfg) {
         ? cfg.transcribe_stream_language_options.filter(Boolean)
         : ['he-IL', 'en-US'];
     const langOptions = options.length >= 2 ? options : ['he-IL', 'en-US'];
-    if (resolved === 'en') {
-        return {
-            languageCode: 'en-US',
-            identifyMultipleLanguages: false,
-            languageOptions: langOptions,
-            preferredLanguage: 'en-US',
-        };
-    }
     if (resolved === 'auto') {
         return {
             languageCode: String((cfg && cfg.transcribe_stream_language) || 'he-IL'),
@@ -242,12 +271,71 @@ function qsMedicalStreamOptionsForMode(mode, cfg) {
             preferredLanguage: String((cfg && cfg.transcribe_stream_preferred_language) || 'he-IL'),
         };
     }
+    const aws = qsMedicalStreamAwsLocale(resolved);
     return {
-        languageCode: 'he-IL',
+        languageCode: aws,
         identifyMultipleLanguages: false,
         languageOptions: langOptions,
-        preferredLanguage: 'he-IL',
+        preferredLanguage: aws,
     };
+}
+
+function qsPopulateMedicalStreamLangSelect(select) {
+    if (!select) return;
+    const current = qsGetMedicalStreamLangMode();
+    const labels = {
+        he: { he: 'עברית', en: 'Hebrew' },
+        en: { he: 'English', en: 'English' },
+        ar: { he: 'ערבית (العربية)', en: 'Arabic (العربية)' },
+        ru: { he: 'רוסית (Русский)', en: 'Russian (Русский)' },
+        fr: { he: 'צרפתית (Français)', en: 'French (Français)' },
+        es: { he: 'ספרדית (Español)', en: 'Spanish (Español)' },
+        de: { he: 'גרמנית (Deutsch)', en: 'German (Deutsch)' },
+        it: { he: 'איטלקית (Italiano)', en: 'Italian (Italiano)' },
+        pt: { he: 'פורטוגזית (Português)', en: 'Portuguese (Português)' },
+    };
+    let uiLocale = 'he';
+    try {
+        uiLocale = String(localStorage.getItem('locale') || document.documentElement.lang || 'he')
+            .toLowerCase()
+            .startsWith('en')
+            ? 'en'
+            : 'he';
+    } catch (_) {}
+    const labelFor = (code) => {
+        const row = labels[code];
+        if (!row) return code;
+        return row[uiLocale] || row.en || code;
+    };
+
+    select.innerHTML = '';
+
+    const heOpt = document.createElement('option');
+    heOpt.value = 'he';
+    heOpt.textContent = qsMedicalStreamLangI18n('medical_stream_lang_he', labelFor('he'));
+    select.appendChild(heOpt);
+
+    const autoOpt = document.createElement('option');
+    autoOpt.value = 'auto';
+    autoOpt.textContent = qsMedicalStreamLangI18n('medical_stream_lang_auto', 'Auto');
+    autoOpt.title = qsMedicalStreamLangI18n(
+        'medical_language_pause_tip',
+        'When switching languages, pause about 2 seconds.'
+    );
+    select.appendChild(autoOpt);
+
+    const commonGroup = document.createElement('optgroup');
+    commonGroup.label = qsMedicalStreamLangI18n('medical_stream_lang_common', 'Common languages');
+    QS_MEDICAL_STREAM_COMMON_LANG_CODES.forEach((code) => {
+        const opt = document.createElement('option');
+        opt.value = code;
+        opt.textContent = labelFor(code);
+        commonGroup.appendChild(opt);
+    });
+    select.appendChild(commonGroup);
+
+    select.value = current;
+    if (select.value !== current) select.value = 'he';
 }
 
 function _qsHasSupabaseAuthStorageHint() {
@@ -1473,6 +1561,7 @@ window.qsMedicalRefreshPricingButtonLabels = qsMedicalRefreshPricingButtonLabels
 
 function qsMedicalApplyAccessState(account) {
     window.__QS_MEDICAL_ACCOUNT = account || null;
+    try { if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi(); } catch (_) {}
     const onboarding = document.getElementById('medical-onboarding-screen');
     const pricingButton = document.getElementById('medical-open-pricing-btn');
     const billingButton = document.getElementById('user-menu-medical-billing');
@@ -4013,9 +4102,19 @@ function setMedicalMode(enabled, opts) {
 function qsSyncMedicalAccountMenuUi() {
     const medicalModeInput = document.getElementById('user-menu-medical-mode');
     const trainingWrap = document.querySelector('.user-menu-profile-medical-training');
+    const specialtyWrap = document.getElementById('user-menu-medical-specialty-wrap');
+    const specialtySelect = document.getElementById('user-menu-medical-specialty');
     const medicalOn = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
     if (medicalModeInput) medicalModeInput.checked = !!medicalOn;
     if (trainingWrap) trainingWrap.style.display = medicalOn ? '' : 'none';
+    const account = window.__QS_MEDICAL_ACCOUNT;
+    const showSpecialty = typeof qsAccountIsMedicalUser === 'function' && qsAccountIsMedicalUser(account);
+    if (specialtyWrap) specialtyWrap.hidden = !showSpecialty;
+    if (showSpecialty && specialtySelect) {
+        const current = qsNormalizeMedicalSpecialtyValue(account && account.professionalSpecialty);
+        const hasOption = Array.from(specialtySelect.options).some((opt) => opt.value === current);
+        specialtySelect.value = hasOption ? current : '';
+    }
     try { qsSyncReferralMenuUi(); } catch (_) {}
 }
 window.qsSyncMedicalAccountMenuUi = qsSyncMedicalAccountMenuUi;
@@ -5767,7 +5866,8 @@ function qsSyncMedicalDefaultSignatureUi() {
     const live = qsMedicalLiveCaptureActive();
     const paused = qsMedicalUserPaused();
     const finished = qsMedicalHasFinishedTranscript();
-    const showSave = medical && finished && !live && (paused || !qsMedicalRecordingActive());
+    const transcriptTab = String(window.medicalActiveTab || 'transcript') === 'transcript';
+    const showSave = medical && transcriptTab && finished && !live && (paused || !qsMedicalRecordingActive());
     if (shell) shell.classList.toggle('has-finished-transcript', !!showSave);
     if (root && root.dataset.editing === '1' && (live || finished || paused)) {
         root.dataset.editing = '0';
@@ -5776,8 +5876,7 @@ function qsSyncMedicalDefaultSignatureUi() {
         if (form) form.hidden = true;
         if (view) view.hidden = false;
     }
-    const transcriptTab = String(window.medicalActiveTab || 'transcript') === 'transcript';
-    const showSignatureEditor = medical && !finished && !live && !paused;
+    const showSignatureEditor = medical && transcriptTab && !finished && !live && !paused;
     if (root && root.dataset.editing !== '1') {
         root.hidden = !showSignatureEditor;
         const label = root.querySelector('.medical-default-signature-text');
@@ -5793,8 +5892,12 @@ function qsSyncMedicalDefaultSignatureUi() {
     );
     if (row) {
         row.hidden = !showSave;
+        const label = row.querySelector('.medical-save-signature-label');
+        if (label) label.hidden = !!signature;
         if (!showSave) {
             row.dataset.editing = '0';
+            row.style.top = '';
+            row.style.bottom = '';
             const form = row.querySelector('.medical-save-signature-form');
             if (form) form.hidden = true;
             const box = document.getElementById('medical-save-signature-check');
@@ -8139,27 +8242,33 @@ async function loadUserMenuProfile(user) {
             if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi();
         };
     }
+    function qsClearMedicalPersonalTrainingLocal() {
+        window._qsMedicalTrainingEpoch = (Number(window._qsMedicalTrainingEpoch) || 0) + 1;
+        window._medicalTrainingCandidatePrompt = '';
+        window._medicalTrainingCandidatePreview = null;
+        window._medicalTrainingLearnedRules = [];
+        window._medicalTrainingDoctorDraft = '';
+        window._medicalTrainingPostLearnPreviewReady = false;
+        window._medicalTrainingPanelExpanded = false;
+        window._medicalTrainingBaselineForRetry = '';
+        window._medicalTrainingApprovedCandidatePrompt = '';
+        window._medicalPersonalTemplateHydrated = false;
+        window._medicalPersonalTemplateActive = false;
+        window._medicalPersonalSectionLabels = null;
+        try { localStorage.removeItem('qs_medical_personal_template'); } catch (_) {}
+        try { localStorage.removeItem('qs_medical_section_labels'); } catch (_) {}
+        if (typeof qsSetMedicalStyleConfigured === 'function') qsSetMedicalStyleConfigured(false);
+        if (typeof qsCloseMedicalTrainingModal === 'function') qsCloseMedicalTrainingModal();
+        if (typeof qsSyncMedicalStyleTrainingBadge === 'function') qsSyncMedicalStyleTrainingBadge();
+    }
     if (medicalTrainingResetBtn) {
         medicalTrainingResetBtn.onclick = async () => {
             const T = typeof window.t === 'function' ? window.t : (k) => k;
             if (medicalTrainingStatus) medicalTrainingStatus.textContent = T('medical_training_resetting');
             try {
                 await medicalTrainingApi('/api/medical_training/reset', {});
-                window._medicalTrainingCandidatePrompt = '';
-                window._medicalTrainingCandidatePreview = null;
-                window._medicalTrainingLearnedRules = [];
-                window._medicalTrainingDoctorDraft = '';
-                window._medicalTrainingPostLearnPreviewReady = false;
-                window._medicalTrainingPanelExpanded = false;
-                window._medicalTrainingBaselineForRetry = '';
-                window._medicalTrainingApprovedCandidatePrompt = '';
-                window._medicalPersonalTemplateHydrated = false;
-                window._medicalPersonalTemplateActive = false;
-                try { localStorage.removeItem('qs_medical_personal_template'); } catch (_) {}
-                qsSetMedicalStyleConfigured(false);
-                qsCloseMedicalTrainingModal();
+                qsClearMedicalPersonalTrainingLocal();
                 if (medicalTrainingStatus) medicalTrainingStatus.textContent = T('medical_training_reset_done');
-                qsSyncMedicalStyleTrainingBadge();
                 if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
             } catch (e) {
                 const err = String((e && e.message) || e).slice(0, 160);
@@ -8170,10 +8279,13 @@ async function loadUserMenuProfile(user) {
         };
     }
 
+    const specialtySelect = document.getElementById('user-menu-medical-specialty');
+    let specialtyAtOpen = specialtySelect ? String(specialtySelect.value || '') : '';
     if (cancelBtn) {
         cancelBtn.onclick = () => {
             nameInput.value = currentName;
             emailInput.value = currentEmail;
+            if (specialtySelect) specialtySelect.value = specialtyAtOpen;
             if (messageEl) { messageEl.style.display = 'none'; messageEl.textContent = ''; }
             closeUserMenu();
         };
@@ -8194,6 +8306,17 @@ async function loadUserMenuProfile(user) {
             }
             return;
         }
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        const specialtyWrap = document.getElementById('user-menu-medical-specialty-wrap');
+        const nextSpecialty = specialtySelect ? String(specialtySelect.value || '').trim() : '';
+        if (specialtyWrap && !specialtyWrap.hidden && !nextSpecialty) {
+            if (messageEl) {
+                messageEl.style.display = 'block';
+                messageEl.textContent = T('medical_specialty_placeholder') || 'Choose your professional field';
+                messageEl.style.color = '#b91c1c';
+            }
+            return;
+        }
         saveBtn.disabled = true;
         if (messageEl) { messageEl.style.display = 'block'; messageEl.textContent = ''; }
         try {
@@ -8202,10 +8325,41 @@ async function loadUserMenuProfile(user) {
             if (newEmail !== (user.email || '')) updates.email = newEmail;
             const { data: updated, error } = await supabase.auth.updateUser(updates);
             if (error) throw error;
+            let savedMessage = T('changes_saved') || 'Changes saved';
+            if (specialtyWrap && !specialtyWrap.hidden) {
+                if (nextSpecialty !== specialtyAtOpen) {
+                    const headers = await qsMedicalJsonHeaders();
+                    const res = await fetch('/api/medical/professional-specialty', {
+                        method: 'POST',
+                        headers,
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ professionalSpecialty: nextSpecialty }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.error || T('save_failed') || 'Save failed');
+                    window.__QS_MEDICAL_ACCOUNT = {
+                        ...(window.__QS_MEDICAL_ACCOUNT || {}),
+                        ...data,
+                        professionalSpecialty: data.professionalSpecialty || nextSpecialty,
+                    };
+                    const professionChanged = !!(specialtyAtOpen && nextSpecialty !== specialtyAtOpen);
+                    if (data.trainingReset || professionChanged) {
+                        if (!data.trainingReset) {
+                            await medicalTrainingApi('/api/medical_training/reset', {});
+                        }
+                        qsClearMedicalPersonalTrainingLocal();
+                        savedMessage = T('profile_specialty_saved') || savedMessage;
+                        if (String(window.medicalActiveTab || '') === 'summary' && typeof renderTranscriptFromCues === 'function') {
+                            renderTranscriptFromCues(window.currentSegments || []);
+                        }
+                    }
+                    specialtyAtOpen = nextSpecialty;
+                }
+            }
             const userToShow = updated?.user || user;
             if (typeof setupNavbarAuth === 'function') await setupNavbarAuth(userToShow);
             if (messageEl) {
-                messageEl.textContent = (typeof window.t === 'function' ? window.t('changes_saved') : 'Changes saved');
+                messageEl.textContent = savedMessage;
                 messageEl.style.color = '#059669';
             }
             const { displayName: d, email: em } = getAuthUserDisplayInfo(userToShow);
@@ -9889,7 +10043,9 @@ function _stripLeadingMedicalExamLegacyPrefix(s) {
 const _MEDICAL_SECTION_ALL_LABELS = [
     'תלונה עיקרית / HPI', 'תלונה עיקרית', 'תלונה', 'תלונות',
     'תכנים מרכזיים',
+    'תלונה עיקרית / אנמנזה',
     'היסטוריה, תרופות ובדיקה נוירולוגית',
+    'בדיקה אורתופדית',
     'הערכה ותוכנית',
     'ממצאים', 'בדיקה',
     'התרשמות רגשית',
@@ -10982,9 +11138,13 @@ function qsSyncMedicalStyleTrainingBadge() {
         || String(fmt.medical_patient_recommendations || '').trim()
         || (Array.isArray(fmt.key_points) && fmt.key_points.length)
     );
-    const show = !!(on && trainingOn && isSummary && hasSummary && !qsIsMedicalStyleConfigured());
+    const show = !!(on && trainingOn && isSummary && hasSummary);
     badge.hidden = !show;
-    if (show) badge.removeAttribute('hidden');
+    if (show) {
+        badge.removeAttribute('hidden');
+        const label = (typeof window.t === 'function' && window.t('medical_learn_my_style')) || '';
+        if (label && label !== 'medical_learn_my_style') badge.textContent = label;
+    }
 }
 
 function qsCloseMedicalTrainingModal() {
@@ -11060,13 +11220,10 @@ function renderMedicalTrainingPanel(container) {
         window._medicalTrainingDoctorDraft = '';
         draftText = '';
     }
-    const learnBtnLabel = postLearnPreview ? 'נסה שנית' : 'למד מהסיכום הזה';
+    const learnBtnLabel = postLearnPreview ? 'נסה שנית' : 'התאם לסגנון הכתיבה שלי';
     const learnBtnStyle = postLearnPreview
         ? 'padding:10px 14px;border:1px solid #0f766e;border-radius:10px;background:#ffffff;color:#0f766e;font-weight:700;cursor:pointer;'
         : 'padding:10px 14px;border:none;border-radius:10px;background:#0f766e;color:#ffffff;font-weight:700;cursor:pointer;';
-    const approveBtnStyle = postLearnPreview
-        ? 'padding:10px 14px;border:none;border-radius:10px;background:#0f766e;color:#ffffff;font-weight:700;cursor:pointer;'
-        : 'padding:10px 14px;border:1px solid #0f766e;border-radius:10px;background:#ffffff;color:#0f766e;font-weight:700;cursor:pointer;';
     const panel = document.createElement('div');
     panel.id = 'medical-training-panel';
     panel.style.cssText = 'direction:rtl;text-align:right;margin:0;padding:0;line-height:1.6;';
@@ -11075,7 +11232,6 @@ function renderMedicalTrainingPanel(container) {
         <div style="font-size:0.88rem;color:#0f766e;margin-bottom:10px;">ערכו את הסיכום לצורת התבנית שלכם (כותרות, סדר סעיפים וסגנון). האימון שומר תבנית וסגנון אישיים לחשבון שלכם בלבד — לא משותף עם רופאים אחרים. עובדות קליניות מהדוגמה לא נשמרות ככללים.</div>
         <div class="qs-medical-training-actions">
             <button type="button" id="medical-training-learn-btn" style="${learnBtnStyle}">${learnBtnLabel}</button>
-            <button type="button" id="medical-training-approve-btn" style="${approveBtnStyle}">אשר אימון</button>
             <button type="button" id="medical-training-cancel-btn" style="padding:10px 14px;border:1px solid #cbd5e1;border-radius:10px;background:#ffffff;color:#475569;font-weight:700;cursor:pointer;">ביטול</button>
         </div>
         <textarea id="medical-training-doctor-summary" class="qs-medical-training-textarea" rows="8" placeholder="הדביקו כאן את הסיכום בתבנית הרצויה שלכם...">${esc(draftText)}</textarea>
@@ -11093,21 +11249,13 @@ function renderMedicalTrainingPanel(container) {
     const textarea = panel.querySelector('#medical-training-doctor-summary');
     const message = panel.querySelector('#medical-training-message');
     const learnBtn = panel.querySelector('#medical-training-learn-btn');
-    const approveBtn = panel.querySelector('#medical-training-approve-btn');
     const cancelBtn = panel.querySelector('#medical-training-cancel-btn');
     if (cancelBtn) {
         cancelBtn.onclick = () => qsCloseMedicalTrainingModal();
     }
     const syncTrainingButtons = () => {
         const currentDraft = _qsNormMedicalTrainingSummaryText(textarea ? textarea.value : '');
-        const learnActive = !!currentDraft;
-        const approveActive = !!(
-            window._medicalTrainingPostLearnPreviewReady &&
-            String(window._medicalTrainingCandidatePrompt || '').trim() &&
-            !window._medicalTrainingApprovedCandidatePrompt
-        );
-        _medicalTrainingBtnSetDisabled(learnBtn, !learnActive);
-        _medicalTrainingBtnSetDisabled(approveBtn, !approveActive);
+        _medicalTrainingBtnSetDisabled(learnBtn, !currentDraft);
     };
     if (textarea) {
         textarea.addEventListener('input', () => {
@@ -11116,6 +11264,25 @@ function renderMedicalTrainingPanel(container) {
         });
     }
     syncTrainingButtons();
+
+    const persistLearnedStyle = async () => {
+        const candidateToApprove = String(window._medicalTrainingCandidatePrompt || '').trim();
+        if (!candidateToApprove) {
+            throw new Error('missing_candidate_prompt');
+        }
+        if (window._medicalTrainingApprovedCandidatePrompt === candidateToApprove) {
+            return null;
+        }
+        const approved = await medicalTrainingApi('/api/medical_training/approve', {
+            candidate_prompt: candidateToApprove,
+            example_id: window._medicalTrainingLastExampleId || ''
+        });
+        window._medicalTrainingApprovedCandidatePrompt = candidateToApprove;
+        qsSetMedicalStyleConfigured(true);
+        qsSyncMedicalStyleTrainingBadge();
+        return approved;
+    };
+
     if (learnBtn) {
         learnBtn.onclick = async () => {
             if (_medicalTrainingBtnBlockIfInactive(learnBtn)) return;
@@ -11167,10 +11334,7 @@ function renderMedicalTrainingPanel(container) {
                 if (previewRes.preview_model) {
                     console.info('[medical training] preview model:', previewRes.preview_model);
                 }
-                window._medicalTrainingMessage = 'התצוגה המקדימה מוכנה. אם התבנית והסגנון מתאימים, לחצו על «אשר אימון». אם לא — ערכו ו«נסה שנית».';
                 // Apply preview to the open visit so Summary matches what was learned.
-                // Production persistence waits for «אשר אימון» (do not auto-approve — that
-                // left both buttons greyed out / unusable).
                 const previewFmt = window._medicalTrainingCandidatePreview;
                 if (previewFmt && typeof previewFmt === 'object') {
                     const prevDoc = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
@@ -11184,10 +11348,14 @@ function renderMedicalTrainingPanel(container) {
                     window._medicalHasResult = true;
                     window.medicalActiveTab = 'summary';
                 }
+                if (message) message.textContent = 'שומר סיגנון ותבנית סיכום...';
+                const approved = await persistLearnedStyle();
                 window._medicalTrainingPostLearnPreviewReady = true;
-                window._medicalTrainingApprovedCandidatePrompt = '';
-                window._medicalTrainingPanelExpanded = true;
                 window._medicalTrainingBaselineForRetry = doctorSummary;
+                window._medicalTrainingPanelExpanded = true;
+                window._medicalTrainingMessage = approved
+                    ? `התבנית והסגנון נשמרו (גרסה ${approved?.profile?.version || ''}). סיכומים חדשים ישתמשו בתבנית האישית שלכם. אפשר לערוך ו«נסה שנית» אם תרצו לדייק.`
+                    : 'התבנית והסגנון כבר שמורים. אפשר לערוך ו«נסה שנית» אם תרצו לדייק.';
                 if (typeof window.hideClinicalTrainingModal === 'function') window.hideClinicalTrainingModal();
                 if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
                 if (typeof updateMedicalTabUi === 'function') {
@@ -11199,69 +11367,6 @@ function renderMedicalTrainingPanel(container) {
             } catch (e) {
                 if (typeof window.hideClinicalTrainingModal === 'function') window.hideClinicalTrainingModal();
                 if (message) message.textContent = 'האימון נכשל: ' + String((e && e.message) || e).slice(0, 220);
-            } finally {
-                syncTrainingButtons();
-            }
-        };
-    }
-    if (approveBtn) {
-        approveBtn.onclick = async () => {
-            if (_medicalTrainingBtnBlockIfInactive(approveBtn)) return;
-            try {
-                if (!window._medicalTrainingPostLearnPreviewReady || !String(window._medicalTrainingCandidatePrompt || '').trim()) {
-                    if (typeof showStatus === 'function') {
-                        showStatus('יש להריץ למידה ותצוגה מקדימה לפני אישור האימון.', false, { duration: 5000 });
-                    }
-                    return;
-                }
-                approveBtn.disabled = true;
-                const candidateToApprove = String(window._medicalTrainingCandidatePrompt || '').trim();
-                if (window._medicalTrainingApprovedCandidatePrompt === candidateToApprove) {
-                    if (typeof showStatus === 'function') {
-                        showStatus('האימון הזה כבר אושר.', false, { duration: 5000 });
-                    }
-                    return;
-                }
-                if (message) message.textContent = 'שומר סיגנון ותבנית סיכום...';
-                const approved = await medicalTrainingApi('/api/medical_training/approve', {
-                    candidate_prompt: candidateToApprove,
-                    example_id: window._medicalTrainingLastExampleId || ''
-                });
-                // Apply the trained preview to the open visit so Summary reflects the private template
-                // immediately (not only on the next recording).
-                const previewFmt = window._medicalTrainingCandidatePreview;
-                if (previewFmt && typeof previewFmt === 'object') {
-                    const prevDoc = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
-                        ? window.currentFormattedDoc
-                        : {};
-                    const merged = normalizeFormattedFields({
-                        ...prevDoc,
-                        ...previewFmt,
-                        clean_transcript: previewFmt.clean_transcript || prevDoc.clean_transcript || '',
-                    }) || { ...prevDoc, ...previewFmt };
-                    window.currentFormattedDoc = merged;
-                    window._medicalHasResult = true;
-                }
-                window._medicalTrainingMessage = `התבנית והסגנון נשמרו (גרסה ${approved?.profile?.version || ''}). סיכומים חדשים ישתמשו בתבנית האישית שלכם.`;
-                window._medicalTrainingApprovedCandidatePrompt = candidateToApprove;
-                window._medicalTrainingPostLearnPreviewReady = false;
-                window._medicalTrainingBaselineForRetry = '';
-                window._medicalTrainingDoctorDraft = '';
-                window._medicalTrainingCandidatePrompt = '';
-                window._medicalTrainingCandidatePreview = null;
-                window._medicalTrainingLearnedRules = [];
-                window._medicalTrainingLastExampleId = '';
-                qsSetMedicalStyleConfigured(true);
-                qsCloseMedicalTrainingModal();
-                qsSyncMedicalStyleTrainingBadge();
-                if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
-                if (typeof updateMedicalTabUi === 'function') {
-                    try { updateMedicalTabUi(); } catch (_) {}
-                } else if (typeof window.refreshMedicalTabs === 'function') {
-                    try { window.refreshMedicalTabs(); } catch (_) {}
-                }
-            } catch (e) {
-                if (message) message.textContent = 'שמירת סיגנון הסיכום נכשלה: ' + String((e && e.message) || e).slice(0, 220);
             } finally {
                 syncTrainingButtons();
             }
@@ -12086,6 +12191,7 @@ async function ensureFormattedViaApiForExport(options) {
                 try { localStorage.setItem('qs_medical_personal_template', '1'); } catch (_) {}
             } else if (
                 safeFmt.medical_task2_prompt_source === 'neurology'
+                || safeFmt.medical_task2_prompt_source === 'orthopedics'
                 || safeFmt.medical_task2_prompt_source === 'default'
                 || safeFmt.medical_task2_prompt_source === 'psychology'
             ) {
@@ -12106,13 +12212,17 @@ async function ensureFormattedViaApiForExport(options) {
                 });
             } catch (_) {}
         }
-        try {
-            await qsPersistFormattedDocToS3();
-        } catch (e) {
-            console.warn('[export] persist formatted after API format:', e);
+        if (!opts.deferPersist) {
+            try {
+                await qsPersistFormattedDocToS3();
+            } catch (e) {
+                console.warn('[export] persist formatted after API format:', e);
+            }
         }
         try {
-            if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
+            if (opts.skipUiRender) {
+                // Caller paints the summary once after this request settles.
+            } else if (typeof effectiveIsMedicalForFormatting === 'function' && effectiveIsMedicalForFormatting()) {
                 window.medicalActiveTab = 'summary';
                 if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
                 if (typeof renderTranscriptFromCues === 'function') renderTranscriptFromCues(window.currentSegments || []);
@@ -16503,7 +16613,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const hasLoadedPayload = typeof initOpenAppHasLoadedTranscriptPayload === 'function'
                 ? initOpenAppHasLoadedTranscriptPayload()
                 : false;
-            if (!hasLoadedPayload) window.medicalActiveTab = 'transcript';
+            const summaryBusy = !!(window._qsMedicalSummaryGenerating || window._qsMedicalSummaryInFlight);
+            if (!hasLoadedPayload && !summaryBusy) window.medicalActiveTab = 'transcript';
             try {
                 if (typeof window.hideSubtitleStyleSelector === 'function') window.hideSubtitleStyleSelector();
                 if (typeof window.toggleSubtitleStyleDrawer === 'function') window.toggleSubtitleStyleDrawer(false);
@@ -16517,7 +16628,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     twMed
                     && twMed.querySelector('textarea.qs-medical-edit-box-body, [data-medical-edit-box]')
                 );
-                if (!hasUnsavedBoxes && typeof window._qsRerenderTranscriptView === 'function') {
+                if (!hasUnsavedBoxes && !summaryBusy && typeof window._qsRerenderTranscriptView === 'function') {
                     window._qsRerenderTranscriptView();
                 }
             } catch (_) {}
@@ -16568,14 +16679,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function qsMedicalRecordingClockMs() {
+        const last = Number(window.__QS_MEDICAL_LAST_RECORDING_MS || 0);
+        const rec = window._medicalRecorder;
+        const recActive = !!(rec && (rec.state === 'recording' || rec.state === 'paused'));
+        if (last > 0 && !recActive) return last;
+        const base = Number(window._medicalRecordingAccumMs || 0);
+        const started = Number(window._medicalRecordingStartedAt || 0);
+        const paused = !!window._medicalRecorderPaused;
+        const running = (paused || !started) ? 0 : Math.max(0, Date.now() - started);
+        return Math.max(0, base + running);
+    }
+    window.qsMedicalRecordingClockMs = qsMedicalRecordingClockMs;
+
     function renderMedicalRecordingTimer() {
         const timerTarget = medicalRecordingTimerSlot || medicalRecordTimer;
         if (!timerTarget) return;
-        const base = Number(window._medicalRecordingAccumMs || 0);
-        const runningDelta = window._medicalRecorderPaused
-            ? 0
-            : Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
-        const elapsedMs = Math.max(0, base + runningDelta);
+        const elapsedMs = qsMedicalRecordingClockMs();
         const totalSec = Math.floor(elapsedMs / 1000);
         const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
         const ss = String(totalSec % 60).padStart(2, '0');
@@ -17312,51 +17432,65 @@ document.addEventListener('DOMContentLoaded', () => {
     function qsSyncMedicalStreamLangUi() {
         const mode = qsGetMedicalStreamLangMode();
         const wrap = document.getElementById('medical-stream-lang-wrap');
-        const toggle = document.getElementById('medical-stream-lang-toggle');
+        const select = document.getElementById('medical-stream-lang-select');
         const hint = document.getElementById('medical-stream-lang-hint');
-        if (toggle) {
-            toggle.querySelectorAll('[data-medical-stream-lang]').forEach((btn) => {
-                const selected = String(btn.getAttribute('data-medical-stream-lang') || '') === mode;
-                btn.setAttribute('aria-checked', selected ? 'true' : 'false');
-            });
+        if (select) {
+            if (!select.options.length) qsPopulateMedicalStreamLangSelect(select);
+            if (select.value !== mode) {
+                select.value = mode;
+                if (select.value !== mode) {
+                    qsSetMedicalStreamLangMode('he');
+                    select.value = 'he';
+                }
+            }
+            select.setAttribute(
+                'aria-label',
+                qsMedicalStreamLangI18n('medical_stream_lang_aria', 'Live transcription language')
+            );
+            select.title = mode === 'auto'
+                ? qsMedicalStreamLangI18n(
+                    'medical_language_pause_tip',
+                    'When switching languages, pause about 2 seconds.'
+                )
+                : '';
         }
         if (hint) hint.hidden = mode !== 'auto';
         if (wrap) wrap.hidden = !isMedicalModeEnabled();
     }
 
     function qsWireMedicalStreamLangUi() {
-        const toggle = document.getElementById('medical-stream-lang-toggle');
-        if (!toggle || toggle.dataset.qsWired === '1') {
+        const select = document.getElementById('medical-stream-lang-select');
+        if (!select) {
             qsSyncMedicalStreamLangUi();
             return;
         }
-        toggle.dataset.qsWired = '1';
-        toggle.addEventListener('click', (event) => {
-            const btn = event.target && event.target.closest
-                ? event.target.closest('[data-medical-stream-lang]')
-                : null;
-            if (!btn || !toggle.contains(btn)) return;
-            event.preventDefault();
-            qsSetMedicalStreamLangMode(btn.getAttribute('data-medical-stream-lang'));
-            qsSyncMedicalStreamLangUi();
-            try {
-                const tw = document.getElementById('transcript-window');
-                if (
-                    tw
-                    && typeof window.renderTranscriptFromCues === 'function'
-                    && !String(window._medicalLiveStreamText || '').trim()
-                    && !(Array.isArray(window.currentSegments) && window.currentSegments.length)
-                ) {
-                    window.renderTranscriptFromCues([]);
-                }
-            } catch (_) {}
-        });
+        if (select.dataset.qsWired !== '1') {
+            select.dataset.qsWired = '1';
+            select.addEventListener('change', () => {
+                qsSetMedicalStreamLangMode(select.value);
+                qsSyncMedicalStreamLangUi();
+                try {
+                    const tw = document.getElementById('transcript-window');
+                    if (
+                        tw
+                        && typeof window.renderTranscriptFromCues === 'function'
+                        && !String(window._medicalLiveStreamText || '').trim()
+                        && !(Array.isArray(window.currentSegments) && window.currentSegments.length)
+                    ) {
+                        window.renderTranscriptFromCues([]);
+                    }
+                } catch (_) {}
+            });
+        }
+        qsPopulateMedicalStreamLangSelect(select);
         qsSyncMedicalStreamLangUi();
     }
 
     window.qsGetPreferredMedicalMicDeviceId = qsGetPreferredMedicalMicDeviceId;
     window.qsStopMedicalMicTest = qsStopMedicalMicTest;
     window.qsCloseMedicalMicTestModal = qsCloseMedicalMicTestModal;
+    window.qsSyncMedicalStreamLangUi = qsSyncMedicalStreamLangUi;
+    window.qsWireMedicalStreamLangUi = qsWireMedicalStreamLangUi;
     qsWireMedicalMicSettingsUi();
     qsWireMedicalStreamLangUi();
     qsWireMedicalSettingsMenu();
@@ -17403,28 +17537,19 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         const T = typeof window.t === 'function' ? window.t : function(k) { return k; };
-        const jobId = localStorage.getItem('lastJobId') || '';
-        const awaitingSummary = !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
-        const hasTranscript = Array.isArray(window.currentSegments) && window.currentSegments.length > 0;
-        if (awaitingSummary && hasTranscript) {
-            medicalRecordBtn.classList.add('is-new-session');
-            if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = 'none';
-            if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = '';
-            if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
-            medicalRecordBtn.setAttribute('aria-label', T('new_session') || 'New session');
-            return;
-        }
-        medicalRecordBtn.classList.remove('is-new-session');
-        if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = 'none';
         const isPaused = !!(medicalRecordOuter && medicalRecordOuter.classList.contains('is-paused'));
         const isRecording = !!(medicalRecordOuter && medicalRecordOuter.classList.contains('is-recording'));
         if (isRecording) {
+            medicalRecordBtn.classList.remove('is-new-session');
+            if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = 'none';
             if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = 'none';
             if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = '';
             medicalRecordBtn.setAttribute('aria-label', T('pause') || 'Pause');
             return;
         }
         if (isPaused) {
+            medicalRecordBtn.classList.remove('is-new-session');
+            if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = 'none';
             if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = '';
             if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
             medicalRecordBtn.setAttribute(
@@ -17433,6 +17558,8 @@ document.addEventListener('DOMContentLoaded', () => {
             );
             return;
         }
+        medicalRecordBtn.classList.remove('is-new-session');
+        if (medicalRecordNewSessionLabel) medicalRecordNewSessionLabel.style.display = 'none';
         if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = '';
         if (medicalRecordPauseSymbol) medicalRecordPauseSymbol.style.display = 'none';
         medicalRecordBtn.setAttribute('aria-label', T('medical_recording') || 'Recording');
@@ -17987,6 +18114,231 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function qsMedicalGapLocaleIsRtl() {
+        const locale = String(typeof qsResolveAppLocale === 'function' ? qsResolveAppLocale() : (window.currentLocale || 'he')).toLowerCase();
+        return locale.startsWith('he') || locale.startsWith('ar');
+    }
+
+    function qsFormatMedicalGapClock(ms) {
+        const totalSec = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+        const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
+        const ss = String(totalSec % 60).padStart(2, '0');
+        return `${mm}:${ss}`;
+    }
+
+    function qsMedicalGapMarkerText(gap, failed) {
+        const from = qsFormatMedicalGapClock(gap && gap.startMs);
+        const to = qsFormatMedicalGapClock(gap && gap.endMs);
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        const key = failed ? 'medical_gap_not_transcribed_marker' : 'medical_gap_filling_marker';
+        const tmpl = T(key) || (failed
+            ? (qsMedicalGapLocaleIsRtl() ? '[קטע לא תומלל {from}–{to}]' : '[Not transcribed {from}–{to}]')
+            : (qsMedicalGapLocaleIsRtl() ? '[קטע בהשלמה {from}–{to}]' : '[Filling in {from}–{to}]'));
+        return String(tmpl).replace('{from}', from).replace('{to}', to);
+    }
+
+    function qsReplaceMedicalLiveTextToken(prev, next) {
+        const cur = String(window._medicalLiveStreamText || '');
+        if (prev && cur.includes(prev)) {
+            window._medicalLiveStreamText = cur.split(prev).join(next);
+        } else {
+            const base = cur.trim();
+            window._medicalLiveStreamText = base ? `${base} ${next}` : next;
+        }
+        try { window._medicalLiveCommitAnchor = window._medicalLiveStreamText; } catch (_) {}
+        const tw = document.getElementById('transcript-window');
+        if (!tw) return;
+        const boxes = tw.querySelectorAll('textarea.qs-medical-edit-box-body');
+        if (boxes.length) {
+            let replaced = false;
+            boxes.forEach((box) => {
+                const val = String(box.value || '');
+                if (prev && val.includes(prev)) {
+                    box.value = val.split(prev).join(next);
+                    replaced = true;
+                    if (typeof qsAutosizeMedicalEditTextarea === 'function') qsAutosizeMedicalEditTextarea(box);
+                }
+            });
+            if (!replaced) {
+                const last = boxes[boxes.length - 1];
+                const curLast = String(last.value || '').trim();
+                last.value = curLast ? `${curLast} ${next}` : next;
+                if (typeof qsAutosizeMedicalEditTextarea === 'function') qsAutosizeMedicalEditTextarea(last);
+            }
+        }
+        try { qsSnapshotMedicalTranscriptBoxesFromDom({ force: true }); } catch (_) {}
+    }
+
+    function qsUpsertMedicalGapPlaceholder(gap, failed) {
+        if (!gap) return '';
+        const next = qsMedicalGapMarkerText(gap, !!failed);
+        const prev = String(gap.placeholder || '').trim();
+        if (prev === next && prev) return next;
+        qsReplaceMedicalLiveTextToken(prev, next);
+        gap.placeholder = next;
+        try {
+            const list = Array.isArray(window._medicalPendingGaps) ? window._medicalPendingGaps : [];
+            const idx = list.findIndex((g) => g && g.id === gap.id);
+            if (idx >= 0) list[idx] = { ...list[idx], ...gap, placeholder: next };
+            else list.push({ ...gap, placeholder: next });
+            window._medicalPendingGaps = list;
+        } catch (_) {}
+        return next;
+    }
+
+    function qsMarkMedicalGapsFailed(gaps) {
+        (gaps || []).forEach((gap) => {
+            if (!gap) return;
+            gap.failed = true;
+            gap.recovered = false;
+            qsUpsertMedicalGapPlaceholder(gap, true);
+        });
+    }
+
+    function qsBytesToBase64(bytes) {
+        const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+        let binary = '';
+        const step = 0x8000;
+        for (let i = 0; i < view.length; i += step) {
+            binary += String.fromCharCode.apply(null, view.subarray(i, i + step));
+        }
+        return btoa(binary);
+    }
+
+    function qsApplyMedicalGapStitchedTranscript(text, gaps) {
+        const clean = String(text || '').trim();
+        if (!clean) return;
+        (gaps || []).forEach((g) => {
+            if (!g) return;
+            g.recovered = g.status === 'ok';
+            g.failed = g.status !== 'ok';
+            const replacement = g.recovered
+                ? String(g.text || '').trim()
+                : qsMedicalGapMarkerText(g, true);
+            const prev = String(g.placeholder || '').trim();
+            if (replacement) qsReplaceMedicalLiveTextToken(prev, replacement);
+            g.placeholder = replacement;
+        });
+        const tw = document.getElementById('transcript-window');
+        const boxes = tw ? Array.from(tw.querySelectorAll('textarea.qs-medical-edit-box-body')) : [];
+        if (boxes.length) {
+            const joined = boxes.map((box) => String(box.value || '').trim()).filter(Boolean).join(' ').trim();
+            window._medicalLiveStreamText = joined || clean.replace(/(?:\r?\n\s*){2,}/g, ' ').trim();
+            window._medicalUnsavedBoxes = boxes.map((box) => String(box.value || ''));
+        } else {
+            const one = clean.replace(/(?:\r?\n\s*){2,}/g, ' ').replace(/\s+/g, ' ').trim();
+            window._medicalLiveStreamText = one;
+            window._medicalUnsavedBoxes = [one];
+            if (typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
+                qsRenderMedicalEditableTranscriptBoxes([one]);
+            }
+        }
+        try { window._medicalLiveCommitAnchor = window._medicalLiveStreamText; } catch (_) {}
+        const durationSec = Math.max(1, Number(window.__QS_MEDICAL_LAST_RECORDING_MS || 0) / 1000);
+        window.currentSegments = [{ start: 0, end: durationSec, text: window._medicalLiveStreamText }];
+        window.medicalActiveTab = 'transcript';
+        try { qsSnapshotMedicalTranscriptBoxesFromDom({ force: true }); } catch (_) {}
+        try { if (typeof updateMedicalTabUi === 'function') updateMedicalTabUi(); } catch (_) {}
+        window._medicalPendingGaps = gaps || [];
+    }
+
+    function qsCollectMedicalPendingGaps(streamResult) {
+        const fromResult = (streamResult && Array.isArray(streamResult.gaps)) ? streamResult.gaps : [];
+        const fromWindow = Array.isArray(window._medicalPendingGaps) ? window._medicalPendingGaps : [];
+        const byId = new Map();
+        const add = (g) => {
+            if (!g || !g.id) return;
+            const prev = byId.get(g.id) || {};
+            byId.set(g.id, {
+                ...prev,
+                ...g,
+                recovered: !!(prev.recovered || g.recovered || g.status === 'ok'),
+                failed: !!(prev.failed || g.failed || g.status === 'failed'),
+                placeholder: g.placeholder || prev.placeholder || '',
+            });
+        };
+        fromResult.forEach(add);
+        fromWindow.forEach(add);
+        return Array.from(byId.values()).filter((g) => Number(g.endMs) > Number(g.startMs));
+    }
+
+    function qsUnfilledMedicalGaps(streamResult) {
+        return qsCollectMedicalPendingGaps(streamResult).filter((g) => g && !g.recovered && !g.failed);
+    }
+
+    function qsMergeRecoveredMedicalGaps(freshGaps) {
+        const prior = qsCollectMedicalPendingGaps({ gaps: [] });
+        const byId = new Map(prior.filter((g) => g && g.id).map((g) => [g.id, g]));
+        return (Array.isArray(freshGaps) ? freshGaps : []).map((g) => {
+            if (!g || !g.id) return g;
+            const old = byId.get(g.id);
+            if (!old) return g;
+            const recovered = !!(old.recovered || old.status === 'ok');
+            const failed = !!(old.failed || old.status === 'failed');
+            return {
+                ...g,
+                ...old,
+                startMs: g.startMs != null ? g.startMs : old.startMs,
+                endMs: g.endMs != null ? g.endMs : old.endMs,
+                recovered,
+                failed,
+                status: recovered ? 'ok' : (failed ? 'failed' : (old.status || g.status || '')),
+                text: old.text || g.text || '',
+                placeholder: old.placeholder || g.placeholder || '',
+            };
+        });
+    }
+
+    function qsShowMedicalLiveStatusBanner(mode) {
+        const el = document.getElementById('medical-live-status-banner');
+        const textEl = document.getElementById('medical-live-status-banner-text');
+        if (!el) return;
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        const filling = mode === 'filling';
+        const label = filling
+            ? (T('medical_gap_filling_banner') || 'משלים קטע חסר…')
+            : (T('medical_live_paused_banner') || 'התמלול החי מושהה. ההקלטה ממשיכה.');
+        if (textEl) textEl.textContent = label;
+        el.hidden = false;
+        el.setAttribute('data-mode', filling ? 'filling' : 'paused');
+        window._medicalLiveBannerVisible = true;
+    }
+
+    function qsHideMedicalLiveStatusBanner() {
+        if (window._medicalLiveBannerTimer) {
+            clearTimeout(window._medicalLiveBannerTimer);
+            window._medicalLiveBannerTimer = null;
+        }
+        const el = document.getElementById('medical-live-status-banner');
+        if (el) {
+            el.hidden = true;
+            el.removeAttribute('data-mode');
+        }
+        window._medicalLiveBannerVisible = false;
+    }
+
+    function qsNoteMedicalLiveStreamBanner(statusKey) {
+        const key = String(statusKey || '').toLowerCase();
+        const userPaused = !!window._medicalUserPaused
+            || !!(medicalRecordOuter && medicalRecordOuter.classList.contains('is-paused'));
+        if (key === 'listening' || key === 'ready') {
+            if (window._medicalLiveBannerTimer) {
+                clearTimeout(window._medicalLiveBannerTimer);
+                window._medicalLiveBannerTimer = null;
+            }
+            if (window._medicalLiveBannerVisible) qsHideMedicalLiveStatusBanner();
+            return;
+        }
+        if (userPaused) return;
+        if (key !== 'resuming' && key !== 'parked') return;
+        if (window._medicalLiveBannerVisible || window._medicalLiveBannerTimer) return;
+        window._medicalLiveBannerTimer = setTimeout(() => {
+            window._medicalLiveBannerTimer = null;
+            if (window._medicalUserPaused) return;
+            qsShowMedicalLiveStatusBanner('paused');
+        }, 3000);
+    }
+
     function renderMedicalLiveStreamStatus(statusKey) {
         if (!isMedicalModeEnabled()) return;
         const key = String(statusKey || '').toLowerCase();
@@ -18030,22 +18382,14 @@ document.addEventListener('DOMContentLoaded', () => {
             && tw.classList.contains('qs-medical-boxes-editable')
             && tw.querySelector('textarea.qs-medical-edit-box-body, [data-medical-edit-box]')
         );
-        if (hasBoxes || key === 'parked' || key === 'resuming') {
-            if (typeof showStatus === 'function' && (key === 'parked' || key === 'resuming')) {
-                const toastKey = `medical_stream_status_${key}`;
-                if (window._medicalStreamStatusToastKey !== toastKey) {
-                    window._medicalStreamStatusToastKey = toastKey;
-                    showStatus(label, false, {
-                        duration: key === 'parked' ? 8000 : 5000,
-                        toastPosition: 'above',
-                        toastAnchorId: 'medical-record-btn',
-                    });
-                }
-            }
+        if (key === 'parked' || key === 'resuming') {
+            qsNoteMedicalLiveStreamBanner(key);
             if (hasBoxes) return;
         }
+        if (hasBoxes) return;
         if (key === 'listening') {
             window._medicalStreamStatusToastKey = '';
+            qsNoteMedicalLiveStreamBanner(key);
         }
 
         if (!tw) return;
@@ -18145,7 +18489,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 // prepend it again here — that duplicated the live transcript.
                 renderMedicalLiveStreamTranscript(t);
             },
-            onStatus: (s) => renderMedicalLiveStreamStatus(s),
+            onStatus: (s) => {
+                qsNoteMedicalLiveStreamBanner(s);
+                renderMedicalLiveStreamStatus(s);
+            },
+            onGap: (gap) => {
+                if (!gap) return;
+                qsUpsertMedicalGapPlaceholder(gap, !!gap.failed);
+            },
         });
         // Capture PCM immediately — MediaRecorder UI may already be recording while auth/socket await.
         try {
@@ -18217,7 +18568,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const networkHint = /socket|ws_|websocket|connect|polling/i.test(msg)
                     ? T(
                         'medical_stream_network_blocked',
-                        'Live connection was blocked on this network. Try another network, or ask IT to allow Socket.IO polling to getquickscribe.com.'
+                        'Live connection was blocked on this network. Try another network, or ask IT to allow WebSocket/polling to getquickscribe.com.'
                     )
                     : '';
                 showStatus(networkHint || `AWS Transcribe stream: ${msg}`, true);
@@ -18277,13 +18628,223 @@ document.addEventListener('DOMContentLoaded', () => {
         return errText;
     }
 
+    async function qsEnsureMedicalGapsRecovered(pending) {
+        if (!pending || (!pending.file && !pending.gapPcmBase64)) return pending;
+        const unfilled = qsUnfilledMedicalGaps(pending.streamResult || { gaps: pending.gaps });
+        if (!unfilled.length) return pending;
+        qsShowMedicalLiveStatusBanner('filling');
+        const T = typeof window.t === 'function' ? window.t : (k) => k;
+        try {
+            const liveStream = window._medicalAwsTranscribeStream;
+            const cfg = (typeof qsGetMedicalTranscriptionConfigCached === 'function'
+                ? qsGetMedicalTranscriptionConfigCached()
+                : null) || {};
+            const mime = normalizeMedicalUploadMime((pending.file && pending.file.type) || 'audio/webm');
+            let session = pending.session;
+            const pcm = String(pending.gapPcmBase64 || '');
+            if (!pcm) {
+                if (!session || !session.s3Key || !session.jobId) {
+                    session = await createMedicalUploadSession(mime);
+                    pending.session = session;
+                }
+                if (!session || !session.s3Key || !session.jobId) {
+                    throw new Error('upload_session_failed');
+                }
+                if (!pending.audioUploaded) {
+                    await putMedicalRecordingViaApp(session, pending.file);
+                    pending.audioUploaded = true;
+                }
+            }
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), pcm ? 50000 : 120000);
+            let res;
+            const gapBody = {
+                jobId: (session && session.jobId) || `gap_${Date.now()}`,
+                s3Key: (session && session.s3Key) || '',
+                bucket: (session && session.bucket) || '',
+                transcript: resolveMedicalStreamTranscript(pending.streamResult)
+                    || String(window._medicalLiveStreamText || ''),
+                gaps: unfilled.map((g) => ({
+                    id: g.id,
+                    startMs: g.startMs,
+                    endMs: g.endMs,
+                    placeholder: g.placeholder || qsMedicalGapMarkerText(g, false),
+                    textOffset: g.textOffset,
+                })),
+                language_code: (liveStream && liveStream.languageCode) || cfg.transcribe_stream_language || 'he-IL',
+                identify_multiple_languages: !!(liveStream && liveStream.identifyMultipleLanguages),
+                language_options: (liveStream && liveStream.languageOptions) || cfg.transcribe_stream_language_options || ['he-IL', 'en-US'],
+                locale: qsMedicalGapLocaleIsRtl() ? 'he' : 'en',
+                isMedical: true,
+            };
+            if (pcm) gapBody.pcm_base64 = pcm;
+            console.info('[medical] gap fill request', {
+                pcmBytes: pcm ? Math.floor(pcm.length * 3 / 4) : 0,
+                gaps: unfilled.length,
+                uploadFirst: !pcm,
+            });
+            try {
+                res = await fetch('/api/medical/transcribe_gaps', {
+                    method: 'POST',
+                    headers: await qsMedicalJsonHeaders(),
+                    credentials: 'same-origin',
+                    signal: controller.signal,
+                    body: JSON.stringify(gapBody),
+                });
+            } finally {
+                clearTimeout(timer);
+            }
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.message || data.error || `HTTP ${res.status}`);
+            }
+            const stitched = String(data.transcript || '').trim();
+            console.info('[medical] gap fill response', {
+                ok: !!data.ok,
+                chars: stitched.length,
+                statuses: (data.gaps || []).map((g) => g && g.status),
+            });
+            if (stitched) {
+                qsApplyMedicalGapStitchedTranscript(stitched, data.gaps || unfilled);
+                if (!pending.streamResult) pending.streamResult = {};
+                pending.streamResult.transcript = stitched;
+                pending.streamResult.gaps = data.gaps || unfilled;
+            } else {
+                qsMarkMedicalGapsFailed(unfilled);
+            }
+            pending.gaps = data.gaps || unfilled;
+            pending.gapsRecovered = true;
+        } catch (e) {
+            console.warn('[medical] gap recovery failed', e);
+            qsMarkMedicalGapsFailed(unfilled);
+            pending.gapsRecovered = false;
+            if (typeof showStatus === 'function') {
+                showStatus(
+                    T('medical_gap_recovery_failed') || 'Could not fill in a missing part. The summary will continue.',
+                    false,
+                    { duration: 6500 }
+                );
+            }
+        } finally {
+            qsHideMedicalLiveStatusBanner();
+        }
+        return pending;
+    }
+
+    async function qsBuildPausedMedicalRecordingFile() {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const chunks = (window._medicalRecorderChunks || []).filter((b) => b && b.size > 0);
+        const prior = (window._medicalRecorderSegments || []).filter((b) => b && b.size > 0);
+        const parts = prior.slice();
+        if (chunks.length) {
+            parts.push(new Blob(chunks, { type: (chunks[0] && chunks[0].type) || 'audio/webm' }));
+        }
+        if (!parts.length) return null;
+        if (parts.length === 1) {
+            const only = parts[0];
+            const normalizedType = normalizeMedicalUploadMime(only.type || 'audio/webm');
+            const ext = medicalBlobExtensionFromMime(normalizedType);
+            return new File([only], `medical_recording_${Date.now()}.${ext}`, { type: normalizedType });
+        }
+        try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) throw new Error('AudioContext unavailable');
+            const ctx = new Ctx();
+            const buffers = [];
+            for (const segment of parts) {
+                const arr = await segment.arrayBuffer();
+                buffers.push(await ctx.decodeAudioData(arr.slice(0)));
+            }
+            try { await ctx.close(); } catch (_) {}
+            const wav = encodeAudioBufferToWavBlob(buffers);
+            if (wav) return new File([wav], `medical_recording_${Date.now()}.wav`, { type: 'audio/wav' });
+        } catch (e) {
+            console.warn('[medical] pause snapshot stitch failed', e);
+        }
+        const mime = normalizeMedicalUploadMime((parts[0] && parts[0].type) || 'audio/webm');
+        const ext = medicalBlobExtensionFromMime(mime);
+        return new File(parts, `medical_recording_${Date.now()}.${ext}`, { type: mime });
+    }
+
+    async function qsRecoverMedicalGapsAfterPause() {
+        const live = window._medicalAwsTranscribeStream;
+        const gaps = qsCollectMedicalPendingGaps({
+            gaps: (live && typeof live.getGaps === 'function') ? live.getGaps() : [],
+        }).filter((g) => g && !g.recovered && !g.failed);
+        if (!gaps.length) return;
+        window._medicalGapRecoveryInFlight = true;
+        qsShowMedicalLiveStatusBanner('filling');
+        try {
+            let gapPcmBase64 = '';
+            const oneCompleteGap = gaps.length === 1 && !gaps[0].overflow;
+            if (oneCompleteGap && live && typeof live.snapshotPreReadyPcm === 'function') {
+                try {
+                    const pcm = live.snapshotPreReadyPcm();
+                    if (pcm && pcm.byteLength > 1000) gapPcmBase64 = qsBytesToBase64(pcm);
+                } catch (pcmErr) {
+                    console.warn('[medical] gap pcm snapshot failed', pcmErr);
+                }
+            }
+            let file = null;
+            if (!gapPcmBase64) {
+                file = await qsBuildPausedMedicalRecordingFile();
+                if (!file || !file.size) throw new Error('empty_recording_blob');
+            }
+            const pending = {
+                file,
+                streamResult: {
+                    transcript: String(window._medicalLiveStreamText || ''),
+                    gaps,
+                },
+                durationMs: qsMedicalRecordingClockMs(),
+                gaps,
+                gapPcmBase64,
+                session: window._medicalGapRecoverySession || null,
+                audioUploaded: false,
+            };
+            await qsEnsureMedicalGapsRecovered(pending);
+            if (pending.session) window._medicalGapRecoverySession = pending.session;
+            window._medicalPendingGaps = pending.gaps || gaps;
+            if (window._medicalPendingUpload) {
+                window._medicalPendingUpload.gaps = window._medicalPendingGaps;
+                if (!window._medicalPendingUpload.streamResult) window._medicalPendingUpload.streamResult = {};
+                window._medicalPendingUpload.streamResult.gaps = window._medicalPendingGaps;
+                window._medicalPendingUpload.streamResult.transcript = String(window._medicalLiveStreamText || '');
+            }
+        } catch (e) {
+            console.warn('[medical] pause gap recovery failed', e);
+            qsMarkMedicalGapsFailed(gaps);
+            qsHideMedicalLiveStatusBanner();
+        } finally {
+            window._medicalGapRecoveryInFlight = false;
+        }
+    }
+
     async function uploadWarmedMedicalRecordingWithStream(file, streamResult, durationMs) {
-        const transcript = resolveMedicalStreamTranscript(streamResult);
+        const pending = {
+            file,
+            streamResult,
+            durationMs,
+            session: (window._medicalPendingUpload && window._medicalPendingUpload.session) || null,
+            audioUploaded: !!(window._medicalPendingUpload && window._medicalPendingUpload.audioUploaded),
+            gaps: qsCollectMedicalPendingGaps(streamResult),
+        };
+        if (qsUnfilledMedicalGaps({ gaps: pending.gaps }).length) {
+            await qsEnsureMedicalGapsRecovered(pending);
+            window._medicalPendingUpload = {
+                ...(window._medicalPendingUpload || {}),
+                ...pending,
+            };
+        }
+        const transcript = resolveMedicalStreamTranscript(pending.streamResult || streamResult);
         if (!transcript) return false;
 
         const mime = normalizeMedicalUploadMime(file.type || 'audio/webm');
-        const session = await createMedicalUploadSession(mime);
+        const session = pending.session && pending.session.s3Key
+            ? pending.session
+            : await createMedicalUploadSession(mime);
         if (!session || !session.url || !session.s3Key || !session.jobId) return false;
+        pending.session = session;
 
         const objectUrl = URL.createObjectURL(file);
         window.originalFileName = file.name.replace(/\.[^.]+$/, '') || 'medical_recording';
@@ -18291,9 +18852,13 @@ document.addEventListener('DOMContentLoaded', () => {
         qsPersistUploadWasVideoFlag(false);
         setLocalPreviewAudio(objectUrl, session.filetype || mime);
 
-        if (window._medicalSaveSilent !== true) {
+        const silentUpload = window._medicalSaveSilent === true;
+        if (!silentUpload) {
             showProgressBar();
             qsSetProgressBarPct(25);
+        } else {
+            hideProgressBar();
+            if (typeof qsStopFakeProgress === 'function') qsStopFakeProgress('medical_silent_upload');
         }
 
         localStorage.setItem('lastS3Key', session.s3Key);
@@ -18314,7 +18879,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (wu && wu.id) warmUserId = wu.id;
         } catch (_) {}
 
-        qsSetProgressBarPct(40);
+        if (!silentUpload) qsSetProgressBarPct(40);
 
         if (keepSummaryUi && typeof qsMedicalHasFormattedSummary === 'function' && qsMedicalHasFormattedSummary()) {
             window._qsMedicalStreamAwaitingSummary = null;
@@ -18343,7 +18908,7 @@ document.addEventListener('DOMContentLoaded', () => {
             throw new Error(msg);
         }
         qsApplyTriggerCreditFields(completeData);
-        qsSetProgressBarPct(70);
+        if (!silentUpload) qsSetProgressBarPct(70);
 
         if (typeof window.qsSetActiveJob === 'function') {
             window.qsSetActiveJob(session.jobId);
@@ -18361,8 +18926,21 @@ document.addEventListener('DOMContentLoaded', () => {
             result: { segments: completeData.segments || [] },
             segments: completeData.segments || [],
         };
-        if (typeof window.handleJobUpdate === 'function') {
-            await window.handleJobUpdate(payload);
+        const summaryAlreadyOnScreen = !!(
+            keepSummaryUi
+            && typeof qsMedicalHasFormattedSummary === 'function'
+            && qsMedicalHasFormattedSummary()
+        );
+        window._qsSkipJobResultBackgroundSave = summaryAlreadyOnScreen;
+        try {
+            if (typeof window.handleJobUpdate === 'function') {
+                await window.handleJobUpdate(payload);
+            }
+            if (summaryAlreadyOnScreen && typeof qsPersistFormattedDocToS3 === 'function') {
+                await qsPersistFormattedDocToS3();
+            }
+        } finally {
+            window._qsSkipJobResultBackgroundSave = false;
         }
 
         // HIPAA S3 has no CORS — never PUT from the phone. Same-origin proxy uses IAM.
@@ -18372,11 +18950,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 bytes: file.size,
                 mime: file && file.type,
                 name: file && file.name,
+                alreadyUploaded: !!pending.audioUploaded,
             });
             if (!file || !file.size) {
                 throw new Error('empty_recording_blob');
             }
-            await putMedicalRecordingViaApp(session, file);
+            if (!pending.audioUploaded) {
+                await putMedicalRecordingViaApp(session, file);
+            }
             qsUploadTrace('medical_stream_archive_done', { jobId: session.jobId, bytes: file.size });
             const dbId = localStorage.getItem('lastJobDbId');
             if (typeof updateJobStatus === 'function' && dbId) await updateJobStatus(dbId, 'uploaded');
@@ -18389,23 +18970,77 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('[medical] audio archive proxy failed', proxyErr);
             if (typeof showStatus === 'function') {
                 const msg = String((proxyErr && proxyErr.message) || proxyErr || '');
+                const T = typeof window.t === 'function' ? window.t : (k) => k;
                 showStatus(
                     msg.includes('empty_recording_blob')
                         ? 'Transcript saved; recorder produced no audio file.'
-                        : 'Transcript saved; audio archive upload failed.',
-                    true,
+                        : (T('medical_archive_upload_failed') || 'Transcript saved. Audio upload failed.'),
+                    false,
                     { duration: 6000 }
                 );
             }
         }
 
-        qsSetProgressBarPct(100);
+        if (!silentUpload) qsSetProgressBarPct(100);
         hideProgressBar();
+        if (silentUpload) {
+            if (typeof qsStopFakeProgress === 'function') qsStopFakeProgress('medical_silent_upload');
+            if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI('medical_silent_upload');
+        }
         setDiarizationBusyState(false);
         if (transcript) window._medicalLiveStreamText = transcript;
         window._medicalWarmupSession = null;
         window._medicalWarmupPromise = null;
         return true;
+    }
+
+    async function qsUploadPendingMedicalRecordingAfterSummary() {
+        const pending = window._medicalPendingUpload;
+        if (!pending || !pending.file) {
+            window._medicalPendingUpload = null;
+            return;
+        }
+        window._medicalSaveSilent = true;
+        hideProgressBar();
+        try {
+            if (qsUnfilledMedicalGaps(pending.streamResult || { gaps: pending.gaps }).length) {
+                await qsEnsureMedicalGapsRecovered(pending);
+            }
+            window._medicalPendingUpload = pending;
+            const transcript = pending.streamResult
+                ? resolveMedicalStreamTranscript(pending.streamResult)
+                : '';
+            if (transcript) {
+                await uploadWarmedMedicalRecordingWithStream(
+                    pending.file,
+                    pending.streamResult,
+                    pending.durationMs
+                );
+            } else if (isMedicalModeEnabled()) {
+                const uploaded = await uploadWarmedMedicalRecordingFile(pending.file);
+                if (!uploaded) throw new Error('Recording upload failed');
+                if (typeof qsPersistFormattedDocToS3 === 'function') {
+                    await qsPersistFormattedDocToS3();
+                }
+            }
+        } catch (e) {
+            console.warn('[medical] recording upload failed after summary', e);
+            if (typeof showStatus === 'function') {
+                const T = typeof window.t === 'function' ? window.t : (k) => k;
+                showStatus(
+                    T('medical_upload_failed_summary_continues') || 'Recording upload failed. The summary will continue.',
+                    false,
+                    { duration: 6500 }
+                );
+            }
+        } finally {
+            window._medicalSaveSilent = false;
+            window._medicalPendingUpload = null;
+            hideProgressBar();
+            if (typeof qsStopFakeProgress === 'function') qsStopFakeProgress('medical_post_summary_upload');
+            if (typeof stopProcessingStateUI === 'function') stopProcessingStateUI('medical_post_summary_upload');
+            if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
+        }
     }
 
     async function uploadWarmedMedicalRecordingFile(file) {
@@ -18432,14 +19067,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window._medicalSaveSilent !== true) {
             showProgressBar();
             qsSetProgressBarPct(10);
+            const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : 'Uploading...') || '').replace(/\.\.\.?$/, '');
+            if (mainBtn) {
+                mainBtn.disabled = true;
+                mainBtn.innerText = uploadLabel;
+            }
+            setDiarizationBusyState(true);
+            setTranscriptActionButtonsVisible(false);
         }
-        const uploadLabel = ((typeof window.t === 'function' ? window.t('uploading') : 'Uploading...') || '').replace(/\.\.\.?$/, '');
-        if (mainBtn) {
-            mainBtn.disabled = true;
-            mainBtn.innerText = uploadLabel;
-        }
-        setDiarizationBusyState(true);
-        setTranscriptActionButtonsVisible(false);
         qsUploadTrace('medical_recording_put_start', { jobId: session.jobId, bytes: file.size });
         try {
             const putRes = await fetch(session.url, { method: 'PUT', headers, body: file, mode: 'cors', credentials: 'omit' });
@@ -18948,6 +19583,9 @@ document.addEventListener('DOMContentLoaded', () => {
             window._medicalLiveLastBoxDirty = false;
             window._medicalHasResult = false;
             window._lastProcessedJobId = null;
+            window._medicalPendingGaps = [];
+            window._medicalPendingUpload = null;
+            try { qsHideMedicalLiveStatusBanner(); } catch (_) {}
         }
         let stream = null;
         try {
@@ -19120,14 +19758,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!window._medicalRecorderPaused) {
                     window._medicalRecordingAccumMs += Math.max(0, Date.now() - Number(window._medicalRecordingStartedAt || 0));
                 }
+                window._medicalRecordingStartedAt = 0;
+                window.__QS_MEDICAL_LAST_RECORDING_MS = Math.max(0, Number(window._medicalRecordingAccumMs || 0));
                 stopMedicalRecordingTimer();
                 setMedicalRecordingVisualState('idle');
                 shouldSubmit = !!window._medicalSubmitOnStop;
                 const hadLiveTranscribe = !!window._medicalAwsTranscribeStream;
+                const liveStream = window._medicalAwsTranscribeStream;
                 if (hadLiveTranscribe) {
                     try {
                         // Use live transcript quickly; do not block Save on Socket.IO stop ack.
-                        streamResult = await window._medicalAwsTranscribeStream.stop({
+                        streamResult = await liveStream.stop({
                             quickLocal: true,
                             waitMs: 0,
                         });
@@ -19139,6 +19780,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                 ? streamResult.partials.map((p) => String(p || '').trim()).filter(Boolean).join(' ')
                                 : '');
                         if (tx && streamResult) streamResult.transcript = tx;
+                        const rawGaps = (streamResult && streamResult.gaps)
+                            || (typeof liveStream.getGaps === 'function' ? liveStream.getGaps() : []);
+                        const gaps = qsMergeRecoveredMedicalGaps(rawGaps);
+                        if (streamResult) streamResult.gaps = gaps;
+                        if (gaps && gaps.length) window._medicalPendingGaps = gaps;
                     } catch (streamErr) {
                         window._medicalAwsTranscribeStream = null;
                         const fallbackTx = String(window._medicalLiveStreamText || '').trim();
@@ -19169,9 +19815,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 }
-                const prefix = isMedicalModeEnabled() ? 'medical_recording' : 'transcript_record';
-                if (shouldSubmit) {
-                    window.__QS_MEDICAL_LAST_RECORDING_MS = Math.max(0, Number(window._medicalRecordingAccumMs || 0));
+                    const prefix = isMedicalModeEnabled() ? 'medical_recording' : 'transcript_record';
+                    if (shouldSubmit) {
+                    window.__QS_MEDICAL_LAST_RECORDING_MS = Math.max(
+                        Number(window.__QS_MEDICAL_LAST_RECORDING_MS || 0),
+                        Number(window._medicalRecordingAccumMs || 0)
+                    );
                     const streamOnly = qsMedicalStreamOnlyMode();
                     const streamOk = !!(streamResult && String(streamResult.transcript || '').trim());
                     if (streamOnly && !hadLiveTranscribe) {
@@ -19212,6 +19861,14 @@ document.addEventListener('DOMContentLoaded', () => {
                                 );
                             }
                             uploadedViaWarmup = true;
+                        } else if (window._medicalDeferUpload) {
+                            window._medicalPendingUpload = {
+                                file,
+                                streamResult,
+                                durationMs: window.__QS_MEDICAL_LAST_RECORDING_MS,
+                                gaps: qsCollectMedicalPendingGaps(streamResult),
+                            };
+                            uploadedViaWarmup = true;
                         } else {
                             uploadedViaWarmup = await uploadWarmedMedicalRecordingWithStream(
                                 file,
@@ -19219,6 +19876,15 @@ document.addEventListener('DOMContentLoaded', () => {
                                 window.__QS_MEDICAL_LAST_RECORDING_MS
                             );
                         }
+                    }
+                    if (!uploadedViaWarmup && window._medicalDeferUpload && isMedicalModeEnabled()) {
+                        window._medicalPendingUpload = {
+                            file,
+                            streamResult,
+                            durationMs: window.__QS_MEDICAL_LAST_RECORDING_MS,
+                            gaps: qsCollectMedicalPendingGaps(streamResult),
+                        };
+                        uploadedViaWarmup = true;
                     }
                     if (!uploadedViaWarmup) {
                         if (streamOnly) {
@@ -19234,7 +19900,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     saveOk = true;
                 }
             } catch (e) {
-                if (typeof showStatus === 'function') showStatus(`Recording upload failed: ${e.message || e}`, true);
+                console.warn('[medical] recording upload failed', e);
+                if (typeof showStatus === 'function') {
+                    const medicalContinue = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+                    if (medicalContinue) {
+                        const T = typeof window.t === 'function' ? window.t : (k) => k;
+                        showStatus(
+                            T('medical_upload_failed_summary_continues') || 'Recording upload failed. The summary will continue.',
+                            false,
+                            { duration: 6500 }
+                        );
+                    } else {
+                        showStatus(`Recording upload failed: ${e.message || e}`, true);
+                    }
+                }
             } finally {
                 (stream.getTracks() || []).forEach((t) => { try { t.stop(); } catch (_) {} });
                 window._medicalRecorder = null;
@@ -19246,6 +19925,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalRecordingAccumMs = 0;
                 window._medicalRecordingStartedAt = 0;
                 window._medicalSubmitOnStop = false;
+                window._medicalDeferUpload = false;
                 if (!shouldSubmit) {
                     void clearMedicalRecordingWarmup(true);
                     qsHideMedicalRecordingWarmupProgress();
@@ -19270,6 +19950,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
                 if (typeof window._medicalSaveSettle === 'function') {
                     try { window._medicalSaveSettle(!!saveOk); } catch (_) {}
+                }
+                if (!window._medicalPendingUpload || !qsUnfilledMedicalGaps(
+                    (window._medicalPendingUpload && window._medicalPendingUpload.streamResult) || { gaps: window._medicalPendingGaps }
+                ).length) {
+                    try { qsHideMedicalLiveStatusBanner(); } catch (_) {}
                 }
             }
         };
@@ -19338,10 +20023,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof _hideToastNow === 'function') _hideToastNow();
             } catch (_) {}
             if (window._medicalAwsTranscribeStream) window._medicalAwsTranscribeStream.pause();
+            const pausedGaps = qsCollectMedicalPendingGaps({
+                gaps: (window._medicalAwsTranscribeStream && typeof window._medicalAwsTranscribeStream.getGaps === 'function')
+                    ? window._medicalAwsTranscribeStream.getGaps()
+                    : [],
+            }).filter((g) => g && !g.recovered && !g.failed);
+            if (pausedGaps.length && isMedicalModeEnabled()) {
+                window._medicalGapRecoveryPromise = qsRecoverMedicalGapsAfterPause().finally(() => {
+                    window._medicalGapRecoveryPromise = null;
+                });
+            } else {
+                try { qsHideMedicalLiveStatusBanner(); } catch (_) {}
+            }
             try { qsSyncMedicalDefaultSignatureUi(); } catch (_) {}
             return;
         }
         if (rec && rec.state === 'paused') {
+            if (window._medicalGapRecoveryPromise) {
+                try { await window._medicalGapRecoveryPromise; } catch (_) {}
+            }
             window._medicalUserPaused = false;
             window._medicalSystemRecordingInterrupted = false;
             stopMedicalResumeRetryLoop();
@@ -19515,6 +20215,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!rec) return Promise.resolve(false);
 
         window._medicalSaveSilent = silent;
+        window._medicalDeferUpload = !!(options && options.deferUpload);
         window._medicalSaveInFlight = true;
         window._medicalSaveInFlightPromise = new Promise((resolve) => {
             window._medicalSaveSettle = (ok) => {
@@ -19585,12 +20286,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-    if (medicalTabSummary) {
+    if (medicalTabSummary && medicalTabSummary.dataset.qsSummaryClickBound !== '1') {
+        medicalTabSummary.dataset.qsSummaryClickBound = '1';
         medicalTabSummary.addEventListener('click', async (e) => {
             if (e) {
                 e.preventDefault();
                 e.stopPropagation();
             }
+            if (window._qsMedicalSummaryInFlight) return;
             try { qsPersistMedicalTranscriptBoxesFromDom(); } catch (_) {}
             try { qsSnapshotMedicalTranscriptBoxesFromDom({ force: true }); } catch (_) {}
             window.medicalActiveTab = 'summary';
@@ -19598,33 +20301,45 @@ document.addEventListener('DOMContentLoaded', () => {
                 typeof buildTranscriptTextForGptFormat === 'function' ? buildTranscriptTextForGptFormat() : ''
             ).trim();
             const jobIdEarly = localStorage.getItem('lastJobId') || '';
-            const needsSummaryEarly = !!(
+            const hasSummaryAlready = !!_medicalHasFormattedSummaryContent();
+            const needsSummary = !hasSummaryAlready && !!(
                 (jobIdEarly && window._qsMedicalStreamAwaitingSummary === jobIdEarly)
-                || (transcriptText && !_medicalHasFormattedSummaryContent())
+                || transcriptText
             );
-            if (needsSummaryEarly) window._qsMedicalSummaryGenerating = true;
-            const savePromise = qsCommitMedicalRecording({ silent: true });
+            if (!needsSummary) {
+                window._qsMedicalStreamAwaitingSummary = null;
+                window._qsMedicalSummaryGenerating = false;
+                updateMedicalTabUi();
+                if (typeof renderTranscriptFromCues === 'function') {
+                    renderTranscriptFromCues(window.currentSegments || []);
+                }
+                return;
+            }
+            window._qsMedicalSummaryInFlight = true;
+            window._qsMedicalSummaryGenerating = true;
+            if (typeof qsPaintMedicalSummaryEmptyPane === 'function') {
+                qsPaintMedicalSummaryEmptyPane({ generating: true });
+            }
+            let summaryOk = !needsSummary;
             try {
+                if (window._medicalGapRecoveryPromise) {
+                    try { await window._medicalGapRecoveryPromise; } catch (_) {}
+                }
+                if (typeof qsCommitMedicalRecording === 'function' && qsMedicalSessionNeedsCommit()) {
+                    await qsCommitMedicalRecording({ silent: true, deferUpload: true });
+                }
+                if (window._medicalPendingUpload && qsUnfilledMedicalGaps(
+                    window._medicalPendingUpload.streamResult || { gaps: window._medicalPendingUpload.gaps }
+                ).length) {
+                    qsShowMedicalLiveStatusBanner('filling');
+                    await qsEnsureMedicalGapsRecovered(window._medicalPendingUpload);
+                }
                 if (typeof qsHydrateMedicalPersonalTemplateProfile === 'function') {
                     await qsHydrateMedicalPersonalTemplateProfile();
                 }
             } catch (_) {}
             updateMedicalTabUi();
             const jobId = localStorage.getItem('lastJobId') || jobIdEarly;
-            const needsSummary = needsSummaryEarly
-                || !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId)
-                || (transcriptText && !_medicalHasFormattedSummaryContent());
-            // Do not leave the transcript visible while summary GPT runs — show loading ring first.
-            if (needsSummary || !_medicalHasFormattedSummaryContent()) {
-                window._qsMedicalSummaryGenerating = !!needsSummary;
-                if (typeof qsPaintMedicalSummaryEmptyPane === 'function') {
-                    qsPaintMedicalSummaryEmptyPane({ generating: !!needsSummary });
-                } else if (typeof renderTranscriptFromCues === 'function') {
-                    renderTranscriptFromCues(window.currentSegments || []);
-                }
-            } else if (typeof renderTranscriptFromCues === 'function') {
-                renderTranscriptFromCues(window.currentSegments || []);
-            }
             if (needsSummary && typeof window.qsRegenerateMedicalSummaryFromTranscript === 'function') {
                 const T = typeof window.t === 'function' ? window.t : (k) => k;
                 if (mainBtn) mainBtn.disabled = true;
@@ -19639,41 +20354,48 @@ document.addEventListener('DOMContentLoaded', () => {
                     jobId,
                     awaiting: window._qsMedicalStreamAwaitingSummary,
                     chars: transcriptText.length,
-                    saveInFlight: window._medicalSaveInFlight === true,
+                    saveInFlight: false,
                 });
                 try {
-                    const ok = await window.qsRegenerateMedicalSummaryFromTranscript({ forceMedicalSummary: true });
-                    try { await savePromise; } catch (_) {}
-                    const savedJobId = localStorage.getItem('lastJobId') || jobId;
-                    if (ok) {
+                    summaryOk = await window.qsRegenerateMedicalSummaryFromTranscript({
+                        forceMedicalSummary: true,
+                        skipUiRender: true,
+                        deferPersist: true,
+                    });
+                    if (summaryOk) {
                         window._qsMedicalStreamAwaitingSummary = null;
-                        if (savedJobId) {
-                            window._qsSummaryGptDoneJobId = savedJobId;
-                            window._lastProcessedJobId = savedJobId;
+                        window._medicalHasResult = true;
+                        if (jobId) {
+                            window._qsSummaryGptDoneJobId = jobId;
+                            window._lastProcessedJobId = jobId;
                         }
-                        try {
-                            if (typeof qsPersistFormattedDocToS3 === 'function') {
-                                await qsPersistFormattedDocToS3();
-                            }
-                        } catch (_) {}
+                        window.medicalActiveTab = 'summary';
+                        if (typeof updateMedicalTabUi === 'function') updateMedicalTabUi();
+                        if (typeof renderTranscriptFromCues === 'function') {
+                            renderTranscriptFromCues(window.currentSegments || []);
+                        }
                     } else {
                         console.warn('[medical] deferred summary generation failed or returned empty');
-                        // Keep awaiting so another Summary click can retry; leave transcript usable.
                         window.medicalActiveTab = 'transcript';
                         updateMedicalTabUi();
                         if (typeof renderMedicalTranscriptMainView === 'function') {
                             renderMedicalTranscriptMainView();
                         }
-                        return;
                     }
+                } catch (summaryErr) {
+                    summaryOk = false;
+                    console.warn('[medical] summary failed before upload', summaryErr);
+                    window.medicalActiveTab = 'transcript';
+                    try { updateMedicalTabUi(); } catch (_) {}
                 } finally {
                     window._qsMedicalSummaryGenerating = false;
+                    window._qsMedicalSummaryInFlight = false;
                     if (mainBtn) mainBtn.disabled = false;
                     if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
                 }
             } else {
                 window._qsMedicalSummaryGenerating = false;
-                void savePromise;
+                window._qsMedicalSummaryInFlight = false;
                 if (!_medicalHasFormattedSummaryContent()) {
                     console.warn('[medical] Summary tab opened with no content and not awaiting GPT', {
                         jobId,
@@ -19681,7 +20403,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 }
             }
-            renderTranscriptFromCues(window.currentSegments || []);
+            if (summaryOk && typeof renderTranscriptFromCues === 'function') {
+                window.medicalActiveTab = 'summary';
+                renderTranscriptFromCues(window.currentSegments || []);
+            }
+            await qsUploadPendingMedicalRecordingAfterSummary();
         });
     }
     const transcriptWindowForLiveCopy = document.getElementById('transcript-window');
@@ -20472,11 +21198,29 @@ document.addEventListener('DOMContentLoaded', () => {
             : null;
         const isMedicalStreamIncoming = qsJobEngineFromPayload(rawResult) === 'aws_transcribe_stream'
             || !!(jobId && window._qsMedicalStreamAwaitingSummary === jobId);
+        const keepClientMedicalSummary = !!(
+            prevFmt
+            && (
+                window._qsMedicalSummaryInFlight
+                || window._qsMedicalSummaryGenerating
+                || (
+                    typeof qsMedicalHasFormattedSummary === 'function'
+                    && qsMedicalHasFormattedSummary()
+                    && String(window.medicalActiveTab || '') === 'summary'
+                )
+            )
+        );
         // Never carry a previous visit's summary into a new medical live-stream job.
+        // Keep a summary the doctor is already generating or viewing for this visit.
         if (isMedicalStreamIncoming && jobId && jobId !== window._lastProcessedJobId) {
-            window.currentFormattedDoc = incomingFmt
-                ? normalizeFormattedFields({ ...incomingFmt })
-                : null;
+            if (incomingFmt) {
+                window.currentFormattedDoc = normalizeFormattedFields({
+                    ...(keepClientMedicalSummary ? prevFmt : {}),
+                    ...incomingFmt,
+                });
+            } else if (!keepClientMedicalSummary) {
+                window.currentFormattedDoc = null;
+            }
         } else if (incomingFmt) {
             window.currentFormattedDoc = normalizeFormattedFields({ ...(prevFmt || {}), ...incomingFmt });
         } else if (jobId && (qsJobSummaryAlreadyDone(jobId) || (prevFmt && hasStandardFormattedSummary()))) {
@@ -20628,7 +21372,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (deferMedicalStreamSummary) {
             window.isTriggering = false;
         }
-        if (!summaryAlreadyDone && !deferMedicalStreamSummary) {
+        if (!summaryAlreadyDone && !deferMedicalStreamSummary && !window._qsMedicalSummaryInFlight) {
             qsResetCleanupState();
             window._medicalHasResult = false;
             setTranscriptActionButtonsVisible(false);
@@ -20760,7 +21504,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // No summary without GPT — show raw transcript/document view.
                 try { setFormatViewMode('doc'); } catch (_) {}
             }
-        } else if (!summaryAlreadyDone) {
+        } else if (!summaryAlreadyDone && !window._qsMedicalSummaryInFlight) {
             if (mainBtn) mainBtn.disabled = true;
             console.info('[qs-processing-ui] summary_gpt_start', {
                 segment_count: (window.currentSegments || []).length
@@ -20911,7 +21655,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        if (!summaryAlreadyDone) {
+        if (!summaryAlreadyDone && !window._qsMedicalSummaryInFlight) {
             const fmtOk = await runPostTranscriptionFormatting();
             if (!fmtOk && hasStandardFormattedSummary()) {
                 qsRenderSummaryIfAvailable('post_gpt_had_persisted_formatted');
@@ -20926,7 +21670,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const finalStatus = 'processed';
 
         // Persist transcript: save JSON to S3 and store only result_s3_key in DB (or fallback to result.segments)
-        if (typeof updateJobStatus === 'function' && dbId) {
+        if (typeof updateJobStatus === 'function' && dbId && !window._qsSkipJobResultBackgroundSave) {
             (async () => {
                 try {
                     const { data: { user } } = await supabase.auth.getUser();
@@ -20995,7 +21739,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!window.currentSegments || !window.currentSegments.length) {
                 qsRenderEmptyTranscriptMessage();
             } else if (isMedicalModeEnabled()) {
-                if (String(window.medicalActiveTab || 'summary') === 'summary') {
+                if (window._qsMedicalSummaryInFlight && String(window.medicalActiveTab || '') === 'summary') {
+                    // The summary tab paints the waiting message and the result once.
+                } else if (String(window.medicalActiveTab || 'summary') === 'summary') {
                     renderTranscriptFromCues(window.currentSegments || []);
                 } else if (typeof renderMedicalTranscriptMainView === 'function') {
                     renderMedicalTranscriptMainView();
@@ -24014,10 +24760,42 @@ const QS_MEDICAL_SUMMARY_SECTION_LABELS_NEUROLOGY = {
     rec: 'הערכה ותוכנית'
 };
 
+const QS_MEDICAL_SUMMARY_SECTION_LABELS_ORTHOPEDICS = {
+    chief: 'תלונה עיקרית / אנמנזה',
+    exam: 'בדיקה אורתופדית',
+    rec: 'הערכה ותוכנית'
+};
+
+const QS_MEDICAL_SUMMARY_SECTION_LABELS_CLINIC = {
+    chief: 'ברקע',
+    exam: 'בבדיקה',
+    rec: 'המלצות'
+};
+
+function qsNormalizeMedicalSpecialtyValue(specialty) {
+    const s = String(specialty || '').trim().toLowerCase();
+    const aliases = {
+        neurologist: 'neurology',
+        'נוירולוגיה': 'neurology',
+        'נוירולוג': 'neurology',
+        orthopedic: 'orthopedics',
+        orthopedist: 'orthopedics',
+        orthopaedic: 'orthopedics',
+        orthopaedics: 'orthopedics',
+        orthopaedist: 'orthopedics',
+        'אורתופדיה': 'orthopedics',
+        'אורתופד': 'orthopedics',
+        psychology: 'psychologist',
+        'פסיכולוגיה': 'psychologist',
+    };
+    return aliases[s] || s;
+}
+
 function qsMedicalProfessionalSpecialty() {
-    const fromAccount = String(window.__QS_MEDICAL_ACCOUNT?.professionalSpecialty || '').trim();
+    const account = window.__QS_MEDICAL_ACCOUNT || {};
+    const fromAccount = String(account.professionalSpecialty || account.professional_specialty || '').trim();
     if (fromAccount) return fromAccount;
-    return String(document.getElementById('auth-medical-specialty')?.value || '').trim();
+    return String(document.getElementById('user-menu-medical-specialty')?.value || '').trim();
 }
 
 function qsIsMedicalPsychologySpecialty(specialty) {
@@ -24028,10 +24806,17 @@ function qsIsMedicalPsychologySpecialty(specialty) {
 }
 
 function qsIsMedicalNeurologySpecialty(specialty) {
-    const s = String(specialty != null ? specialty : qsMedicalProfessionalSpecialty())
-        .trim()
-        .toLowerCase();
-    return s === 'neurology' || s === 'neurologist' || s === 'נוירולוגיה' || s === 'נוירולוג';
+    const s = qsNormalizeMedicalSpecialtyValue(
+        specialty != null ? specialty : qsMedicalProfessionalSpecialty()
+    );
+    return s === 'neurology';
+}
+
+function qsIsMedicalOrthopedicsSpecialty(specialty) {
+    const s = qsNormalizeMedicalSpecialtyValue(
+        specialty != null ? specialty : qsMedicalProfessionalSpecialty()
+    );
+    return s === 'orthopedics';
 }
 
 function _medicalText(key, fallback) {
@@ -24042,16 +24827,29 @@ function _medicalText(key, fallback) {
     return fallback;
 }
 
+function qsMedicalSectionLabelsMatch(left, right) {
+    return ['chief', 'exam', 'rec'].every((key) =>
+        String((left && left[key]) || '').trim() === String((right && right[key]) || '').trim()
+    );
+}
+
+/** Stock profession titles are not a custom style. The account specialty wins over them. */
+function qsMedicalSectionLabelsAreKnownStock(labels) {
+    if (!labels || typeof labels !== 'object') return false;
+    return [
+        QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY,
+        QS_MEDICAL_SUMMARY_SECTION_LABELS_NEUROLOGY,
+        QS_MEDICAL_SUMMARY_SECTION_LABELS_ORTHOPEDICS,
+        QS_MEDICAL_SUMMARY_SECTION_LABELS_CLINIC,
+        QS_MEDICAL_SUMMARY_SECTION_LABELS,
+    ].some((stock) => qsMedicalSectionLabelsMatch(labels, stock));
+}
+
 function _medicalSummarySectionLabel(sectionKey) {
     const personal = window._medicalPersonalSectionLabels;
-    if (personal && typeof personal === 'object') {
+    if (personal && typeof personal === 'object' && !qsMedicalSectionLabelsAreKnownStock(personal)) {
         const custom = String(personal[sectionKey] || '').trim();
         if (custom) return custom;
-    }
-    // Personal clinic template active but labels not cached yet — avoid stock תלונה/ממצאים chrome.
-    if (window._medicalPersonalTemplateActive) {
-        const fallbackPersonal = { chief: 'ברקע', exam: 'בבדיקה', rec: 'המלצות' };
-        if (fallbackPersonal[sectionKey]) return fallbackPersonal[sectionKey];
     }
     if (qsIsMedicalPsychologySpecialty()) {
         const psychKeyMap = {
@@ -24064,8 +24862,7 @@ function _medicalSummarySectionLabel(sectionKey) {
             QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY[sectionKey] || sectionKey
         );
     }
-    // Personal Hebrew clinic templates (ברקע/בבדיקה/המלצות) must not show stock neurology CC/HPI titles.
-    if (qsIsMedicalNeurologySpecialty() && !window._medicalPersonalTemplateActive) {
+    if (qsIsMedicalNeurologySpecialty()) {
         const neuroKeyMap = {
             chief: 'medical_summary_chief_neurology',
             exam: 'medical_summary_exam_neurology',
@@ -24074,6 +24871,17 @@ function _medicalSummarySectionLabel(sectionKey) {
         return _medicalText(
             neuroKeyMap[sectionKey],
             QS_MEDICAL_SUMMARY_SECTION_LABELS_NEUROLOGY[sectionKey] || sectionKey
+        );
+    }
+    if (qsIsMedicalOrthopedicsSpecialty()) {
+        const orthoKeyMap = {
+            chief: 'medical_summary_chief_orthopedics',
+            exam: 'medical_summary_exam_orthopedics',
+            rec: 'medical_summary_recommendations_orthopedics'
+        };
+        return _medicalText(
+            orthoKeyMap[sectionKey],
+            QS_MEDICAL_SUMMARY_SECTION_LABELS_ORTHOPEDICS[sectionKey] || sectionKey
         );
     }
     const keyMap = {
@@ -24086,9 +24894,20 @@ function _medicalSummarySectionLabel(sectionKey) {
 
 function qsApplyMedicalPersonalTemplateMeta(meta) {
     meta = meta || {};
+    const source = String(meta.resolved_task2_source || '');
+    const profileStatus = String(meta.profile_status || '').trim().toLowerCase();
+    const specialtyTemplate = source === 'orthopedics' || source === 'neurology' || source === 'psychology' || source === 'default';
+    const savedProfileOff = specialtyTemplate || profileStatus === 'disabled' || (source && source !== 'doctor_profile' && source !== 'request_candidate');
+    if (savedProfileOff && !meta.personal_template) {
+        window._medicalPersonalTemplateActive = false;
+        window._medicalPersonalSectionLabels = null;
+        try { localStorage.removeItem('qs_medical_personal_template'); } catch (_) {}
+        try { localStorage.removeItem('qs_medical_section_labels'); } catch (_) {}
+        return;
+    }
     const labels = meta.section_labels && typeof meta.section_labels === 'object' ? meta.section_labels : null;
     const hasPersonal = !!(
-        meta.resolved_task2_source === 'doctor_profile'
+        source === 'doctor_profile'
         || meta.personal_template
         || (labels && (labels.chief || labels.exam || labels.rec))
         || Number(meta.active_prompt_chars || 0) > 0
@@ -24134,14 +24953,17 @@ function qsRestoreMedicalPersonalTemplateMetaFromStorage() {
 async function qsHydrateMedicalPersonalTemplateProfile(options) {
     const force = !!(options && options.force);
     if (!force && window._medicalPersonalTemplateHydrated) return window._medicalPersonalTemplateActive;
+    const epoch = Number(window._qsMedicalTrainingEpoch) || 0;
     try {
         if (typeof medicalTrainingApi !== 'function') {
             qsRestoreMedicalPersonalTemplateMetaFromStorage();
             return !!window._medicalPersonalTemplateActive;
         }
         const data = await medicalTrainingApi('/api/medical_training/profile', {});
+        if ((Number(window._qsMedicalTrainingEpoch) || 0) !== epoch) return false;
         qsApplyMedicalPersonalTemplateMeta({
             resolved_task2_source: data.resolved_task2_source,
+            profile_status: data.profile && data.profile.status,
             section_labels: data.section_labels,
             active_prompt_chars: data.profile && data.profile.active_prompt_chars,
             production_prompt_chars: data.production_prompt_chars,
@@ -24165,8 +24987,12 @@ async function qsHydrateMedicalPersonalTemplateProfile(options) {
 }
 window.qsHydrateMedicalPersonalTemplateProfile = qsHydrateMedicalPersonalTemplateProfile;
 
-/** If body text already uses personal clinic headings, treat session as personal (UI labels). */
+/** If body text already uses personal clinic headings, keep those UI labels only while training is on. */
 function qsInferPersonalTemplateFromSummaryDoc(fmt) {
+    if (!window._medicalPersonalTemplateActive) return false;
+    if (qsIsMedicalOrthopedicsSpecialty() || qsIsMedicalNeurologySpecialty() || qsIsMedicalPsychologySpecialty()) {
+        return false;
+    }
     const blob = [
         fmt && fmt.medical_chief_complaint,
         fmt && fmt.medical_examination_transcript,
@@ -24222,6 +25048,9 @@ function _medicalSummaryLineLooksLikeSubheading(line) {
     if (!raw || raw.length > 48) return false;
     const normalized = raw.replace(/[:：.\s]+$/u, '').trim().toLowerCase();
     if (!normalized) return false;
+    if (!window._medicalPersonalTemplateActive && ['ברקע', 'בבדיקה', 'המלצות', 'רגישות', 'תרופות', 'לסיכום'].includes(normalized)) {
+        return false;
+    }
     return QS_MEDICAL_SUMMARY_SUBHEADINGS.some((h) => h.toLowerCase() === normalized);
 }
 
@@ -24436,7 +25265,9 @@ function renderMedicalTranscriptMainView() {
         }
         return;
     }
-    if (snap.length > 1) {
+    // Keep the boxes the doctor already had, including one box with many lines.
+    // Re-splitting clean_transcript on blank lines turns each line into its own box.
+    if (snap.length >= 1) {
         qsRenderMedicalEditableTranscriptBoxes(snap);
         return;
     }
@@ -24880,9 +25711,11 @@ function renderTranscriptFromCues(cues) {
         try { qsSnapshotMedicalTranscriptBoxesFromDom(); } catch (_) {}
         const existingBoxes = container.querySelectorAll('textarea.qs-medical-edit-box-body');
         const unsavedSnap = Array.isArray(window._medicalUnsavedBoxes) ? window._medicalUnsavedBoxes : [];
-        const keepUnsavedSections = existingBoxes.length > 1 || unsavedSnap.length > 1;
+        const keepUnsavedSections = existingBoxes.length > 1 || unsavedSnap.length >= 1;
         if (keepUnsavedSections) {
-            if (unsavedSnap.length > existingBoxes.length && typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
+            if (!existingBoxes.length && unsavedSnap.length >= 1 && typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
+                qsRenderMedicalEditableTranscriptBoxes(unsavedSnap);
+            } else if (unsavedSnap.length > existingBoxes.length && typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
                 qsRenderMedicalEditableTranscriptBoxes(unsavedSnap);
             }
             try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
@@ -24916,6 +25749,9 @@ function renderTranscriptFromCues(cues) {
     // While summary is not ready yet, keep an empty pane — never leave transcript boxes visible.
     if (isMedical && activeTab === 'summary') {
         if (!_medicalHasFormattedSummaryContent()) {
+            if (window._qsMedicalSummaryGenerating && container.querySelector('.medical-summary-loading')) {
+                return;
+            }
             qsPaintMedicalSummaryEmptyPane();
             return;
         }
@@ -25030,7 +25866,7 @@ function renderTranscriptFromCues(cues) {
             }
             return;
         }
-        if (snap.length > 1) {
+        if (snap.length >= 1) {
             qsRenderMedicalEditableTranscriptBoxes(snap);
             return;
         }
@@ -25039,7 +25875,8 @@ function renderTranscriptFromCues(cues) {
             .map((c) => String((c && (c.translated_text || c.text)) || '').trim())
             .filter(Boolean);
         if (paras.length) {
-            qsRenderMedicalEditableTranscriptBoxes(paras);
+            // Saved cues are often one line each. That is not a new box.
+            qsRenderMedicalEditableTranscriptBoxes([paras.join('\n')]);
             return;
         }
     }

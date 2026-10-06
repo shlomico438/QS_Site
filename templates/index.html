@@ -329,8 +329,9 @@ try {
                     <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;" data-i18n="medical_specialty_label">Choose your professional field</label>
                     <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
                         <option value="" data-i18n="medical_specialty_placeholder">Choose your professional field</option>
-                        <option value="physician" data-i18n="medical_specialty_physician">Medicine</option>
+                        <option value="physician" data-i18n="medical_specialty_physician">Family medicine</option>
                         <option value="neurology" data-i18n="medical_specialty_neurology">Neurology</option>
+                        <option value="orthopedics" data-i18n="medical_specialty_orthopedics">Orthopedics</option>
                         <option value="psychologist" data-i18n="medical_specialty_psychologist">Psychology</option>
                         <option value="occupational_therapist" data-i18n="medical_specialty_occupational_therapist">Occupational therapy</option>
                         <option value="physiotherapist" data-i18n="medical_specialty_physiotherapist">Physiotherapy</option>
@@ -496,12 +497,20 @@ try {
                 <span class="translation-progress-spinner" aria-hidden="true"></span>
                 <span id="translation-progress-text" class="translation-progress-text"></span>
             </div>
+            <div id="medical-live-status-banner" class="medical-live-status-banner" hidden role="status" aria-live="polite">
+                <span class="medical-live-status-banner-dot" aria-hidden="true"></span>
+                <span class="medical-live-status-banner-spin" aria-hidden="true"></span>
+                <span id="medical-live-status-banner-text"></span>
+                <span class="medical-live-status-banner-track" aria-hidden="true"><span></span></span>
+            </div>
             <div id="medical-result-tabs" style="display:none;">
+                <div class="medical-result-tabs-main">
                 <button type="button" id="medical-tab-transcript" class="format-ab-option is-active" data-i18n="medical_tab_transcript">תמלול מלא</button>
                 <button type="button" id="medical-tab-summary" class="format-ab-option" data-i18n="medical_tab_summary">סיכום רפואי</button>
+                <button type="button" id="medical-style-learn-badge" class="medical-style-learn-badge" hidden data-i18n="medical_learn_my_style">✨ התאם לסגנון הכתיבה שלי</button>
+                </div>
             </div>
                 <div class="medical-transcript-shell">
-                    <button type="button" id="medical-style-learn-badge" class="medical-style-learn-badge" hidden data-i18n="medical_learn_my_style">✨ למד את הסגנון שלי</button>
                     <div class="medical-transcript-top-actions">
                     <button type="button" id="medical-typo-fix-btn" class="medical-typo-fix-btn" data-i18n-aria-label="medical_fix_typos" data-i18n-title="medical_fix_typos_tooltip" title="ממיר מונחים רפואיים שנכתבו פונטית בעברית לאיות האנגלי הנכון, ומתקן שגיאות כתיב" hidden>
                         <span class="medical-typo-fix-icon" aria-hidden="true">🪄</span>
@@ -516,7 +525,7 @@ try {
                 <div id="medical-default-signature" class="medical-default-signature" hidden>
                     <span class="medical-default-signature-view">
                         <span class="medical-default-signature-text"></span>
-                        <button type="button" class="medical-default-signature-edit" aria-label="ערוך חתימה קבועה">✎ ערוך</button>
+                        <button type="button" class="medical-default-signature-edit" aria-label="עריכת חתימה">✎ עריכת חתימה</button>
                     </span>
                     <form class="medical-default-signature-form" hidden>
                         <textarea class="medical-default-signature-input" maxlength="500" rows="2" autocomplete="off" aria-label="חתימה קבועה"></textarea>
@@ -528,7 +537,7 @@ try {
                         <input type="checkbox" id="medical-save-signature-check">
                         <span>שמור את השורה האחרונה כחתימה קבועה</span>
                     </label>
-                    <button type="button" class="medical-save-signature-edit" aria-label="ערוך חתימה">✎ ערוך</button>
+                    <button type="button" class="medical-save-signature-edit" aria-label="עריכת חתימה">✎ עריכת חתימה</button>
                     <form class="medical-save-signature-form" hidden>
                         <textarea class="medical-save-signature-input" maxlength="500" rows="2" autocomplete="off" aria-label="חתימה קבועה"></textarea>
                         <button type="submit" class="medical-save-signature-save">שמור</button>

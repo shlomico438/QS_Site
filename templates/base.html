@@ -199,12 +199,8 @@
                             </button>
                             <div class="medical-settings-panel" id="medical-settings-panel" hidden>
                                 <div class="medical-stream-lang-wrap" id="medical-stream-lang-wrap">
-                                    <span class="medical-stream-lang-label" data-i18n="medical_stream_lang_label">שפת תמלול</span>
-                                    <div class="medical-stream-lang-toggle" id="medical-stream-lang-toggle" role="radiogroup" data-i18n-aria-label="medical_stream_lang_aria" aria-label="שפת תמלול חי">
-                                        <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="he" aria-checked="true" data-i18n="medical_stream_lang_he">עברית</button>
-                                        <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="en" aria-checked="false" data-i18n="medical_stream_lang_en">English</button>
-                                        <button type="button" role="radio" class="medical-stream-lang-btn" data-medical-stream-lang="auto" aria-checked="false" data-i18n="medical_stream_lang_auto" data-i18n-title="medical_language_pause_tip" title="במעבר בין שפות — עצרו כשתי שניות.">אוטומטי</button>
-                                    </div>
+                                    <label class="medical-stream-lang-label" for="medical-stream-lang-select" data-i18n="medical_stream_lang_label">שפת תמלול</label>
+                                    <select id="medical-stream-lang-select" class="medical-stream-lang-select" data-i18n-aria-label="medical_stream_lang_aria" aria-label="שפת תמלול חי"></select>
                                 </div>
                                 <div class="medical-mic-test-entry-wrap" id="medical-mic-test-entry-wrap">
                                     <button type="button" id="medical-mic-test-entry-btn" class="medical-mic-test-entry-btn" data-i18n-aria-label="medical_settings_test_mic" aria-label="Mic test">
@@ -341,6 +337,23 @@
                 <button type="button" id="user-menu-medical-training-reset" style="width:100%; padding:8px; border:1px solid #99f6e4; background:#ffffff; color:#0f766e; border-radius:8px; cursor:pointer; font-weight:600;" data-i18n="medical_training_reset_btn">Reset summary training</button>
                 <div id="user-menu-medical-training-status" style="margin-top:6px; font-size:0.8rem; color:#0f766e;"></div>
             </div>
+            <div id="user-menu-medical-specialty-wrap" class="user-menu-medical-specialty-wrap" hidden>
+                <label class="user-menu-profile-label" for="user-menu-medical-specialty" data-i18n="profile_specialty_label">Professional field</label>
+                <select id="user-menu-medical-specialty" class="user-menu-profile-input">
+                    <option value="" data-i18n="medical_specialty_placeholder">Choose your professional field</option>
+                    <option value="physician" data-i18n="medical_specialty_physician">Family medicine</option>
+                    <option value="neurology" data-i18n="medical_specialty_neurology">Neurology</option>
+                    <option value="orthopedics" data-i18n="medical_specialty_orthopedics">Orthopedics</option>
+                    <option value="psychologist" data-i18n="medical_specialty_psychologist">Psychology</option>
+                    <option value="occupational_therapist" data-i18n="medical_specialty_occupational_therapist">Occupational therapy</option>
+                    <option value="physiotherapist" data-i18n="medical_specialty_physiotherapist">Physiotherapy</option>
+                    <option value="speech_therapist" data-i18n="medical_specialty_speech_therapist">Speech therapy</option>
+                    <option value="nurse" data-i18n="medical_specialty_nurse">Nursing</option>
+                    <option value="social_worker" data-i18n="medical_specialty_social_worker">Medical social work</option>
+                    <option value="other" data-i18n="medical_specialty_other">Other healthcare profession</option>
+                </select>
+                <p class="user-menu-profile-note" data-i18n="profile_specialty_note">Used for the next clinical summary, unless a personal summary style is active.</p>
+            </div>
             <label class="user-menu-profile-label" for="user-menu-name" data-i18n="display_name">Display name</label>
             <input type="text" id="user-menu-name" class="user-menu-profile-input" placeholder="" autocomplete="name">
             <label class="user-menu-profile-label" for="user-menu-email" data-i18n="email">Email</label>
@@ -388,10 +401,10 @@
             }
             function createSocket() {
                 const socketOrigin = `${window.location.protocol}//${window.location.host}`;
-                // Medical (and Site): HTTP long-polling only — never upgrade to WebSocket.
+                // WebSocket first. If it cannot connect, or it dies mid-session, stay on polling.
                 const socket = io(socketOrigin, {
-                    transports: ['polling'],
-                    upgrade: false,
+                    transports: ['websocket', 'polling'],
+                    upgrade: true,
                     secure: window.location.protocol === 'https:',
                     withCredentials: true,
                     reconnection: true,
@@ -399,14 +412,39 @@
                     reconnectionDelay: 1000,
                     reconnectionDelayMax: 10000,
                     randomizationFactor: 0.5,
-                    // Must exceed server ping_timeout. A 20s xhr timeout aborts the
+                    // Must exceed server ping_timeout. A short xhr timeout aborts a
                     // long-poll while the server still holds it → overlapping GET →
-                    // HTTP 400 Invalid session after ~1 minute.
+                    // HTTP 400 Invalid session.
                     timeout: 120000
                 });
+                let activeTransport = '';
+                let wsDropCount = 0;
+                function socketTransportName() {
+                    try {
+                        return String(
+                            (socket.io && socket.io.engine && socket.io.engine.transport
+                                && socket.io.engine.transport.name)
+                            || activeTransport
+                            || ''
+                        ).toLowerCase();
+                    } catch (_) {
+                        return activeTransport || '';
+                    }
+                }
+                function stayOnPolling(reason) {
+                    try {
+                        if (socket.io && socket.io.opts && socket.io.opts.upgrade === false) return;
+                        socket.io.opts.transports = ['polling'];
+                        socket.io.opts.upgrade = false;
+                        console.warn('QuickScribe: Socket.IO staying on polling.', reason || '');
+                    } catch (_) {}
+                }
                 socket.on('connect_error', (err) => {
                     const detail = (err && (err.message || err.description)) ? String(err.message || err.description) : '';
                     const invalid = /invalid session|session is disconnected/i.test(detail);
+                    if (socketTransportName() === 'websocket' || (socket.io && socket.io.opts && socket.io.opts.transports && socket.io.opts.transports[0] === 'websocket')) {
+                        stayOnPolling(detail || 'websocket connect failed');
+                    }
                     if (invalid) {
                         console.warn('QuickScribe: Socket.IO session dropped; reconnecting.', detail);
                         return;
@@ -417,6 +455,14 @@
                         'QuickScribe: Socket.IO connect error; will keep retrying with backoff.'
                         + (detail ? ' ' + detail : '')
                     );
+                });
+                socket.on('disconnect', (reason) => {
+                    const r = String(reason || '');
+                    if (socketTransportName() !== 'websocket') return;
+                    if (r === 'transport close' || r === 'transport error' || r === 'ping timeout') {
+                        wsDropCount += 1;
+                        if (wsDropCount >= 2) stayOnPolling('websocket dropped');
+                    }
                 });
                 socket.on('reconnect', (attempt) => {
                     console.info('QuickScribe: Socket.IO reconnected after', attempt, 'attempt(s)');
@@ -429,7 +475,9 @@
                         const t = socket.io && socket.io.engine && socket.io.engine.transport
                             ? socket.io.engine.transport.name
                             : '';
+                        activeTransport = String(t || '').toLowerCase();
                         if (t) console.info('QuickScribe: Socket.IO connected via', t);
+                        if (activeTransport === 'websocket') wsDropCount = 0;
                     } catch (_) {}
                     if (typeof window.qsBindSocketHandlers === 'function') {
                         window.qsBindSocketHandlers(socket);
