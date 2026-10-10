@@ -3,6 +3,7 @@
                 <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
                 <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
 
+{% if medical_entry | default(false) %}
                 <div id="auth-medical-specialty-wrap" style="display:none; text-align:start;">
                     <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;" data-i18n="medical_specialty_label">Choose your professional field</label>
                     <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
@@ -19,6 +20,7 @@
                         <option value="other" data-i18n="medical_specialty_other">Other healthcare profession</option>
                     </select>
                 </div>
+{% endif %}
 
                 <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
                     <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;">
@@ -74,7 +76,8 @@
             </div>
         </div>
 
-        <div id="medical-delete-confirm-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+        {% if medical_entry | default(false) %}
+<div id="medical-delete-confirm-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-delete-confirm-title">
                 <h3 id="medical-delete-confirm-title" data-i18n="medical_delete_recording_title">מחיקת הקלטה</h3>
                 <p id="medical-delete-confirm-message" data-i18n="medical_delete_recording_message">האם אתה בטוח שברצונך למחוק הקלטה זו?</p>
@@ -131,7 +134,8 @@
                 <button type="button" id="medical-mic-test-close" class="medical-confirm-btn secondary" data-i18n="medical_mic_close">Close</button>
             </div>
         </div>
-        <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
+        {% endif %}
+<div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
                 <h3 id="translation-modal-title">Translate transcript</h3>
                 <p class="translation-modal-subtitle">Choose a language or type to filter.</p>
@@ -175,7 +179,8 @@
                 <span class="translation-progress-spinner" aria-hidden="true"></span>
                 <span id="translation-progress-text" class="translation-progress-text"></span>
             </div>
-            <div id="medical-live-status-banner" class="medical-live-status-banner" hidden role="status" aria-live="polite">
+            {% if medical_entry | default(false) %}
+<div id="medical-live-status-banner" class="medical-live-status-banner" hidden role="status" aria-live="polite">
                 <span class="medical-live-status-banner-dot" aria-hidden="true"></span>
                 <span class="medical-live-status-banner-spin" aria-hidden="true"></span>
                 <span id="medical-live-status-banner-text"></span>
@@ -188,18 +193,22 @@
                 <button type="button" id="medical-style-learn-badge" class="medical-style-learn-badge" hidden data-i18n="medical_learn_my_style">✨ התאם לסגנון הכתיבה שלי</button>
                 </div>
             </div>
-            <div class="medical-transcript-shell">
+            {% endif %}
+<div class="medical-transcript-shell">
                 <div class="medical-transcript-top-actions">
+{% if medical_entry | default(false) %}
                     <button type="button" id="medical-typo-fix-btn" class="medical-typo-fix-btn" data-i18n-aria-label="medical_fix_typos" data-i18n-title="medical_fix_typos_tooltip" title="ממיר מונחים רפואיים שנכתבו פונטית בעברית לאיות האנגלי הנכון, ומתקן שגיאות כתיב" hidden>
                         <span class="medical-typo-fix-icon" aria-hidden="true">🪄</span>
                         <span class="medical-typo-fix-label" data-i18n="medical_fix_typos">התאמה רפואית</span>
                     </button>
+{% endif %}
                     <button type="button" id="medical-copy-btn" class="medical-copy-btn" data-i18n-aria-label="medical_copy_all" aria-label="Copy all" title="Copy all">
                         <span class="medical-copy-icon" aria-hidden="true"></span>
                     </button>
                 </div>
                 <div id="transcript-window" contenteditable="false"></div>
-                <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
+                {% if medical_entry | default(false) %}
+<div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
                 <div id="medical-default-signature" class="medical-default-signature" hidden>
                     <span class="medical-default-signature-view">
                         <span class="medical-default-signature-text"></span>
@@ -222,7 +231,8 @@
                     </form>
                 </div>
             </div>
-            <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
+            {% endif %}
+<div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}" data-showcase-version="{{ static_asset_version }}">
                     <div class="qs-feature-showcase-header">
                         <p class="qs-feature-showcase-kicker" data-i18n="showcase_kicker">בינתיים, הנה מה שמחכה לכם</p>
@@ -260,7 +270,7 @@
             </div>
             <div class="controls-bar">
                 <div class="toolbar-group">
-                    <button type="button" id="medical-toolbar-new-session-btn" class="medical-toolbar-new-session-btn" hidden data-i18n="new_session">סשן חדש</button>
+                    {% if medical_entry | default(false) %}<button type="button" id="medical-toolbar-new-session-btn" class="medical-toolbar-new-session-btn" hidden data-i18n="new_session">סשן חדש</button>{% endif %}
                     <div class="medical-toolbar-docs">
                     <div class="generate-btn-wrap" style="position: relative;">
                         <button class="generate-select-btn" id="btn-download" type="button">
@@ -430,7 +440,8 @@
                     </div>
                 </div>
             </div>
-            <div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
+            {% if medical_entry | default(false) %}
+<div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
                 <div class="medical-record-controls" dir="ltr">
                     <div id="medical-cancel-stack" class="medical-side-action-stack" style="display:none;">
                         <button id="medical-cancel-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_delete_recording" aria-label="מחק הקלטה">
@@ -465,7 +476,8 @@
                 <div id="medical-record-timer" class="medical-record-timer" style="visibility:hidden;"></div>
             </div>
             <button id="medical-upload-new-session-btn" class="btn btn-primary medical-upload-new-session-btn" type="button" style="display:none;" data-i18n="new_session">סשן חדש</button>
-            <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
+            {% endif %}
+<button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
             <div id="qs-pipeline-phase-wrap" class="qs-pipeline-phase-wrap" style="display:none;" aria-live="polite">
                 <div id="qs-pipeline-phase-label" class="qs-pipeline-phase-label" data-i18n="pipeline_upload">העלאה</div>
                 <div class="progress-container" id="p-container">

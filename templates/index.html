@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block structured_data %}{% include "snippets/product_json_ld.html" %}{% if not medical_entry %}{% include "snippets/faq_json_ld.html" %}{% endif %}{% endblock %}
-{% block page_title %}{% if medical_entry %}{% if qs_is_en %}QuickScribe Medical | Clinical documentation that understands mixed languages{% else %}QuickScribe Medical | תיעוד רפואי חכם{% endif %}{% elif qs_is_en %}AI transcription that understands you — in any language you speak, even if you switch mid-recording | QuickScribe{% else %}תמלול AI שמבין אתכם - בכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה | QuickScribe{% endif %}{% endblock %}
-{% block page_description %}{% if medical_entry %}{% if qs_is_en %}Medical transcription that detects language switching in real time — including English prescriptions. Accurate, HIPAA-aligned, results in seconds.{% else %}מערכת תמלול רפואי המזהה שילוב שפות בזמן אמת - כולל מרשמים באנגלית. מדויקת, מאובטחת (HIPAA), ותוצאות תוך שניות.{% endif %}{% elif qs_is_en %}Automatic recognition of 99 languages, including switching languages in the same recording. Summary and action items ready in minutes. Built to handle background noise, multiple speakers, and field recordings.{% else %}זיהוי אוטומטי של 99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות. המערכת בנויה להתמודד עם רעשי רקע, ריבוי דוברים והקלטות מהשטח.{% endif %}{% endblock %}
+{% block page_title %}{% if medical_entry %}{% if qs_is_en %}QuickScribe Medical | Clinical documentation that understands mixed languages{% else %}QuickScribe Medical | תיעוד רפואי חכם{% endif %}{% elif qs_is_en %}AI transcription that understands you — in any language you speak, even if you switch mid-recording | QuickScribe{% else %}תמלול בעיברית ובכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה | QuickScribe{% endif %}{% endblock %}
+{% block page_description %}{% if medical_entry %}{% if qs_is_en %}Medical transcription that detects language switching in real time — including English prescriptions. Accurate, HIPAA-aligned, results in seconds.{% else %}מערכת תמלול רפואי המזהה שילוב שפות בזמן אמת - כולל מרשמים באנגלית. מדויקת, מאובטחת (HIPAA), ותוצאות תוך שניות.{% endif %}{% elif qs_is_en %}Automatic recognition of 99 languages, including switching languages in the same recording. Summary and action items ready in minutes. Built to handle background noise, multiple speakers, and field recordings.{% else %}זיהוי אוטומטי של עברית ו99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות.{% endif %}{% endblock %}
 {% block content %}
 {% if medical_entry %}
 <script>
@@ -27,10 +27,10 @@ try {
                     <div class="seo-hero-grid">
                         <div class="seo-hero-copy">
                             <h1>
-                                {% if qs_is_en %}AI transcription that understands you — in any language you speak, even if you switch mid-recording{% else %}תמלול AI שמבין אתכם - בכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה{% endif %}
+                                {% if qs_is_en %}AI transcription that understands you — in any language you speak, even if you switch mid-recording{% else %}תמלול בעיברית ובכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה{% endif %}
                             </h1>
                             <p class="seo-hero-subtitle">
-                                {% if qs_is_en %}Automatic recognition of 99 languages, including switching languages in the same recording. Summary and action items ready in minutes.<br class="seo-hero-linebreak">Built to handle background noise, multiple speakers, and field recordings.{% else %}זיהוי אוטומטי של 99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות<br class="seo-hero-linebreak">המערכת בנויה להתמודד עם רעשי רקע, ריבוי דוברים והקלטות מהשטח{% endif %}
+                                {% if qs_is_en %}Automatic recognition of 99 languages, including switching languages in the same recording. Summary and action items ready in minutes.<br class="seo-hero-linebreak">Built to handle background noise, multiple speakers, and field recordings.{% else %}זיהוי אוטומטי של עברית ו99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות{% endif %}
                             </p>
                         </div>
                     </div>
@@ -75,7 +75,6 @@ try {
                         {% if qs_is_en %}By the Numbers{% else %}במספרים{% endif %}
                     </h2>
                     <div class="seo-metrics-row">
-                        <div><strong>94%</strong><span>{% if qs_is_en %}Accuracy Baseline{% else %}דיוק בסיסי{% endif %}</span></div>
                         <div><strong>4x</strong><span>{% if qs_is_en %}Faster Workflow{% else %}זרימת עבודה מהירה יותר{% endif %}</span></div>
                         <div><strong>10k+</strong><span>{% if qs_is_en %}Minutes Processed{% else %}דקות שעובדו{% endif %}</span></div>
                         <div><strong>100%</strong><span>{% if qs_is_en %}Vocal Isolation{% else %}בידוד קולי{% endif %}</span></div>
@@ -188,41 +187,6 @@ try {
                 </div>
             </section>
 
-            <section id="faq-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="faq-section-title">
-                <div class="seo-landing-inner">
-                <h2 id="faq-section-title">
-                    {% if qs_is_en %}Frequently Asked Questions{% else %}שאלות נפוצות{% endif %}
-                </h2>
-                <details>
-                    <summary>{% if qs_is_en %}How does automatic transcription work?{% else %}איך עובד תמלול אוטומטי?{% endif %}</summary>
-                    {% if qs_is_en %}<p>Upload a video or audio file, and our fine-tuned AI architecture isolates the speech and generates editable text and subtitles automatically.</p>{% else %}<p>מעלים קובץ אודיו או וידאו, וארכיטקטורת AI מותאמת מבודדת את הדיבור ומייצרת תמלול וכתוביות לעריכה אוטומטית.</p>{% endif %}
-                </details>
-                <details>
-                    <summary>{% if qs_is_en %}Can I download an SRT file?{% else %}אפשר להוריד קובץ SRT?{% endif %}</summary>
-                    {% if qs_is_en %}<p>Yes. You can export industry-standard SRT subtitles to use immediately on YouTube, Premiere Pro, and social platforms.</p>{% else %}<p>כן. ניתן לייצא כתוביות SRT בתקן תעשייתי ולהשתמש בהן מיידית ביוטיוב, Premiere Pro וברשתות החברתיות.</p>{% endif %}
-                </details>
-                <details>
-                    <summary>{% if qs_is_en %}How do you protect my data?{% else %}איך אתם מגנים על הנתונים שלי?{% endif %}</summary>
-                    {% if qs_is_en %}<p>Security is built into our core. All files are uploaded via encrypted protocols to secure storage buckets and are processed automatically without human intervention. For medical or sensitive workflows, we offer fully isolated, HIPAA-aligned environments.</p>{% else %}<p>האבטחה מובנית בליבה: כל הקבצים מועלים בפרוטוקולים מוצפנים לדליי אחסון מאובטחים ומעובדים אוטומטית ללא התערבות אנושית. עבור תהליכים רפואיים או רגישים מוצעות סביבות מבודדות התואמות HIPAA.</p>{% endif %}
-                </details>
-                <details>
-                    <summary>{% if qs_is_en %}Can I include multiple languages in the same video file without creating duplicate content?{% else %}האם אפשר לכלול כמה שפות באותו קובץ וידאו בלי ליצור תוכן כפול?{% endif %}</summary>
-                    {% if qs_is_en %}<p>Yes. Our platform allows you to embed multiple languages within the exact same media file. This eliminates the need to upload, manage, and track analytics for duplicate videos across different regions. Your audience can easily toggle to their preferred language in one seamless player experience, keeping all your views and engagement consolidated.</p>{% else %}<p>כן. הפלטפורמה מאפשרת להטמיע כמה שפות באותו קובץ מדיה בדיוק. כך אין צורך להעלות, לנהל ולעקוב אחרי נתוני צפייה של סרטונים כפולים לאזורים שונים. הקהל יכול לעבור בקלות לשפה המועדפת בנגן אחד ורציף, וכל הצפיות והמעורבות נשארות מרוכזות במקום אחד.</p>{% endif %}
-                </details>
-                <details>
-                    <summary>{% if qs_is_en %}Do the subtitles automatically adjust for mobile (vertical) and desktop (horizontal) screens?{% else %}האם הכתוביות מתאימות את עצמן אוטומטית למסך מובייל (אנכי) ולמסך מחשב (אופקי)?{% endif %}</summary>
-                    {% if qs_is_en %}<p>Absolutely. Subtitles that look great on a TV can be unreadable or cut off on a smartphone. Our engine automatically adapts subtitle placement, screen orientation, and font size based on the viewer’s device. Whether your content is being watched on a widescreen monitor or swiped on mobile reels, the text remains perfectly formatted, legible, and visually balanced.</p>{% else %}<p>בהחלט. כתוביות שנראות מצוין בטלוויזיה עלולות להיות בלתי קריאות או להיחתך בטלפון. המנוע מתאים אוטומטית את מיקום הכתוביות, כיוון המסך וגודל הגופן לפי המכשיר של הצופה. בין אם התוכן נצפה במסך רחב או ברילס במובייל, הטקסט נשאר מעוצב, קריא ומאוזן.</p>{% endif %}
-                </details>
-                <details>
-                    <summary>{% if qs_is_en %}How do you handle Right-to-Left (RTL) languages like Arabic and Hebrew?{% else %}איך אתם מטפלים בשפות מימין לשמאל (RTL) כמו ערבית ועברית?{% endif %}</summary>
-                    {% if qs_is_en %}<p>We provide native, flawless RTL support. A common frustration with traditional video editors is that RTL languages render backward or with broken punctuation. Our formatting engine is built to correctly align, sequence, and display RTL text instantly, ensuring your Arabic, Hebrew, or Persian subtitles look professional and culturally accurate without any manual workarounds.</p>{% else %}<p>יש תמיכה מובנית ומלאה ב-RTL. תסכול נפוץ בעורכי וידאו מסורתיים הוא ששפות מימין לשמאל מוצגות הפוך או עם פיסוק שבור. מנוע העיצוב שלנו נבנה ליישר, לסדר ולהציג טקסט RTL מיידית, כך שכתוביות בערבית, בעברית או בפרסית נראות מקצועיות ומדויקות תרבותית, בלי פתרונות ידניים.</p>{% endif %}
-                </details>
-                <details>
-                    <summary>{% if qs_is_en %}Can I rely on your system for professional-grade accuracy?{% else %}האם אפשר לסמוך על המערכת לדיוק ברמה מקצועית?{% endif %}</summary>
-                    {% if qs_is_en %}<p>Yes. We prioritize high-fidelity transcription and translation. Whether you are dealing with complex industry terminology, rapid dialogue, or nuanced phrasing, our system ensures that your subtitles and localized audio are highly accurate, protecting your brand's credibility and keeping your global audience fully engaged.</p>{% else %}<p>כן. אנחנו שמים דגש על תמלול ותרגום בנאמנות גבוהה. גם במונחים מקצועיים מורכבים, בדיאלוג מהיר או בניסוח עדין, המערכת שומרת על כתוביות ואודיו מתורגם מדויקים, כדי להגן על אמינות המותג ולהשאיר את הקהל הגלובלי מעורב.</p>{% endif %}
-                </details>
-                </div>
-            </section>
         </section>
 
         <div id="invoice-billing-modal" class="seo-sales-modal-backdrop" style="display:none;" aria-hidden="true">
@@ -243,21 +207,22 @@ try {
 
         <div id="sales-contact-modal" class="seo-sales-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="seo-sales-modal" role="dialog" aria-modal="true" aria-labelledby="sales-contact-title">
-                <button type="button" class="seo-sales-modal-close" id="sales-contact-close" aria-label="Close">✕</button>
-                <h3 id="sales-contact-title" data-i18n="sales_contact_title">Contact Sales</h3>
-                <p class="seo-sales-modal-sub" data-i18n="sales_contact_sub">Tell us what you need and we will get back to you.</p>
-                <label class="seo-sales-label" for="sales-contact-email-input" data-i18n="sales_contact_email">Email (optional)</label>
-                <input type="email" id="sales-contact-email-input" class="seo-sales-input" autocomplete="email">
-                <label class="seo-sales-label" for="sales-contact-message-input" data-i18n="sales_contact_message">Message</label>
+                <button type="button" class="seo-sales-modal-close" id="sales-contact-close" aria-label="{% if qs_is_en %}Close{% else %}סגור{% endif %}">✕</button>
+                <h3 id="sales-contact-title" data-i18n="sales_contact_title">{% if qs_is_en %}Contact Sales{% else %}צור קשר למכירות{% endif %}</h3>
+                <p class="seo-sales-modal-sub" data-i18n="sales_contact_sub">{% if qs_is_en %}Tell us what you need and we will get back to you.{% else %}כתבו לנו ונחזור אליכם בהקדם.{% endif %}</p>
+                <label class="seo-sales-label" for="sales-contact-email-input" data-i18n="sales_contact_email">{% if qs_is_en %}Email (optional){% else %}אימייל (אופציונלי){% endif %}</label>
+                <input type="email" id="sales-contact-email-input" class="seo-sales-input" autocomplete="email" lang="en" dir="ltr">
+                <label class="seo-sales-label" for="sales-contact-message-input" data-i18n="sales_contact_message">{% if qs_is_en %}Message{% else %}הודעה{% endif %}</label>
                 <textarea id="sales-contact-message-input" class="seo-sales-textarea" rows="5" required></textarea>
                 <div class="seo-sales-modal-actions">
-                    <button type="button" id="sales-contact-send-btn" class="seo-btn seo-btn-medical" data-i18n="sales_contact_send">Send</button>
-                    <button type="button" id="sales-contact-cancel-btn" class="seo-btn seo-btn-secondary" data-i18n="sales_contact_cancel">Cancel</button>
+                    <button type="button" id="sales-contact-send-btn" class="seo-btn seo-btn-medical" data-i18n="sales_contact_send">{% if qs_is_en %}Send{% else %}שליחה{% endif %}</button>
+                    <button type="button" id="sales-contact-cancel-btn" class="seo-btn seo-btn-secondary" data-i18n="sales_contact_cancel">{% if qs_is_en %}Cancel{% else %}ביטול{% endif %}</button>
                 </div>
             </div>
         </div>
 
-        <section id="medical-onboarding-screen" class="medical-onboarding-screen" {% if not medical_entry %}hidden{% endif %} data-qs-locale-dir>
+        {% if medical_entry %}
+        <section id="medical-onboarding-screen" class="medical-onboarding-screen" data-qs-locale-dir>
             <div class="medical-onboarding-hero">
                 <span class="medical-onboarding-kicker">QuickScribe Medical</span>
                 <h1 data-i18n="medical_onboarding_hero_title">{% if qs_is_en %}AI Documentation for Healthcare Professionals{% else %}תיעוד AI לאנשי מקצוע בתחום הבריאות{% endif %}</h1>
@@ -300,7 +265,7 @@ try {
             <p class="medical-aws-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</p>
         </section>
 
-        <section id="medical-session-header"{% if not medical_entry %} style="display:none;"{% endif %}>
+        <section id="medical-session-header">
             <div class="medical-session-header-main">
                 <h2 id="medical-session-title" data-i18n="medical_session_secure_recording">Secure medical recording session</h2>
                 <span id="medical-session-subtitle" class="medical-hipaa-badge" data-i18n="medical_session_hipaa_active">Clinical transcription with HIPAA mode active</span>
@@ -319,12 +284,14 @@ try {
                 <span id="medical-warmup-banner-subtext" class="medical-warmup-banner-subtext" data-i18n="medical_warmup_cold_msg">The transcription system is sleeping to save energy.</span>
             </div>
         </div>
+        {% endif %}
 
          <div id="auth-modal" class="auth-modal-backdrop" style="display:none; position:fixed; z-index:14000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center;">
             <div class="auth-modal-card" style="position:relative; background: white; padding: 28px; border-radius: 16px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
                 <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
                 <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
 
+                {% if medical_entry %}
                 <div id="auth-medical-specialty-wrap" style="display:none; text-align:start;">
                     <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;" data-i18n="medical_specialty_label">Choose your professional field</label>
                     <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
@@ -341,6 +308,7 @@ try {
                         <option value="other" data-i18n="medical_specialty_other">Other healthcare profession</option>
                     </select>
                 </div>
+                {% endif %}
 
                 <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
                     <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;">
@@ -396,6 +364,7 @@ try {
             </div>
         </div>
 
+        {% if medical_entry %}
         <div id="medical-delete-confirm-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-delete-confirm-title">
                 <h3 id="medical-delete-confirm-title" data-i18n="medical_delete_recording_title">מחיקת הקלטה</h3>
@@ -453,6 +422,7 @@ try {
                 <button type="button" id="medical-mic-test-close" class="medical-confirm-btn secondary" data-i18n="medical_mic_close">Close</button>
             </div>
         </div>
+        {% endif %}
         <div id="translation-language-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="translation-modal" role="dialog" aria-modal="true" aria-labelledby="translation-modal-title">
                 <h3 id="translation-modal-title">Translate transcript</h3>
@@ -497,6 +467,7 @@ try {
                 <span class="translation-progress-spinner" aria-hidden="true"></span>
                 <span id="translation-progress-text" class="translation-progress-text"></span>
             </div>
+            {% if medical_entry %}
             <div id="medical-live-status-banner" class="medical-live-status-banner" hidden role="status" aria-live="polite">
                 <span class="medical-live-status-banner-dot" aria-hidden="true"></span>
                 <span class="medical-live-status-banner-spin" aria-hidden="true"></span>
@@ -510,17 +481,21 @@ try {
                 <button type="button" id="medical-style-learn-badge" class="medical-style-learn-badge" hidden data-i18n="medical_learn_my_style">✨ התאם לסגנון הכתיבה שלי</button>
                 </div>
             </div>
+            {% endif %}
                 <div class="medical-transcript-shell">
                     <div class="medical-transcript-top-actions">
+                    {% if medical_entry %}
                     <button type="button" id="medical-typo-fix-btn" class="medical-typo-fix-btn" data-i18n-aria-label="medical_fix_typos" data-i18n-title="medical_fix_typos_tooltip" title="ממיר מונחים רפואיים שנכתבו פונטית בעברית לאיות האנגלי הנכון, ומתקן שגיאות כתיב" hidden>
                         <span class="medical-typo-fix-icon" aria-hidden="true">🪄</span>
                         <span class="medical-typo-fix-label" data-i18n="medical_fix_typos">התאמה רפואית</span>
                     </button>
+                    {% endif %}
                     <button type="button" id="medical-copy-btn" class="medical-copy-btn" data-i18n-aria-label="medical_copy_all" aria-label="Copy all" title="Copy all">
                         <span class="medical-copy-icon" aria-hidden="true"></span>
                     </button>
                 </div>
                 <div id="transcript-window" contenteditable="false"></div>
+                {% if medical_entry %}
                 <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
                 <div id="medical-default-signature" class="medical-default-signature" hidden>
                     <span class="medical-default-signature-view">
@@ -543,6 +518,7 @@ try {
                         <button type="submit" class="medical-save-signature-save">שמור</button>
                     </form>
                 </div>
+                {% endif %}
             </div>
             <div id="processing-state-panel" class="processing-state-panel" style="display:none;" aria-live="polite">
                 <div id="qs-feature-showcase" class="qs-feature-showcase" hidden aria-hidden="true" aria-roledescription="carousel" data-showcase-base="{{ url_for('static', filename='images/showcase/') }}" data-showcase-version="{{ static_asset_version }}">
@@ -582,7 +558,7 @@ try {
             </div>
             <div class="controls-bar">
                 <div class="toolbar-group">
-                    <button type="button" id="medical-toolbar-new-session-btn" class="medical-toolbar-new-session-btn" hidden data-i18n="new_session">סשן חדש</button>
+                    {% if medical_entry %}<button type="button" id="medical-toolbar-new-session-btn" class="medical-toolbar-new-session-btn" hidden data-i18n="new_session">סשן חדש</button>{% endif %}
                     <div class="medical-toolbar-docs">
                     <div class="generate-btn-wrap" style="position: relative;">
                         <button class="generate-select-btn" id="btn-download" type="button">
@@ -752,7 +728,8 @@ try {
                     </div>
                 </div>
             </div>
-            <div id="medical-recording-wrap" style="{% if medical_entry %}{% else %}display:none; {% endif %}margin-bottom:12px;">
+            {% if medical_entry %}
+            <div id="medical-recording-wrap" style="margin-bottom:12px;">
                 <div class="medical-record-controls" dir="ltr">
                     <div id="medical-cancel-stack" class="medical-side-action-stack" style="display:none;">
                         <button id="medical-cancel-btn" type="button" class="medical-side-action-btn" data-i18n-aria-label="medical_delete_recording" aria-label="מחק הקלטה">
@@ -787,6 +764,7 @@ try {
                 <div id="medical-record-timer" class="medical-record-timer" style="visibility:hidden;"></div>
             </div>
             <button id="medical-upload-new-session-btn" class="btn btn-primary medical-upload-new-session-btn" type="button" style="display:none;" data-i18n="new_session">סשן חדש</button>
+            {% endif %}
             <button class="btn btn-primary mobile-new-session-btn" id="mobile-new-session-btn" type="button" data-i18n="new_session">New Session</button>
             <div id="qs-pipeline-phase-wrap" class="qs-pipeline-phase-wrap" style="display:none;" aria-live="polite">
                 <div id="qs-pipeline-phase-label" class="qs-pipeline-phase-label" data-i18n="pipeline_upload">העלאה</div>
