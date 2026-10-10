@@ -7892,21 +7892,43 @@ function wireUserMenuTrigger(btn) {
 async function setupNavbarAuth(userOverride) {
     const signInBtn = document.getElementById('nav-auth-btn');
     const signInMobile = document.getElementById('nav-auth-btn-mobile');
-    const signedInWrap = document.getElementById('nav-utility-signed-in');
-    const mobileSignedInWrap = document.getElementById('nav-mobile-signed-in');
-    const nameTrigger = document.getElementById('nav-user-name-trigger');
-    const nameTriggerMobile = document.getElementById('nav-user-name-trigger-mobile');
-    const logoutBtn = document.getElementById('nav-logout-btn');
-    const logoutBtnMobile = document.getElementById('nav-logout-btn-mobile');
-    if (!signInBtn && !signedInWrap) return;
+    if (!signInBtn && !document.getElementById('nav-utility-signed-in') && !document.getElementById('nav-utility-signed-in-host')) return;
 
+    let nameTrigger = document.getElementById('nav-user-name-trigger');
     const hadSignedInNav = !!(nameTrigger && nameTrigger.textContent && nameTrigger.textContent !== 'Account');
     const user = userOverride != null ? userOverride : await qsGetAuthUserForUi({ waitMs: 1500 });
     const T = typeof window.t === 'function' ? window.t : (k) => k;
 
+    if (user) {
+        try {
+            if (typeof window.qsEnsureSignedInAccountChrome === 'function') {
+                window.qsEnsureSignedInAccountChrome();
+            }
+        } catch (_) {}
+    } else {
+        try {
+            if (typeof window.qsShowGuestAccountChrome === 'function') {
+                window.qsShowGuestAccountChrome();
+            }
+        } catch (_) {}
+    }
+
+    const signedInWrap = document.getElementById('nav-utility-signed-in');
+    const mobileSignedInWrap = document.getElementById('nav-mobile-signed-in');
+    nameTrigger = document.getElementById('nav-user-name-trigger');
+    const nameTriggerMobile = document.getElementById('nav-user-name-trigger-mobile');
+    const logoutBtn = document.getElementById('nav-logout-btn');
+    const logoutBtnMobile = document.getElementById('nav-logout-btn-mobile');
+
     if (!user && hadSignedInNav && window.__QS_PRESERVE_NAVBAR_AUTH_ON_LOCALE_SWITCH === true) {
         try { window.__QS_UX_USER_SIGNED_IN = true; } catch (_) {}
-        if (logoutBtn) logoutBtn.textContent = T('nav_logout');
+        try {
+            if (typeof window.qsEnsureSignedInAccountChrome === 'function') {
+                window.qsEnsureSignedInAccountChrome();
+            }
+        } catch (_) {}
+        const logoutPreserve = document.getElementById('nav-logout-btn');
+        if (logoutPreserve) logoutPreserve.textContent = T('nav_logout');
         qsSyncNavWorkspaceCta(true);
         closeUserMenu();
         return;

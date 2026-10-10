@@ -58,6 +58,22 @@ header.navbar,
     font-family: Inter, system-ui, sans-serif;
     font-size: 14px;
 }
+.site-footer-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 10px 16px;
+}
+.site-footer-nav a {
+    color: #4b5563;
+    text-decoration: none;
+    font-weight: 500;
+}
+.site-footer-nav a:hover {
+    color: #4f46e5;
+    text-decoration: underline;
+}
 .site-footer-copy,
 .site-footer-follow {
     color: #6b7280;
@@ -495,6 +511,28 @@ body.medical-mode .upload-zone-app-footer .medical-aws-footnote::before,
     min-height: 0;
     height: auto;
     overflow: visible;
+}
+
+.nav-guest-free-tier {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #475569;
+    white-space: nowrap;
+    line-height: 1.2;
+}
+.nav-guest-free-tier[hidden],
+.nav-guest-free-tier--mobile[hidden] {
+    display: none !important;
+}
+.nav-guest-free-tier--mobile {
+    display: block;
+    padding: 8px 16px;
+    white-space: normal;
+}
+body.qs-user-signed-in .nav-guest-free-tier {
+    display: none !important;
 }
 
 .nav-credit-balance {
