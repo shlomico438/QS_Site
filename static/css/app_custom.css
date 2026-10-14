@@ -3044,6 +3044,39 @@ body.qs-video-transcript-session.has-transcript-actions:not(.medical-mode) #subt
     min-height: 120px;
     max-height: min(42vh, 340px);
     overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    outline: none;
+    background: #ffffff;
+    cursor: text;
+}
+#medical-training-panel .qs-medical-training-textarea:focus {
+    border-color: #0f766e;
+    box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.15);
+}
+#medical-training-panel .qs-medical-training-textarea b,
+#medical-training-panel .qs-medical-training-textarea strong {
+    font-weight: 700 !important;
+}
+#medical-training-panel .qs-medical-training-textarea.is-empty:before {
+    content: attr(data-placeholder);
+    color: #94a3b8;
+    pointer-events: none;
+}
+#medical-training-panel .qs-medical-training-bold-btn {
+    padding: 10px 14px;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #0f172a;
+    font-weight: 800;
+    font-style: italic;
+    cursor: pointer;
+    min-width: 40px;
+}
+#medical-training-panel .qs-medical-training-bold-btn:hover {
+    border-color: #0f766e;
+    color: #0f766e;
 }
 
 /* Medical: no כתוביות/מסמך format switch or Aa subtitle styling — transcript vs summary uses medical tabs */

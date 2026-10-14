@@ -11167,6 +11167,228 @@ function _qsNormMedicalTrainingSummaryText(s) {
     return String(s || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 }
 
+function _qsMedicalTrainingEscHtml(s) {
+    return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+/** Plain draft (optional **bold**) → HTML for the training contenteditable. */
+function _qsMedicalTrainingPlainToHtml(text) {
+    const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (!raw) return '';
+    const parts = raw.split(/(\*\*[^*]+?\*\*)/g);
+    return parts.map((part) => {
+        if (part.length >= 4 && part.startsWith('**') && part.endsWith('**')) {
+            return `<strong>${_qsMedicalTrainingEscHtml(part.slice(2, -2)).replace(/\n/g, '<br>')}</strong>`;
+        }
+        return _qsMedicalTrainingEscHtml(part).replace(/\n/g, '<br>');
+    }).join('');
+}
+
+function _qsMedicalTrainingStyleSaysBold(styleAttr) {
+    const style = String(styleAttr || '').toLowerCase();
+    if (!style) return false;
+    // Word/Docs often use font-weight:bold|700; ignore mso-bidi-font-weight:normal on <b>.
+    if (/font-weight\s*:\s*(bold|bolder|[6-9]00)\b/.test(style)) return true;
+    return false;
+}
+
+function _qsMedicalTrainingNodeIsBold(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const tag = el.tagName;
+    if (tag === 'B' || tag === 'STRONG') return true;
+    if (/^H[1-6]$/.test(tag)) return true;
+    if (_qsMedicalTrainingStyleSaysBold(el.getAttribute && el.getAttribute('style'))) return true;
+    const cls = String((el.getAttribute && el.getAttribute('class')) || '').toLowerCase();
+    if (/\b(bold|fw-bold|font-weight-bold|font-bold)\b/.test(cls)) return true;
+    try {
+        const w = window.getComputedStyle(el).fontWeight;
+        const n = parseInt(w, 10);
+        return w === 'bold' || w === 'bolder' || (!Number.isNaN(n) && n >= 600);
+    } catch (_) {
+        return false;
+    }
+}
+
+/** Bold check for detached clipboard DOM (no getComputedStyle). */
+function _qsMedicalTrainingDetachedIsBold(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const tag = el.tagName;
+    if (tag === 'B' || tag === 'STRONG') return true;
+    if (/^H[1-6]$/.test(tag)) return true;
+    if (_qsMedicalTrainingStyleSaysBold(el.getAttribute('style'))) return true;
+    const cls = String(el.getAttribute('class') || '').toLowerCase();
+    return /\b(bold|fw-bold|font-weight-bold|font-bold)\b/.test(cls);
+}
+
+function _qsMedicalTrainingExtractClipboardHtml(html) {
+    const raw = String(html || '');
+    const start = raw.indexOf('<!--StartFragment-->');
+    const end = raw.indexOf('<!--EndFragment-->');
+    if (start >= 0 && end > start) {
+        return raw.slice(start + '<!--StartFragment-->'.length, end);
+    }
+    return raw;
+}
+
+/** Clipboard HTML → safe editor HTML with visible <strong> for bold runs. */
+function _qsMedicalTrainingSanitizePasteHtml(html) {
+    const fragment = _qsMedicalTrainingExtractClipboardHtml(html);
+    if (!fragment || !/[<]/.test(fragment)) return '';
+    let doc;
+    try {
+        doc = new DOMParser().parseFromString(
+            `<div id="qs-mt-paste-root">${fragment}</div>`,
+            'text/html'
+        );
+    } catch (_) {
+        return '';
+    }
+    const root = (doc && doc.getElementById('qs-mt-paste-root')) || (doc && doc.body);
+    if (!root) return '';
+    let out = '';
+    const walk = (node, bold) => {
+        if (!node) return;
+        if (node.nodeType === Node.TEXT_NODE) {
+            const t = String(node.nodeValue || '').replace(/\u00a0/g, ' ');
+            if (!t) return;
+            const esc = _qsMedicalTrainingEscHtml(t);
+            out += bold ? `<strong>${esc}</strong>` : esc;
+            return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        const tag = node.tagName;
+        if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'META' || tag === 'LINK' || tag === 'XML') return;
+        if (tag === 'BR') {
+            out += '<br>';
+            return;
+        }
+        const nextBold = bold || _qsMedicalTrainingDetachedIsBold(node);
+        const block = /^(DIV|P|LI|H[1-6]|TR|TABLE|SECTION|ARTICLE|UL|OL)$/.test(tag);
+        if (block && out && !/<br>$/i.test(out)) out += '<br>';
+        for (let i = 0; i < node.childNodes.length; i++) {
+            walk(node.childNodes[i], nextBold);
+        }
+        if (block && out && !/<br>$/i.test(out)) out += '<br>';
+    };
+    for (let i = 0; i < root.childNodes.length; i++) {
+        walk(root.childNodes[i], false);
+    }
+    out = out
+        .replace(/<\/strong>(\s*)<strong>/gi, '$1')
+        .replace(/(?:<br>\s*){3,}/gi, '<br><br>')
+        .replace(/^(?:<br>)+|(?:<br>)+$/gi, '');
+    return out;
+}
+
+function _qsMedicalTrainingInsertHtmlAtCaret(editor, html) {
+    if (!editor || !html) return;
+    editor.focus();
+    try {
+        if (document.queryCommandSupported && document.queryCommandSupported('insertHTML')) {
+            document.execCommand('insertHTML', false, html);
+            return;
+        }
+    } catch (_) {}
+    const sel = window.getSelection && window.getSelection();
+    if (!sel || !sel.rangeCount) {
+        editor.insertAdjacentHTML('beforeend', html);
+        return;
+    }
+    let range = sel.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) {
+        range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+    }
+    range.deleteContents();
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+    const frag = document.createDocumentFragment();
+    let last = null;
+    while (temp.firstChild) {
+        last = frag.appendChild(temp.firstChild);
+    }
+    range.insertNode(frag);
+    if (last) {
+        range.setStartAfter(last);
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }
+}
+
+function _qsMedicalTrainingHandlePaste(editor, e) {
+    if (!editor || !e || !e.clipboardData) return false;
+    const htmlRaw = e.clipboardData.getData('text/html') || '';
+    const plain = e.clipboardData.getData('text/plain') || '';
+    let insertHtml = '';
+    if (htmlRaw && /<(b|strong|span|p|div|h[1-6]|li|table|font)\b/i.test(htmlRaw)) {
+        insertHtml = _qsMedicalTrainingSanitizePasteHtml(htmlRaw);
+    }
+    if (!insertHtml && plain) {
+        insertHtml = _qsMedicalTrainingPlainToHtml(plain);
+    }
+    if (!insertHtml) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    _qsMedicalTrainingInsertHtmlAtCaret(editor, insertHtml);
+    window._medicalTrainingDoctorDraft = _qsMedicalTrainingEditorGetText(editor);
+    _qsMedicalTrainingEditorSetEmptyClass(editor);
+    return true;
+}
+
+/** Contenteditable → plain text; bold runs become **…** for the learn API. */
+function _qsMedicalTrainingEditorGetText(root) {
+    if (!root) return '';
+    if (root.tagName === 'TEXTAREA' || root.tagName === 'INPUT') {
+        return String(root.value || '');
+    }
+    let out = '';
+    const walk = (node, bold) => {
+        if (!node) return;
+        if (node.nodeType === Node.TEXT_NODE) {
+            const t = String(node.nodeValue || '').replace(/\u00a0/g, ' ');
+            if (!t) return;
+            out += bold ? `**${t}**` : t;
+            return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        const tag = node.tagName;
+        if (tag === 'BR') {
+            out += '\n';
+            return;
+        }
+        const nextBold = bold || _qsMedicalTrainingNodeIsBold(node);
+        const block = /^(DIV|P|LI|H[1-6]|SECTION|ARTICLE)$/.test(tag);
+        if (block && out && !/\n$/.test(out)) out += '\n';
+        for (let i = 0; i < node.childNodes.length; i++) {
+            walk(node.childNodes[i], nextBold);
+        }
+        if (block && out && !/\n$/.test(out)) out += '\n';
+    };
+    walk(root, false);
+    return out.replace(/\*\*\*\*/g, '').replace(/\n{3,}/g, '\n\n');
+}
+
+function _qsMedicalTrainingEditorSetEmptyClass(el) {
+    if (!el) return;
+    const empty = !_qsNormMedicalTrainingSummaryText(_qsMedicalTrainingEditorGetText(el));
+    el.classList.toggle('is-empty', empty);
+}
+
+function _qsMedicalTrainingToggleBold(editor) {
+    if (!editor) return;
+    editor.focus();
+    try {
+        document.execCommand('bold', false, null);
+    } catch (_) {}
+    window._medicalTrainingDoctorDraft = _qsMedicalTrainingEditorGetText(editor);
+    _qsMedicalTrainingEditorSetEmptyClass(editor);
+}
+
 const QS_MEDICAL_TRAINING_TOAST_UPDATE_SUMMARY = 'עדכן את הסיכום הרצוי.';
 
 function _medicalTrainingBtnSetDisabled(btn, disabled) {
@@ -11325,7 +11547,7 @@ function qsSyncMedicalStyleTrainingBadge() {
 function qsCloseMedicalTrainingModal() {
     const modal = document.getElementById('medical-training-modal');
     const ta = document.getElementById('medical-training-doctor-summary');
-    if (ta) window._medicalTrainingDoctorDraft = ta.value;
+    if (ta) window._medicalTrainingDoctorDraft = _qsMedicalTrainingEditorGetText(ta);
     if (modal) {
         modal.style.display = 'none';
         modal.setAttribute('aria-hidden', 'true');
@@ -11422,13 +11644,14 @@ function renderMedicalTrainingPanel(container) {
     panel.style.cssText = 'direction:rtl;text-align:right;margin:0;padding:0;line-height:1.6;';
     panel.innerHTML = `
         <div id="medical-training-panel-body">
-        <div style="font-size:0.88rem;color:#0f766e;margin-bottom:10px;">ערכו את הסיכום לצורת התבנית שלכם (כותרות, סדר סעיפים וסגנון). האימון שומר תבנית וסגנון אישיים לחשבון שלכם בלבד — לא משותף עם רופאים אחרים. עובדות קליניות מהדוגמה לא נשמרות ככללים.</div>
+        <div style="font-size:0.88rem;color:#0f766e;margin-bottom:10px;">ערכו את הסיכום לצורת התבנית שלכם (כותרות, סדר סעיפים וסגנון). סמנו כותרת ולחצו Ctrl+B (או ⌘B) להדגשה. האימון שומר תבנית וסגנון אישיים לחשבון שלכם בלבד — לא משותף עם רופאים אחרים. עובדות קליניות מהדוגמה לא נשמרות ככללים.</div>
         <div class="qs-medical-training-actions">
             ${okBtnHtml}
             <button type="button" id="medical-training-learn-btn" style="${learnBtnStyle}">${learnBtnLabel}</button>
             ${cancelBtnHtml}
+            <button type="button" id="medical-training-bold-btn" class="qs-medical-training-bold-btn" title="Ctrl+B" aria-label="Bold">B</button>
         </div>
-        <textarea id="medical-training-doctor-summary" class="qs-medical-training-textarea" rows="8" placeholder="הדביקו כאן את הסיכום בתבנית הרצויה שלכם...">${esc(draftText)}</textarea>
+        <div id="medical-training-doctor-summary" class="qs-medical-training-textarea${draftText ? '' : ' is-empty'}" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="הדביקו כאן את הסיכום בתבנית הרצויה שלכם..." spellcheck="true">${_qsMedicalTrainingPlainToHtml(draftText)}</div>
         <div id="medical-training-message" style="margin-top:8px;font-size:0.88rem;color:#0f766e;">${esc(window._medicalTrainingMessage || '')}</div>
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid #99f6e4;">
             <button type="button" id="medical-training-inspect-btn" style="padding:8px 12px;border:1px solid #0f766e;border-radius:10px;background:#ffffff;color:#0f766e;font-weight:700;cursor:pointer;">מה נשמר בחשבון?</button>
@@ -11445,20 +11668,44 @@ function renderMedicalTrainingPanel(container) {
     const learnBtn = panel.querySelector('#medical-training-learn-btn');
     const cancelBtn = panel.querySelector('#medical-training-cancel-btn');
     const okBtn = panel.querySelector('#medical-training-ok-btn');
+    const boldBtn = panel.querySelector('#medical-training-bold-btn');
     if (cancelBtn) {
         cancelBtn.onclick = () => qsCloseMedicalTrainingModal();
     }
     if (okBtn) {
         okBtn.onclick = () => qsCloseMedicalTrainingModal();
     }
+    if (boldBtn) {
+        boldBtn.onclick = (e) => {
+            e.preventDefault();
+            _qsMedicalTrainingToggleBold(textarea);
+            syncTrainingButtons();
+        };
+    }
     const syncTrainingButtons = () => {
-        const currentDraft = _qsNormMedicalTrainingSummaryText(textarea ? textarea.value : '');
+        const currentDraft = _qsNormMedicalTrainingSummaryText(
+            textarea ? _qsMedicalTrainingEditorGetText(textarea) : ''
+        );
         _medicalTrainingBtnSetDisabled(learnBtn, !currentDraft);
+        _qsMedicalTrainingEditorSetEmptyClass(textarea);
     };
     if (textarea) {
         textarea.addEventListener('input', () => {
-            window._medicalTrainingDoctorDraft = textarea.value;
+            window._medicalTrainingDoctorDraft = _qsMedicalTrainingEditorGetText(textarea);
             syncTrainingButtons();
+        });
+        textarea.addEventListener('paste', (e) => {
+            if (_qsMedicalTrainingHandlePaste(textarea, e)) {
+                syncTrainingButtons();
+            }
+        });
+        textarea.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && String(e.key || '').toLowerCase() === 'b') {
+                e.preventDefault();
+                e.stopPropagation();
+                _qsMedicalTrainingToggleBold(textarea);
+                syncTrainingButtons();
+            }
         });
     }
     syncTrainingButtons();
@@ -11485,7 +11732,9 @@ function renderMedicalTrainingPanel(container) {
         learnBtn.onclick = async () => {
             if (_medicalTrainingBtnBlockIfInactive(learnBtn)) return;
             try {
-                const doctorSummary = _qsNormMedicalTrainingSummaryText(textarea ? textarea.value : '');
+                const doctorSummary = _qsNormMedicalTrainingSummaryText(
+                    textarea ? _qsMedicalTrainingEditorGetText(textarea) : ''
+                );
                 if (!doctorSummary) {
                     if (typeof showStatus === 'function') {
                         showStatus(QS_MEDICAL_TRAINING_TOAST_UPDATE_SUMMARY, false, { duration: 5000 });
