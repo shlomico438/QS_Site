@@ -11174,17 +11174,76 @@ function _qsMedicalTrainingEscHtml(s) {
         .replace(/>/g, '&gt;');
 }
 
+/** True for clinic section/subhead lines that the summary UI shows in bold. */
+function _qsMedicalTrainingLineLooksLikeHeading(line) {
+    const raw = String(line || '').trim();
+    if (!raw || raw.length > 64) return false;
+    const normalized = raw.replace(/[:：.\s]+$/u, '').trim().toLowerCase();
+    if (!normalized) return false;
+    const known = (typeof QS_MEDICAL_SUMMARY_SUBHEADINGS !== 'undefined' && Array.isArray(QS_MEDICAL_SUMMARY_SUBHEADINGS))
+        ? QS_MEDICAL_SUMMARY_SUBHEADINGS
+        : ['ברקע', 'רגישות', 'תרופות', 'לסיכום', 'המלצות', 'בבדיקה', 'אנמנזה', 'בדיקה', 'סיכום'];
+    if (known.some((h) => String(h || '').toLowerCase() === normalized)) return true;
+    const labels = window._medicalPersonalSectionLabels;
+    if (labels && typeof labels === 'object') {
+        for (const v of Object.values(labels)) {
+            const lab = String(v || '').trim().replace(/[:：.\s]+$/u, '').trim().toLowerCase();
+            if (lab && lab === normalized) return true;
+        }
+    }
+    // Short label lines ending with a colon (common in doctor templates).
+    if (raw.length <= 40 && /[:：]\s*$/u.test(raw) && !/[.!?。]/.test(raw.replace(/[:：]\s*$/u, ''))) {
+        return true;
+    }
+    return false;
+}
+
 /** Plain draft (optional **bold**) → HTML for the training contenteditable. */
 function _qsMedicalTrainingPlainToHtml(text) {
     const raw = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     if (!raw) return '';
-    const parts = raw.split(/(\*\*[^*]+?\*\*)/g);
-    return parts.map((part) => {
-        if (part.length >= 4 && part.startsWith('**') && part.endsWith('**')) {
-            return `<strong>${_qsMedicalTrainingEscHtml(part.slice(2, -2)).replace(/\n/g, '<br>')}</strong>`;
+    const renderLine = (line) => {
+        const parts = String(line || '').split(/(\*\*[^*]+?\*\*)/g);
+        const lineHtml = parts.map((part) => {
+            if (part.length >= 4 && part.startsWith('**') && part.endsWith('**')) {
+                return `<strong>${_qsMedicalTrainingEscHtml(part.slice(2, -2))}</strong>`;
+            }
+            return _qsMedicalTrainingEscHtml(part);
+        }).join('');
+        const plainLine = String(line || '').replace(/\*\*/g, '');
+        if (_qsMedicalTrainingLineLooksLikeHeading(plainLine) && !/<strong>/i.test(lineHtml)) {
+            return `<strong>${lineHtml}</strong>`;
         }
-        return _qsMedicalTrainingEscHtml(part).replace(/\n/g, '<br>');
-    }).join('');
+        return lineHtml;
+    };
+    return raw.split('\n').map(renderLine).join('<br>');
+}
+
+async function _qsWriteClipboardRich(plain, html) {
+    const plainText = String(plain || '');
+    const htmlText = String(html || '');
+    let mdPlain = plainText;
+    if (htmlText) {
+        try {
+            const tmp = document.createElement('div');
+            tmp.innerHTML = htmlText;
+            mdPlain = _qsMedicalTrainingEditorGetText(tmp) || plainText;
+        } catch (_) {}
+    }
+    try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+            const payload = { 'text/plain': new Blob([mdPlain], { type: 'text/plain' }) };
+            if (htmlText) payload['text/html'] = new Blob([htmlText], { type: 'text/html' });
+            await navigator.clipboard.write([new ClipboardItem(payload)]);
+            return true;
+        }
+    } catch (_) {}
+    try {
+        await navigator.clipboard.writeText(mdPlain);
+        return true;
+    } catch (_) {
+        return false;
+    }
 }
 
 function _qsMedicalTrainingStyleSaysBold(styleAttr) {
@@ -11220,6 +11279,10 @@ function _qsMedicalTrainingDetachedIsBold(el) {
     if (/^H[1-6]$/.test(tag)) return true;
     if (_qsMedicalTrainingStyleSaysBold(el.getAttribute('style'))) return true;
     const cls = String(el.getAttribute('class') || '').toLowerCase();
+    // Summary UI bolds headers via CSS classes (not <b>) — treat those as bold when pasting.
+    if (/\b(medical-summary-subhead|medical-summary-section-title|medical-summary-section-head)\b/.test(cls)) {
+        return true;
+    }
     return /\b(bold|fw-bold|font-weight-bold|font-bold)\b/.test(cls);
 }
 
@@ -11261,6 +11324,7 @@ function _qsMedicalTrainingSanitizePasteHtml(html) {
         if (node.nodeType !== Node.ELEMENT_NODE) return;
         const tag = node.tagName;
         if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'META' || tag === 'LINK' || tag === 'XML') return;
+        if (tag === 'BUTTON' || tag === 'SVG' || tag === 'PATH' || tag === 'IMG') return;
         if (tag === 'BR') {
             out += '<br>';
             return;
@@ -11324,12 +11388,17 @@ function _qsMedicalTrainingHandlePaste(editor, e) {
     if (!editor || !e || !e.clipboardData) return false;
     const htmlRaw = e.clipboardData.getData('text/html') || '';
     const plain = e.clipboardData.getData('text/plain') || '';
-    let insertHtml = '';
+    let fromHtml = '';
     if (htmlRaw && /<(b|strong|span|p|div|h[1-6]|li|table|font)\b/i.test(htmlRaw)) {
-        insertHtml = _qsMedicalTrainingSanitizePasteHtml(htmlRaw);
+        fromHtml = _qsMedicalTrainingSanitizePasteHtml(htmlRaw);
     }
-    if (!insertHtml && plain) {
-        insertHtml = _qsMedicalTrainingPlainToHtml(plain);
+    const fromPlain = plain ? _qsMedicalTrainingPlainToHtml(plain) : '';
+    const countStrong = (s) => ((String(s || '').match(/<strong\b/gi) || []).length);
+    // Prefer clipboard HTML when it already carries bold; otherwise use plain+heading detection
+    // (summary copy often yields class-styled headers or plain text only).
+    let insertHtml = fromHtml;
+    if (!insertHtml || (countStrong(fromPlain) > countStrong(fromHtml))) {
+        insertHtml = fromPlain || fromHtml;
     }
     if (!insertHtml) return false;
     e.preventDefault();
@@ -21373,7 +21442,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             try {
-                await navigator.clipboard.writeText(text);
+                const isSummaryTab = String(window.medicalActiveTab || '') === 'summary';
+                if (isSummaryTab && typeof _qsMedicalTrainingPlainToHtml === 'function') {
+                    const html = _qsMedicalTrainingPlainToHtml(text);
+                    const ok = await _qsWriteClipboardRich(text, html);
+                    if (!ok) throw new Error('clipboard_failed');
+                } else {
+                    await navigator.clipboard.writeText(text);
+                }
                 if (typeof showStatus === 'function') {
                     showStatus(T('text_copied') || 'Text copied.', false);
                 }
@@ -26171,7 +26247,13 @@ async function _copyMedicalSummarySection(sectionKey) {
         return;
     }
     try {
-        await navigator.clipboard.writeText(text);
+        const html = typeof _qsMedicalTrainingPlainToHtml === 'function'
+            ? _qsMedicalTrainingPlainToHtml(text)
+            : '';
+        const ok = html
+            ? await _qsWriteClipboardRich(text, html)
+            : (await navigator.clipboard.writeText(text), true);
+        if (!ok) throw new Error('clipboard_failed');
         if (typeof showStatus === 'function') showStatus(`${label} הועתק.`, false, { duration: 2500 });
         try {
             if (typeof ensureJobRecordOnExport === 'function') await ensureJobRecordOnExport();
@@ -26193,6 +26275,38 @@ function _wireMedicalSummarySectionCopyButtonsOnce() {
         const key = String(btn.getAttribute('data-medical-copy-section') || '').trim();
         if (!key) return;
         void _copyMedicalSummarySection(key);
+    });
+    // Selection copy from summary: rewrite clipboard so CSS-bold headers become real <strong>.
+    container.addEventListener('copy', (e) => {
+        try {
+            if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+            if (String(window.medicalActiveTab || '') !== 'summary') return;
+            const sel = window.getSelection && window.getSelection();
+            if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+            const anchor = sel.anchorNode;
+            const el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+            if (!el || !container.contains(el)) return;
+            if (!el.closest(
+                '[data-medical-section], #medical-summary-chief, #medical-summary-exam, #medical-summary-rec, #medical-summary-content, #medical-summary-overview'
+            )) return;
+            const range = sel.getRangeAt(0);
+            const wrap = document.createElement('div');
+            wrap.appendChild(range.cloneContents());
+            let html = _qsMedicalTrainingSanitizePasteHtml(wrap.innerHTML || '');
+            const plain = String(sel.toString() || '').replace(/\u00a0/g, ' ');
+            if (!html) html = _qsMedicalTrainingPlainToHtml(plain);
+            else if (!/<strong\b/i.test(html) && plain) {
+                const fromPlain = _qsMedicalTrainingPlainToHtml(plain);
+                if ((fromPlain.match(/<strong\b/gi) || []).length > 0) html = fromPlain;
+            }
+            if (!html && !plain) return;
+            if (!e.clipboardData) return;
+            e.preventDefault();
+            if (html) e.clipboardData.setData('text/html', html);
+            const tmp = document.createElement('div');
+            tmp.innerHTML = html || '';
+            e.clipboardData.setData('text/plain', _qsMedicalTrainingEditorGetText(tmp) || plain);
+        } catch (_) {}
     });
 }
 
