@@ -248,8 +248,12 @@ def transcribe_pcm_via_stream(
 ) -> str:
     """Send gap PCM through AWS Transcribe Streaming.
 
-    Must run on a real OS thread (see siteapp._run_on_os_thread). Do not call
-    AwsTranscribeStreamSession.start() from a gevent request greenlet.
+    Must run on a real OS thread (see siteapp._run_on_real_os_thread).
+
+    Default path is a one-shot asyncio loop (_transcribe_pcm_direct). The live
+    AwsTranscribeStreamSession nests extra OS threads + hub hops and can hang
+    after AWS finishes (HTTP never returns) when used for offline gap fill.
+    Pass session_factory only in unit tests that mock a session.
     """
     raw = bytes(pcm or b"")
     if not raw:
@@ -648,9 +652,14 @@ def transcribe_medical_gaps(
     stream_region: Optional[str] = None,
     stream_transcribe_fn: Optional[Callable[..., str]] = None,
     pcm_bytes: Optional[bytes] = None,
+    client_duration_ms: int = 0,
 ) -> Dict[str, Any]:
     """Slice each gap, transcribe it, stitch, then delete temporary objects."""
-    if pcm_bytes and gap_transcribe_engine(engine) != "batch":
+    # Default stream = StartStreamTranscription (same IAM as live).
+    # Batch = StartTranscriptionJob only when explicitly requested — do not force
+    # batch for file/offline recovery (QuickScribe_Koyeb_Uploader has no batch IAM).
+    requested = gap_transcribe_engine(engine)
+    if pcm_bytes and requested != "batch":
         return recover_gaps_from_pcm(
             transcript=transcript,
             gaps=gaps,
@@ -665,6 +674,9 @@ def transcribe_medical_gaps(
         )
     if not recording_bytes:
         raise ValueError("empty_recording")
+    use_batch = requested == "batch"
+    if use_batch and transcribe_client is None:
+        raise RuntimeError("batch_transcribe_client_required")
 
     suffix = str(recording_suffix or ".m4a")
     if not suffix.startswith("."):
@@ -676,7 +688,22 @@ def transcribe_medical_gaps(
     try:
         with open(source_path, "wb") as fh:
             fh.write(recording_bytes)
-        duration_ms = probe_duration_ms(ffprobe_path, source_path)
+        try:
+            duration_ms = probe_duration_ms(ffprobe_path, source_path)
+        except Exception as probe_err:
+            logger.warning("medical gap ffprobe failed: %s", probe_err)
+            duration_ms = 0
+        # MediaRecorder m4a often under-reports duration until the file is fully finalized.
+        try:
+            hint = int(client_duration_ms or 0)
+        except (TypeError, ValueError):
+            hint = 0
+        gap_hi = 0
+        for raw in gaps or []:
+            g = _norm_gap(raw)
+            if g:
+                gap_hi = max(gap_hi, int(g.get("endMs") or 0), int(g.get("startMs") or 0))
+        duration_ms = max(duration_ms, hint, gap_hi)
         valid = validate_gaps(gaps, duration_ms)
         if not valid:
             failed = []
@@ -692,7 +719,6 @@ def transcribe_medical_gaps(
                 "duration_ms": duration_ms,
             }
 
-        use_batch = gap_transcribe_engine(engine) == "batch"
         prefix = _gap_object_prefix(user_id, job_id)
         pending: List[Dict[str, Any]] = []
         stream_fn = stream_transcribe_fn or transcribe_pcm_via_stream
@@ -713,6 +739,12 @@ def transcribe_medical_gaps(
                 }
                 try:
                     pcm = pcm_bytes_from_wav(wav_path)
+                    logger.info(
+                        "medical gap stream start id=%s pcm_bytes=%s duration_ms=%s",
+                        gap.get("id"),
+                        len(pcm),
+                        int(gap.get("endMs") or 0) - int(gap.get("startMs") or 0),
+                    )
                     text = str(
                         stream_fn(
                             pcm,
@@ -727,6 +759,12 @@ def transcribe_medical_gaps(
                     ).strip()
                     row["text"] = text
                     row["status"] = "ok" if text else "failed"
+                    logger.info(
+                        "medical gap stream done id=%s status=%s chars=%s",
+                        gap.get("id"),
+                        row["status"],
+                        len(text),
+                    )
                 except Exception as exc:
                     logger.warning("medical gap stream failed id=%s: %s", gap.get("id"), exc)
                     row["error"] = str(exc)[:240]
@@ -798,6 +836,7 @@ def transcribe_medical_gaps(
             "transcript": stitched,
             "gaps": public_gaps,
             "duration_ms": duration_ms,
+            "engine": "batch" if use_batch else "stream",
         }
     finally:
         for key in cleanup_keys:

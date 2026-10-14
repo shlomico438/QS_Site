@@ -50,7 +50,7 @@ def resolve_offer(plan_id, hours=1):
             "plan": plan_id,
             "credit_minutes": 0,
             "hours": 0,
-            "amount_ils": 70,
+            "amount_ils": 60,
             "amount_usd": 20,
             "period_days": UNLIMITED_MONTHLY_DAYS,
         }

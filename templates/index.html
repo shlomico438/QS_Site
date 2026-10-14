@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block structured_data %}{% include "snippets/product_json_ld.html" %}{% if not medical_entry %}{% include "snippets/faq_json_ld.html" %}{% endif %}{% endblock %}
-{% block page_title %}{% if medical_entry %}{% if qs_is_en %}QuickScribe Medical | Clinical documentation that understands mixed languages{% else %}QuickScribe Medical | תיעוד רפואי חכם{% endif %}{% elif qs_is_en %}AI transcription that understands you — in any language you speak, even if you switch mid-recording | QuickScribe{% else %}תמלול בעיברית ובכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה | QuickScribe{% endif %}{% endblock %}
-{% block page_description %}{% if medical_entry %}{% if qs_is_en %}Medical transcription that detects language switching in real time — including English prescriptions. Accurate, HIPAA-aligned, results in seconds.{% else %}מערכת תמלול רפואי המזהה שילוב שפות בזמן אמת - כולל מרשמים באנגלית. מדויקת, מאובטחת (HIPAA), ותוצאות תוך שניות.{% endif %}{% elif qs_is_en %}Automatic recognition of 99 languages, including switching languages in the same recording. Summary and action items ready in minutes. Built to handle background noise, multiple speakers, and field recordings.{% else %}זיהוי אוטומטי של עברית ו99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות.{% endif %}{% endblock %}
+{% block structured_data %}{% include "snippets/product_json_ld.html" %}{% if not medical_entry %}{% include "snippets/faq_json_ld.html" %}{% endif %}{% include "snippets/organization_json_ld.html" %}{% endblock %}
+{% block page_title %}{% if medical_entry %}{% if qs_is_en %}QuickScribe Medical | Clinical documentation that understands mixed languages{% else %}QuickScribe Medical | תיעוד רפואי חכם{% endif %}{% elif qs_is_en %}Transcription in any language — even if you switch mid-recording | QuickScribe{% else %}תמלול בעברית ובכל שפה, גם כשמחליפים שפה | QuickScribe{% endif %}{% endblock %}
+{% block page_description %}{% if medical_entry %}{% if qs_is_en %}Medical transcription that detects language switching in real time — including English prescriptions. Accurate, HIPAA-aligned, results in seconds.{% else %}מערכת תמלול רפואי המזהה שילוב שפות בזמן אמת - כולל מרשמים באנגלית. מדויקת, מאובטחת (HIPAA), ותוצאות תוך שניות.{% endif %}{% elif qs_is_en %}Transcription in English and 98 other languages, including switching mid-recording. Subtitles, summary, and DOCX export. 30 free minutes every month, no credit card.{% else %}תמלול בעברית ובעוד 98 שפות, כולל מעבר שפה באמצע ההקלטה. כתוביות, סיכום וייצוא ל-DOCX. 30 דקות חינם בחודש, בלי כרטיס אשראי.{% endif %}{% endblock %}
 {% block content %}
 {% if medical_entry %}
 <script>
@@ -21,16 +21,17 @@ try {
 
 <div class="app-mode">
     <div class="main-app-container{% if medical_entry %} medical-mode{% endif %}" id="main-app-container">
-        <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content" style="display:none;">
+        {# Visible on first paint for guests (mobile LCP). Hidden for medical entry or active job via CSS / tiny boot script. #}
+        <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content"{% if medical_entry %} style="display:none;"{% endif %}>
             <div class="seo-landing-hero seo-landing-band seo-landing-bg-white">
                 <div class="seo-landing-inner">
                     <div class="seo-hero-grid">
                         <div class="seo-hero-copy">
                             <h1>
-                                {% if qs_is_en %}AI transcription that understands you — in any language you speak, even if you switch mid-recording{% else %}תמלול בעיברית ובכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה{% endif %}
+                                {% if qs_is_en %}Transcription in any language you speak — even if you switch mid-recording{% else %}תמלול בעברית ובכל שפה שתדברו גם אם החלפתם שפה באמצע ההקלטה{% endif %}
                             </h1>
                             <p class="seo-hero-subtitle">
-                                {% if qs_is_en %}Automatic recognition of 99 languages, including switching languages in the same recording. Summary and action items ready in minutes.<br class="seo-hero-linebreak">Built to handle background noise, multiple speakers, and field recordings.{% else %}זיהוי אוטומטי של עברית ו99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות{% endif %}
+                                {% if qs_is_en %}Automatic recognition of English and 99 languages, including switching languages in the same recording. Summary and action items ready in minutes.{% else %}זיהוי אוטומטי של עברית ו-99 שפות, כולל מעבר בין שפות באותה הקלטה. עם סיכום ומשימות מוכנים תוך דקות{% endif %}
                             </p>
                         </div>
                     </div>
@@ -41,46 +42,15 @@ try {
             <section id="features-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="features-section-title">
                 <div class="seo-landing-inner">
                 <h2 id="features-section-title">
-                    {% if qs_is_en %}Engineered for High-Fidelity Audio Separation{% else %}מהונדס להפרדת קול באיכות גבוהה{% endif %}
+                    {% if qs_is_en %}Transcribe recordings with background noise and music{% else %}תמלול הקלטות עם רעשי רקע ומוזיקה{% endif %}
                 </h2>
                 <p>
-                    {% if qs_is_en %}Standard speech-to-text models fail when background music or environmental noise interferes. QuickScribe utilizes advanced Neural Audio Source Separation (stem splitting) to isolate human vocals from background noise, instruments, and music beats before transcription begins.{% else %}מודלים רגילים של דיבור לטקסט נכשלים כאשר מוזיקת רקע או רעשי סביבה מפריעים. QuickScribe משתמשת בהפרדת מקורות שמע עצבית מתקדמת (Stem Splitting) כדי לבודד קול אנושי מרעש, מכלים ומקצב מוזיקלי לפני תחילת התמלול.{% endif %}
+                    {% if qs_is_en %}Standard speech-to-text models fail when background music or environmental noise gets in the way. QuickScribe uses advanced neural audio source separation (stem splitting) to isolate the human voice from noise, instruments, and music beats before transcription starts.{% else %}מודלים רגילים של דיבור לטקסט נכשלים כאשר מוזיקת רקע או רעשי סביבה מפריעים. QuickScribe משתמשת בהפרדת מקורות שמע עצבית מתקדמת (Stem Splitting) כדי לבודד קול אנושי מרעש, מכלים ומקצב מוזיקלי לפני תחילת התמלול.{% endif %}
                 </p>
-                <div class="seo-feature-grid">
-                    <article class="seo-card">
-                        <h3>
-                            {% if qs_is_en %}94% Baseline Accuracy{% else %}דיוק בסיסי של 94%{% endif %}
-                        </h3>
-                        <p>
-                            {% if qs_is_en %}Even on complex dialects, terminology, and mixed-language audio.{% else %}גם בדיאלקטים מורכבים, מונחים מקצועיים ואודיו משולב שפות.{% endif %}
-                        </p>
-                    </article>
-                    <article class="seo-card">
-                        <h3>
-                            {% if qs_is_en %}Advanced Vocal Isolation{% else %}בידוד קולי מתקדם{% endif %}
-                        </h3>
-                        <p>
-                            {% if qs_is_en %}Clean audio processing ensures flawless timestamps and zero missing text.{% else %}עיבוד קול נקי מבטיח חותמות זמן מדויקות וללא טקסט חסר.{% endif %}
-                        </p>
-                    </article>
-                </div>
                 </div>
             </section>
 
             {% include 'snippets/regular_pricing_section.html' %}
-
-            <section id="metrics-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="metrics-section-title">
-                <div class="seo-landing-inner">
-                    <h2 id="metrics-section-title" class="seo-metrics-section-title">
-                        {% if qs_is_en %}By the Numbers{% else %}במספרים{% endif %}
-                    </h2>
-                    <div class="seo-metrics-row">
-                        <div><strong>4x</strong><span>{% if qs_is_en %}Faster Workflow{% else %}זרימת עבודה מהירה יותר{% endif %}</span></div>
-                        <div><strong>10k+</strong><span>{% if qs_is_en %}Minutes Processed{% else %}דקות שעובדו{% endif %}</span></div>
-                        <div><strong>100%</strong><span>{% if qs_is_en %}Vocal Isolation{% else %}בידוד קולי{% endif %}</span></div>
-                    </div>
-                </div>
-            </section>
 
             <section id="use-cases-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="use-cases-section-title">
                 <div class="seo-landing-inner">
@@ -88,30 +58,30 @@ try {
                     {% if qs_is_en %}Tailored Solutions for Every Workflow{% else %}פתרונות מותאמים לכל תהליך עבודה{% endif %}
                 </h2>
                 <div class="seo-use-cases-grid">
-                    <article class="seo-card">
+                    <a href="/resources/lectures" class="seo-card seo-use-case-card">
                         <h3>
                             {% if qs_is_en %}🎓 Academic &amp; Research Insights{% else %}🎓 אקדמיה ותובנות מחקר{% endif %}
                         </h3>
                         <p>
                             {% if qs_is_en %}Convert long lectures, recorded Zoom classes, and research interviews into organized text. Speed up study summaries and review complex material instantly.{% else %}המירו הרצאות ארוכות, שיעורי זום מוקלטים וראיונות מחקר לטקסט מאורגן. האיצו סיכומי לימוד וסקירת חומר מורכב במהירות.{% endif %}
                         </p>
-                    </article>
-                    <article class="seo-card">
+                    </a>
+                    <a href="/resources/subtitles" class="seo-card seo-use-case-card">
                         <h3>
                             {% if qs_is_en %}🎬 Social Media &amp; Content Creators{% else %}🎬 רשתות חברתיות ויוצרי תוכן{% endif %}
                         </h3>
                         <p>
-                            {% if qs_is_en %}Generate perfectly timed SRT subtitles for YouTube, TikTok, and podcasts. Export subtitles seamlessly to cut editing workflows in half.{% else %}צרו כתוביות SRT מתוזמנות ליוטיוב, טיקטוק ופודקאסטים. ייצאו כתוביות בקלות וקצרו את זמן העריכה בחצי.{% endif %}
+                            {% if qs_is_en %}Generate perfectly timed SRT subtitles for YouTube, TikTok, and podcasts. Export subtitles seamlessly to cut editing workflows in half.{% else %}צרו כתוביות SRT מתוזמנות ליוטיוב, טיקטוק ופודקאסטים. ייצאו כתוביות בקלות וקצרו את זמן העריכה.{% endif %}
                         </p>
-                    </article>
-                    <article class="seo-card">
+                    </a>
+                    <a href="/resources/legal-interviews" class="seo-card seo-use-case-card">
                         <h3>
                             {% if qs_is_en %}⚖️ Legal, Translation &amp; Enterprise{% else %}⚖️ משפטי, תרגום וארגונים{% endif %}
                         </h3>
                         <p>
-                            {% if qs_is_en %}Built for professionals who require precise, verbatim Hebrew transcription for depth interviews, legal documentation, and localized translation workflows.{% else %}נבנה לאנשי מקצוע הזקוקים לתמלול עברי מדויק מילה במילה עבור ראיונות עומק, תיעוד משפטי ותהליכי לוקליזציה ותרגום.{% endif %}
+                            {% if qs_is_en %}Built for professionals who require precise Hebrew transcription for depth interviews, legal documentation, and localized translation workflows.{% else %}נבנה לאנשי מקצוע הזקוקים לתמלול עברי מדויק עבור ראיונות עומק, תיעוד משפטי ותהליכי לוקליזציה ותרגום.{% endif %}
                         </p>
-                    </article>
+                    </a>
                 </div>
                 </div>
             </section>
@@ -126,10 +96,10 @@ try {
                         {% if qs_is_en %}Featured Review{% else %}ביקורת נבחרת{% endif %}
                     </div>
                     <p>
-                        {% if qs_is_en %}"I used QuickScribe to transcribe a series of in-depth interviews for a book I am writing, and I was truly impressed by the accuracy - even small nuances in speech came out correctly. The automatic chapter splitting surprised me for the better; it really helps when working with long-form audio. Definitely recommend it!"{% else %}"השתמשתי ב-QuickScribe כדי לתמלל סדרת ראיונות עומק עבור ספר שאני כותב, והדיוק באמת הרשים אותי - אפילו ניואנסים קטנים בדיבור הופיעו נכון. חלוקת הפרקים האוטומטית הפתיעה אותי לטובה; זה ממש עוזר כשעובדים עם אודיו ארוך. ממליץ מאוד!"{% endif %}
+                        {% if qs_is_en %}"I used QuickScribe to transcribe a series of in-depth interviews for a book I am writing, and I was truly impressed by the accuracy - even small nuances in speech came out correctly. The automatic chapter splitting surprised me for the better; it really helps when working with long-form audio. Highly recommend it!"{% else %}"השתמשתי ב-QuickScribe כדי לתמלל סדרת ראיונות עומק עבור ספר שאני כותבת, והדיוק באמת הרשים אותי - אפילו ניואנסים קטנים בדיבור הופיעו נכון. חלוקת הפרקים האוטומטית הפתיעה אותי לטובה; זה ממש עוזר כשעובדים עם אודיו ארוך. ממליצה מאוד!"{% endif %}
                     </p>
                     <footer>
-                        {% if qs_is_en %}- Author &amp; Content Creator (Verified Facebook Community Review){% else %}- מחבר ויוצר תוכן (ביקורת מאומתת מקהילת פייסבוק){% endif %}
+                        {% if qs_is_en %}- Author{% else %}- סופרת{% endif %}
                     </footer>
                 </article>
                 <div class="seo-testimonials-grid">
@@ -139,14 +109,6 @@ try {
                         </p>
                         <footer>
                             {% if qs_is_en %}- Hebrew-to-English Translator{% else %}- מתרגם לשפות נבחרות{% endif %}
-                        </footer>
-                    </article>
-                    <article class="seo-card">
-                        <p>
-                            {% if qs_is_en %}"The automatic division of text and multi-speaker separation makes handling long academic research recordings incredibly fast and painless."{% else %}"החלוקה האוטומטית של הטקסט והפרדת ריבוי דוברים הופכות עבודה עם הקלטות מחקר אקדמיות ארוכות למהירה ופשוטה במיוחד."{% endif %}
-                        </p>
-                        <footer>
-                            {% if qs_is_en %}- Academic Researcher{% else %}- חוקר/ת אקדמי/ת{% endif %}
                         </footer>
                     </article>
                     <article class="seo-card">
@@ -168,6 +130,8 @@ try {
                 </div>
                 </div>
             </section>
+
+            {% include "snippets/hebrew_faq_section.html" %}
 
             <section id="formats-section" class="seo-landing-section seo-section seo-landing-bg-gray" aria-labelledby="formats-section-title">
                 <div class="seo-landing-inner">
@@ -399,7 +363,10 @@ try {
         </div>
         <div id="medical-training-modal" class="medical-confirm-modal-backdrop medical-training-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="medical-confirm-modal medical-training-modal" role="dialog" aria-modal="true" aria-labelledby="medical-training-modal-title">
-                <h3 id="medical-training-modal-title" data-i18n="medical_training_modal_title">מצב אימון: סגנון ותבנית סיכום אישית</h3>
+                <div class="medical-training-modal-header">
+                    <h3 id="medical-training-modal-title" data-i18n="medical_training_modal_title">מצב אימון: סגנון ותבנית סיכום אישית</h3>
+                    <button type="button" id="medical-training-modal-close" class="medical-training-modal-close" aria-label="Close" title="Close">&times;</button>
+                </div>
                 <div id="medical-training-modal-body" class="medical-training-modal-body"></div>
             </div>
         </div>

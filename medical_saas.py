@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 import hmac
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote
 
@@ -184,6 +184,10 @@ def _medical_account_update_profile(user_id: str, full_name: str, specialty: str
     return rows[0] if isinstance(rows, list) and rows else (_medical_account_get(user_id) or {})
 
 
+# Keep access briefly after cycle end so the daily token charge can run first.
+MEDICAL_RENEWAL_GRACE = timedelta(hours=36)
+
+
 def medical_entitlement(account: Optional[dict], now: Optional[datetime] = None) -> dict:
     """Return effective access state; never trusts a client-side plan."""
     now = now or datetime.now(timezone.utc)
@@ -214,15 +218,48 @@ def medical_entitlement(account: Optional[dict], now: Optional[datetime] = None)
             "reason": "subscription_" + (status or "inactive"),
             "onboardingRequired": False,
         }
-    if not cycle_ends or now >= cycle_ends:
+    if not cycle_ends:
+        return {"allowed": False, "reason": "billing_cycle_expired", "onboardingRequired": False}
+    if now >= cycle_ends + MEDICAL_RENEWAL_GRACE:
         return {"allowed": False, "reason": "billing_cycle_expired", "onboardingRequired": False}
     # Paid plans continue into metered overage after included hours.
+    # During the short post-cycle grace window the daily Cardcom cron renews the token.
     return {"allowed": True, "reason": "subscription_active", "onboardingRequired": False}
+
+
+def _medical_last_billing_failure(user_id: str) -> Optional[str]:
+    """Latest failed renewal/Cardcom reason for ops + past_due UI (may be None)."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return None
+    try:
+        sa = _sa()
+        supabase_url, _, headers = sa._supabase_rest_config()
+        r = sa._supabase_http_request(
+            "GET",
+            f"{supabase_url}/rest/v1/medical_subscription_payments"
+            f"?user_id=eq.{quote(uid, safe='')}"
+            f"&status=eq.failed&select=failure_reason,created_at"
+            f"&order=created_at.desc&limit=1",
+            headers=headers,
+            timeout=6,
+        )
+        if r.status_code != 200:
+            return None
+        rows = r.json() if r.text else []
+        if not isinstance(rows, list) or not rows:
+            return None
+        reason = str(rows[0].get("failure_reason") or "").strip()
+        return reason or None
+    except Exception:
+        logging.exception("medical last billing failure lookup failed user=%s", uid[:8])
+        return None
 
 
 def medical_account_public(account: dict) -> dict:
     entitlement = medical_entitlement(account)
     plan = str(account.get("subscription_plan") or "trial")
+    status = str(account.get("subscription_status") or "")
     usage_seconds = max(0, int(account.get("current_period_usage_seconds") or 0))
     included_seconds = max(0, int(account.get("included_seconds") or 0))
     overage_seconds = max(0, int(account.get("overage_seconds") or 0))
@@ -234,13 +271,16 @@ def medical_account_public(account: dict) -> dict:
         if trial_end and plan == "trial"
         else None
     )
+    last_failure = None
+    if status.lower() == "past_due":
+        last_failure = _medical_last_billing_failure(str(account.get("user_id") or ""))
     return {
         **entitlement,
         "isMedicalUser": True,
         "fullName": str(account.get("full_name") or ""),
         "professionalSpecialty": str(account.get("professional_specialty") or ""),
         "subscriptionPlan": plan,
-        "subscriptionStatus": str(account.get("subscription_status") or ""),
+        "subscriptionStatus": status,
         "trialStartedAt": account.get("trial_started_at"),
         "trialExpiresAt": account.get("trial_expires_at"),
         "trialDaysRemaining": trial_days_remaining,
@@ -256,6 +296,7 @@ def medical_account_public(account: dict) -> dict:
         "overageHours": round(overage_seconds / 3600.0, 2),
         "overageAmountIls": round(overage_seconds / 3600.0 * OVERAGE_ILS_PER_HOUR, 2),
         "seatLimit": int(account.get("seat_limit") or 1),
+        "lastBillingFailure": last_failure,
     }
 
 
@@ -514,11 +555,14 @@ def _medical_payment_update(order_id: str, patch: dict) -> None:
         timeout=10,
     )
     if r.status_code not in (200, 204):
-        invoice_keys = {"invoice_number", "invoice_type", "invoice_url"}
-        if invoice_keys.intersection((patch or {}).keys()) and (
-            "invoice_" in (r.text or "") or r.status_code == 400
-        ):
-            slim = {k: v for k, v in (patch or {}).items() if k not in invoice_keys}
+        optional_keys = {
+            "invoice_number",
+            "invoice_type",
+            "invoice_url",
+            "failure_reason",
+        }
+        if optional_keys.intersection((patch or {}).keys()) and r.status_code == 400:
+            slim = {k: v for k, v in (patch or {}).items() if k not in optional_keys}
             if slim:
                 r2 = sa._supabase_http_request(
                     "PATCH",
@@ -530,7 +574,8 @@ def _medical_payment_update(order_id: str, patch: dict) -> None:
                 )
                 if r2.status_code in (200, 204):
                     logging.warning(
-                        "medical payment invoice columns missing; applied status patch without invoice fields"
+                        "medical payment optional columns missing; applied status patch without %s",
+                        sorted(optional_keys.intersection((patch or {}).keys())),
                     )
                     return
         raise RuntimeError(r.text or f"medical payment update HTTP {r.status_code}")
@@ -678,6 +723,14 @@ def _medical_activate_paid_plan(user_id: str, plan: str) -> dict:
 
 
 def _cardcom_token_info(result: dict) -> Optional[dict]:
+    """Extract reusable token + card expiry (MMYY) for later Recurring charges.
+
+    Order matters for bank approval of token charges:
+    1. Shva Tokef (printed card MMYY from the acquirer)
+    2. CardValidityMonth+Year as a pair (never mix with TokenExDate)
+    3. TokenExDate (token lifetime YYYYMMDD) — last resort only; often differs
+       from the card (e.g. token 0329 vs card 0229 → issuer decline)
+    """
     candidates = [result]
     for key in ("TokenInfo", "TranzactionInfo", "TransactionInfo", "ExtShvaParams"):
         nested = result.get(key) if isinstance(result, dict) else None
@@ -692,22 +745,64 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
                     return str(value).strip()
         return ""
 
-    token = first("Token", "token")
-    month = first("CardValidityMonth", "ValidityMonth", "card_validity_month")
-    year = first("CardValidityYear", "ValidityYear", "card_validity_year")
-    ex_date = first("TokenExDate", "token_ex_date")
-    if not month and len(ex_date) >= 6:
-        month = ex_date[4:6]
-    if not year and len(ex_date) >= 4:
-        year = ex_date[:4]
-    if len(year) == 4:
-        year = year[-2:]
-    month = month.zfill(2)[-2:] if month else ""
-    validity = f"{month}{year}" if month and year else ""
+    token = first("Token", "token", "CardToken")
+    month_raw = first("CardValidityMonth", "ValidityMonth", "card_validity_month")
+    year_raw = first("CardValidityYear", "ValidityYear", "card_validity_year")
+    tokef = "".join(
+        ch for ch in first("Tokef30", "Tokef_30", "tokef30", "Tokef") if ch.isdigit()
+    )
+    ex_date = "".join(ch for ch in first("TokenExDate", "token_ex_date") if ch.isdigit())
+
+    card_validity = ""
+    if month_raw and year_raw:
+        year = year_raw[-2:] if len(year_raw) >= 2 else year_raw
+        month = month_raw.zfill(2)[-2:]
+        year = year.zfill(2)[-2:]
+        card_validity = f"{month}{year}"
+
+    tokef_mmyy = tokef[-4:] if len(tokef) >= 4 else ""
+    token_ex_mmyy = ""
+    if len(ex_date) >= 6:
+        # YYYYMMDD → MMYY
+        token_ex_mmyy = f"{ex_date[4:6]}{ex_date[2:4]}"
+
+    if tokef_mmyy:
+        validity = tokef_mmyy
+        source = "tokef"
+        if card_validity and card_validity != tokef_mmyy:
+            logging.warning(
+                "cardcom card validity %s differs from Shva tokef %s; using tokef for charges",
+                card_validity,
+                tokef_mmyy,
+            )
+    elif card_validity:
+        validity = card_validity
+        source = "card_validity"
+    elif token_ex_mmyy:
+        validity = token_ex_mmyy
+        source = "token_ex_date"
+        logging.warning(
+            "cardcom token validity falling back to TokenExDate=%s -> MMYY=%s "
+            "(may differ from printed card expiry)",
+            ex_date,
+            validity,
+        )
+    else:
+        validity = ""
+        source = "none"
+
     card_number = first("CardNumber5", "Last4", "CardNumEnd", "card_last_four")
     last_four = "".join(ch for ch in card_number if ch.isdigit())[-4:]
     if not token or len(validity) != 4:
         return None
+    logging.info(
+        "cardcom token validity source=%s mmyy=%s last4=%s card_validity=%s token_ex=%s",
+        source,
+        validity,
+        last_four or "-",
+        card_validity or "-",
+        token_ex_mmyy or "-",
+    )
     return {"token": token, "validity_mmyy": validity, "last_four": last_four or None}
 
 
@@ -846,10 +941,12 @@ def _medical_due_accounts(limit: int = 50) -> list:
     sa = _sa()
     supabase_url, _, headers = sa._supabase_rest_config()
     now = quote(datetime.now(timezone.utc).isoformat(), safe="")
+    # Include past_due so a declined charge is retried on the next cron
+    # (after ops fixes expiry / card), not only while status stays active.
     r = sa._supabase_http_request(
         "GET",
         f"{supabase_url}/rest/v1/medical_accounts"
-        f"?subscription_status=eq.active&billing_cycle_ends_at=lte.{now}"
+        f"?subscription_status=in.(active,past_due)&billing_cycle_ends_at=lte.{now}"
         f"&select=*&order=billing_cycle_ends_at.asc&limit={max(1, min(200, int(limit)))}",
         headers=headers,
         timeout=12,
@@ -972,7 +1069,8 @@ def _charge_medical_renewal(account: dict) -> dict:
         )
         response_code = int(result.get("ResponseCode") if result.get("ResponseCode") is not None else -1)
         if response_code != 0:
-            raise RuntimeError(str(result.get("Description") or "Cardcom recurring charge failed"))
+            desc = str(result.get("Description") or "Cardcom recurring charge failed").strip()
+            raise RuntimeError(f"Cardcom {response_code}: {desc}")
         account_after = _medical_activate_paid_plan(user_id, plan)
         transaction_id = (
             result.get("TranzactionId")
@@ -998,6 +1096,7 @@ def _charge_medical_renewal(account: dict) -> dict:
                 "paid_at": datetime.now(timezone.utc).isoformat(),
                 "billing_cycle_started_at": account_after.get("billing_cycle_started_at"),
                 "billing_cycle_ends_at": account_after.get("billing_cycle_ends_at"),
+                "failure_reason": None,
                 **invoice_patch,
             },
         )
@@ -1030,8 +1129,20 @@ def _charge_medical_renewal(account: dict) -> dict:
             "overageAmountIls": overage_amount,
             **invoice_patch,
         }
-    except Exception:
-        _medical_payment_update(order_id, {"status": "failed"})
+    except Exception as exc:
+        reason = str(exc).strip()[:500] or "medical renewal failed"
+        logging.error(
+            "medical renewal charge failed user=%s order=%s plan=%s amount=%s reason=%s",
+            user_id[:8],
+            order_id,
+            plan,
+            amount_ils,
+            reason,
+        )
+        _medical_payment_update(
+            order_id,
+            {"status": "failed", "failure_reason": reason},
+        )
         _medical_account_set_status(user_id, "past_due")
         raise
 
@@ -1330,7 +1441,11 @@ def register_medical_saas_routes(app) -> None:
     def api_medical_cardcom_run_renewals():
         """Daily cron target: charge due plans plus accrued overage, then reset cycle."""
         expected = str(os.environ.get("MEDICAL_BILLING_CRON_SECRET") or "").strip()
-        supplied = str(request.headers.get("X-Medical-Billing-Secret") or "").strip()
+        supplied = str(
+            request.headers.get("X-Medical-Billing-Secret")
+            or request.headers.get("X-Billing-Secret")
+            or ""
+        ).strip()
         if not expected:
             return jsonify({"error": "MEDICAL_BILLING_CRON_SECRET is not configured"}), 503
         if not supplied or not hmac.compare_digest(supplied, expected):

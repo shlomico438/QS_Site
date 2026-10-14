@@ -32,6 +32,176 @@
         return headers.Authorization ? headers : null;
     }
 
+    /** Wait for QuickScribe session after Cardcom/Stripe redirect (restored from storage). */
+    async function waitForAuthedHeaders(waitMs) {
+        const deadline = Date.now() + Math.max(0, Number(waitMs) || 0);
+        do {
+            const headers = await getAuthedJsonHeaders();
+            if (headers) return headers;
+            if (Date.now() >= deadline) break;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        } while (true);
+        return null;
+    }
+
+    function checkoutSuccessMessage(data) {
+        const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
+        const plan = String((data && data.plan) || '');
+        if (plan === 'unlimited_monthly' || plan === 'unlimited_annual') {
+            return isHe ? 'המסלול ללא הגבלה הופעל.' : 'Unlimited plan is active.';
+        }
+        if (plan === 'pay_per_use') {
+            const hours = Number(data.hours || 1);
+            return isHe
+                ? (hours === 1 ? 'שולם עבור קובץ של עד שעה.' : `שולם עבור קובץ של עד ${hours} שעות.`)
+                : (hours === 1 ? 'Paid for a file of up to 1 hour.' : `Paid for a file of up to ${hours} hours.`);
+        }
+        const added = Number(data && data.added_minutes || 0);
+        if (added > 0) {
+            return isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`;
+        }
+        return isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.';
+    }
+
+    const cardcomReturnQueryKeys = [
+        'cardcom_success', 'cardcom_cancelled', 'order_id', 'terminalnumber',
+        'lowprofilecode', 'LowProfileCode', 'ResponeCode', 'ResponseCode',
+        'Operation', 'Status', 'internalDealNumber', 'IssuerAuthCodeDescription', 'traceid',
+    ];
+
+    function cleanCardcomReturnQuery(params) {
+        cardcomReturnQueryKeys.forEach((key) => params.delete(key));
+        return params.toString();
+    }
+
+    function hasPendingRegularCheckoutReturn() {
+        try {
+            const params = new URLSearchParams(window.location.search || '');
+            const cardcom = params.get('cardcom_success') === '1' && !!String(params.get('order_id') || '').trim();
+            const stripe = params.get('stripe_success') === '1' && !!String(params.get('session_id') || '').trim();
+            return cardcom || stripe;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * Confirm Cardcom/Stripe return and fire GA4/Ads purchase.
+     * Safe to call from page load and again on Supabase SIGNED_IN (session restore race).
+     */
+    async function confirmRegularCheckoutReturn(options) {
+        if (!hasPendingRegularCheckoutReturn()) return false;
+        if (window.__QS_REGULAR_CHECKOUT_CONFIRM_INFLIGHT) {
+            return window.__QS_REGULAR_CHECKOUT_CONFIRM_INFLIGHT;
+        }
+        const opts = options || {};
+        const waitMs = Math.max(0, Number(opts.waitMs != null ? opts.waitMs : 20000));
+
+        const run = (async () => {
+            const headers = await waitForAuthedHeaders(waitMs);
+            if (!headers) {
+                console.info('[qs-purchase] waiting for QuickScribe session before confirming checkout');
+                return false;
+            }
+
+            const params = new URLSearchParams(window.location.search || '');
+            const sessionId = String(params.get('session_id') || '').trim();
+            const orderId = String(params.get('order_id') || '').trim();
+
+            try {
+                if (params.get('stripe_success') === '1' && sessionId) {
+                    const res = await fetch('/api/stripe/confirm-checkout-session', {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({ session_id: sessionId }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
+                    try {
+                        if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
+                    } catch (_) {}
+                    if (typeof showStatus === 'function') {
+                        showStatus(checkoutSuccessMessage(data), false, { duration: 6000 });
+                    }
+                    try {
+                        if (typeof window.qsTrackGa4Purchase === 'function') {
+                            await window.qsTrackGa4Purchase({
+                                transaction_id: sessionId,
+                                value: data.amount ?? data.amount_ils,
+                                currency: data.currency || 'ILS',
+                                items: data.bundle_id
+                                    ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
+                                    : undefined,
+                            });
+                        }
+                    } catch (_) {}
+                    params.delete('stripe_success');
+                    params.delete('session_id');
+                    const cleanQuery = params.toString();
+                    history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
+                    return true;
+                }
+
+                if (params.get('cardcom_success') === '1' && orderId) {
+                    const lowProfileId = (
+                        params.get('lowprofilecode')
+                        || params.get('LowProfileCode')
+                        || params.get('low_profile_id')
+                        || ''
+                    ).trim();
+                    const res = await fetch('/api/cardcom/confirm-payment', {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({
+                            order_id: orderId,
+                            low_profile_id: lowProfileId || undefined,
+                            lowprofilecode: lowProfileId || undefined,
+                        }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
+                    try {
+                        if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
+                    } catch (_) {}
+                    if (typeof showStatus === 'function') {
+                        showStatus(checkoutSuccessMessage(data), false, { duration: 6000 });
+                    }
+                    try {
+                        if (typeof window.qsTrackGa4Purchase === 'function') {
+                            await window.qsTrackGa4Purchase({
+                                transaction_id: orderId,
+                                value: data.amount ?? data.amount_ils,
+                                currency: data.currency || 'ILS',
+                                items: data.bundle_id
+                                    ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
+                                    : undefined,
+                            });
+                        }
+                    } catch (_) {}
+                    const cleanQuery = cleanCardcomReturnQuery(params);
+                    history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
+                    return true;
+                }
+            } catch (err) {
+                if (typeof showStatus === 'function') {
+                    showStatus((err && err.message) || 'Could not confirm checkout.', true, { duration: 8000 });
+                }
+                return false;
+            }
+            return false;
+        })();
+
+        window.__QS_REGULAR_CHECKOUT_CONFIRM_INFLIGHT = run;
+        try {
+            return await run;
+        } finally {
+            if (window.__QS_REGULAR_CHECKOUT_CONFIRM_INFLIGHT === run) {
+                window.__QS_REGULAR_CHECKOUT_CONFIRM_INFLIGHT = null;
+            }
+        }
+    }
+    window.qsConfirmRegularCheckoutReturn = confirmRegularCheckoutReturn;
+
     function creditCheckoutUsesStripe() {
         const loc = String(window.currentLocale || document.documentElement.lang || 'he').toLowerCase();
         return loc.startsWith('en');
@@ -195,25 +365,6 @@
             })();
         });
 
-        const checkoutSuccessMessage = (data) => {
-            const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
-            const plan = String((data && data.plan) || '');
-            if (plan === 'unlimited_monthly' || plan === 'unlimited_annual') {
-                return isHe ? 'המסלול ללא הגבלה הופעל.' : 'Unlimited plan is active.';
-            }
-            if (plan === 'pay_per_use') {
-                const hours = Number(data.hours || 1);
-                return isHe
-                    ? (hours === 1 ? 'שולם עבור קובץ של עד שעה.' : `שולם עבור קובץ של עד ${hours} שעות.`)
-                    : (hours === 1 ? 'Paid for a file of up to 1 hour.' : `Paid for a file of up to ${hours} hours.`);
-            }
-            const added = Number(data && data.added_minutes || 0);
-            if (added > 0) {
-                return isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`;
-            }
-            return isHe ? 'התשלום כבר עודכן בארנק שלך.' : 'Payment already credited to your wallet.';
-        };
-
         let payUseHours = 1;
         const syncPayUseHours = (hours) => {
             const next = Math.max(1, Math.min(24, Number(hours) || 1));
@@ -304,112 +455,8 @@
         };
         window.qsStartCreditCheckout = startCreditCheckout;
 
-        const confirmReturnedStripeCheckout = async () => {
-            const params = new URLSearchParams(window.location.search || '');
-            const sessionId = params.get('session_id');
-            if (!sessionId || params.get('stripe_success') !== '1') return;
-            const headers = await getAuthedJsonHeaders();
-            if (!headers) return;
-            try {
-                const res = await fetch('/api/stripe/confirm-checkout-session', {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({ session_id: sessionId }),
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
-                try {
-                    if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
-                } catch (_) {}
-                if (typeof showStatus === 'function') {
-                    showStatus(checkoutSuccessMessage(data), false, { duration: 6000 });
-                }
-                try {
-                    if (typeof window.qsTrackGa4Purchase === 'function') {
-                        window.qsTrackGa4Purchase({
-                            transaction_id: sessionId,
-                            value: data.amount ?? data.amount_ils,
-                            currency: data.currency || 'ILS',
-                            items: data.bundle_id
-                                ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
-                                : undefined,
-                        });
-                    }
-                } catch (_) {}
-                params.delete('stripe_success');
-                params.delete('session_id');
-                const cleanQuery = params.toString();
-                history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
-            } catch (err) {
-                if (typeof showStatus === 'function') {
-                    showStatus((err && err.message) || 'Could not confirm checkout.', true, { duration: 8000 });
-                }
-            }
-        };
-
-        const cardcomReturnQueryKeys = [
-            'cardcom_success', 'cardcom_cancelled', 'order_id', 'terminalnumber',
-            'lowprofilecode', 'LowProfileCode', 'ResponeCode', 'ResponseCode',
-            'Operation', 'Status', 'internalDealNumber', 'IssuerAuthCodeDescription', 'traceid',
-        ];
-        const cleanCardcomReturnQuery = (params) => {
-            cardcomReturnQueryKeys.forEach((key) => params.delete(key));
-            return params.toString();
-        };
-
-        const confirmReturnedCardcomCheckout = async () => {
-            const params = new URLSearchParams(window.location.search || '');
-            const orderId = params.get('order_id');
-            if (!orderId || params.get('cardcom_success') !== '1') return;
-            const headers = await getAuthedJsonHeaders();
-            if (!headers) return;
-            const lowProfileId = (
-                params.get('lowprofilecode')
-                || params.get('LowProfileCode')
-                || params.get('low_profile_id')
-                || ''
-            ).trim();
-            try {
-                const res = await fetch('/api/cardcom/confirm-payment', {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({
-                        order_id: orderId,
-                        low_profile_id: lowProfileId || undefined,
-                        lowprofilecode: lowProfileId || undefined,
-                    }),
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(data.error || 'checkout confirmation failed');
-                try {
-                    if (typeof window.qsRefreshUserCredits === 'function') await window.qsRefreshUserCredits();
-                } catch (_) {}
-                if (typeof showStatus === 'function') {
-                    showStatus(checkoutSuccessMessage(data), false, { duration: 6000 });
-                }
-                try {
-                    if (typeof window.qsTrackGa4Purchase === 'function') {
-                        window.qsTrackGa4Purchase({
-                            transaction_id: orderId,
-                            value: data.amount ?? data.amount_ils,
-                            currency: data.currency || 'ILS',
-                            items: data.bundle_id
-                                ? [{ item_id: String(data.bundle_id), item_name: 'QuickScribe credits' }]
-                                : undefined,
-                        });
-                    }
-                } catch (_) {}
-                const cleanQuery = cleanCardcomReturnQuery(params);
-                history.replaceState(null, '', window.location.pathname + (cleanQuery ? '?' + cleanQuery : '') + window.location.hash);
-            } catch (err) {
-                if (typeof showStatus === 'function') {
-                    showStatus((err && err.message) || 'Could not confirm checkout.', true, { duration: 8000 });
-                }
-            }
-        };
-
-        void confirmReturnedStripeCheckout();
-        void confirmReturnedCardcomCheckout();
+        // Confirm purchase return (waits for session; SIGNED_IN also retries via qsConfirmRegularCheckoutReturn).
+        void confirmRegularCheckoutReturn({ waitMs: 20000 });
 
         const minusBtn = document.getElementById('seo-pay-hours-minus');
         const plusBtn = document.getElementById('seo-pay-hours-plus');
@@ -445,6 +492,10 @@
     };
 
     document.addEventListener('DOMContentLoaded', function () {
+        // Always attempt purchase confirm when returning from Cardcom/Stripe (even before pricing UI wires).
+        if (hasPendingRegularCheckoutReturn()) {
+            void confirmRegularCheckoutReturn({ waitMs: 20000 });
+        }
         if (document.getElementById('main-btn')) return;
         if (typeof window.qsInitRegularPricingPage === 'function') {
             window.qsInitRegularPricingPage({ standalone: true });

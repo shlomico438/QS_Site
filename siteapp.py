@@ -3784,13 +3784,101 @@ def _site_extract_video_audio_to_s3(bucket, source_s3_key, output_s3_key):
         )
 
 
+# Real thread-local (not greenlet-local) so nested S3 helpers can detect
+# "already off the gevent hub" and avoid threadpool deadlocks.
+try:
+    _OS_TASK_TLS = monkey.get_original('threading', 'local')()
+except Exception:
+    _OS_TASK_TLS = threading.local()
+
+
 def _run_on_os_thread(fn, *args, timeout=None):
     """Real OS thread. threading.Thread is a greenlet after gevent monkey patch."""
+    if getattr(_OS_TASK_TLS, 'off_hub', False):
+        return fn(*args)
     import gevent
     waiter = gevent.get_hub().threadpool.spawn(fn, *args)
     if timeout is None:
         return waiter.get()
     return waiter.get(timeout=timeout)
+
+
+def _run_on_real_os_thread(fn, *args, timeout=None):
+    """Bypass gevent hub threadpool — use a true OS thread + queue for the result.
+
+    Gap fill / AWS Transcribe must not run on gevent's threadpool when the work
+    touches asyncio or CRT; that raises "child watchers are only available on
+    the default loop".
+
+    Poll the result queue in short slices so a blocking RealQueue.get does not
+    freeze the gevent hub (Socket.IO) for the whole job.
+    """
+    if getattr(_OS_TASK_TLS, 'off_hub', False):
+        return fn(*args)
+    try:
+        RealThread = monkey.get_original('threading', 'Thread')
+        RealQueue = monkey.get_original('queue', 'Queue')
+        RealEmpty = monkey.get_original('queue', 'Empty')
+    except Exception:
+        RealThread = threading.Thread
+        import queue as _queue_mod
+        RealQueue = _queue_mod.Queue
+        RealEmpty = _queue_mod.Empty
+    out = RealQueue(maxsize=1)
+
+    def _runner():
+        _OS_TASK_TLS.off_hub = True
+        try:
+            out.put((True, fn(*args)))
+        except BaseException as exc:
+            try:
+                out.put((False, exc))
+            except Exception:
+                pass
+        finally:
+            _OS_TASK_TLS.off_hub = False
+
+    worker = RealThread(target=_runner, name='qs-medical-gap-fill', daemon=True)
+    worker.start()
+    deadline = None if timeout is None else (time.time() + max(0.1, float(timeout)))
+    ok = payload = None
+    while True:
+        if deadline is not None and time.time() >= deadline:
+            raise TimeoutError('os_thread_wait_timeout')
+        try:
+            ok, payload = out.get(timeout=0.25)
+            break
+        except RealEmpty:
+            try:
+                import gevent
+                gevent.sleep(0)
+            except Exception:
+                time.sleep(0.01)
+            continue
+        except Exception as wait_err:
+            raise TimeoutError(f'os_thread_wait_failed: {wait_err}') from wait_err
+    if ok:
+        return payload
+    raise payload
+
+
+def _spawn_background_os_task(fn, *args, **kwargs):
+    """Fire-and-forget on a real OS thread (gevent hub threadpool).
+
+    After monkey.patch_all(), threading.Thread is a greenlet — heavy R2/S3
+    put_object work there stalls Socket.IO / AWS Transcribe audio on the same
+    worker. Prefer this for background S3/R2 uploads so live PCM stays first.
+    """
+    import gevent
+
+    def _runner():
+        _OS_TASK_TLS.off_hub = True
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _OS_TASK_TLS.off_hub = False
+
+    return gevent.get_hub().threadpool.spawn(_runner)
 
 
 def _should_preprocess_music_vocals(is_medical, audio_profile_info):
@@ -5265,7 +5353,13 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
             put_kw['SSEKMSKeyId'] = kms_arn
     else:
         kms_arn = ''
-    s3_client.put_object(**put_kw)
+
+    # boto put_object is blocking I/O — keep it off the gevent hub so live
+    # AWS Transcribe Socket.IO audio is not delayed by Cloudflare R2 / S3 writes.
+    def _put_main():
+        s3_client.put_object(**put_kw)
+
+    _run_on_os_thread(_put_main)
 
     # Medical: also persist GPT summary under summaries/ for the HIPAA layout.
     if profile["is_medical"] and isinstance(transcript.get('formatted'), dict):
@@ -5286,7 +5380,11 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
                 if kms_arn:
                     summary_kw['ServerSideEncryption'] = 'aws:kms'
                     summary_kw['SSEKMSKeyId'] = kms_arn
-                s3_client.put_object(**summary_kw)
+
+                def _put_summary():
+                    s3_client.put_object(**summary_kw)
+
+                _run_on_os_thread(_put_summary)
         except Exception as sum_err:
             logging.warning(
                 "_put_transcript_json_to_s3: summary mirror failed input=%s: %s",
@@ -5298,10 +5396,13 @@ def _put_transcript_json_to_s3(user_id, input_s3_key, transcript, stage='gpt', i
     # Canonical transcript storage is a single key: <base>.json.
     legacy_pre_align_key = base + '.pre_align.json'
     try:
-        s3_client.delete_object(
-            Bucket=profile["bucket"],
-            Key=legacy_pre_align_key
-        )
+        def _delete_legacy():
+            s3_client.delete_object(
+                Bucket=profile["bucket"],
+                Key=legacy_pre_align_key
+            )
+
+        _run_on_os_thread(_delete_legacy)
     except Exception as e:
         logging.debug("_put_transcript_json_to_s3: could not delete legacy key=%s: %s", legacy_pre_align_key, e)
     return result_s3_key
@@ -6089,8 +6190,127 @@ def _schedule_admin_payment_notify(**kwargs):
             return
         # Meta Conversions API Purchase (server-side) — same payload keys.
         _schedule_meta_capi_purchase(**payload)
+        # GA4 Measurement Protocol purchase — survives Cardcom webhook-only credits
+        # where the browser never fires gtag (Adblock, closed tab, auth race).
+        _schedule_ga4_mp_purchase(**payload)
     except Exception as e:
         logging.warning('schedule payment notify failed: %s', e)
+
+
+def _ga4_measurement_id():
+    return (os.environ.get('GA4_MEASUREMENT_ID') or 'G-QDEKS23DSF').strip()
+
+
+def _ga4_api_secret():
+    return (
+        os.environ.get('GA4_API_SECRET')
+        or os.environ.get('GA4_MEASUREMENT_PROTOCOL_SECRET')
+        or ''
+    ).strip()
+
+
+def _send_ga4_mp_purchase(payload):
+    """POST purchase to GA4 Measurement Protocol. Returns True on HTTP success."""
+    from urllib.parse import quote
+
+    if not isinstance(payload, dict):
+        return False
+    measurement_id = _ga4_measurement_id()
+    api_secret = _ga4_api_secret()
+    if not measurement_id or not api_secret:
+        logging.info(
+            'GA4 MP Purchase skipped (set GA4_API_SECRET; measurement_id=%s)',
+            measurement_id or 'missing',
+        )
+        return False
+
+    user_id = str(payload.get('user_id') or '').strip()
+    order_ref = str(payload.get('order_ref') or payload.get('event_id') or '').strip()
+    if not order_ref:
+        order_ref = f"qs_{user_id}_{int(time.time())}"
+    try:
+        value = float(payload.get('amount') if payload.get('amount') is not None else 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    currency = str(payload.get('currency') or 'ILS').strip().upper() or 'ILS'
+    if value <= 0:
+        logging.info('GA4 MP Purchase skipped: non-positive amount order=%s', order_ref[:32])
+        return False
+
+    # Stable anonymous client_id from user (required by MP).
+    client_seed = user_id or order_ref
+    client_hash = hashlib.sha256(client_seed.encode('utf-8')).hexdigest()
+    client_id = f"{int(client_hash[:8], 16)}.{int(client_hash[8:16], 16)}"
+
+    body = {
+        'client_id': client_id,
+        'events': [{
+            'name': 'purchase',
+            'params': {
+                'transaction_id': order_ref,
+                'value': round(value, 2),
+                'currency': currency,
+                'engagement_time_msec': 1,
+                'items': [{
+                    'item_id': str(payload.get('bundle_id') or payload.get('plan') or 'credits'),
+                    'item_name': 'QuickScribe credits',
+                    'quantity': 1,
+                    'price': round(value, 2),
+                }],
+            },
+        }],
+    }
+    if user_id:
+        body['user_id'] = user_id
+
+    url = (
+        'https://www.google-analytics.com/mp/collect'
+        f'?measurement_id={quote(measurement_id, safe="")}'
+        f'&api_secret={quote(api_secret, safe="")}'
+    )
+    try:
+        r = requests.post(url, json=body, timeout=12)
+        # MP returns 204 No Content on success; some stacks return 2xx empty.
+        if r.status_code >= 400:
+            logging.warning(
+                'GA4 MP Purchase failed HTTP %s: %s',
+                r.status_code,
+                (r.text or '')[:300],
+            )
+            return False
+        logging.info(
+            'GA4 MP Purchase sent measurement_id=%s order=%s value=%s %s',
+            measurement_id,
+            order_ref[:32],
+            value,
+            currency,
+        )
+        return True
+    except Exception as e:
+        logging.warning('GA4 MP Purchase error: %s', e)
+        return False
+
+
+def _schedule_ga4_mp_purchase(**kwargs):
+    """Fire-and-forget GA4 Measurement Protocol purchase after newly credited payment."""
+    try:
+        payload = dict(kwargs or {})
+        if not payload.get('user_id'):
+            return
+        try:
+            amount = float(payload.get('amount') if payload.get('amount') is not None else 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if amount <= 0:
+            return
+        threading.Thread(
+            target=_send_ga4_mp_purchase,
+            args=(payload,),
+            daemon=True,
+            name='qs-ga4-mp-purchase',
+        ).start()
+    except Exception as e:
+        logging.warning('schedule GA4 MP Purchase failed: %s', e)
 
 
 def _meta_pixel_id():
@@ -10141,6 +10361,37 @@ def free_landing():
     return render_template('free.html')
 
 
+@app.route('/resources')
+@app.route('/resources/')
+def resources_pillar():
+    """Hebrew SEO pillar: תמלול עברית (shared resources template)."""
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/resources', code=301)
+    from resources_content import get_resource_page
+
+    page = get_resource_page('')
+    if not page:
+        return ('Not Found', 404)
+    return render_template('resources_page.html', resource_page=page)
+
+
+@app.route('/resources/<slug>')
+@app.route('/resources/<slug>/')
+def resources_article(slug):
+    """Hebrew SEO cluster pages under /resources/<slug>."""
+    clean = str(slug or '').strip().strip('/')
+    if request.path.endswith('/'):
+        return redirect(f'/resources/{clean}', code=301)
+    from resources_content import RESOURCE_SLUGS_PUBLISHED, get_resource_page
+
+    if not clean or clean not in RESOURCE_SLUGS_PUBLISHED:
+        return ('Not Found', 404)
+    page = get_resource_page(clean)
+    if not page:
+        return ('Not Found', 404)
+    return render_template('resources_page.html', resource_page=page)
+
+
 @app.route('/products')
 @app.route('/products/')
 def products():
@@ -12012,39 +12263,46 @@ def _format_transcript_cleanup_openai(
             )
     else:
         system_prompt = (
-            "You edit transcripts. Return plain text only. "
-            "Do not include markdown fences or JSON."
+            "You are a conservative transcript proofreader. "
+            "Correct the existing transcript; do not rewrite it. "
+            "Output no commentary."
         )
         medical_note = _GPT_MEDICAL_CLEAN_TRANSCRIPT_NOTE if is_medical else ""
         user_prompt = (
-            "You are editing a transcript.\n\n"
+            "You are a conservative transcript proofreader. Your task is to correct the existing "
+            "transcript, NOT rewrite it.\n\n"
+            "HIGHEST PRIORITY: Preserve every word, statement, repetition, interruption, and "
+            "speaker turn unless a specific correction is necessary.\n\n"
+            "Allowed changes:\n"
+            "- Fix spelling and punctuation.\n"
+            "- Correct an obvious ASR error when the intended word is clear from the immediate "
+            "context.\n"
+            "- Correct malformed words, including Hebrew phonetic/letter-confusion errors. "
+            'Example: "הדפקיד" → "התפקיד".\n'
+            "- Make small grammatical corrections only when clearly caused by ASR.\n\n"
+            "Strictly forbidden:\n"
+            "- Summarizing, shortening, restructuring, or rewriting.\n"
+            "- Removing repetitions, hesitations, incomplete sentences, or conversational "
+            "language.\n"
+            "- Combining separate statements into polished paragraphs.\n"
+            "- Adding explanations, inferred facts, or words that cannot be confidently "
+            "recovered.\n"
+            "- Replacing unusual but intelligible wording with more natural wording.\n"
+            '- Inserting placeholders such as "[...]".\n'
+            "- Omitting any part of the input, including its ending.\n\n"
+            "LANGUAGE:\n"
+            "Preserve the original language of every passage. Never translate.\n\n"
+            "UNCERTAINTY:\n"
+            "If a word cannot be confidently corrected from context, leave it as written. "
+            "Do not guess.\n\n"
+            "OUTPUT:\n"
+            "Return the entire transcript in its original order, with only the corrections "
+            "described above. Output no commentary.\n\n"
+            "Before responding, verify that the output covers the entire input from beginning "
+            "to end and that no statements or repetitions have been omitted.\n\n"
             f"{medical_note}"
-            "Requirements:\n\n"
-            f"{language_rule}"
-            "* Fix punctuation and spelling.\n"
-            "* Correct obvious transcription / ASR mistakes, including Hebrew letter confusions "
-            "(ט/ת, ש/ס, ע/א, כ/ק) when the intended word is clear from context "
-            "(e.g. והטענות not והתענות).\n"
-            "* Preserve the original wording and meaning.\n"
-            "* Do not summarize.\n"
-            "* Do not omit information.\n"
-            "* Do not add information.\n"
-            "* Keep paragraph structure when possible.\n"
-            "* Do not rewrite sentences for style.\n\n"
-            + (
-                "LANGUAGE LOCK: Do not translate. English stays English. Hebrew stays Hebrew. "
-                "Only fix spelling and punctuation inside the same language.\n\n"
-                if preserve_source_languages
-                else f"Output language: {output_lang_label}.\n\nLanguage hint: {lang_hint}\n\n"
-            )
-            + "Transcript:\n\n"
-            f"{transcript_text}\n\n"
-            + (
-                "LANGUAGE LOCK again: do not translate any sentence. "
-                "If a sentence is English, return it in English. If it is Hebrew, return it in Hebrew.\n"
-                if preserve_source_languages
-                else ""
-            )
+            "TRANSCRIPT:\n"
+            f"{transcript_text}"
         )
     clean = _openai_chat_text_completion(
         system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
@@ -13016,40 +13274,84 @@ def api_format_transcript_summary():
                 raw = ts_text
         if not raw:
             return jsonify({"error": "No transcript text provided"}), 400
+        typo_fix = mode == 'typo_fix' or bool(data.get('typoFix') or data.get('typo_fix'))
         try:
-            t_cleanup = time.time()
-            typo_fix = mode == 'typo_fix' or bool(data.get('typoFix') or data.get('typo_fix'))
-            out = _format_transcript_cleanup_openai(
-                raw,
-                target_lang=target_lang,
-                timeout_sec=int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '180') or 180),
-                read_retries=read_retries,
-                is_music=is_music_format,
-                is_medical=is_medical,
-                typo_fix=typo_fix or is_medical,
-            )
-            elapsed = time.time() - t_cleanup
-            _apply_format_timing(elapsed)
-            cleaned = str(out.get("clean_transcript") or "").strip()
-            logging.info(
-                "format_transcript_summary %s done medical=%s chars_in=%s chars_out=%s changed=%s sec=%.2f",
+            max_attempts = max(1, min(5, int(os.environ.get('GPT_CLEANUP_ATTEMPTS', '2') or 2)))
+        except (TypeError, ValueError):
+            max_attempts = 2
+        try:
+            retry_sleep = max(0.5, float(os.environ.get('GPT_CLEANUP_RETRY_SLEEP_SEC', '1.5') or 1.5))
+        except (TypeError, ValueError):
+            retry_sleep = 1.5
+        t_cleanup = time.time()
+        cleaned = ''
+        last_err = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                out = _format_transcript_cleanup_openai(
+                    raw,
+                    target_lang=target_lang,
+                    timeout_sec=int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '90') or 90),
+                    read_retries=read_retries,
+                    is_music=is_music_format,
+                    is_medical=is_medical,
+                    typo_fix=typo_fix or is_medical,
+                )
+                cleaned = str(out.get("clean_transcript") or "").strip()
+                if cleaned:
+                    if attempt > 1:
+                        logging.info(
+                            "format_transcript_summary %s succeeded on retry attempt=%s/%s",
+                            mode,
+                            attempt,
+                            max_attempts,
+                        )
+                    break
+                last_err = 'empty_clean_transcript'
+                logging.warning(
+                    "format_transcript_summary %s empty attempt=%s/%s medical=%s",
+                    mode,
+                    attempt,
+                    max_attempts,
+                    is_medical,
+                )
+            except Exception as e:
+                last_err = e
+                logging.warning(
+                    "format_transcript_summary %s failed attempt=%s/%s: %s",
+                    mode,
+                    attempt,
+                    max_attempts,
+                    e,
+                )
+            if attempt < max_attempts:
+                time.sleep(retry_sleep * attempt)
+        elapsed = time.time() - t_cleanup
+        if not cleaned:
+            logging.error(
+                "format_transcript_summary %s exhausted attempts=%s last_err=%s",
                 mode,
-                is_medical,
-                len(raw),
-                len(cleaned),
-                cleaned != raw,
-                elapsed,
+                max_attempts,
+                last_err,
             )
-            return jsonify({
-                "clean_transcript": cleaned,
-                "cleanup_generation_time": round(float(elapsed), 3),
-                "gpt_format_sec": round(float(elapsed), 3),
-                "typo_fix": True,
-                "changed": cleaned != raw,
-            }), 200
-        except Exception as e:
-            logging.warning("format_transcript_summary %s failed: %s", mode, e)
-            return jsonify({"error": str(e)}), 500
+            return jsonify({"error": str(last_err or 'cleanup_exhausted')}), 500
+        _apply_format_timing(elapsed)
+        logging.info(
+            "format_transcript_summary %s done medical=%s chars_in=%s chars_out=%s changed=%s sec=%.2f",
+            mode,
+            is_medical,
+            len(raw),
+            len(cleaned),
+            cleaned != raw,
+            elapsed,
+        )
+        return jsonify({
+            "clean_transcript": cleaned,
+            "cleanup_generation_time": round(float(elapsed), 3),
+            "gpt_format_sec": round(float(elapsed), 3),
+            "typo_fix": True,
+            "changed": cleaned != raw,
+        }), 200
 
     if mode in ('summary', 'summary_only'):
         raw = str(data.get('text') or '').strip()
@@ -13985,6 +14287,42 @@ def api_export_docx():
 
 
 # --- GPU Callback: ack fast to worker; persist in background (see docs/GPU_CALLBACK_API.md) ---
+def _resolve_post_summary_storage_target(job_id, user_id, input_s3_key):
+    """Prefer claimed jobs-row keys so cleanup writes survive guest→sign-in moves."""
+    uid = str(user_id or '').strip() or 'anonymous'
+    in_key = str(input_s3_key or '').strip()
+    try:
+        rows = _get_job_rows_by_runpod_job_id(
+            job_id,
+            select='user_id,input_s3_key,result_s3_key,metadata,updated_at,created_at',
+            limit=10,
+        )
+        best = None
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            row_uid = str(row.get('user_id') or '').strip()
+            if row_uid and row_uid.lower() != 'anonymous':
+                best = row
+                break
+            if best is None:
+                best = row
+        if isinstance(best, dict):
+            row_uid = str(best.get('user_id') or '').strip()
+            row_in = str(best.get('input_s3_key') or '').strip()
+            if row_uid:
+                uid = row_uid
+            if row_in:
+                in_key = row_in
+    except Exception as resolve_err:
+        logging.debug(
+            "post-summary storage resolve failed job_id=%s: %s",
+            job_id,
+            resolve_err,
+        )
+    return uid or 'anonymous', in_key
+
+
 def _schedule_post_summary_formatting(
     job_id,
     user_id,
@@ -13995,7 +14333,7 @@ def _schedule_post_summary_formatting(
     is_music_job=False,
     pending_info=None,
 ):
-    """One cleanup GPT pass after summary; project the same text onto subtitle cues."""
+    """Cleanup GPT after summary; project onto subtitle cues. Retries until clean_transcript lands."""
     if is_medical_job or not job_id or not input_s3_key:
         return
     if not isinstance(segments, list) or not segments:
@@ -14010,33 +14348,80 @@ def _schedule_post_summary_formatting(
                 logging.info("GPT disabled (DISABLE_GPT); abort post-summary worker job_id=%s", job_id)
                 return
             t0 = time.time()
-            clean_result = None
-            meta = {}
             try:
-                clean_result = _format_transcript_cleanup_openai(
-                    plain_text,
-                    # Cleanup may receive mixed Hebrew/English speech. Keep each
-                    # passage in its source language; only the summary is Hebrew.
-                    target_lang='preserve',
-                    gpt_model=(
-                        os.environ.get('GPT_CLEANUP_MODEL')
-                        or os.environ.get('GPT_MODEL')
-                        or 'gpt-4.1-mini'
+                max_attempts = max(1, min(5, int(os.environ.get('GPT_CLEANUP_ATTEMPTS', '2') or 2)))
+            except (TypeError, ValueError):
+                max_attempts = 2
+            try:
+                retry_sleep = max(0.5, float(os.environ.get('GPT_CLEANUP_RETRY_SLEEP_SEC', '1.5') or 1.5))
+            except (TypeError, ValueError):
+                retry_sleep = 1.5
+            try:
+                cleanup_timeout = max(
+                    30,
+                    int(
+                        os.environ.get('GPT_CLEANUP_POST_SUMMARY_TIMEOUT_SEC')
+                        or os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '90')
+                        or 90
                     ),
-                    is_music=bool(is_music_job),
                 )
-            except Exception as clean_err:
-                logging.warning(
-                    "gpu_callback: transcript cleanup background failed job_id=%s: %s",
-                    job_id,
-                    clean_err,
-                )
+            except (TypeError, ValueError):
+                cleanup_timeout = 90
+            gpt_model = (
+                os.environ.get('GPT_CLEANUP_MODEL')
+                or os.environ.get('GPT_MODEL')
+                or 'gpt-4.1-mini'
+            )
+            clean_text = ''
+            last_err = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    clean_result = _format_transcript_cleanup_openai(
+                        plain_text,
+                        # Cleanup may receive mixed Hebrew/English speech. Keep each
+                        # passage in its source language; only the summary is Hebrew.
+                        target_lang='preserve',
+                        gpt_model=gpt_model,
+                        timeout_sec=cleanup_timeout,
+                        is_music=bool(is_music_job),
+                    )
+                    clean_text = str(
+                        (clean_result or {}).get("clean_transcript")
+                        if isinstance(clean_result, dict)
+                        else ""
+                    ).strip()
+                    if clean_text:
+                        if attempt > 1:
+                            logging.info(
+                                "gpu_callback: transcript cleanup succeeded on retry "
+                                "job_id=%s attempt=%s/%s chars=%s",
+                                job_id,
+                                attempt,
+                                max_attempts,
+                                len(clean_text),
+                            )
+                        break
+                    last_err = 'empty_clean_transcript'
+                    logging.warning(
+                        "gpu_callback: transcript cleanup empty job_id=%s attempt=%s/%s",
+                        job_id,
+                        attempt,
+                        max_attempts,
+                    )
+                except Exception as clean_err:
+                    last_err = clean_err
+                    logging.warning(
+                        "gpu_callback: transcript cleanup background failed "
+                        "job_id=%s attempt=%s/%s: %s",
+                        job_id,
+                        attempt,
+                        max_attempts,
+                        clean_err,
+                    )
+                if attempt < max_attempts:
+                    time.sleep(retry_sleep * attempt)
 
-            clean_text = str(
-                (clean_result or {}).get("clean_transcript")
-                if isinstance(clean_result, dict)
-                else ""
-            ).strip()
+            meta = {}
             if clean_text:
                 merged, meta = _apply_clean_transcript_to_segments(
                     segments, clean_text, is_music=bool(is_music_job)
@@ -14047,11 +14432,30 @@ def _schedule_post_summary_formatting(
                     "source": "clean_transcript_projection",
                     "changed_count": 0,
                     "mode": "no_clean",
+                    "error": str(last_err or 'cleanup_exhausted')[:240],
                 }
+                logging.error(
+                    "gpu_callback: transcript cleanup exhausted job_id=%s attempts=%s last_err=%s",
+                    job_id,
+                    max_attempts,
+                    last_err,
+                )
 
-            existing = _get_transcript_json_from_s3(
-                user_id or 'anonymous', input_s3_key, stage='gpt', is_medical=False
+            store_uid, store_in_key = _resolve_post_summary_storage_target(
+                job_id, user_id, input_s3_key
             )
+            if not store_in_key:
+                store_in_key = str(input_s3_key or '').strip()
+            existing = _get_transcript_json_from_s3(
+                store_uid, store_in_key, stage='gpt', is_medical=False
+            )
+            # Guest may have claimed mid-cleanup — also try the original callback path.
+            if not isinstance(existing, dict) and (
+                store_uid != (user_id or 'anonymous') or store_in_key != input_s3_key
+            ):
+                existing = _get_transcript_json_from_s3(
+                    user_id or 'anonymous', input_s3_key, stage='gpt', is_medical=False
+                )
             payload = dict(existing) if isinstance(existing, dict) else {"segments": merged}
             existing_fmt = (
                 dict(payload.get("formatted"))
@@ -14067,15 +14471,16 @@ def _schedule_post_summary_formatting(
                 payload["words"] = w2
                 payload["captions"] = c2
             result_s3_key = _put_transcript_json_to_s3(
-                user_id or 'anonymous', input_s3_key, payload, stage='gpt', is_medical=False
+                store_uid, store_in_key, payload, stage='gpt', is_medical=False
             )
             cached = dict(job_results_cache.get(job_id) or {})
             cached['jobId'] = job_id
             cached['status'] = cached.get('status') or 'completed'
             cached['segments'] = merged
             cached['transcript_persisted'] = True
-            cached['subtitle_grammar_done'] = True
+            cached['subtitle_grammar_done'] = bool(clean_text)
             cached['transcript_cleanup_done'] = bool(clean_text)
+            cached['transcript_cleanup_failed'] = not bool(clean_text)
             cached['post_summary_formatting_done'] = True
             cached['segment_correction_meta'] = meta
             if existing_fmt:
@@ -14091,12 +14496,13 @@ def _schedule_post_summary_formatting(
             socketio.emit('job_status_update', cached, room=job_id)
             logging.info(
                 "gpu_callback: post-summary formatting done job_id=%s clean_chars=%s "
-                "segments=%s changed=%s mode=%s sec=%.2f",
+                "segments=%s changed=%s mode=%s store_uid=%s sec=%.2f",
                 job_id,
                 len(clean_text),
                 len(merged) if isinstance(merged, list) else 0,
                 (meta or {}).get('changed_count'),
                 (meta or {}).get('mode'),
+                (store_uid or '')[:12],
                 time.time() - t0,
             )
         except Exception as err:
@@ -14105,8 +14511,18 @@ def _schedule_post_summary_formatting(
                 job_id,
                 err,
             )
+            try:
+                cached = dict(job_results_cache.get(job_id) or {})
+                cached['jobId'] = job_id
+                cached['transcript_cleanup_failed'] = True
+                cached['post_summary_formatting_done'] = True
+                cached['transcript_cleanup_done'] = False
+                job_results_cache[job_id] = cached
+                socketio.emit('job_status_update', cached, room=job_id)
+            except Exception:
+                pass
 
-    threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=_worker, daemon=True, name=f'qs-post-summary-{job_id[:24]}').start()
 
 
 def _record_completed_medical_usage(
@@ -14589,22 +15005,20 @@ def gpu_callback():
         pending_trigger[job_id] = "triggered"
 
     public_base = _public_base_url(request)
-    t = threading.Thread(
-        target=_finalize_gpu_callback_background,
-        kwargs={
-            "job_id": job_id,
-            "data": data,
-            "segments": segments,
-            "result": result,
-            "input_s3_key": input_s3_key,
-            "user_id": user_id,
-            "t0": t0,
-            "public_base": public_base,
-            "pending_info": pending,
-        },
-        daemon=True,
+    # Real OS thread: R2 put_object must not run as a gevent greenlet or it
+    # stalls medical Socket.IO / AWS Transcribe PCM on this worker.
+    _spawn_background_os_task(
+        _finalize_gpu_callback_background,
+        job_id=job_id,
+        data=data,
+        segments=segments,
+        result=result,
+        input_s3_key=input_s3_key,
+        user_id=user_id,
+        t0=t0,
+        public_base=public_base,
+        pending_info=pending,
     )
-    t.start()
 
     ack_ms = int((time.time() - t0) * 1000)
     logging.info("gpu_callback ack job_id=%s segments=%s ack_ms=%s", job_id, len(segments), ack_ms)
@@ -15840,22 +16254,18 @@ def api_medical_complete_stream_transcription():
     socketio.emit('job_status_update', payload, room=job_id)
 
     public_base = _public_base_url(request)
-    t = threading.Thread(
-        target=_finalize_gpu_callback_background,
-        kwargs={
-            'job_id': job_id,
-            'data': payload,
-            'segments': segments,
-            'result': payload.get('result') or {},
-            'input_s3_key': s3_key,
-            'user_id': user_id,
-            't0': t0,
-            'public_base': public_base,
-            'pending_info': pending_job_info.get(job_id),
-        },
-        daemon=True,
+    _spawn_background_os_task(
+        _finalize_gpu_callback_background,
+        job_id=job_id,
+        data=payload,
+        segments=segments,
+        result=payload.get('result') or {},
+        input_s3_key=s3_key,
+        user_id=user_id,
+        t0=t0,
+        public_base=public_base,
+        pending_info=pending_job_info.get(job_id),
     )
-    t.start()
 
     logging.info(
         'medical stream transcription complete job_id=%s segments=%s chars=%s',
@@ -15921,7 +16331,12 @@ def api_medical_archive_recording():
     region = _s3_region_for_bucket(bucket)
     try:
         s3_client = _s3_boto_client(for_upload=True, bucket=bucket)
-        s3_client.put_object(**put_kw)
+
+        def _archive_put():
+            s3_client.put_object(**put_kw)
+
+        # Archive bodies can be large; never block the gevent hub (live ASR).
+        _run_on_os_thread(_archive_put, timeout=120)
     except Exception as put_err:
         aws_code, aws_msg = _public_s3_error(put_err)
         logging.exception(
@@ -16037,10 +16452,27 @@ def api_medical_transcribe_gaps():
     )
 
     suffix = os.path.splitext(s3_key)[1] or '.m4a'
-    engine = gap_transcribe_engine()
+    # Prefer stream (StartStreamTranscription) — same IAM as live medical.
+    # Batch (StartTranscriptionJob) is optional and not on QuickScribe_Koyeb_Uploader.
+    # Always run ffmpeg + stream ASR on a real OS thread (below) so gevent does not
+    # 502 with "child watchers are only available on the default loop".
+    client_engine = str(data.get('engine') or data.get('gap_engine') or '').strip().lower()
+    engine = gap_transcribe_engine(
+        client_engine if client_engine in ('batch', 'stream') else None
+    )
     stream_region = _medical_transcribe_stream_region()
     region = _medical_transcribe_batch_region() if engine == 'batch' else stream_region
     transcribe_client = boto3.client('transcribe', region_name=region) if engine == 'batch' else None
+    try:
+        client_duration_ms = int(round(float(data.get('duration_ms') or data.get('durationMs') or 0)))
+    except (TypeError, ValueError):
+        client_duration_ms = 0
+    # File/offline stream of a full take needs headroom; batch jobs can take longer.
+    work_timeout = max(
+        float(timeout_sec or 110) + 8,
+        180.0 if engine == 'batch' else (160.0 if not pcm_bytes else 90.0),
+    )
+
     def _work():
         return transcribe_medical_gaps(
             transcript=transcript,
@@ -16059,16 +16491,28 @@ def api_medical_transcribe_gaps():
             identify_multiple_languages=bool(identify_multiple),
             language_options=language_options if isinstance(language_options, list) else ['he-IL', 'en-US'],
             locale=locale,
-            timeout_sec=timeout_sec,
+            timeout_sec=max(float(timeout_sec or 110), 160.0 if engine == 'batch' else 0.0),
             engine=engine,
             stream_region=stream_region,
             pcm_bytes=pcm_bytes or None,
+            client_duration_ms=client_duration_ms,
         )
     try:
-        result = _run_on_os_thread(_work, timeout=timeout_sec + 8)
+        logging.info(
+            'medical transcribe_gaps dispatch job_id=%s engine=%s pcm=%s timeout=%.1f',
+            job_id,
+            engine,
+            len(pcm_bytes or b''),
+            work_timeout,
+        )
+        result = _run_on_real_os_thread(_work, timeout=work_timeout)
     except Exception as exc:
-        logging.exception('medical transcribe_gaps failed job_id=%s: %s', job_id, exc)
-        return jsonify({'error': 'gap_transcribe_failed', 'message': str(exc)[:240]}), 502
+        logging.exception('medical transcribe_gaps failed job_id=%s engine=%s: %s', job_id, engine, exc)
+        return jsonify({
+            'error': 'gap_transcribe_failed',
+            'message': str(exc)[:240],
+            'engine': engine,
+        }), 502
 
     logging.info(
         'medical transcribe_gaps job_id=%s gaps=%s recovered=%s region=%s engine=%s',
@@ -16086,6 +16530,7 @@ def api_medical_transcribe_gaps():
         'gaps': result.get('gaps') or [],
         'duration_ms': result.get('duration_ms') or 0,
         'region': region,
+        'engine': engine,
     }), 200
 
 

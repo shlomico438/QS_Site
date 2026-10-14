@@ -397,7 +397,17 @@ def _cardcom_api_post(path: str, payload: dict) -> dict:
     if r.status_code >= 400:
         raise RuntimeError(data.get('Description') or r.text or f"Cardcom HTTP {r.status_code}")
     if isinstance(data, dict) and data.get('ResponseCode') not in (None, 0, '0'):
-        raise RuntimeError(str(data.get('Description') or f"Cardcom error {data.get('ResponseCode')}"))
+        code = data.get('ResponseCode')
+        desc = str(data.get('Description') or f'Cardcom error {code}').strip()
+        # Log code + description before raise so CloudWatch keeps ResponseCode even when
+        # Hebrew Description is mangled by the log pipeline.
+        logger.error(
+            'Cardcom API decline path=%s response_code=%s description=%s',
+            path,
+            code,
+            desc,
+        )
+        raise RuntimeError(f'Cardcom {code}: {desc}')
     return data if isinstance(data, dict) else {}
 
 

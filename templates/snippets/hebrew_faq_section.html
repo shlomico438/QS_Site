@@ -1,0 +1,17 @@
+{# Visible Hebrew FAQ — same Q&A as FAQPage JSON-LD. #}
+{% if not qs_is_en and not (medical_entry | default(false)) %}
+{% from "snippets/hebrew_faq_data.html" import faq_items %}
+<section id="faq-section" class="seo-landing-section seo-section seo-landing-bg-white" aria-labelledby="faq-section-title">
+    <div class="seo-landing-inner">
+        <h2 id="faq-section-title">שאלות נפוצות</h2>
+        <div class="seo-faq-list">
+            {% for item in faq_items %}
+            <details class="seo-faq-item">
+                <summary>{{ item.q }}</summary>
+                <p>{% if item.a_html is defined %}{{ item.a_html | safe }}{% else %}{{ item.a }}{% endif %}</p>
+            </details>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endif %}

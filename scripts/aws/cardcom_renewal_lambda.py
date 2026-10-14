@@ -1,4 +1,4 @@
-"""EventBridge target: charge due QuickScribe Unlimited Cardcom tokens.
+"""EventBridge target: charge due Cardcom tokens (Unlimited + Medical).
 
 The billing secret is read at runtime from SSM or Secrets Manager.
 It is never logged.
@@ -9,6 +9,13 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+# Regular Unlimited renewals (existing).
+DEFAULT_RENEWAL_URL = "https://www.getquickscribe.com/api/cardcom/run-renewals"
+# Medical plan + overage renewals (same cron secret).
+DEFAULT_MEDICAL_RENEWAL_URL = (
+    "https://www.getquickscribe.com/api/medical/cardcom/run-renewals"
+)
 
 
 def _secret() -> str:
@@ -41,21 +48,15 @@ def _secret() -> str:
     return value
 
 
-def handler(event, context):
-    url = (os.environ.get("RENEWAL_URL") or "").strip()
-    if not url:
-        raise RuntimeError("RENEWAL_URL is not set")
-    try:
-        limit = int((event or {}).get("limit") or 50)
-    except (TypeError, ValueError):
-        limit = 50
-    limit = max(1, min(200, limit))
+def _post_renewals(url: str, secret: str, limit: int) -> dict:
     payload = json.dumps({"limit": limit}).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=payload,
         headers={
-            "X-Billing-Secret": _secret(),
+            # Regular endpoint accepts either header; medical expects Medical.
+            "X-Billing-Secret": secret,
+            "X-Medical-Billing-Secret": secret,
             "Content-Type": "application/json",
         },
         method="POST",
@@ -66,8 +67,42 @@ def handler(event, context):
             status = int(response.status)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"renewal HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"renewal HTTP {exc.code} url={url}: {detail}") from exc
     if status != 200:
-        raise RuntimeError(f"renewal HTTP {status}: {body[:500]}")
-    print(f"cardcom renewal ok status={status} bytes={len(body)}")
-    return {"ok": True, "status": status}
+        raise RuntimeError(f"renewal HTTP {status} url={url}: {body[:500]}")
+    print(f"cardcom renewal ok status={status} url={url} bytes={len(body)}")
+    return {"ok": True, "status": status, "url": url, "bytes": len(body)}
+
+
+def handler(event, context):
+    regular_url = (os.environ.get("RENEWAL_URL") or DEFAULT_RENEWAL_URL).strip()
+    medical_url = (
+        os.environ.get("MEDICAL_RENEWAL_URL") or DEFAULT_MEDICAL_RENEWAL_URL
+    ).strip()
+    if not regular_url:
+        raise RuntimeError("RENEWAL_URL is not set")
+    try:
+        limit = int((event or {}).get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(200, limit))
+    secret = _secret()
+    results = []
+    errors = []
+    for url in (regular_url, medical_url):
+        if not url:
+            continue
+        try:
+            results.append(_post_renewals(url, secret, limit))
+        except Exception as exc:
+            print(f"cardcom renewal failed url={url}: {exc}")
+            errors.append({"url": url, "error": str(exc)})
+    if errors and not results:
+        raise RuntimeError(errors[0]["error"])
+    if errors:
+        # One path failed after the other succeeded — surface for CloudWatch alarms.
+        raise RuntimeError(
+            "partial renewal failure: "
+            + "; ".join(f"{row['url']}: {row['error']}" for row in errors)
+        )
+    return {"ok": True, "results": results}

@@ -53,6 +53,11 @@
     color: #4b5563;
 }
 
+.free-hero-cta {
+    margin-top: 16px;
+    min-width: 160px;
+}
+
 .free-steps-section h2,
 .free-landing #free-features-title,
 .free-landing #faq-section-title {

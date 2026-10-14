@@ -80,8 +80,31 @@ header.navbar,
 }
 .site-footer-social {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    justify-content: center;
+    gap: 8px 14px;
+}
+.site-footer-social .qs-social-link,
+.about-also-on-links .qs-social-link {
+    color: #6b7280;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    text-decoration: none;
+}
+.site-footer-social .qs-social-link:hover,
+.about-also-on-links .qs-social-link:hover {
+    color: #4f46e5;
+    text-decoration: underline;
+}
+.about-also-on {
+    margin-top: 0.5rem;
+}
+.about-also-on-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    margin: 0.75rem 0 0;
 }
 .site-footer-linkedin {
     color: #9ca3af;
@@ -914,6 +937,13 @@ main.main-content:has(.blog-page) {
     overflow-y: auto !important;
     overflow-x: hidden !important;
 }
+/* Marketing / SEO pages (resources, about, contact, pricing, …): body is 100vh + main overflow:hidden for the app shell */
+main.main-content:has(.resources-page),
+main.main-content:has(.content-page),
+main.main-content:has(.accuracy-page) {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
 .blog-table-wrap {
     overflow-x: auto;
     margin: 0.8rem 0 1.2rem;
@@ -1125,6 +1155,33 @@ body.landing-logo-large .nav-logo img {
 }
 .seo-section {
     scroll-margin-top: var(--nav-total-height, 104px);
+}
+
+.seo-faq-list {
+    display: grid;
+    gap: 10px;
+    max-width: 720px;
+    margin: 0 auto;
+}
+.seo-faq-item {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 0.65rem 1rem;
+    background: #fff;
+}
+.seo-faq-item summary {
+    cursor: pointer;
+    font-weight: 700;
+    color: #0f172a;
+    list-style-position: outside;
+}
+.seo-faq-item p {
+    margin: 0.7rem 0 0.2rem;
+    color: #475569;
+    line-height: 1.65;
+}
+#faq-section.seo-landing-section h2 {
+    text-align: center;
 }
 
 /* Products split: Core vs Medical (two-column landing section) */
@@ -1414,6 +1471,19 @@ html[dir="rtl"] .product-card-features {
     border-radius: 12px;
     padding: 14px;
     background: #ffffff;
+}
+a.seo-use-case-card {
+    display: block;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+a.seo-use-case-card:hover {
+    border-color: #a5b4fc;
+    box-shadow: 0 8px 20px rgba(79, 70, 229, 0.1);
+}
+a.seo-use-case-card p {
+    color: #334155;
 }
 .seo-card h3 {
     margin: 0 0 8px;
@@ -2460,6 +2530,10 @@ body.qs-video-transcript-session.has-transcript-actions:not(.medical-mode) #subt
     font-size: 17px;
     font-weight: 700;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
     cursor: pointer;
     box-shadow: none;
     transition: all 0.2s;
@@ -4163,7 +4237,11 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
   box-sizing: border-box;
 }
 .medical-live-status-banner:not([hidden]) {
-  display: flex;
+  display: flex !important;
+}
+body.medical-mode .medical-live-status-banner:not([hidden]),
+.main-app-container.medical-mode .medical-live-status-banner:not([hidden]) {
+  display: flex !important;
 }
 .main-app-container:not(.medical-mode) .medical-live-status-banner {
   display: none !important;
@@ -4178,6 +4256,14 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
 .medical-live-status-banner-spin,
 .medical-live-status-banner-track {
   display: none;
+}
+.medical-live-status-banner[data-mode="offline"] {
+  background: #fffbeb;
+  border-color: #f59e0b;
+  color: #92400e;
+}
+.medical-live-status-banner[data-mode="offline"] .medical-live-status-banner-dot {
+  background: #f59e0b;
 }
 .medical-live-status-banner[data-mode="filling"] .medical-live-status-banner-dot {
   display: none;
@@ -4317,6 +4403,39 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
   width: 100%;
   max-height: min(86vh, 760px);
   overflow: auto;
+}
+
+.medical-training-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.medical-training-modal-header h3 {
+  margin: 0;
+  flex: 1;
+}
+
+.medical-training-modal-close {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  margin: -4px 0 0;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  font-size: 1.45rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.medical-training-modal-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
 }
 
 .medical-training-modal-body {

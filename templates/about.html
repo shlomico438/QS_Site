@@ -22,5 +22,14 @@
         <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio2">Before founding QuickScribe, Shlomi held senior engineering and architecture roles at DSP Group, Altair Semiconductor, and Alvarion Technologies, where he led the development of innovative, globally deployed smart voice and wireless solutions. He has contributed to multiple patented technologies across voice systems and communication platforms.</p>
         <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio3">At QuickScribe, Shlomi leads product strategy, AI architecture, cloud infrastructure, and the development of language-specific transcription technologies designed to maximize accuracy and usability for professional users.</p>
     </div>
+
+    <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
+
+    <section class="about-also-on" aria-labelledby="about-also-on-title">
+        <h2 id="about-also-on-title" data-i18n="about_also_on_title">{% if qs_is_en %}Also find us on…{% else %}גם אצלנו ב…{% endif %}</h2>
+        <p class="about-also-on-links">
+            {% include "snippets/social_profile_links.html" %}
+        </p>
+    </section>
 </div>
 {% endblock %}

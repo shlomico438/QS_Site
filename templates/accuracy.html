@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block page_title %}Accuracy Benchmark | QuickScribe{% endblock %}
+{% block page_title %}בדיקת דיוק תמלול בעברית | QuickScribe{% endblock %}
+{% block page_description %}QuickScribe הגיעה ל-94.36% דיוק בתמלול עברית בהקלטת זום אמיתית. השוואה ל-Whisper, Gemini ו-Sonix, כולל קבצי בדיקה להורדה.{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/accuracy.css') }}?v={{ static_asset_version }}">
-<meta name="description" content="QuickScribe achieves 94.36% accuracy on Hebrew transcription — independently verified. Compare to Whisper, Gemini, Sonix, and run the test yourself.">
 {% endblock %}
 
 {% block structured_data %}
@@ -13,19 +13,19 @@
 {
   "@context": "https://schema.org",
   "@type": "WebPage",
-  "name": "QuickScribe Accuracy Benchmark",
-  "description": "QuickScribe achieves 94.36% accuracy (5.64% WER) on Hebrew transcription, outperforming OpenAI Whisper (77.27%), Google Gemini (76.02%), Sonix (71%), YouTube (47.81%), CapCut (42.57%), and Clipchamp (34.95%). Validated on a 7-minute Zoom meeting using Python WER evaluation against a human reference transcript.",
+  "name": "בדיקת דיוק תמלול בעברית | QuickScribe",
+  "description": "QuickScribe הגיעה ל-94.36% דיוק בתמלול עברית בהקלטת זום אמיתית. השוואה ל-Whisper, Gemini ו-Sonix, כולל קבצי בדיקה להורדה.",
   "about": {
     "@type": "SoftwareApplication",
     "name": "QuickScribe",
     "applicationCategory": "AI Transcription",
     "operatingSystem": "Web",
-    "description": "Hebrew-specialized AI transcription platform using Dual-Stage Language Routing and DSP audio enhancement. Achieves 94.36% accuracy on Hebrew audio — significantly above generic multilingual models.",
+    "description": "Hebrew-specialized AI transcription platform using Dual-Stage Language Routing and DSP audio enhancement. On a ~7-minute real Hebrew Zoom meeting (Test A), QuickScribe reached 94.36% accuracy.",
     "featureList": [
-      "94.36% transcription accuracy on Hebrew audio",
+      "94.36% transcription accuracy on a ~7-minute real Hebrew Zoom meeting (Test A)",
+      "90.88% accuracy on a separate synthetic audio set (Test B)",
       "Dual-Stage Language Routing to specialized expert models",
-      "DSP pre-processing for real-world audio environments",
-      "Outperforms OpenAI Whisper, Google Gemini, Sonix, YouTube, CapCut, and Clipchamp"
+      "DSP pre-processing for real-world audio environments"
     ]
   }
 }
@@ -40,31 +40,31 @@
 
   <div class="hero">
     <div class="hero-badge">
-      <span class="t-he">בדיקה עצמאית · פברואר 2026</span>
-      <span class="t-en">Independent Benchmark · February 2026</span>
+      <span class="t-he">בדיקה שערכנו בעצמנו · פברואר 2026</span>
+      <span class="t-en">Our own benchmark · February 2026</span>
     </div>
     <h1>
       <span class="t-he" dir="rtl">תמלול בעברית,<br><em>סוף סוף בדיוק.</em></span>
       <span class="t-en" dir="ltr">Hebrew transcription,<br><em>finally accurate.</em></span>
     </h1>
-    <p class="hero-sub t-he" dir="rtl">הרצנו את QuickScribe מול מנועי התמלול המובילים על אודיו אמיתי מזום בעברית. התוצאות — לא היו אפילו קרובות.</p>
-    <p class="hero-sub t-en" dir="ltr">We ran QuickScribe against every major transcription engine on real Hebrew Zoom audio. The results weren’t even close.</p>
+    <p class="hero-sub t-he" dir="rtl">הרצנו שתי בדיקות נפרדות: הקלטת זום אמיתית בעברית, וסט הקלטות סינתטי. QuickScribe מובילה בשתי הבדיקות.</p>
+    <p class="hero-sub t-en" dir="ltr">We ran two separate tests: a real Hebrew Zoom meeting, and a synthetic audio set. QuickScribe leads in both.</p>
 
     <div class="stat-hero">
       <div class="stat-number">94.36%</div>
-      <div class="stat-label t-he" dir="rtl">דיוק תמלול</div>
-      <div class="stat-label t-en" dir="ltr">Transcription Accuracy</div>
+      <div class="stat-label t-he" dir="rtl">דיוק · בדיקה א׳ (זום)</div>
+      <div class="stat-label t-en" dir="ltr">Accuracy · Test A (Zoom)</div>
       <div class="stat-detail t-he" dir="rtl">5.64% WER · סטייה של +1 מילה מול קו בסיס אנושי</div>
       <div class="stat-detail t-en" dir="ltr">5.64% Word Error Rate · +1 word variance vs human baseline</div>
     </div>
   </div>
 
   <section>
-    <div class="section-label t-he" dir="rtl">המספרים</div>
-    <div class="section-label t-en" dir="ltr">The Numbers</div>
+    <div class="section-label t-he" dir="rtl">בדיקה א׳</div>
+    <div class="section-label t-en" dir="ltr">Test A</div>
     <h2>
-      <span class="t-he" dir="rtl">השוואה</span>
-      <span class="t-en" dir="ltr">How we compare</span>
+      <span class="t-he" dir="rtl">הקלטת זום אמיתית (~7 דק׳)</span>
+      <span class="t-en" dir="ltr">Real Hebrew Zoom meeting (~7 min)</span>
     </h2>
 
     <div class="benchmark-wrap">
@@ -142,6 +142,84 @@
         </tbody>
       </table>
     </div>
+    <p class="t-he" dir="rtl" style="margin-top:1rem;color:var(--text-muted);font-size:0.9rem">שתי הבדיקות משתמשות באודיו שונה, ולכן אי אפשר להשוות ציונים בין בדיקה לבדיקה.</p>
+    <p class="t-en" dir="ltr" style="margin-top:1rem;color:var(--text-muted);font-size:0.9rem">The two tests use different audio, so scores are not comparable across tests.</p>
+  </section>
+
+  <hr class="divider" />
+
+  <section>
+    <div class="section-label t-he" dir="rtl">בדיקה ב׳</div>
+    <div class="section-label t-en" dir="ltr">Test B</div>
+    <h2>
+      <span class="t-he" dir="rtl">בדיקה שנייה: סט הקלטות סינתטי</span>
+      <span class="t-en" dir="ltr">Second test: synthetic audio set</span>
+    </h2>
+
+    <div class="benchmark-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>
+              <span class="t-he">מנוע</span>
+              <span class="t-en">Engine</span>
+            </th>
+            <th>
+              <span class="t-he">דיוק</span>
+              <span class="t-en">Accuracy</span>
+            </th>
+            <th>WER</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="winner">
+            <td>
+              <div class="engine-name">QuickScribe
+                <span class="winner-badge t-he">מנצח</span>
+                <span class="winner-badge t-en">Winner</span>
+              </div>
+            </td>
+            <td>
+              <div class="bar-wrap">
+                <span class="acc-high">90.88%</span>
+                <div class="bar"><div class="bar-fill" style="width:90.88%"></div></div>
+              </div>
+            </td>
+            <td class="acc-high">9.12%</td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">Sonix</div></td>
+            <td><div class="bar-wrap"><span class="acc-mid">86.09%</span><div class="bar"><div class="bar-fill mid" style="width:86.09%"></div></div></div></td>
+            <td class="acc-mid">13.91%</td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">TurboScribe</div></td>
+            <td><div class="bar-wrap"><span class="acc-mid">82.38%</span><div class="bar"><div class="bar-fill mid" style="width:82.38%"></div></div></div></td>
+            <td class="acc-mid">17.62%</td>
+          </tr>
+          <tr>
+            <td><div class="engine-name">Alef Bot</div></td>
+            <td><div class="bar-wrap"><span class="acc-mid">78.52%</span><div class="bar"><div class="bar-fill mid" style="width:78.52%"></div></div></div></td>
+            <td class="acc-mid">21.48%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="t-he" dir="rtl" style="margin-top:1rem;font-size:0.95rem">בבדיקה זו נמדדו רק Sonix, TurboScribe ו-Alef Bot.</p>
+    <p class="t-en" dir="ltr" style="margin-top:1rem;font-size:0.95rem">In this test, only Sonix, TurboScribe, and Alef Bot were measured as competitors.</p>
+    <p class="t-he" dir="rtl" style="margin-top:0.5rem;color:var(--text-muted);font-size:0.9rem">שתי הבדיקות משתמשות באודיו שונה, ולכן אי אפשר להשוות ציונים בין בדיקה לבדיקה.</p>
+    <p class="t-en" dir="ltr" style="margin-top:0.5rem;color:var(--text-muted);font-size:0.9rem">The two tests use different audio, so scores are not comparable across tests.</p>
+
+    <div class="method-box" style="margin-top:1.5rem">
+      <p class="t-he" dir="rtl"><strong>שם/מקור הסט:</strong> Google WAV ASR</p>
+      <p class="t-en" dir="ltr"><strong>Dataset name/source:</strong> Google WAV ASR</p>
+      <p class="t-he" dir="rtl"><strong>שפה:</strong> עברית</p>
+      <p class="t-en" dir="ltr"><strong>Language:</strong> Hebrew</p>
+      <p class="t-he" dir="rtl"><strong>תאריך הבדיקה:</strong> 20.9.26</p>
+      <p class="t-en" dir="ltr"><strong>Test date:</strong> 20.9.26</p>
+      <p class="t-he" dir="rtl"><strong>מי הריץ:</strong> הרצה עצמית</p>
+      <p class="t-en" dir="ltr"><strong>Who ran it:</strong> Self-run</p>
+    </div>
   </section>
 
   <hr class="divider" />
@@ -173,6 +251,8 @@
         </h3>
         <p class="t-he" dir="rtl">תמללנו פגישת זום אמיתית של 7 דק׳ בעברית דרך כל מנוע, ואז אימתנו מול תמלול ייחוס אנושי באמצעות פונקציית WER בפייתון. אותו אודיו, אותו ייחוס, ללא “דגימה מוטה” — לכל מנוע.</p>
         <p class="t-en" dir="ltr">We transcribed a 7-minute real-world Hebrew Zoom meeting through each engine, then validated results against a human reference transcript using a standard Python WER function. No cherry-picking — same audio, same reference, every engine.</p>
+        <p class="t-he" dir="rtl">הבדיקה בוצעה על הקלטה אחת של כ-7 דקות; תוצאות עשויות להשתנות בהקלטות אחרות.</p>
+        <p class="t-en" dir="ltr">One ~7-minute recording; results may differ on other audio.</p>
       </div>
     </div>
   </section>
@@ -291,8 +371,8 @@
           <span class="t-he" dir="rtl">הפער מצטבר</span>
           <span class="t-en" dir="ltr">The gap compounds</span>
         </h3>
-        <p class="t-he" dir="rtl">94% מול 77% נשמע קטן — אבל בשעה: מאות שגיאות מול עשרות. תיקון ידני יכול לקחת יותר מהפגישה מחדש.</p>
-        <p class="t-en" dir="ltr">At 94% vs 77%, a 1-hour meeting is hundreds of errors vs many fewer — fix time explodes.</p>
+        <p class="t-he" dir="rtl">בבדיקת הזום (א׳), 94% מול 77% נשמע קטן — אבל בשעה: מאות שגיאות מול עשרות. תיקון ידני יכול לקחת יותר מהפגישה מחדש.</p>
+        <p class="t-en" dir="ltr">In the Zoom test (A), 94% vs 77% sounds small — but over an hour: hundreds of errors vs many fewer — fix time explodes.</p>
       </div>
     </div>
   </section>
@@ -300,11 +380,11 @@
   <hr class="divider" />
 
   <section>
-    <div class="section-label t-he" dir="rtl">פרטי בנצ׳מארק</div>
-    <div class="section-label t-en" dir="ltr">Benchmark details</div>
+    <div class="section-label t-he" dir="rtl">פרטי בדיקה א׳</div>
+    <div class="section-label t-en" dir="ltr">Test A details</div>
     <h2>
-      <span class="t-he" dir="rtl">שחזור עצמי</span>
-      <span class="t-en" dir="ltr">Reproducible methodology</span>
+      <span class="t-he" dir="rtl">שחזור עצמי (זום)</span>
+      <span class="t-en" dir="ltr">Reproducible methodology (Zoom)</span>
     </h2>
     <div class="tech-pills">
       <span class="pill t-he">עברית</span>
@@ -328,6 +408,8 @@
       <p class="t-en" dir="ltr"><strong>Engines:</strong> Same file, default settings, all listed engines.</p>
       <p class="t-he" dir="rtl"><strong>הערכה:</strong> WER סטנדרטי; סטיית מילים — הפרש ספירת מילים מול האנושי.</p>
       <p class="t-en" dir="ltr"><strong>Evaluation:</strong> Standard WER; word variance = count difference vs human.</p>
+      <p class="t-he" dir="rtl">הבדיקה בוצעה על הקלטה אחת של כ-7 דקות; תוצאות עשויות להשתנות בהקלטות אחרות.</p>
+      <p class="t-en" dir="ltr">One ~7-minute recording; results may differ on other audio.</p>
     </div>
   </section>
 

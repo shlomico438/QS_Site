@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% set page = resource_page %}
+
+{% block page_title %}{{ page.title }}{% endblock %}
+{% block page_description %}{{ page.meta }}{% endblock %}
+
+{# Hebrew-only cluster: do not advertise /en/… alternates that 404. #}
+{% block hreflang_tags %}
+    <link rel="alternate" hreflang="he" href="{{ qs_canonical_url }}">
+    <link rel="alternate" hreflang="x-default" href="{{ qs_canonical_url }}">
+{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/resources.css') }}?v={{ static_asset_version }}">
+<meta property="og:image" content="{{ qs_canonical_origin }}{{ url_for('static', filename=page.hero_image) }}">
+<meta property="og:image:alt" content="{{ page.hero_image_alt }}">
+<meta name="twitter:image" content="{{ qs_canonical_origin }}{{ url_for('static', filename=page.hero_image) }}">
+{% endblock %}
+
+{% block structured_data %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "דף הבית",
+      "item": "{{ qs_canonical_origin }}/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "משאבים — תמלול עברית",
+      "item": "{{ qs_canonical_origin }}/resources"
+    }{% if page.slug %},
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "name": {{ page.nav_label | tojson }},
+      "item": "{{ qs_canonical_origin }}{{ page.path }}"
+    }
+    {% endif %}
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "inLanguage": "he",
+  "mainEntity": [
+    {%- for item in page.faqs %}
+    {
+      "@type": "Question",
+      "name": {{ item.q | tojson }},
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": {{ item.a | tojson }}
+      }
+    }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+  ]
+}
+</script>
+{% endblock %}
+
+{% block content %}
+<article class="content-page resources-page" lang="he" dir="rtl">
+    <nav class="resources-breadcrumb" aria-label="פירורי לחם">
+        <ol>
+            <li><a href="/">דף הבית</a></li>
+            <li>{% if page.slug %}<a href="/resources">משאבים</a>{% else %}<span aria-current="page">משאבים</span>{% endif %}</li>
+            {% if page.slug %}
+            <li><span aria-current="page">{{ page.nav_label }}</span></li>
+            {% endif %}
+        </ol>
+    </nav>
+
+    <header class="resources-header">
+        <h1>{{ page.h1 }}</h1>
+        <p class="resources-lead">{{ page.lead }}</p>
+        <figure class="resources-hero-figure">
+            <img
+                src="{{ url_for('static', filename=page.hero_image) }}?v={{ static_asset_version }}"
+                alt="{{ page.hero_image_alt }}"
+                width="960"
+                height="540"
+                loading="eager"
+                decoding="async"
+            >
+        </figure>
+    </header>
+
+    <section class="resources-section" aria-labelledby="resources-how-title">
+        <h2 id="resources-how-title">איך זה עובד</h2>
+        <ol class="resources-steps">
+            {% for step in page.how_steps %}
+            <li>
+                <strong>{{ step.title }}</strong>
+                <p>{{ step.text }}</p>
+            </li>
+            {% endfor %}
+        </ol>
+    </section>
+
+    {% for section in page.body_sections %}
+    <section class="resources-section" aria-labelledby="resources-body-{{ loop.index }}">
+        <h2 id="resources-body-{{ loop.index }}">{{ section.h2 }}</h2>
+        {% for p in section.paragraphs %}
+        <p>{{ p | safe }}</p>
+        {% endfor %}
+    </section>
+    {% endfor %}
+
+    <section class="resources-section" aria-labelledby="resources-tips-title">
+        <h2 id="resources-tips-title">{{ page.tips_title }}</h2>
+        <ul class="resources-tips">
+            {% for tip in page.tips %}
+            <li>{{ tip | safe }}</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section class="resources-section resources-pricing" aria-labelledby="resources-pricing-title">
+        <h2 id="resources-pricing-title">מחירים בקצרה</h2>
+        <p>{{ page.pricing_note }} <a href="/pricing">לדף המחירים</a>.</p>
+        <p class="resources-cta-wrap">
+            <a class="seo-btn seo-btn-primary" href="{{ page.cta_href }}">{{ page.cta_label }}</a>
+        </p>
+    </section>
+
+    <section class="resources-section" aria-labelledby="resources-faq-title" id="faq">
+        <h2 id="resources-faq-title">שאלות נפוצות</h2>
+        {% for item in page.faqs %}
+        <details class="resources-faq-item">
+            <summary>{{ item.q }}</summary>
+            <p>{{ item.a }}</p>
+        </details>
+        {% endfor %}
+    </section>
+
+    <section class="resources-section resources-related" aria-labelledby="resources-related-title">
+        <h2 id="resources-related-title">דפים קשורים</h2>
+        <ul>
+            {% for rel in page.related_pages %}
+            <li><a href="{{ rel.path }}">{{ rel.label }}</a> — {{ rel.h1 }}</li>
+            {% endfor %}
+        </ul>
+    </section>
+</article>
+{% endblock %}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Min 1 / max 2 Fargate tasks for quickscribe-site, scaled on Maximum CPU.
 
-Idle stays at 1×1 vCPU. A live visit pegs one task near 100% (Maximum), so
+Idle stays at 1×0.5 vCPU. A live visit pegs one task near 100% (Maximum), so
 scale-out adds a spare for the next doctor. Scale-in uses Maximum too, so a
 busy+idle pair (avg ~50%, max ~100%) is not mistaken for idle.
 
@@ -198,7 +198,7 @@ def main() -> int:
     if not apply:
         log('Dry-run only. Re-run with --apply to change AWS.')
     else:
-        log('Applied. Idle bill is one 1 vCPU task; a live visit can add a second.')
+        log('Applied. Idle bill is one 0.5 vCPU task; a live visit can add a second.')
     return 0
 
 

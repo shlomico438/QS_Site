@@ -4,7 +4,7 @@
 Prints the new task definition ARN on stdout. Used by deploy.bat (avoids
 PowerShell UTF-8 BOM breaking `aws ... --cli-input-json`).
 
-Always registers with 1 vCPU / 2 GB so a console-only size change that was
+Always registers with 0.5 vCPU / 2 GB so a console-only size change that was
 never attached to the service cannot restore 2 vCPU / 4 GB on the next deploy.
 """
 from __future__ import annotations
@@ -39,8 +39,8 @@ FARGATE_STOP_TIMEOUT_SEC = 120
 
 # Pin task size on every deploy so console-only revisions (or an older
 # service task definition) cannot silently restore 2 vCPU / 4 GB.
-# Fargate units: cpu 1024 = 1 vCPU, memory 2048 = 2 GB.
-PINNED_TASK_CPU = '1024'
+# Fargate units: cpu 512 = 0.5 vCPU, memory 2048 = 2 GB.
+PINNED_TASK_CPU = '512'
 PINNED_TASK_MEMORY = '2048'
 
 

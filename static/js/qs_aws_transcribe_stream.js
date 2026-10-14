@@ -95,20 +95,35 @@ function qsSocketIoIsPollingOnly(sock) {
     return false;
 }
 
+function qsSocketLooksPermanentlyDown(sock) {
+    if (!sock) return true;
+    try {
+        if (sock.connected) return false;
+        // Explicit disconnect / reconnection(false) (security-SW simulation or blocked client).
+        if (sock.active === false) return true;
+        if (sock.io && sock.io.opts && sock.io.opts.reconnection === false) return true;
+    } catch (_) {}
+    return false;
+}
+
 function qsWaitForSocketConnected(sock, timeoutMs = 20000) {
     if (!sock) return Promise.reject(new Error('socket_unavailable'));
     if (sock.connected) return Promise.resolve(sock);
+    const waitMs = qsSocketLooksPermanentlyDown(sock)
+        ? Math.min(2500, Number(timeoutMs) || 2500)
+        : timeoutMs;
     return new Promise((resolve, reject) => {
         const t = setTimeout(() => {
             sock.off('connect', onConnect);
             reject(new Error('socket_connect_timeout'));
-        }, timeoutMs);
+        }, waitMs);
         function onConnect() {
             clearTimeout(t);
             sock.off('connect', onConnect);
             resolve(sock);
         }
         sock.on('connect', onConnect);
+        try { if (typeof sock.connect === 'function' && sock.active !== false) sock.connect(); } catch (_) {}
     });
 }
 
@@ -169,6 +184,7 @@ export class MedicalAwsTranscribeStream {
         this._stopResolve = null;
         this._stopReject = null;
         this._chunksSent = 0;
+        this._meterOnly = false;
         this._lastRms = 0;
         this._lastPeak = 0;
         this._lastGain = 1;
@@ -491,6 +507,8 @@ export class MedicalAwsTranscribeStream {
     }
 
     _canCaptureAudio() {
+        // Offline park keeps the graph for bargraph only; still capture RMS while feed is paused.
+        if (this._meterOnly) return Boolean(this._processor);
         return !this._feedPaused && Boolean(this._processor);
     }
 
@@ -899,19 +917,36 @@ export class MedicalAwsTranscribeStream {
                 for (let i = 0; i < mono.length; i++) mixed[i] = 0.5 * (mono[i] + ch1[i]);
                 mono = mixed;
             }
-            const pcm = qsDownsampleFloat32(mono, this._audioCtx.sampleRate, this.sampleRateHz);
-            if (!pcm.length) return;
+            // Meter from full-rate mono (same levels live + offline park). Do not require downsample.
             let sumSq = 0;
             let peak = 0;
-            for (let i = 0; i < pcm.length; i++) {
-                const v = Math.abs(pcm[i]);
-                sumSq += v * v;
-                if (v > peak) peak = v;
+            for (let i = 0; i < mono.length; i++) {
+                const s = mono[i];
+                sumSq += s * s;
+                const a = Math.abs(s);
+                if (a > peak) peak = a;
             }
-            this._lastRms = Math.sqrt(sumSq / pcm.length);
+            this._lastRms = Math.sqrt(sumSq / mono.length);
             this._lastPeak = peak;
             if (this._lastRms < 0.008) this._lastQuietAt = Date.now();
             this._lastGain = this.applySpeechGain ? qsSpeechGainAmount(this._lastRms, this._lastPeak) : 1;
+            this._meterTicks = (this._meterTicks || 0) + 1;
+            // Socket.IO failed: keep ScriptProcessor alive only for the level meter.
+            if (this._meterOnly) {
+                if (this._meterTicks === 1 || this._meterTicks % 50 === 0) {
+                    console.error(
+                        '[transcribe-stream] meter-only rms:',
+                        this._lastRms.toFixed(4),
+                        'peak:',
+                        this._lastPeak.toFixed(4),
+                        'gain:',
+                        this._lastGain.toFixed(2)
+                    );
+                }
+                return;
+            }
+            const pcm = qsDownsampleFloat32(mono, this._audioCtx.sampleRate, this.sampleRateHz);
+            if (!pcm.length) return;
             const audioPcm = this.applySpeechGain ? qsApplySpeechGain(pcm, this._lastRms, this._lastPeak) : pcm;
             const pcmBuf = qsFloat32ToPcm16(audioPcm);
             if (this._canSendLiveAudio()) {
@@ -982,7 +1017,8 @@ export class MedicalAwsTranscribeStream {
             this._visibilityBound = true;
             this._onVisibility = () => {
                 if (document.visibilityState !== 'visible') return;
-                if (this._feedPaused) return;
+                // Meter-only offline park still needs a running AudioContext for the bargraph.
+                if (this._feedPaused && !this._meterOnly) return;
                 if (this._audioCtx && this._audioCtx.state === 'suspended') {
                     void this._audioCtx.resume().catch(() => {});
                 }
@@ -1319,9 +1355,27 @@ export class MedicalAwsTranscribeStream {
     }
 
     getLastRms() {
-        if (this._feedPaused) return 0;
+        // Offline park keeps capturing for the bargraph even though the feed is "paused"
+        // for Socket.IO. Do not zero the meter in that mode.
+        if (this._feedPaused && !this._meterOnly) return 0;
         const n = Number(this._lastRms);
         return Number.isFinite(n) ? n : 0;
+    }
+
+    getLastPeak() {
+        if (this._feedPaused && !this._meterOnly) return 0;
+        const n = Number(this._lastPeak);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    /** Speech-boost factor last applied to ASR PCM (1–3). Used to match live bargraph feel. */
+    getLastGain() {
+        const n = Number(this._lastGain);
+        return Number.isFinite(n) && n > 0 ? n : 1;
+    }
+
+    isMeterOnly() {
+        return !!this._meterOnly;
     }
 
     _resolveStopWithLocalFallback(timeoutMs = 12000) {
@@ -1458,8 +1512,58 @@ export class MedicalAwsTranscribeStream {
         return this._attachGaps(result);
     }
 
+    /**
+     * Live Socket.IO failed: drop transport but keep the mic ScriptProcessor running
+     * so the UI level meter stays as sensitive as live mode (same RMS path).
+     * Browser AGC is unchanged — this only preserves our capture graph.
+     */
+    parkForOfflineMetering() {
+        this._meterOnly = true;
+        this._sessionWanted = false;
+        this._transportArmed = false;
+        this._ready = false;
+        this._feedPaused = false;
+        this._meterTicks = 0;
+        this._clearStarvationWatch();
+        this._clearPreReadyBuffer();
+        this._clearPollingBatch();
+        this._openGap = null;
+        this._gaps = [];
+        try {
+            if (this._socket && this._socket.connected) {
+                this._socket.emit('medical_transcribe_stop');
+            }
+        } catch (_) {}
+        this._teardownSocketIo();
+        try {
+            if (this._ws) this._ws.close();
+        } catch (_) {}
+        this._ws = null;
+        // Keep a single AudioContext graph alive — a second offline AudioContext on the
+        // same MediaStream often starves ScriptProcessor and kills bargraph sensitivity.
+        try {
+            if (this._audioCtx && this._audioCtx.state === 'suspended') {
+                void this._audioCtx.resume().catch(() => {});
+            }
+            if (this._source && this._processor && this._mutedGain) {
+                try { this._source.disconnect(); } catch (_) {}
+                try { this._processor.disconnect(); } catch (_) {}
+                try { this._mutedGain.disconnect(); } catch (_) {}
+                this._source.connect(this._processor);
+                this._processor.connect(this._mutedGain);
+                this._mutedGain.connect(this._audioCtx.destination);
+            }
+        } catch (e) {
+            console.warn('[transcribe-stream] park meter rewire failed', e);
+        }
+        void this._activateAudioCapture();
+        console.info('[transcribe-stream] parked for offline level meter');
+        return Boolean(this._processor && this._audioCtx && this._audioCtx.state !== 'closed');
+    }
+
     abort(options = {}) {
         const emitStop = options.emitStop !== false;
+        this._meterOnly = false;
         this._finalizeOpenGapOnStop();
         try {
             const gaps = this.getGaps();

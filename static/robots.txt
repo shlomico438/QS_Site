@@ -1,4 +1,17 @@
 User-agent: *
 Disallow: /api/
 
+# Explicit allow for major AI crawlers (not blocked by the rule above).
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
 Sitemap: https://www.getquickscribe.com/sitemap.xml

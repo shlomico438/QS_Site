@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Daily EventBridge schedule for QuickScribe Unlimited Cardcom renewals.
+"""Daily EventBridge schedule for QuickScribe Cardcom renewals.
+
+Charges both Unlimited (regular) and Medical tokens. The Lambda POSTs:
+  /api/cardcom/run-renewals
+  /api/medical/cardcom/run-renewals
 
 Reads MEDICAL_BILLING_CRON_SECRET from the ECS task definition and stores a
 copy in SSM only when the task still has it as plain text. The value is
@@ -29,8 +33,9 @@ SCHEDULE_NAME = "quickscribe-cardcom-renewal"
 ROLE_NAME = "quickscribe-cardcom-renewal"
 SCHEDULER_ROLE_NAME = "quickscribe-cardcom-renewal-scheduler"
 RENEWAL_URL = "https://www.getquickscribe.com/api/cardcom/run-renewals"
-# 06:15 Asia/Jerusalem. One attempt; a retry could charge a period twice.
-SCHEDULE_EXPRESSION = "cron(15 6 * * ? *)"
+MEDICAL_RENEWAL_URL = "https://www.getquickscribe.com/api/medical/cardcom/run-renewals"
+# 12:45 Asia/Jerusalem. One attempt; a retry could charge a period twice.
+SCHEDULE_EXPRESSION = "cron(45 12 * * ? *)"
 SCHEDULE_TIMEZONE = "Asia/Jerusalem"
 
 LAMBDA_SOURCE = Path(__file__).resolve().parent / "aws" / "cardcom_renewal_lambda.py"
@@ -219,6 +224,7 @@ def _secret_config(kind: str, value: str, ssm, apply: bool):
 def _upsert_lambda(lam, role_arn: str, source: str, secret_id: str, apply: bool, json_key: str = "") -> str:
     variables = {
         "RENEWAL_URL": RENEWAL_URL,
+        "MEDICAL_RENEWAL_URL": MEDICAL_RENEWAL_URL,
         "SECRET_SOURCE": source,
         "SECRET_ID": secret_id,
     }
@@ -258,7 +264,7 @@ def _upsert_lambda(lam, role_arn: str, source: str, secret_id: str, apply: bool,
                     Timeout=180,
                     MemorySize=128,
                     Environment=env,
-                    Description="Daily Cardcom token charge for QuickScribe Unlimited.",
+                    Description="Daily Cardcom token charge for QuickScribe Unlimited and Medical.",
                 )
                 return created["FunctionArn"]
             except lam.exceptions.InvalidParameterValueException as exc:
@@ -286,7 +292,7 @@ def _upsert_schedule(scheduler, lambda_arn: str, role_arn: str, apply: bool) -> 
         "FlexibleTimeWindow": {"Mode": "OFF"},
         "Target": target,
         "State": "ENABLED",
-        "Description": "Daily QuickScribe Unlimited Cardcom token renewal.",
+        "Description": "Daily QuickScribe Unlimited + Medical Cardcom token renewal.",
     }
     try:
         scheduler.get_schedule(Name=SCHEDULE_NAME)
@@ -428,8 +434,8 @@ def main() -> int:
         log("Dry-run only. Re-run with --apply to change AWS.")
     else:
         log(
-            f"Applied. EventBridge runs {SCHEDULE_NAME} daily at 06:15 {SCHEDULE_TIMEZONE} "
-            f"and posts {RENEWAL_URL}."
+            f"Applied. EventBridge runs {SCHEDULE_NAME} daily at 12:45 {SCHEDULE_TIMEZONE} "
+            f"and posts {RENEWAL_URL} then {MEDICAL_RENEWAL_URL}."
         )
     return 0
 

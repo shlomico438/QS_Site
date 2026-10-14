@@ -56,7 +56,7 @@ class RegularCardcomRecurringTests(unittest.TestCase):
             first = cc._charge_regular_renewal(self._due_row())
             second = cc._charge_regular_renewal(self._due_row())
         self.assertTrue(first["ok"])
-        self.assertEqual(first["amount_ils"], 70)
+        self.assertEqual(first["amount_ils"], 60)
         self.assertEqual(extended, [("user-1", "unlimited_monthly")])
         self.assertEqual(second.get("skipped"), "already_renewed")
         saved = cc._regular_renewal_get("user-1", "2026-09-01T00:00:00Z")

@@ -67,12 +67,26 @@ def test_paid_plan_allows_metered_overage():
     assert state["reason"] == "subscription_active"
 
 
-def test_paid_plan_blocks_after_unrenewed_cycle():
+def test_paid_plan_stays_allowed_during_renewal_grace():
+    """Cycle end alone must not lock the doctor before the daily token charge runs."""
     state = medical_entitlement(
         _account(
             subscription_plan="professional",
             subscription_status="active",
-            billing_cycle_ends_at=(NOW - timedelta(seconds=1)).isoformat(),
+            billing_cycle_ends_at=(NOW - timedelta(hours=1)).isoformat(),
+        ),
+        NOW,
+    )
+    assert state["allowed"] is True
+    assert state["reason"] == "subscription_active"
+
+
+def test_paid_plan_blocks_after_unrenewed_grace():
+    state = medical_entitlement(
+        _account(
+            subscription_plan="professional",
+            subscription_status="active",
+            billing_cycle_ends_at=(NOW - timedelta(hours=37)).isoformat(),
         ),
         NOW,
     )
@@ -96,6 +110,44 @@ def test_cardcom_token_fields_are_normalized():
         "validity_mmyy": "0729",
         "last_four": "1234",
     }
+
+
+def test_cardcom_token_prefers_tokef_over_card_validity_and_token_ex():
+    token = _cardcom_token_info(
+        {
+            "Token": "token-id",
+            "CardValidityMonth": "03",
+            "CardValidityYear": "2029",
+            "TokenExDate": "20290301",
+            "ExtShvaParams": {"Tokef_30": "0229", "CardNumber5": "9876"},
+        }
+    )
+    assert token["validity_mmyy"] == "0229"
+    assert token["last_four"] == "9876"
+
+
+def test_cardcom_token_uses_card_validity_before_token_ex_date():
+    token = _cardcom_token_info(
+        {
+            "Token": "token-id",
+            "CardValidityMonth": "02",
+            "CardValidityYear": "2029",
+            "TokenExDate": "20290301",
+        }
+    )
+    assert token["validity_mmyy"] == "0229"
+
+
+def test_cardcom_token_does_not_mix_card_year_with_token_ex_month():
+    # Old bug: year from CardValidity + month from TokenExDate → wrong MMYY.
+    token = _cardcom_token_info(
+        {
+            "Token": "token-id",
+            "CardValidityYear": "2029",
+            "TokenExDate": "20290301",
+        }
+    )
+    assert token["validity_mmyy"] == "0329"  # full TokenExDate fallback only
 
 
 def test_trial_account_public_exposes_period_usage():

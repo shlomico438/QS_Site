@@ -134,8 +134,7 @@
     {# Non-blocking Inter: swap in after load; CSS already falls back to system-ui. #}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-    <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/+esm">
+    {# Do not modulepreload Supabase here — it races LCP on mobile; app_logic imports it when needed. #}
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" media="print" onload="this.media='all'">
     <noscript>
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap">
@@ -145,11 +144,102 @@
     <script src="{{ url_for('static', filename='js/qs_auth_shell.js') }}?v={{ static_asset_version }}" defer></script>
     {# Signed-in account chrome injected after auth — omitted from guest SSR for crawlers. #}
     <script src="{{ url_for('static', filename='js/qs_account_chrome.js') }}?v={{ static_asset_version }}" defer></script>
-    {# defer non-critical scripts. socket.io stays blocking — body script calls io() during parse. #}
+    {# translations / showcase / socket.io: idle or on-demand (SSR already has locale copy). #}
     {# docx + FileSaver are lazy-loaded on first export (qsEnsureExportLibs) to keep homepage light. #}
-    <script src="{{ url_for('static', filename='js/translations.js') }}?v={{ static_asset_version }}" defer></script>
-    <script src="{{ url_for('static', filename='js/feature_showcase.js') }}?v={{ static_asset_version }}" defer></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script>
+      (function () {
+        var assetV = {{ static_asset_version|tojson }};
+        var translationsSrc = {{ url_for('static', filename='js/translations.js')|tojson }} + '?v=' + assetV;
+        var showcaseSrc = {{ url_for('static', filename='js/feature_showcase.js')|tojson }} + '?v=' + assetV;
+        var socketSrc = 'https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js';
+        var translationsPromise = null;
+        var showcasePromise = null;
+        var socketPromise = null;
+
+        function loadScriptOnce(src, key) {
+          return new Promise(function (resolve, reject) {
+            var existing = document.querySelector('script[data-qs-lazy="' + key + '"]');
+            if (existing) {
+              if (existing.getAttribute('data-qs-loaded') === '1') { resolve(); return; }
+              existing.addEventListener('load', function () { resolve(); });
+              existing.addEventListener('error', function () { reject(new Error(key + ' failed')); });
+              return;
+            }
+            var s = document.createElement('script');
+            s.src = src;
+            s.async = true;
+            s.setAttribute('data-qs-lazy', key);
+            s.onload = function () { s.setAttribute('data-qs-loaded', '1'); resolve(); };
+            s.onerror = function () { reject(new Error(key + ' failed')); };
+            document.head.appendChild(s);
+          });
+        }
+
+        window.qsEnsureTranslations = function () {
+          if (typeof window.applyTranslations === 'function' && typeof window.setLocale === 'function') {
+            return Promise.resolve();
+          }
+          if (!translationsPromise) {
+            translationsPromise = loadScriptOnce(translationsSrc, 'translations').then(function () {
+              if (typeof window.applyTranslations === 'function') window.applyTranslations();
+            });
+          }
+          return translationsPromise;
+        };
+
+        window.qsEnsureFeatureShowcase = function () {
+          if (window.__qsFeatureShowcaseLoaded) return Promise.resolve();
+          if (!showcasePromise) {
+            showcasePromise = loadScriptOnce(showcaseSrc, 'showcase').then(function () {
+              window.__qsFeatureShowcaseLoaded = true;
+            });
+          }
+          return showcasePromise;
+        };
+
+        window.qsEnsureSocketIo = function () {
+          if (typeof io === 'function') return Promise.resolve();
+          if (!socketPromise) socketPromise = loadScriptOnce(socketSrc, 'socketio');
+          return socketPromise;
+        };
+
+        // Stubs: feature_showcase.js overwrites these on load; then we re-enter the real fn.
+        function qsStartFeatureShowcaseStub() {
+          window.qsEnsureFeatureShowcase().then(function () {
+            if (window.qsStartFeatureShowcase !== qsStartFeatureShowcaseStub) {
+              window.qsStartFeatureShowcase();
+            }
+          });
+        }
+        function qsStopFeatureShowcaseStub() {
+          // Do not fetch the showcase bundle only to no-op a stop before it ever started.
+          if (!window.__qsFeatureShowcaseLoaded && !showcasePromise) return;
+          window.qsEnsureFeatureShowcase().then(function () {
+            if (window.qsStopFeatureShowcase !== qsStopFeatureShowcaseStub) {
+              window.qsStopFeatureShowcase();
+            }
+          });
+        }
+        function qsRefreshFeatureShowcaseI18nStub() {
+          if (window.__qsFeatureShowcaseLoaded && window.qsRefreshFeatureShowcaseI18n !== qsRefreshFeatureShowcaseI18nStub) {
+            window.qsRefreshFeatureShowcaseI18n();
+          }
+        }
+        window.qsStartFeatureShowcase = qsStartFeatureShowcaseStub;
+        window.qsStopFeatureShowcase = qsStopFeatureShowcaseStub;
+        window.qsRefreshFeatureShowcaseI18n = qsRefreshFeatureShowcaseI18nStub;
+
+        function scheduleTranslations() {
+          var run = function () { window.qsEnsureTranslations(); };
+          if ('requestIdleCallback' in window) {
+            requestIdleCallback(run, { timeout: 2500 });
+          } else {
+            window.addEventListener('load', function () { setTimeout(run, 1); });
+          }
+        }
+        scheduleTranslations();
+      })();
+    </script>
     {% if is_medical_head %}
     <script src="{{ url_for('static', filename='js/clinical_training_modal.js') }}?v={{ static_asset_version }}" defer></script>
     {% endif %}
@@ -166,12 +256,12 @@
     }
     </script>
     <script type="module" src="{{ url_for('static', filename='js/app_logic.js') }}?v={{ static_asset_version }}"></script>
-    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+    <link rel="icon" type="image/png" sizes="48x48" href="{{ url_for('static', filename='images/favicon.png') }}?v={{ static_asset_version }}">
     {% block structured_data %}{% endblock %}
     {% block head_extra %}{% endblock %}
 </head>
 
-<body class="{% if medical_entry | default(false) %}medical-mode{% endif %}" style="display:flex; flex-direction:column; height:100vh; min-height:0;">
+<body class="{% if medical_entry | default(false) %}medical-mode{% else %}qs-homepage-landing{% endif %}" style="display:flex; flex-direction:column; height:100vh; min-height:0;">
     <noscript><img height="1" width="1" style="display:none"
     src="https://www.facebook.com/tr?id=1955862168459302&ev=PageView&noscript=1"
     alt="" /></noscript>
@@ -255,15 +345,15 @@
                 </a>
 
                 <nav class="nav-menu nav-menu-desktop" id="nav-menu-desktop" aria-label="Primary navigation">
-                    <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
+                    <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">{% if qs_is_en %}Pricing{% else %}מחירים{% endif %}</a>
                     {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                     <a href="/resources" class="nav-item nav-resources-link" data-i18n="nav_resources">{% if qs_is_en %}Resources{% else %}משאבים{% endif %}</a>
                     <a href="/free" class="nav-item nav-free-link" data-i18n="nav_free">{% if qs_is_en %}Try free{% else %}נסו בחינם{% endif %}</a>
-                    <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">Accuracy</a>
+                    <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">{% if qs_is_en %}Accuracy{% else %}דיוק{% endif %}</a>
                     {% endif %}
-                    <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">About Us</a>
-                    <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">Blog</a>
-                    <a href="{{ nav_contact_href }}" class="nav-item nav-contact-link" data-i18n="nav_contact">Contact</a>
+                    <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">{% if qs_is_en %}About Us{% else %}אודות{% endif %}</a>
+                    <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">{% if qs_is_en %}Blog{% else %}בלוג{% endif %}</a>
+                    <a href="{{ nav_contact_href }}" class="nav-item nav-contact-link" data-i18n="nav_contact">{% if qs_is_en %}Contact{% else %}צור קשר{% endif %}</a>
                 </nav>
 
                 <div class="navbar-main-actions">
@@ -278,15 +368,15 @@
 
             <!-- Mobile navigation drawer -->
             <nav class="nav-menu nav-menu-mobile" id="nav-menu" aria-label="Mobile navigation" hidden>
-                <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">Pricing</a>
+                <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">{% if qs_is_en %}Pricing{% else %}מחירים{% endif %}</a>
                 {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                 <a href="/resources" class="nav-item nav-resources-link" data-i18n="nav_resources">{% if qs_is_en %}Resources{% else %}משאבים{% endif %}</a>
                 <a href="/free" class="nav-item nav-free-link" data-i18n="nav_free">{% if qs_is_en %}Try free{% else %}נסו בחינם{% endif %}</a>
-                <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">Accuracy</a>
+                <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">{% if qs_is_en %}Accuracy{% else %}דיוק{% endif %}</a>
                 {% endif %}
-                <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">About Us</a>
-                <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">Blog</a>
-                <a href="{{ nav_contact_href }}" class="nav-item nav-contact-link" data-i18n="nav_contact">Contact</a>
+                <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">{% if qs_is_en %}About Us{% else %}אודות{% endif %}</a>
+                <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">{% if qs_is_en %}Blog{% else %}בלוג{% endif %}</a>
+                <a href="{{ nav_contact_href }}" class="nav-item nav-contact-link" data-i18n="nav_contact">{% if qs_is_en %}Contact{% else %}צור קשר{% endif %}</a>
                 <a href="/personal" class="nav-item nav-cta-btn nav-cta-btn--mobile" id="nav-new-session-btn" data-i18n="nav_personal" hidden style="display:none;">Personal Area</a>
                 <span id="nav-guest-free-tier-mobile" class="nav-guest-free-tier nav-guest-free-tier--mobile">30 דקות תמלול חינם בכל חודש</span>
                 <span id="nav-mobile-signed-in-host"></span>
@@ -304,6 +394,20 @@
     <main class="main-content" style="flex:1; min-height:0;">
         {% block content %}{% endblock %}
     </main>
+    {# After SEO markup exists: hide landing if resuming an active job (before app_logic). #}
+    <script>
+      (function () {
+        try {
+          var resume = !!(localStorage.getItem('activeJobId') || '').trim()
+            || localStorage.getItem('pendingOpenGenerateMenu') === '1'
+            || /[?&]open=/.test(String(location.search || ''));
+          if (!resume) return;
+          document.body.classList.remove('qs-homepage-landing');
+          var seo = document.getElementById('seo-home-content');
+          if (seo) seo.style.display = 'none';
+        } catch (_) {}
+      })();
+    </script>
 
     <footer class="site-footer" dir="{{ 'ltr' if qs_is_en else 'rtl' }}">
         <div class="site-footer-inner">
@@ -315,6 +419,9 @@
                 {% endif %}
                 <a href="{{ '/en/medical/contact' if qs_is_en and (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else ('/medical/contact' if (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else '/contact') }}" data-i18n="nav_contact">{% if qs_is_en %}Contact{% else %}צור קשר{% endif %}</a>
             </nav>
+            <nav class="site-footer-social" aria-label="{% if qs_is_en %}Social and reviews{% else %}רשתות וביקורות{% endif %}">
+                {% include "snippets/social_profile_links.html" %}
+            </nav>
             <span class="site-footer-copy" data-i18n="footer_copyright">© 2026 QuickScribe. All rights reserved.</span>
         </div>
     </footer>
@@ -322,12 +429,8 @@
     <script>
         // Expose on window so app_logic.js (module) can use the socket.
         (function () {
-            if (typeof io !== 'function') {
-                console.warn('QuickScribe: Socket.IO library not loaded; live job updates disabled.');
-                window.socket = null;
-                return;
-            }
             let socketWarned = false;
+            let socketBootScheduled = false;
             function shouldAutoConnectSocket() {
                 try {
                     if (document.body.classList.contains('medical-mode')) return true;
@@ -336,7 +439,33 @@
                     return false;
                 }
             }
+            function whenSocketIoReady(cb) {
+                if (typeof io === 'function') {
+                    cb();
+                    return;
+                }
+                var ensure = window.qsEnsureSocketIo;
+                if (typeof ensure !== 'function') {
+                    console.warn('QuickScribe: Socket.IO loader missing; live job updates disabled.');
+                    window.socket = null;
+                    return;
+                }
+                ensure().then(function () {
+                    if (typeof io === 'function') cb();
+                    else {
+                        console.warn('QuickScribe: Socket.IO library not loaded; live job updates disabled.');
+                        window.socket = null;
+                    }
+                }).catch(function () {
+                    console.warn('QuickScribe: Socket.IO library not loaded; live job updates disabled.');
+                    window.socket = null;
+                });
+            }
             function createSocket() {
+                if (typeof io !== 'function') {
+                    console.warn('QuickScribe: Socket.IO library not ready yet.');
+                    return null;
+                }
                 const socketOrigin = `${window.location.protocol}//${window.location.host}`;
                 // WebSocket first. If it cannot connect, or it dies mid-session, stay on polling.
                 const socket = io(socketOrigin, {
@@ -427,11 +556,22 @@
             }
             window.qsWantSocket = function () {
                 if (window.socket) return window.socket;
+                if (typeof io !== 'function') {
+                    whenSocketIoReady(function () {
+                        if (!window.socket) window.socket = createSocket();
+                    });
+                    return null;
+                }
                 window.socket = createSocket();
                 return window.socket;
             };
             if (shouldAutoConnectSocket()) {
-                window.qsWantSocket();
+                whenSocketIoReady(function () {
+                    if (!socketBootScheduled) {
+                        socketBootScheduled = true;
+                        window.qsWantSocket();
+                    }
+                });
             } else {
                 window.socket = null;
             }
@@ -487,7 +627,14 @@
                 btn.addEventListener('click', function(e) {
                     e.stopPropagation();
                     var code = this.getAttribute('data-lang');
-                    if (window.setLocale) window.setLocale(code);
+                    var apply = function () {
+                        if (window.setLocale) window.setLocale(code);
+                    };
+                    if (window.qsEnsureTranslations) {
+                        window.qsEnsureTranslations().then(apply).catch(apply);
+                    } else {
+                        apply();
+                    }
                     closeLangMenu();
                 });
             });

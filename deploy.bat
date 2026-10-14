@@ -6,7 +6,11 @@ setlocal EnableExtensions EnableDelayedExpansion
 :: uploader, you are prompted for infra IAM keys once, then deploy runs.
 ::
 ::   deploy.bat
-::   deploy.bat default quickscribe-site
+::   deploy.bat "commit message"
+::   deploy.bat "commit message" default quickscribe-site
+::
+:: With a commit message: stages all changes, commits, then deploys.
+:: With no message: deploys only (no commit). Does not pause at the end.
 
 set AWS_REGION=eu-north-1
 set AWS_ACCOUNT_ID=760351563015
@@ -21,8 +25,29 @@ set "AWS_ACCESS_KEY_ID="
 set "AWS_SECRET_ACCESS_KEY="
 set "AWS_SESSION_TOKEN="
 
-if not "%~1"=="" (set "ECS_CLUSTER=%~1") else if not defined ECS_CLUSTER set "ECS_CLUSTER=default"
-if not "%~2"=="" (set "ECS_SERVICE=%~2") else if not defined ECS_SERVICE set "ECS_SERVICE=quickscribe-site"
+set "COMMIT_MSG=%~1"
+if not "%~2"=="" (set "ECS_CLUSTER=%~2") else if not defined ECS_CLUSTER set "ECS_CLUSTER=default"
+if not "%~3"=="" (set "ECS_SERVICE=%~3") else if not defined ECS_SERVICE set "ECS_SERVICE=quickscribe-site"
+
+if not "%COMMIT_MSG%"=="" (
+    echo Committing with message: %COMMIT_MSG%
+    git add -A
+    if errorlevel 1 (
+        echo Error: git add failed.
+        exit /b 1
+    )
+    git diff --cached --quiet
+    if !errorlevel! == 0 (
+        echo Nothing to commit, continuing deploy...
+    ) else (
+        git commit -m "%COMMIT_MSG%"
+        if errorlevel 1 (
+            echo Error: git commit failed.
+            exit /b 1
+        )
+        echo Commit created.
+    )
+)
 
 echo Deploying %ECS_CLUSTER%/%ECS_SERVICE% in %AWS_REGION% via AWS profile [%AWS_PROFILE%]
 call :resolve_identity
@@ -122,7 +147,6 @@ echo Image %IMMUTABLE_IMAGE%
 echo Task definition %NEW_TASK_DEF%
 echo Service %ECS_CLUSTER%/%ECS_SERVICE%
 echo Monitor with: aws ecs describe-services --cluster %ECS_CLUSTER% --services %ECS_SERVICE% --profile %AWS_PROFILE% --region %AWS_REGION%
-pause
 exit /b 0
 
 :resolve_identity

@@ -39,7 +39,14 @@ Set a long random value:
 MEDICAL_BILLING_CRON_SECRET=<random-secret>
 ```
 
-Schedule one authenticated request daily:
+The shared EventBridge Lambda (`scripts/setup_cardcom_renewal_schedule.py`) posts this endpoint daily at 12:45 Asia/Jerusalem after Unlimited renewals. Redeploy the Lambda after pulling so medical is included:
+
+```text
+set AWS_PROFILE=quickscribe-ecs
+python scripts/setup_cardcom_renewal_schedule.py --apply
+```
+
+Manual / ops call:
 
 ```http
 POST https://www.getquickscribe.com/api/medical/cardcom/run-renewals
@@ -48,6 +55,8 @@ Content-Type: application/json
 
 {"limit": 50}
 ```
+
+(`X-Billing-Secret` with the same value is also accepted.)
 
 For every due account, the endpoint:
 
@@ -70,6 +79,10 @@ The partial unique index on user, payment kind, and billing-cycle start prevents
 Medical checkout now attaches a Cardcom `Document` (`TaxInvoiceAndReceipt`) and emails it to the doctor (`CARDCOM_INVOICE_EMAIL`, default on). The doctor is asked for **ת.ז. / ח.פ.** and **ישוב** before Cardcom redirect — same modal as regular credit purchases.
 
 Apply `migrations/add_medical_invoice_columns.sql` so `invoice_number` / `invoice_url` persist on `medical_subscription_payments`.
+
+Apply `migrations/add_medical_payment_failure_reason.sql` so failed renewals store Cardcom `ResponseCode` + Description on `failure_reason`.
+
+Apply `migrations/fix_medical_renewal_unique_allow_failed_retry.sql` so a failed renewal does not block the next cron retry for the same billing cycle.
 
 Ops also get the same “payment received” email as regular Cardcom purchases.
 

@@ -20,7 +20,7 @@ class RegularBillingTests(unittest.TestCase):
         annual = resolve_offer("unlimited_annual")
         one_hour = resolve_offer("pay_per_use", 1)
         two_hours = resolve_offer("pay_per_use", 2)
-        self.assertEqual(monthly["amount_ils"], 70)
+        self.assertEqual(monthly["amount_ils"], 60)
         self.assertEqual(monthly["amount_usd"], 20)
         self.assertEqual(annual["amount_ils"], 420)
         self.assertEqual(annual["amount_usd"], 120)
