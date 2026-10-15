@@ -9673,25 +9673,40 @@ async function initOpenInAppImpl(jobIdStr) {
                     ? undefined
                     : 'No `formatted` object in this file — only what you see in keys (e.g. words/captions). Export can run GPT formatting once if needed.',
             });
+            const medicalOpen = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
             if (Array.isArray(tr.words) && Array.isArray(tr.captions) && tr.words.length > 0 && tr.captions.length > 0) {
-                console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length });
-                window.currentWords = tr.words;
-                window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 54);
-                window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                segments = window.currentSegments;
+                console.log('[word-edit] open-in-app: loaded words/captions', { words: tr.words.length, captions: tr.captions.length, medicalOpen });
+                if (medicalOpen) {
+                    // Medical UI is paragraph boxes — do not chop subtitle captions into one box each.
+                    window.currentWords = null;
+                    window.currentCaptions = null;
+                    segments = Array.isArray(tr.segments) && tr.segments.length
+                        ? tr.segments
+                        : _captionsToCues(tr.words, tr.captions);
+                } else {
+                    window.currentWords = tr.words;
+                    window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, tr.captions, 54);
+                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                    segments = window.currentSegments;
+                }
             } else if (Array.isArray(tr.segments)) {
                 console.log('[word-edit] open-in-app: loaded legacy segments', { segments: tr.segments.length });
                 segments = tr.segments;
                 try {
                     console.log('[word-edit] open-in-app: legacy segment start sample', segments.slice(0, 5).map(s => s && s.start));
                 } catch (_) {}
-                const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
-                if (model) {
-                    console.log('[word-edit] open-in-app: derived words/captions from segments[*].words or word_segments', { words: model.words.length, captions: model.captions.length });
-                    window.currentWords = model.words;
-                    window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 54);
-                    window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
-                    segments = window.currentSegments;
+                if (!medicalOpen) {
+                    const model = _tryBuildWordModelFromSegmentsAndFlat(segments, tr.word_segments);
+                    if (model) {
+                        console.log('[word-edit] open-in-app: derived words/captions from segments[*].words or word_segments', { words: model.words.length, captions: model.captions.length });
+                        window.currentWords = model.words;
+                        window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, model.captions, 54);
+                        window.currentSegments = _captionsToCues(window.currentWords, window.currentCaptions);
+                        segments = window.currentSegments;
+                    }
+                } else {
+                    window.currentWords = null;
+                    window.currentCaptions = null;
                 }
             }
         } catch (_) { /* fallback to result */ }
@@ -9700,7 +9715,8 @@ async function initOpenInAppImpl(jobIdStr) {
         const { data: resultData } = await supabase.from('jobs').select('result').eq('id', resolvedJobId).eq('user_id', user.id).maybeSingle();
         const res = resultData && resultData.result && typeof resultData.result === 'object' ? resultData.result : null;
         if (res) {
-            if (Array.isArray(res.words) && Array.isArray(res.captions) && res.words.length > 0 && res.captions.length > 0) {
+            const medicalOpen = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+            if (!medicalOpen && Array.isArray(res.words) && Array.isArray(res.captions) && res.words.length > 0 && res.captions.length > 0) {
                 window.currentWords = res.words;
                 window.currentCaptions = reflowCaptionsByMaxChars(window.currentWords, res.captions, 54);
                 segments = _captionsToCues(window.currentWords, window.currentCaptions);
@@ -9717,15 +9733,18 @@ async function initOpenInAppImpl(jobIdStr) {
             }
         }
     }
+    const medicalOpenFinal = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
     const hasWordModel =
-        Array.isArray(window.currentWords) &&
-        Array.isArray(window.currentCaptions) &&
-        window.currentWords.length > 0 &&
-        window.currentCaptions.length > 0;
+        !medicalOpenFinal
+        && Array.isArray(window.currentWords)
+        && Array.isArray(window.currentCaptions)
+        && window.currentWords.length > 0
+        && window.currentCaptions.length > 0;
     if (!hasWordModel) {
         window.currentWords = null;
         window.currentCaptions = null;
-        if (segments.length && typeof splitLongSegments === 'function') {
+        // Medical: keep ASR segments as-is (one live box). Do not subtitle-split.
+        if (!medicalOpenFinal && segments.length && typeof splitLongSegments === 'function') {
             segments = splitLongSegments(segments, 40);
         }
     }
@@ -9736,17 +9755,25 @@ async function initOpenInAppImpl(jobIdStr) {
         console.log('[word-edit] open-in-app: final model', {
             hasWords: Array.isArray(window.currentWords) && window.currentWords.length > 0,
             hasCaptions: Array.isArray(window.currentCaptions) && window.currentCaptions.length > 0,
+            medical: medicalOpenFinal,
             segStartSample: segStarts,
             wordStartSample: wordStarts,
         });
     } catch (_) {}
 
-    // Medical + word model: paint summary/transcript tabs once; non-medical timing UI is built at end of open (with optional summary host).
-    if (isMedicalModeEnabled() &&
-        Array.isArray(window.currentWords) && Array.isArray(window.currentCaptions) &&
-        window.currentWords.length > 0 && window.currentCaptions.length > 0) {
+    // Medical open: paint one transcript box (live-session model), not one box per caption/line.
+    if (medicalOpenFinal && typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
         try {
-            renderTranscriptFromCues(window.currentSegments || []);
+            const fromFmt = String((window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript) || '').trim();
+            const joined = typeof qsJoinMedicalTranscriptSegments === 'function'
+                ? qsJoinMedicalTranscriptSegments(window.currentSegments)
+                : '';
+            const one = fromFmt || joined;
+            if (one) {
+                window._medicalLiveStreamText = one;
+                window._medicalUnsavedBoxes = [one];
+                qsRenderMedicalEditableTranscriptBoxes([one]);
+            }
         } catch (_) {}
     }
 
@@ -26513,14 +26540,17 @@ function renderMedicalTranscriptMainView() {
     const joined = typeof qsJoinMedicalTranscriptSegments === 'function'
         ? qsJoinMedicalTranscriptSegments(window.currentSegments)
         : '';
-    // Prefer GPT/user paragraph text (real \n\n splits). Never use the export
-    // sentence-packer — that is what turned one live box into many after save.
+    // Prefer GPT/user text, but keep a single box by default (same as live recording).
+    // Splitting clean_transcript on blank lines was turning every line into its own box
+    // when reopening from Personal Area.
     const clean = fromFmt || live || joined;
     if (clean) {
-        const paragraphs = typeof qsMedicalParagraphsFromPlainText === 'function'
-            ? qsMedicalParagraphsFromPlainText(clean)
-            : [clean];
-        qsRenderMedicalEditableTranscriptBoxes(paragraphs.length ? paragraphs : [clean]);
+        let blocks = [clean];
+        if (clean.indexOf(QS_MEDICAL_BOX_MARK) >= 0) {
+            blocks = clean.split(QS_MEDICAL_BOX_MARK).map((p) => String(p || '').trim()).filter(Boolean);
+            if (!blocks.length) blocks = [clean];
+        }
+        qsRenderMedicalEditableTranscriptBoxes(blocks);
         return;
     }
     if (typeof renderTranscriptFromCues === 'function') {
