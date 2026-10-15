@@ -7614,7 +7614,6 @@ function qsSyncUserCreditsUi() {
     const showCredits = signedIn && qsShouldShowCreditBalance();
     const minutes = Number(window.__QS_USER_CREDIT_MINUTES);
     const hasValue = Number.isFinite(minutes);
-    const payUse = Math.max(0, Math.floor(Number(window.__QS_PAY_USE_MINUTES) || 0));
     const unlimited = window.__QS_BILLING_UNLIMITED === true;
     const wallet = hasValue ? Math.max(0, Math.floor(minutes)) : 0;
     const isHe = String(document.documentElement.lang || 'he').toLowerCase().startsWith('he');
@@ -7623,12 +7622,6 @@ function qsSyncUserCreditsUi() {
     if (unlimited) {
         displayMinutes = '∞';
         title = isHe ? 'מסלול ללא הגבלה' : 'Unlimited plan';
-    } else if (payUse > 0) {
-        // Pay-per-use is a separate bucket (one file up to N minutes) — do not hide it behind free wallet.
-        displayMinutes = `${wallet} · ${payUse}`;
-        title = isHe
-            ? `ארנק: ${wallet} דק׳ · תשלום לפי שימוש: עד ${payUse} דק׳ לקובץ אחד`
-            : `Wallet: ${wallet} min · Pay-per-use: up to ${payUse} min for one file`;
     } else {
         displayMinutes = String(wallet);
         title = isHe ? `${wallet} דקות בארנק` : `${wallet} minutes in wallet`;
@@ -8327,10 +8320,15 @@ function ensureBurnProgressOverlay() {
     if (!overlay) {
         overlay = document.createElement('div');
         overlay.id = 'burn-progress-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-labelledby', 'burn-progress-text');
         overlay.innerHTML = `
             <div class="burn-progress-card">
-                <div id="burn-progress-text" class="burn-progress-text"></div>
-                <div class="burn-progress-track"><div id="burn-progress-fill" class="burn-progress-fill"></div></div>
+                <div id="burn-progress-text" class="burn-progress-text" aria-live="polite"></div>
+                <div class="burn-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="burn-progress-track">
+                    <div id="burn-progress-fill" class="burn-progress-fill"></div>
+                </div>
             </div>
         `;
         document.body.appendChild(overlay);
@@ -8339,12 +8337,29 @@ function ensureBurnProgressOverlay() {
 }
 
 function setBurnProgress(pct, text) {
-    // Center overlay progress was removed per UX request.
-    return;
+    const overlay = ensureBurnProgressOverlay();
+    const fill = document.getElementById('burn-progress-fill');
+    const track = document.getElementById('burn-progress-track');
+    const textEl = document.getElementById('burn-progress-text');
+    const n = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+    if (fill) fill.style.width = n + '%';
+    if (track) track.setAttribute('aria-valuenow', String(n));
+    if (textEl && text != null && String(text).trim() !== '') {
+        textEl.textContent = String(text);
+    }
+    overlay.style.display = 'flex';
+    overlay.setAttribute('aria-busy', n < 100 ? 'true' : 'false');
 }
 
 function hideBurnProgress() {
-    return;
+    const overlay = document.getElementById('burn-progress-overlay');
+    if (!overlay) return;
+    overlay.style.display = 'none';
+    overlay.setAttribute('aria-busy', 'false');
+    const fill = document.getElementById('burn-progress-fill');
+    const track = document.getElementById('burn-progress-track');
+    if (fill) fill.style.width = '0%';
+    if (track) track.setAttribute('aria-valuenow', '0');
 }
 
 async function toggleUserMenu() {
@@ -13455,9 +13470,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
         };
         logMovieStage('Start');
-        if (typeof showStatus === 'function') {
-            showStatus('מתחילים ליצור את הסרטון... זה עשוי לקחת כמה דקות.', false, { duration: 900000 });
-        }
+        try { if (typeof _hideToastNow === 'function') _hideToastNow(); } catch (_) {}
         const { data: { user: movieUser } } = await supabase.auth.getUser();
         if (!movieUser) {
             logMovieStage('No user – show sign-in');
@@ -13599,8 +13612,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 return;
             }
 
-            const encodingMsg = '';
-            const pContainer = document.getElementById('p-container');
+            const isHeBurn = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
+            const encodingMsg = isHeBurn
+                ? 'יוצרים את הסרטון עם הכתוביות… זה יכול לקחת כמה דקות.'
+                : 'Creating your movie with subtitles… this can take a few minutes.';
             const progressBar = document.getElementById('progress-bar-legacy');
             const statusTxt = document.getElementById('upload-status');
             let burnProgressTimer = null;
@@ -13612,13 +13627,13 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     statusTxt.innerText = '';
                     statusTxt.style.display = 'none';
                 }
-                setBurnProgress(pct, encodingMsg);
+                setBurnProgress(pct, `${encodingMsg} ${pct}%`);
                 burnProgressTimer = setInterval(() => {
-                    pct = Math.min(95, pct + Math.max(1, Math.round((95 - pct) * 0.1)));
+                    pct = Math.min(95, pct + Math.max(1, Math.round((95 - pct) * 0.08)));
                     if (mainBtn) mainBtn.innerText = creatingMovieText + ' ' + pct + '%';
                     if (progressBar) progressBar.style.width = pct + '%';
-                    setBurnProgress(pct, encodingMsg);
-                }, 1000);
+                    setBurnProgress(pct, `${encodingMsg} ${pct}%`);
+                }, 1200);
             };
             const stopBurnProgress = (completed) => {
                 if (burnProgressTimer) {
@@ -13632,13 +13647,16 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     statusTxt.style.display = 'none';
                 }
                 if (completed) {
-                    setBurnProgress(100, typeof window.t === 'function' ? window.t('movie_downloaded') : 'Movie downloaded');
-                }
-                setTimeout(() => {
+                    const doneMsg = movieT('movie_downloaded', isHeBurn ? 'הסרטון מוכן' : 'Movie ready');
+                    setBurnProgress(100, doneMsg);
+                    setTimeout(() => {
+                        hideProgressBar();
+                        hideBurnProgress();
+                    }, 900);
+                } else {
                     hideProgressBar();
                     hideBurnProgress();
-                }, completed ? 1200 : 0);
-                if (!completed) hideBurnProgress();
+                }
             };
             startBurnProgress();
             logMovieStage('Preparing segments for burn request');
@@ -13684,11 +13702,14 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             logMovieStage('POST /api/burn_subtitles_server done', {
                 status: burnRes.status,
                 tookMs: Date.now() - tBurnStart,
-                mode: burnData && burnData.mode ? burnData.mode : 'unknown'
+                mode: burnData && burnData.mode ? burnData.mode : 'unknown',
+                error: burnData && burnData.error ? burnData.error : undefined,
+                detail: burnData && burnData.detail ? burnData.detail : undefined,
+                fallback_from: burnData && burnData.fallback_from ? burnData.fallback_from : undefined,
             });
             if (!burnRes.ok) {
-                const err = burnData.error || burnRes.statusText;
-                throw new Error(err);
+                const err = [burnData.error || burnRes.statusText, burnData.detail].filter(Boolean).join(' — ');
+                throw new Error(err || 'Burn request failed');
             }
             const taskId = burnData.task_id;
             if (!taskId) throw new Error("No task_id");
@@ -13764,6 +13785,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
         } catch (e) {
             console.error(`[movie export][${_movieTs()}][+${_movieElapsed()}] Error:`, e);
+            try { hideBurnProgress(); } catch (_) {}
             if (typeof showStatus === 'function') {
                 const errMsg = String((e && e.message) || '');
                 const isDeliveryIssue = movieBurnCompleted || /save\/share dialog|save|share|delivery/i.test(errMsg);
@@ -13778,7 +13800,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 }
             }
         } finally {
-            if (!movieExportSucceeded) _hideToastNow();
+            if (!movieExportSucceeded) {
+                try { _hideToastNow(); } catch (_) {}
+                try { hideBurnProgress(); } catch (_) {}
+            }
             if (mainBtn) {
                 mainBtn.disabled = false;
                 mainBtn.innerText = (typeof window.t === 'function' ? window.t('upload_and_process') : 'Upload');

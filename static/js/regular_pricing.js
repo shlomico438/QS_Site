@@ -51,10 +51,14 @@
             return isHe ? 'המסלול ללא הגבלה הופעל.' : 'Unlimited plan is active.';
         }
         if (plan === 'pay_per_use') {
+            const added = Number(data.added_minutes || (Number(data.hours || 1) * 60) || 0);
+            if (added > 0) {
+                return isHe ? `נוספו ${added} דקות לארנק שלך.` : `${added} minutes added to your wallet.`;
+            }
             const hours = Number(data.hours || 1);
             return isHe
-                ? (hours === 1 ? 'שולם עבור קובץ של עד שעה.' : `שולם עבור קובץ של עד ${hours} שעות.`)
-                : (hours === 1 ? 'Paid for a file of up to 1 hour.' : `Paid for a file of up to ${hours} hours.`);
+                ? (hours === 1 ? 'נוספה שעה לארנק שלך.' : `נוספו ${hours} שעות לארנק שלך.`)
+                : (hours === 1 ? '1 hour added to your wallet.' : `${hours} hours added to your wallet.`);
         }
         const added = Number(data && data.added_minutes || 0);
         if (added > 0) {
@@ -387,9 +391,10 @@
             const noteEl = document.getElementById('seo-pay-hours-note');
             if (noteEl) {
                 const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');
+                const mins = next * 60;
                 noteEl.textContent = isEn
-                    ? (next === 1 ? 'Up to 1 hour file' : `Up to ${next} hours`)
-                    : (next === 1 ? 'קובץ של עד שעה' : `קובץ של עד ${next} שעות`);
+                    ? `${mins} minutes added to your balance`
+                    : `${mins} דקות נוספות ליתרה שלך`;
             }
         };
         window.qsSetPayPerUseHours = (hours) => {

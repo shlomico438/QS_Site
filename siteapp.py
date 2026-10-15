@@ -6745,6 +6745,32 @@ def _user_credits_start_free_period(user_id, existing=None):
     }, existing=existing)
 
 
+def _fold_pay_use_into_wallet(user_id, row=None):
+    """Move legacy pay_use_minutes into credit_minutes (single wallet)."""
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return row
+    row = row if isinstance(row, dict) else _user_credits_get(user_id)
+    if not row or not _user_credits_plan_columns_enabled():
+        return row
+    pay_use = int(row.get("pay_use_minutes") or 0)
+    if pay_use <= 0:
+        return row
+    balance = int(row.get("credit_minutes") or 0)
+    logging.info(
+        "fold_pay_use_into_wallet user=%s pay_use=%s balance=%s -> %s",
+        user_id[:8],
+        pay_use,
+        balance,
+        balance + pay_use,
+    )
+    return _user_credits_patch_row(
+        user_id,
+        {"credit_minutes": balance + pay_use, "pay_use_minutes": 0},
+        existing=row,
+    )
+
+
 def _credits_row_for_gate(user_id):
     """Apply period reset / legacy-exhausted transition, then return the wallet row."""
     from regular_billing import gate_action
@@ -6754,6 +6780,7 @@ def _credits_row_for_gate(user_id):
     row = _user_credits_get(user_id)
     if not row or not _user_credits_plan_columns_enabled():
         return row
+    row = _fold_pay_use_into_wallet(user_id, row) or row
     action = gate_action(row)
     if action == "start_free":
         return _user_credits_start_free_period(user_id, existing=row)
@@ -6776,8 +6803,9 @@ def _resolve_checkout_bundle(bundle_id, hours=1):
 
 
 def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0, recurring=False):
-    """Grant a checkout. Legacy bundles add minutes. New plans do not stack a wallet.
+    """Grant a checkout into the unified wallet (or activate unlimited).
 
+    Free / referral / hour packs / legacy bundles all add to credit_minutes.
     recurring=True is Cardcom ChargeAndCreateToken (and later token renewals).
     Stripe and one-time Cardcom charges leave auto-renew off.
     """
@@ -6785,7 +6813,7 @@ def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0, recurrin
     user_id = str(user_id or "").strip()
     bundle = _resolve_checkout_bundle(bundle_id, max(1, int(minutes or 0) // 60 or 1))
     plan = str((bundle or {}).get("plan") or "legacy_bundle")
-    existing = _user_credits_get(user_id)
+    existing = _fold_pay_use_into_wallet(user_id, _user_credits_get(user_id))
     if plan in ("unlimited_monthly", "unlimited_annual"):
         days = int((bundle or {}).get("period_days") or 30)
         current_end = None
@@ -6811,15 +6839,21 @@ def _user_credits_apply_purchased_bundle(user_id, bundle_id, minutes=0, recurrin
     if plan == "pay_per_use":
         bought = int((bundle or {}).get("credit_minutes") or minutes or 60)
         bought = max(60, bought)
-        row = _user_credits_patch_row(user_id, {
-            "pay_use_minutes": bought,
-            "welcome_granted": True,
-        }, existing=existing)
-        return row, {"plan": plan, "added_minutes": 0, "hours": bought // 60}
+        row = _user_credits_add_minutes(user_id, bought)
+        if _user_credits_plan_columns_enabled():
+            try:
+                row = _user_credits_patch_row(
+                    user_id,
+                    {"pay_use_minutes": 0, "welcome_granted": True},
+                    existing=row,
+                ) or row
+            except Exception:
+                logging.warning("pay_per_use wallet mark failed user=%s", user_id[:8], exc_info=True)
+        return row, {"plan": plan, "added_minutes": bought, "hours": bought // 60}
     row = _user_credits_add_minutes(user_id, int(minutes or 0))
     if _user_credits_plan_columns_enabled():
         try:
-            row = _user_credits_patch_row(user_id, {"billing_plan": "legacy"}, existing=row) or row
+            row = _user_credits_patch_row(user_id, {"billing_plan": "legacy", "pay_use_minutes": 0}, existing=row) or row
         except Exception:
             logging.warning("legacy bundle plan mark failed user=%s", user_id[:8], exc_info=True)
     return row, {"plan": "legacy_bundle", "added_minutes": int(minutes or 0), "hours": 0}
@@ -7638,9 +7672,7 @@ def _wallet_minutes_for_credit_check(user_id):
     wallet = _credits_row_for_gate(uid)
     if unlimited_is_active(wallet):
         return 10 ** 9
-    balance = int((wallet or {}).get('credit_minutes') or 0)
-    pay_use = int((wallet or {}).get('pay_use_minutes') or 0)
-    return max(balance, pay_use)
+    return int((wallet or {}).get('credit_minutes') or 0)
 
 
 def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
@@ -7671,29 +7703,6 @@ def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
         from regular_billing import coverage_for_minutes
         gated = _credits_row_for_gate(user_id)
         covered = coverage_for_minutes(gated, minutes)
-        if covered.get("error") == "pay_per_use_short":
-            required_hours = int(covered.get("required_hours") or 1)
-            if prefer_hebrew:
-                msg = (
-                    f"הקובץ דורש {required_hours} שעות בתשלום לפי שימוש. "
-                    f"הגדל את מספר השעות (9₪ לשעה) ושלם שוב לפני התמלול."
-                )
-            else:
-                msg = (
-                    f"This file needs {required_hours} pay-per-use hours. "
-                    f"Increase the hours and pay again before transcribing."
-                )
-            return {
-                "ok": False,
-                "error": "pay_per_use_short",
-                "message": msg,
-                "http_status": 402,
-                "credit_minutes": int(covered.get("credit_minutes") or 0),
-                "required_minutes": minutes,
-                "required_hours": required_hours,
-                "pay_use_minutes": int(covered.get("pay_use_minutes") or 0),
-                "file_duration_seconds": duration_sec,
-            }
         if covered.get("ok"):
             return {
                 "ok": True,
@@ -7703,7 +7712,7 @@ def _check_credits_for_duration(user_id, duration_sec, prefer_hebrew=True):
                 "guest_trial": False,
                 "billing_source": covered.get("source"),
                 "unlimited": covered.get("source") == "unlimited",
-                "pay_use_minutes": int((gated or {}).get("pay_use_minutes") or 0),
+                "pay_use_minutes": 0,
             }
     balance = _wallet_minutes_for_credit_check(user_id)
     if balance is None:
@@ -8046,39 +8055,18 @@ def _charge_job_credits(user_id, runpod_job_id, segments, input_s3_key, result=N
             duration_sec,
             covered.get("error"),
         )
-        if covered.get("error") == "pay_per_use_short":
-            required_hours = int(covered.get("required_hours") or 1)
-            msg = (
-                f"הקובץ דורש {required_hours} שעות בתשלום לפי שימוש. "
-                f"הגדל את מספר השעות (9₪ לשעה) ושלם שוב לפני התמלול."
-                if prefer_he else
-                f"This file needs {required_hours} pay-per-use hours. "
-                f"Increase the hours and pay again before transcribing."
-            )
-            return {
-                "ok": False,
-                "error": "pay_per_use_short",
-                "message": msg,
-                "credit_minutes": balance,
-                "required_minutes": minutes,
-                "required_hours": required_hours,
-                "credit_minutes_used": 0,
-                "file_duration_seconds": duration_sec,
-            }
         return {
             "ok": False,
             "error": "insufficient_credits",
             "message": _credits_insufficient_message(balance, minutes, duration_sec, prefer_he),
             "credit_minutes": balance,
             "required_minutes": minutes,
+            "required_hours": int(covered.get("required_hours") or 0) or None,
             "credit_minutes_used": 0,
             "file_duration_seconds": duration_sec,
         }
 
-    if covered.get("source") == "pay_use":
-        wallet = _user_credits_patch_row(user_id, {"pay_use_minutes": 0}, existing=wallet)
-        balance = int((wallet or {}).get('credit_minutes') or 0)
-    elif covered.get("source") == "unlimited":
+    if covered.get("source") == "unlimited":
         balance = int((wallet or {}).get('credit_minutes') or 0)
     else:
         wallet = _user_credits_deduct_minutes(user_id, minutes)
@@ -9921,6 +9909,7 @@ def api_user_credits_ensure_welcome():
         existing = _user_credits_get(user_id)
         already_welcomed = bool(existing and existing.get('welcome_granted'))
         row = _user_credits_ensure_welcome(user_id, user_name=user_name)
+        row = _fold_pay_use_into_wallet(user_id, row) or row
         # Always attempt ops registration email for recent signups.
         # Welcome minutes are often already granted by the auth.users DB trigger
         # (on_auth_user_created_welcome_credits) before this endpoint runs — so we
@@ -19369,11 +19358,12 @@ def _queue_burn_task_on_ecs(task_id, input_s3_key, segments, user_id, callback_u
         subtitle_color=subtitle_color,
     )
 
-    region = (
+    # Production sets AWS_REGION=auto for R2 — never pass that to ECS.
+    region = _sanitize_aws_region(
         (os.environ.get('BURN_ECS_REGION') or '').strip()
-        or (os.environ.get('AWS_REGION') or '').strip()
         or (os.environ.get('AWS_DEFAULT_REGION') or '').strip()
-        or 'eu-north-1'
+        or (os.environ.get('AWS_REGION') or '').strip(),
+        'eu-north-1',
     )
     cluster = _burn_ecs_cluster()
     container_name = _burn_ecs_container_name()
@@ -19409,12 +19399,9 @@ def _queue_burn_task_on_ecs(task_id, input_s3_key, segments, user_id, callback_u
                 ],
             }],
         },
+        # Avoid request tags: ecs:TagResource edge cases can fail RunTask even when
+        # RunTask/PassRole are allowed. Identify jobs via startedBy + CloudWatch.
         'startedBy': f'qs-burn-{str(task_id)[:24]}',
-        'propagateTags': 'TASK_DEFINITION',
-        'tags': [
-            {'key': 'quickscribe:task', 'value': 'burn_subtitles'},
-            {'key': 'quickscribe:task_id', 'value': str(task_id)[:128]},
-        ],
     }
     max_attempts = int((os.environ.get('BURN_ECS_DISPATCH_RETRIES') or '4').strip() or 4)
     backoff_sec = float((os.environ.get('BURN_ECS_DISPATCH_BACKOFF_SEC') or '1.5').strip() or 1.5)
@@ -19482,11 +19469,11 @@ def _queue_burn_task_on_lambda(task_id, input_s3_key, segments, user_id, callbac
         subtitle_color=subtitle_color,
     )
 
-    region = (
+    region = _sanitize_aws_region(
         (os.environ.get('BURN_LAMBDA_REGION') or '').strip()
-        or (os.environ.get('AWS_REGION') or '').strip()
         or (os.environ.get('AWS_DEFAULT_REGION') or '').strip()
-        or 'eu-north-1'
+        or (os.environ.get('AWS_REGION') or '').strip(),
+        'eu-north-1',
     )
     import boto3
     lam = boto3.client('lambda', region_name=region)
@@ -19729,55 +19716,75 @@ def burn_subtitles_server():
         })
 
         engine = _burn_engine(force_local=force_local_burn)
-        if engine in ('ecs', 'runpod', 'lambda'):
+        # Prefer chosen engine, then fall through on dispatch failure (e.g. missing ecs:RunTask).
+        engine_order = []
+        if engine and engine != 'none':
+            engine_order.append(engine)
+        for candidate in ('ecs', 'runpod', 'lambda'):
+            if candidate not in engine_order:
+                if candidate == 'ecs' and _burn_ecs_configured():
+                    engine_order.append(candidate)
+                elif candidate == 'runpod' and _burn_use_runpod(force_local=False):
+                    engine_order.append(candidate)
+                elif candidate == 'lambda' and _burn_lambda_function_name():
+                    engine_order.append(candidate)
+
+        if engine_order:
             public_base = _burn_callback_base(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"
-            if engine == 'ecs':
-                queue_fn = _queue_burn_task_on_ecs
-            elif engine == 'lambda':
-                queue_fn = _queue_burn_task_on_lambda
-            else:
-                queue_fn = _queue_burn_task_on_runpod
-            try:
-                queue_fn(
-                    task_id=task_id,
-                    input_s3_key=input_s3_key,
-                    segments=segments,
-                    user_id=user_id,
-                    callback_url=callback_url,
-                    subtitle_style=subtitle_style,
-                    is_portrait=is_portrait,
-                    notify_email=notify_email,
-                    job_id=job_id,
-                    subtitle_color=subtitle_color
-                )
-                payload = {
-                    "task_id": task_id,
-                    "status": "processing",
-                    "mode": engine,
-                }
-                if engine == 'ecs':
-                    payload["ecs_task_definition"] = _burn_ecs_task_definition()
-                elif engine == 'lambda':
-                    payload["lambda_function"] = _burn_lambda_function_name()
+            last_dispatch_err = None
+            for try_engine in engine_order:
+                if try_engine == 'ecs':
+                    queue_fn = _queue_burn_task_on_ecs
+                elif try_engine == 'lambda':
+                    queue_fn = _queue_burn_task_on_lambda
                 else:
-                    payload["endpoint_id"] = _runpod_burn_endpoint_id()
-                return jsonify(payload), 202
-            except Exception as e:
-                logging.warning("%s burn dispatch failed: %s", engine, e)
-                if not _burn_allow_local_fallback():
-                    _save_burn_task(task_id, {
-                        'status': 'failed',
-                        'mode': engine,
-                        'error': f'{engine} dispatch failed: {e}',
-                    })
-                    return jsonify({
+                    queue_fn = _queue_burn_task_on_runpod
+                try:
+                    queue_fn(
+                        task_id=task_id,
+                        input_s3_key=input_s3_key,
+                        segments=segments,
+                        user_id=user_id,
+                        callback_url=callback_url,
+                        subtitle_style=subtitle_style,
+                        is_portrait=is_portrait,
+                        notify_email=notify_email,
+                        job_id=job_id,
+                        subtitle_color=subtitle_color
+                    )
+                    payload = {
                         "task_id": task_id,
-                        "status": "failed",
-                        "mode": engine,
-                        "error": f"{engine} burn dispatch failed",
-                        "detail": str(e)[:500],
-                    }), 503
+                        "status": "processing",
+                        "mode": try_engine,
+                    }
+                    if try_engine == 'ecs':
+                        payload["ecs_task_definition"] = _burn_ecs_task_definition()
+                    elif try_engine == 'lambda':
+                        payload["lambda_function"] = _burn_lambda_function_name()
+                    else:
+                        payload["endpoint_id"] = _runpod_burn_endpoint_id()
+                    if last_dispatch_err:
+                        payload["fallback_from"] = engine
+                        payload["fallback_detail"] = str(last_dispatch_err)[:300]
+                    return jsonify(payload), 202
+                except Exception as e:
+                    last_dispatch_err = e
+                    logging.warning("%s burn dispatch failed: %s", try_engine, e)
+                    continue
+            if not _burn_allow_local_fallback():
+                _save_burn_task(task_id, {
+                    'status': 'failed',
+                    'mode': engine,
+                    'error': f'{engine} dispatch failed: {last_dispatch_err}',
+                })
+                return jsonify({
+                    "task_id": task_id,
+                    "status": "failed",
+                    "mode": engine,
+                    "error": f"{engine} burn dispatch failed",
+                    "detail": str(last_dispatch_err)[:500] if last_dispatch_err else None,
+                }), 503
 
         if not _burn_allow_local_fallback():
             _save_burn_task(task_id, {

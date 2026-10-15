@@ -81,21 +81,23 @@ class RegularBillingTests(unittest.TestCase):
         past_due = dict(expired_empty, unlimited_renew="past_due")
         self.assertEqual(gate_action(past_due, now=NOW), "start_free")
 
-    def test_pay_per_use_covers_one_short_file_and_asks_for_more_hours(self):
-        row = {"billing_plan": "free", "credit_minutes": 0, "pay_use_minutes": 60}
+    def test_unified_wallet_covers_files_from_credit_minutes_only(self):
+        row = {"billing_plan": "legacy", "credit_minutes": 60}
         short = coverage_for_minutes(row, 4, now=NOW)
         self.assertTrue(short["ok"])
-        self.assertEqual(short["source"], "pay_use")
+        self.assertEqual(short["source"], "wallet")
         long = coverage_for_minutes(row, 90, now=NOW)
         self.assertFalse(long["ok"])
-        self.assertEqual(long["error"], "pay_per_use_short")
+        self.assertEqual(long["error"], "insufficient_credits")
         self.assertEqual(long["required_hours"], 2)
 
-    def test_wallet_is_used_before_a_pay_per_use_purchase(self):
+    def test_legacy_pay_use_field_is_ignored_for_coverage(self):
+        """Leftover pay_use_minutes must be folded into credit_minutes by Site; coverage ignores it."""
         row = {"billing_plan": "legacy", "credit_minutes": 20, "pay_use_minutes": 60}
         self.assertEqual(coverage_for_minutes(row, 10, now=NOW)["source"], "wallet")
         overflow = coverage_for_minutes(row, 40, now=NOW)
-        self.assertEqual(overflow["source"], "pay_use")
+        self.assertFalse(overflow["ok"])
+        self.assertEqual(overflow["error"], "insufficient_credits")
 
 
 if __name__ == "__main__":

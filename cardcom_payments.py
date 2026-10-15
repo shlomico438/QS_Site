@@ -493,9 +493,10 @@ def _cardcom_invoice_line_description(bundle: dict, is_he: bool) -> str:
         return 'מנוי QuickScribe Unlimited — שנתי' if is_he else 'QuickScribe Unlimited — annual'
     if plan == 'pay_per_use':
         hours = int((bundle or {}).get('hours') or 0) or max(1, int((bundle or {}).get('credit_minutes') or 0) // 60)
+        minutes = int((bundle or {}).get('credit_minutes') or hours * 60)
         if is_he:
-            return f'QuickScribe תשלום לפי שימוש — {hours} שעות'
-        return f'QuickScribe pay-per-use — {hours} hours'
+            return f'QuickScribe קרדיט תמלול — {minutes} דקות ({hours} שעות)'
+        return f'QuickScribe transcription credit — {minutes} minutes ({hours} hours)'
     minutes = int(bundle.get('credit_minutes') or 0)
     if is_he:
         return f'חבילת קרדיט QuickScribe — {minutes} דקות תמלול'

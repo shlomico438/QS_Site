@@ -2336,41 +2336,44 @@ body.medical-onboarding-pending .main-app-container {
     margin-top: 12px;
 }
 
-/* Burn video progress overlay */
+/* Burn video progress overlay (replaces long-lived toast during movie export) */
 #burn-progress-overlay {
     position: fixed;
     inset: 0;
     display: none;
     align-items: center;
     justify-content: center;
-    background: rgba(15, 23, 42, 0.3);
+    background: rgba(15, 23, 42, 0.45);
     z-index: 11000;
+    padding: 16px;
 }
 .burn-progress-card {
-    width: min(520px, 92vw);
-    background: #fff;
-    border-radius: 14px;
-    box-shadow: 0 20px 48px rgba(15, 23, 42, 0.2);
-    padding: 16px 18px;
+    width: min(420px, 92vw);
+    background: #0f172a;
+    color: #f8fafc;
+    border-radius: 12px;
+    box-shadow: 0 16px 40px rgba(15, 23, 42, 0.35);
+    padding: 18px 20px;
 }
 .burn-progress-text {
     font-size: 0.95rem;
-    color: #111827;
-    margin-bottom: 10px;
+    line-height: 1.4;
+    color: #f8fafc;
+    margin-bottom: 12px;
 }
 .burn-progress-track {
     width: 100%;
-    height: 10px;
-    border-radius: 999px;
-    background: #e5e7eb;
+    height: 12px;
+    border-radius: 6px;
+    background: rgba(248, 250, 252, 0.15);
     overflow: hidden;
 }
 .burn-progress-fill {
     width: 0%;
     height: 100%;
     border-radius: inherit;
-    background: linear-gradient(90deg, #2563eb, #60a5fa);
-    transition: width 300ms ease;
+    background: #38bdf8;
+    transition: width 400ms ease;
 }
 
 .app-mode {

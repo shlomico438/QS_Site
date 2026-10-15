@@ -2,9 +2,11 @@
 
 Existing prepaid wallets stay on the legacy balance until it reaches zero.
 New accounts use a recurring 30-minute free month. Paid unlimited access
-expires with the billing period. Pay-per-use is one file: leftover minutes
-from that purchase are dropped after the file, and a file longer than the
-purchased hours must be covered by buying more hours.
+expires with the billing period.
+
+All minute grants (free month, referral, hour packs / pay-per-use) live in
+credit_minutes and deduct from that single wallet. pay_use_minutes is legacy
+only and should be folded into the wallet by the Site.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -116,10 +118,10 @@ def unlimited_is_active(row, now=None):
 
 
 def coverage_for_minutes(row, minutes, now=None):
-    """Decide how a file is billed.
+    """Decide how a file is billed from the unified wallet.
 
-    Returns a dict with ok, source (unlimited|wallet|pay_use), and on failure
-    error of insufficient_credits or pay_per_use_short plus required_hours.
+    Returns ok + source (unlimited|wallet), or insufficient_credits with
+    required_minutes / required_hours (for “buy more hours” UX).
     """
     try:
         minutes = int(minutes or 0)
@@ -129,36 +131,18 @@ def coverage_for_minutes(row, minutes, now=None):
     if unlimited_is_active(row, now=now):
         return {"ok": True, "source": "unlimited", "credit_minutes": int(row.get("credit_minutes") or 0)}
     balance = int(row.get("credit_minutes") or 0)
-    pay_use = int(row.get("pay_use_minutes") or 0)
     if balance >= minutes:
         return {
             "ok": True,
             "source": "wallet",
             "credit_minutes": balance,
-            "pay_use_minutes": pay_use,
-        }
-    if pay_use >= minutes and minutes > 0:
-        return {
-            "ok": True,
-            "source": "pay_use",
-            "credit_minutes": balance,
-            "pay_use_minutes": pay_use,
-        }
-    if pay_use > 0:
-        return {
-            "ok": False,
-            "error": "pay_per_use_short",
-            "credit_minutes": balance,
-            "pay_use_minutes": pay_use,
-            "required_minutes": minutes,
-            "required_hours": hours_for_minutes(minutes),
         }
     return {
         "ok": False,
         "error": "insufficient_credits",
         "credit_minutes": balance,
-        "pay_use_minutes": pay_use,
         "required_minutes": minutes,
+        "required_hours": hours_for_minutes(minutes),
     }
 
 
