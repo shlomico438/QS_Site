@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 class MergeBurnInfoTests(unittest.TestCase):
@@ -123,31 +123,123 @@ class BurnCallbackBaseTests(unittest.TestCase):
 
 
 class BurnEngineTests(unittest.TestCase):
-    def test_prefers_lambda_over_runpod(self):
+    def test_prefers_ecs_over_runpod_and_lambda(self):
         import siteapp
 
         with patch.object(siteapp, "SIMULATION_MODE", False), patch.dict(
             "os.environ",
             {
+                "BURN_ECS_TASK_DEFINITION": "quickscribe-burn-subtitles",
+                "BURN_ECS_SUBNETS": "subnet-aaa",
                 "BURN_LAMBDA_FUNCTION_NAME": "quickscribe-burn-subtitles",
                 "RUNPOD_API_KEY": "k",
                 "RUNPOD_CPU_ENDPOINT_ID": "cpu-ep",
             },
             clear=False,
         ):
-            self.assertEqual(siteapp._burn_engine(), "lambda")
+            self.assertEqual(siteapp._burn_engine(), "ecs")
 
-    def test_falls_back_to_runpod_without_lambda(self):
+    def test_falls_back_to_runpod_without_ecs(self):
         import siteapp
 
         with patch.object(siteapp, "SIMULATION_MODE", False), patch.object(
             siteapp, "RUNPOD_API_KEY", "k"
         ), patch.object(siteapp, "RUNPOD_CPU_ENDPOINT_ID", "cpu-ep"), patch.dict(
             "os.environ",
-            {"BURN_LAMBDA_FUNCTION_NAME": "", "BURN_LAMBDA_FUNCTION_ARN": ""},
+            {
+                "BURN_ECS_TASK_DEFINITION": "",
+                "BURN_ECS_SUBNETS": "",
+                "BURN_LAMBDA_FUNCTION_NAME": "",
+                "BURN_LAMBDA_FUNCTION_ARN": "",
+            },
             clear=False,
         ):
             self.assertEqual(siteapp._burn_engine(), "runpod")
+
+    def test_falls_back_to_lambda_without_ecs_or_runpod(self):
+        import siteapp
+
+        with patch.object(siteapp, "SIMULATION_MODE", False), patch.object(
+            siteapp, "RUNPOD_API_KEY", ""
+        ), patch.dict(
+            "os.environ",
+            {
+                "BURN_ECS_TASK_DEFINITION": "",
+                "BURN_ECS_SUBNETS": "",
+                "BURN_LAMBDA_FUNCTION_NAME": "quickscribe-burn-subtitles",
+                "RUNPOD_API_KEY": "",
+                "RUNPOD_CPU_ENDPOINT_ID": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(siteapp._burn_engine(), "lambda")
+
+
+class QueueBurnTaskOnEcsTests(unittest.TestCase):
+    def test_run_task_receives_burn_payload_env(self):
+        import siteapp
+
+        fake_ecs = MagicMock()
+        fake_ecs.run_task.return_value = {
+            "tasks": [{"taskArn": "arn:aws:ecs:eu-north-1:123:task/default/abc"}],
+            "failures": [],
+        }
+        worker_input = {
+            "task": "burn_subtitles",
+            "task_id": "t1",
+            "input_video_url": "https://example/v",
+            "input_srt_url": "https://example/s",
+            "output_upload_url": "https://example/o",
+            "output_s3_key": "users/u/output/v.mp4",
+            "callback_url": "https://site/api/burn_subtitles_callback",
+        }
+        meta = {
+            "subtitle_format": "ass",
+            "output_s3_key": "users/u/output/v.mp4",
+            "bucket": "qs-bucket",
+            "user_id": "u",
+            "started_at": 1.0,
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "BURN_ECS_CLUSTER": "default",
+                "BURN_ECS_TASK_DEFINITION": "quickscribe-burn-subtitles",
+                "BURN_ECS_SUBNETS": "subnet-a,subnet-b",
+                "BURN_ECS_SECURITY_GROUPS": "sg-1",
+                "BURN_ECS_ASSIGN_PUBLIC_IP": "ENABLED",
+                "BURN_ECS_CONTAINER_NAME": "burn",
+                "AWS_REGION": "eu-north-1",
+            },
+            clear=False,
+        ), patch.object(
+            siteapp, "_prepare_burn_worker_input", return_value=(worker_input, meta)
+        ), patch.object(siteapp, "_save_burn_task"), patch(
+            "boto3.client", return_value=fake_ecs
+        ), patch.object(siteapp.threading, "Thread"):
+            siteapp._queue_burn_task_on_ecs(
+                task_id="t1",
+                input_s3_key="users/u/input/v.mp4",
+                segments=[{"text": "hi"}],
+                user_id="u",
+                callback_url="https://site/api/burn_subtitles_callback",
+            )
+
+        kwargs = fake_ecs.run_task.call_args.kwargs
+        self.assertEqual(kwargs["cluster"], "default")
+        self.assertEqual(kwargs["taskDefinition"], "quickscribe-burn-subtitles")
+        self.assertEqual(kwargs["launchType"], "FARGATE")
+        awsvpc = kwargs["networkConfiguration"]["awsvpcConfiguration"]
+        self.assertEqual(awsvpc["subnets"], ["subnet-a", "subnet-b"])
+        self.assertEqual(awsvpc["securityGroups"], ["sg-1"])
+        env = {
+            e["name"]: e["value"]
+            for e in kwargs["overrides"]["containerOverrides"][0]["environment"]
+        }
+        self.assertIn("BURN_TASK_JSON", env)
+        self.assertEqual(env["BURN_ENGINE"], "ecs")
+        self.assertIn('"task_id":"t1"', env["BURN_TASK_JSON"])
+
 
 if __name__ == "__main__":
     unittest.main()

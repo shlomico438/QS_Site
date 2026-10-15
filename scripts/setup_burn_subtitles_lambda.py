@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Create/update the QuickScribe movie burn Lambda (container image + ffmpeg).
+"""LEGACY: Create/update the QuickScribe movie burn Lambda.
+
+Prefer ECS Fargate instead:
+  python scripts/setup_burn_subtitles_ecs.py --apply
+  See docs/burn-subtitles-ecs.md
 
 Default is dry-run. Apply with:
-  set AWS_PROFILE=quickscribe-ecs
-  python scripts/setup_burn_subtitles_lambda.py --apply
-
-Then set on the Site ECS task:
-  BURN_LAMBDA_FUNCTION_NAME=quickscribe-burn-subtitles
-  ENABLE_AUDIO_PREPROCESSING=false
-
-You can then remove RUNPOD_CPU_ENDPOINT_ID / RUNPOD_MOVIE_ENDPOINT_ID if unused.
-The ECS task role needs lambda:InvokeFunction on this function.
+  set AWS_PROFILE=quickscribeAdmin
+  python scripts/setup_burn_subtitles_lambda.py --apply --role-arn arn:aws:iam::760351563015:role/service-role/cardcom-renewal-role-yqaf5p6g
 """
 from __future__ import annotations
 
@@ -52,7 +49,10 @@ def _account_id(sts) -> str:
     return str(sts.get_caller_identity()["Account"])
 
 
-def _ensure_role(iam, account: str) -> str:
+def _ensure_role(iam, account: str, role_arn_override: str = "") -> str:
+    if role_arn_override:
+        log(f"Using existing IAM role: {role_arn_override}")
+        return role_arn_override
     role_arn = f"arn:aws:iam::{account}:role/{ROLE_NAME}"
     trust = {
         "Version": "2012-10-17",
@@ -67,16 +67,43 @@ def _ensure_role(iam, account: str) -> str:
         log(f"IAM role exists: {ROLE_NAME}")
     except iam.exceptions.NoSuchEntityException:
         log(f"Creating IAM role {ROLE_NAME}")
-        iam.create_role(
-            RoleName=ROLE_NAME,
-            AssumeRolePolicyDocument=json.dumps(trust),
-            Description="QuickScribe subtitle burn Lambda",
-        )
+        try:
+            iam.create_role(
+                RoleName=ROLE_NAME,
+                AssumeRolePolicyDocument=json.dumps(trust),
+                Description="QuickScribe subtitle burn Lambda",
+            )
+        except Exception as exc:
+            raise SystemExit(
+                "Cannot create IAM role with this AWS profile (none of the local "
+                "CLI profiles have iam:CreateRole).\n"
+                "Skip IAM by reusing the existing Cardcom Lambda role:\n"
+                "  set AWS_PROFILE=quickscribeAdmin\n"
+                "  python scripts/setup_burn_subtitles_lambda.py --apply "
+                "--role-arn arn:aws:iam::760351563015:role/service-role/cardcom-renewal-role-yqaf5p6g\n"
+                f"Detail: {exc}"
+            ) from exc
         time.sleep(8)
-    iam.attach_role_policy(
-        RoleName=ROLE_NAME,
-        PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
-    )
+    except Exception as exc:
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation") or "AccessDenied" in str(exc):
+            raise SystemExit(
+                "This AWS profile cannot call iam:GetRole/CreateRole.\n"
+                "Note: profile 'quickscribeAdmin' is QuickScribe_Koyeb_Uploader "
+                "(ECR/Lambda OK, no IAM). Reuse the Cardcom role instead:\n"
+                "  set AWS_PROFILE=quickscribeAdmin\n"
+                "  python scripts/setup_burn_subtitles_lambda.py --apply "
+                "--role-arn arn:aws:iam::760351563015:role/service-role/cardcom-renewal-role-yqaf5p6g\n"
+                f"Detail: {exc}"
+            ) from exc
+        raise
+    try:
+        iam.attach_role_policy(
+            RoleName=ROLE_NAME,
+            PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+        )
+    except Exception as exc:
+        log(f"Note: could not attach basic execution policy ({exc})")
     return role_arn
 
 
@@ -86,7 +113,22 @@ def _ensure_repo(ecr, repo: str) -> str:
         log(f"ECR repo exists: {repo}")
     except ecr.exceptions.RepositoryNotFoundException:
         log(f"Creating ECR repo {repo}")
-        ecr.create_repository(repositoryName=repo, imageScanningConfiguration={"scanOnPush": True})
+        try:
+            ecr.create_repository(repositoryName=repo, imageScanningConfiguration={"scanOnPush": True})
+        except Exception as exc:
+            raise SystemExit(
+                f"Cannot create ECR repo '{repo}' with this AWS profile.\n"
+                "Use AWS_PROFILE=quickscribeAdmin, or create the repo in the console first, then re-run.\n"
+                f"Detail: {exc}"
+            ) from exc
+    except Exception as exc:
+        if "AccessDenied" in str(exc):
+            raise SystemExit(
+                f"Cannot access ECR repo '{repo}' with this AWS profile.\n"
+                "Use: set AWS_PROFILE=quickscribeAdmin\n"
+                f"Detail: {exc}"
+            ) from exc
+        raise
     return ecr.describe_repositories(repositoryNames=[repo])["repositories"][0]["repositoryUri"]
 
 
@@ -127,6 +169,29 @@ def _build_and_push(repo_uri: str, tag: str) -> str:
     return image
 
 
+def _lambda_access_denied_exit(name: str, role_arn: str, image_uri: str, exc: Exception) -> None:
+    raise SystemExit(
+        "This AWS profile cannot create/update Lambda "
+        f"(QuickScribe_Koyeb_Uploader / quickscribe-ecs lack lambda:CreateFunction).\n"
+        "Image is already in ECR. Create the function once in the AWS Console "
+        f"(eu-north-1), then re-run this script to update code:\n"
+        f"  Name:          {name}\n"
+        f"  Package type:  Container image\n"
+        f"  Image URI:     {image_uri}\n"
+        f"  Role:          {role_arn}\n"
+        f"  Timeout:       {TIMEOUT_SEC}s\n"
+        f"  Memory:        {MEMORY_MB} MB\n"
+        f"  Ephemeral:     {EPHEMERAL_MB} MB\n"
+        "  Architecture:  x86_64\n"
+        "  Env: FFMPEG_PATH=/opt/bin/ffmpeg\n"
+        "       BURN_FONTS_DIR=/opt/fonts\n"
+        "       BURN_FFMPEG_TIMEOUT_SEC=840\n"
+        "Console: https://eu-north-1.console.aws.amazon.com/lambda/home"
+        f"?region=eu-north-1#/create/function\n"
+        f"Detail: {exc}"
+    )
+
+
 def _ensure_function(lam, *, name: str, role_arn: str, image_uri: str) -> str:
     env = {
         "Variables": {
@@ -137,22 +202,38 @@ def _ensure_function(lam, *, name: str, role_arn: str, image_uri: str) -> str:
     }
     try:
         current = lam.get_function(FunctionName=name)
-        log(f"Updating Lambda code/config: {name}")
-        lam.update_function_code(FunctionName=name, ImageUri=image_uri, Publish=True)
-        waiter = lam.get_waiter("function_updated_v2")
-        waiter.wait(FunctionName=name)
-        lam.update_function_configuration(
-            FunctionName=name,
-            Role=role_arn,
-            Timeout=TIMEOUT_SEC,
-            MemorySize=MEMORY_MB,
-            EphemeralStorage={"Size": EPHEMERAL_MB},
-            Environment=env,
-        )
-        waiter.wait(FunctionName=name)
-        return current["Configuration"]["FunctionArn"]
     except lam.exceptions.ResourceNotFoundException:
-        log(f"Creating Lambda {name}")
+        current = None
+    except Exception as exc:
+        if "AccessDenied" in str(exc):
+            # Try create anyway; some keys can create but not GetFunction.
+            current = None
+        else:
+            raise
+
+    if current is not None:
+        log(f"Updating Lambda code/config: {name}")
+        try:
+            lam.update_function_code(FunctionName=name, ImageUri=image_uri, Publish=True)
+            waiter = lam.get_waiter("function_updated_v2")
+            waiter.wait(FunctionName=name)
+            lam.update_function_configuration(
+                FunctionName=name,
+                Role=role_arn,
+                Timeout=TIMEOUT_SEC,
+                MemorySize=MEMORY_MB,
+                EphemeralStorage={"Size": EPHEMERAL_MB},
+                Environment=env,
+            )
+            waiter.wait(FunctionName=name)
+            return current["Configuration"]["FunctionArn"]
+        except Exception as exc:
+            if "AccessDenied" in str(exc):
+                _lambda_access_denied_exit(name, role_arn, image_uri, exc)
+            raise
+
+    log(f"Creating Lambda {name}")
+    try:
         created = lam.create_function(
             FunctionName=name,
             PackageType="Image",
@@ -167,6 +248,10 @@ def _ensure_function(lam, *, name: str, role_arn: str, image_uri: str) -> str:
         waiter = lam.get_waiter("function_active_v2")
         waiter.wait(FunctionName=name)
         return created["FunctionArn"]
+    except Exception as exc:
+        if "AccessDenied" in str(exc):
+            _lambda_access_denied_exit(name, role_arn, image_uri, exc)
+        raise
 
 
 def _print_site_env(function_name: str, function_arn: str) -> None:
@@ -199,6 +284,11 @@ def main() -> None:
     parser.add_argument("--function-name", default=FUNCTION_NAME)
     parser.add_argument("--repo-name", default=REPO_NAME)
     parser.add_argument("--tag", default=None, help="Image tag (default: timestamp)")
+    parser.add_argument(
+        "--role-arn",
+        default=(os.environ.get("BURN_LAMBDA_ROLE_ARN") or "").strip(),
+        help="Existing Lambda execution role ARN (skips iam:GetRole/CreateRole)",
+    )
     args = parser.parse_args()
 
     if not args.apply:
@@ -206,6 +296,7 @@ def main() -> None:
         log(f"Dockerfile: {DOCKERFILE}")
         log(f"Function: {args.function_name}")
         log(f"ECR repo: {args.repo_name}")
+        log("Tip: quickscribe-ecs cannot manage IAM/ECR create — use AWS_PROFILE=quickscribeAdmin")
         return
 
     session = _session(args.region)
@@ -216,7 +307,7 @@ def main() -> None:
 
     account = _account_id(sts)
     log(f"AWS account={account} region={args.region}")
-    role_arn = _ensure_role(iam, account)
+    role_arn = _ensure_role(iam, account, role_arn_override=args.role_arn)
     repo_uri = _ensure_repo(ecr, args.repo_name)
     _docker_login(ecr, args.region, repo_uri)
     tag = (args.tag or time.strftime("%Y%m%d-%H%M%S")).strip()

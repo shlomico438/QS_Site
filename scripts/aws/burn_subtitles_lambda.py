@@ -1,4 +1,4 @@
-"""AWS Lambda: burn ASS/SRT subtitles into a video via ffmpeg.
+"""Burn ASS/SRT subtitles into a video via ffmpeg (ECS Fargate or Lambda).
 
 Receives the same `input` contract as the former RunPod cpu_image_burn worker:
   task_id, input_video_url, input_srt_url, input_subtitle_format,
@@ -6,6 +6,12 @@ Receives the same `input` contract as the former RunPod cpu_image_burn worker:
 
 Downloads via presigned GET, encodes with ffmpeg, uploads via presigned PUT,
 then POSTs /api/burn_subtitles_callback.
+
+ECS entrypoint:
+  BURN_TASK_JSON='{...}' python -u burn_subtitles_lambda.py
+
+Lambda entrypoint:
+  handler(event, context)
 """
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -25,6 +32,8 @@ FFMPEG_CANDIDATES = (
     "ffmpeg",
 )
 FONTS_DIR = (os.environ.get("BURN_FONTS_DIR") or "/opt/fonts").strip() or "/opt/fonts"
+# ECS can run longer than Lambda's 900s; default ~28 min with headroom under 30 min watch.
+DEFAULT_FFMPEG_TIMEOUT_SEC = 1680
 
 
 def _log(msg: str) -> None:
@@ -102,7 +111,6 @@ def _burn(video_path: Path, subs_path: Path, out_path: Path, subtitle_ext: str) 
     vf = f"{filter_name}='{subs_escaped}'"
     if os.path.isdir(FONTS_DIR):
         fonts_escaped = _escape_ffmpeg_path(FONTS_DIR)
-        # fontsdir is a separate option, not part of the subtitle path.
         vf = f"{filter_name}='{subs_escaped}':fontsdir={fonts_escaped}"
     cmd = [
         ffmpeg,
@@ -130,8 +138,10 @@ def _burn(video_path: Path, subs_path: Path, out_path: Path, subtitle_ext: str) 
         "+faststart",
         str(out_path),
     ]
-    # Leave headroom under Lambda's 900s hard limit.
-    timeout = max(60, min(840, int(os.environ.get("BURN_FFMPEG_TIMEOUT_SEC", "840") or 840)))
+    timeout = max(
+        60,
+        int(os.environ.get("BURN_FFMPEG_TIMEOUT_SEC", str(DEFAULT_FFMPEG_TIMEOUT_SEC)) or DEFAULT_FFMPEG_TIMEOUT_SEC),
+    )
     _log(f"ffmpeg start timeout={timeout}s filter={filter_name}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
@@ -146,7 +156,6 @@ def _normalize_event(event) -> dict:
         return {}
     if isinstance(event.get("input"), dict):
         return event["input"]
-    # Async invoke sometimes wraps body as JSON string.
     body = event.get("body")
     if isinstance(body, str) and body.strip():
         try:
@@ -160,8 +169,7 @@ def _normalize_event(event) -> dict:
     return event
 
 
-def handler(event, context):
-    inp = _normalize_event(event)
+def run_burn(inp: dict, *, engine: str = "ecs") -> dict:
     task_id = str(inp.get("task_id") or "").strip()
     video_url = str(inp.get("input_video_url") or "").strip()
     subs_url = str(inp.get("input_srt_url") or inp.get("input_subtitle_url") or "").strip()
@@ -176,13 +184,13 @@ def handler(event, context):
         raise RuntimeError("task_id, input_video_url, input_srt_url, output_upload_url required")
 
     _log(
-        f"burn start task_id={task_id} format={subtitle_ext} "
+        f"burn start engine={engine} task_id={task_id} format={subtitle_ext} "
         f"output_s3_key={output_s3_key or '(none)'}"
     )
     try:
         with tempfile.TemporaryDirectory(prefix="qs-burn-") as tmp:
             tmpdir = Path(tmp)
-            video_path = tmpdir / f"input.mp4"
+            video_path = tmpdir / "input.mp4"
             subs_path = tmpdir / f"subs.{subtitle_ext}"
             out_path = tmpdir / "output.mp4"
             _download(video_url, video_path)
@@ -193,7 +201,7 @@ def handler(event, context):
             "task_id": task_id,
             "status": "completed",
             "output_s3_key": output_s3_key,
-            "engine": "lambda",
+            "engine": engine,
         }
         _post_callback(callback_url, body)
         _log(f"burn completed task_id={task_id}")
@@ -208,8 +216,40 @@ def handler(event, context):
                 "status": "failed",
                 "error": err,
                 "output_s3_key": output_s3_key or None,
-                "engine": "lambda",
+                "engine": engine,
             },
         )
-        # Re-raise so async invoke surfaces as failed in CloudWatch metrics.
         raise
+
+
+def handler(event, context):
+    """AWS Lambda entry (legacy). Prefer ECS Fargate RunTask."""
+    return run_burn(_normalize_event(event), engine="lambda")
+
+
+def main() -> int:
+    raw = (os.environ.get("BURN_TASK_JSON") or "").strip()
+    if not raw and len(sys.argv) > 1:
+        raw = sys.argv[1].strip()
+    if not raw:
+        _log("BURN_TASK_JSON (or argv[1] JSON) required")
+        return 2
+    try:
+        inp = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _log(f"invalid BURN_TASK_JSON: {exc}")
+        return 2
+    if not isinstance(inp, dict):
+        _log("BURN_TASK_JSON must be a JSON object")
+        return 2
+    engine = str(os.environ.get("BURN_ENGINE") or "ecs").strip() or "ecs"
+    try:
+        run_burn(_normalize_event(inp), engine=engine)
+        return 0
+    except Exception as exc:
+        _log(f"fatal: {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

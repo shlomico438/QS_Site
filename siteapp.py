@@ -1356,11 +1356,42 @@ def _runpod_burn_endpoint_id():
 
 
 def _burn_lambda_function_name():
-    """AWS Lambda function name or ARN for movie subtitle burn."""
+    """AWS Lambda function name or ARN for movie subtitle burn (legacy fallback)."""
     return (
         (os.environ.get('BURN_LAMBDA_FUNCTION_NAME') or '').strip()
         or (os.environ.get('BURN_LAMBDA_FUNCTION_ARN') or '').strip()
     )
+
+
+def _burn_ecs_cluster():
+    return (os.environ.get('BURN_ECS_CLUSTER') or '').strip() or 'default'
+
+
+def _burn_ecs_task_definition():
+    return (os.environ.get('BURN_ECS_TASK_DEFINITION') or '').strip()
+
+
+def _burn_ecs_container_name():
+    return (os.environ.get('BURN_ECS_CONTAINER_NAME') or '').strip() or 'burn'
+
+
+def _burn_ecs_subnets():
+    raw = (os.environ.get('BURN_ECS_SUBNETS') or '').strip()
+    return [p.strip() for p in raw.split(',') if p.strip()]
+
+
+def _burn_ecs_security_groups():
+    raw = (os.environ.get('BURN_ECS_SECURITY_GROUPS') or '').strip()
+    return [p.strip() for p in raw.split(',') if p.strip()]
+
+
+def _burn_ecs_assign_public_ip():
+    raw = (os.environ.get('BURN_ECS_ASSIGN_PUBLIC_IP') or 'ENABLED').strip().upper()
+    return raw if raw in ('ENABLED', 'DISABLED') else 'ENABLED'
+
+
+def _burn_ecs_configured():
+    return bool(_burn_ecs_task_definition() and _burn_ecs_subnets())
 
 
 def _burn_allow_local_fallback():
@@ -1381,9 +1412,9 @@ def _burn_use_runpod(force_local=False):
 
 
 def _burn_engine(force_local=False):
-    """Preferred burn backend: lambda | runpod | local | none.
+    """Preferred burn backend: ecs | runpod | lambda | local | none.
 
-    Lambda is preferred when configured so the RunPod CPU endpoint can be removed.
+    ECS Fargate RunTask is preferred so RunPod CPU (and Lambda) can be removed.
     """
     if force_local:
         return 'local'
@@ -1392,14 +1423,15 @@ def _burn_engine(force_local=False):
     ).strip().lower() in ('1', 'true', 'yes', 'on')
     if SIMULATION_MODE and not allow_remote_in_simulation:
         return 'local' if _burn_allow_local_fallback() else 'none'
-    if _burn_lambda_function_name():
-        return 'lambda'
+    if _burn_ecs_configured():
+        return 'ecs'
     if _burn_use_runpod(force_local=False):
         return 'runpod'
+    if _burn_lambda_function_name():
+        return 'lambda'
     if _burn_allow_local_fallback():
         return 'local'
     return 'none'
-
 
 def _env_flag_true(name):
     v = (os.environ.get(name) or '').strip().lower()
@@ -18681,8 +18713,11 @@ def _watch_runpod_burn(task_id):
     try:
         info0 = _load_burn_task(task_id)
         mode = str(info0.get('mode') or '').strip().lower()
-        # Lambda hard-caps at 900s; keep a little headroom for callback/S3.
-        default_timeout = '900' if mode == 'lambda' else '1800'
+        # Lambda hard-caps at 900s; ECS/RunPod use ~30 min watch by default.
+        if mode == 'lambda':
+            default_timeout = '900'
+        else:
+            default_timeout = '1800'
         timeout_sec = max(120, int(os.environ.get('RUNPOD_BURN_WATCH_TIMEOUT_SEC', default_timeout) or default_timeout))
         if mode == 'lambda':
             timeout_sec = min(timeout_sec, 960)
@@ -19312,8 +19347,124 @@ def _prepare_burn_worker_input(task_id, input_s3_key, segments, user_id, callbac
     return worker_input, meta
 
 
+def _queue_burn_task_on_ecs(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
+    """Dispatch burn task as a one-off ECS Fargate RunTask using presigned S3 URLs."""
+    task_definition = _burn_ecs_task_definition()
+    subnets = _burn_ecs_subnets()
+    if not task_definition or not subnets:
+        raise RuntimeError(
+            "Burn ECS is not configured (set BURN_ECS_TASK_DEFINITION and BURN_ECS_SUBNETS)"
+        )
+
+    worker_input, meta = _prepare_burn_worker_input(
+        task_id=task_id,
+        input_s3_key=input_s3_key,
+        segments=segments,
+        user_id=user_id,
+        callback_url=callback_url,
+        subtitle_style=subtitle_style,
+        is_portrait=is_portrait,
+        notify_email=notify_email,
+        job_id=job_id,
+        subtitle_color=subtitle_color,
+    )
+
+    region = (
+        (os.environ.get('BURN_ECS_REGION') or '').strip()
+        or (os.environ.get('AWS_REGION') or '').strip()
+        or (os.environ.get('AWS_DEFAULT_REGION') or '').strip()
+        or 'eu-north-1'
+    )
+    cluster = _burn_ecs_cluster()
+    container_name = _burn_ecs_container_name()
+    security_groups = _burn_ecs_security_groups()
+    assign_public_ip = _burn_ecs_assign_public_ip()
+    payload_json = json.dumps(worker_input, separators=(',', ':'))
+    # ECS container override env value limit is 8192 characters.
+    if len(payload_json) > 8000:
+        raise RuntimeError(f"Burn ECS payload too large for container env ({len(payload_json)} chars)")
+
+    import boto3
+    ecs = boto3.client('ecs', region_name=region)
+    network = {
+        'subnets': subnets,
+        'assignPublicIp': assign_public_ip,
+    }
+    if security_groups:
+        network['securityGroups'] = security_groups
+
+    run_kwargs = {
+        'cluster': cluster,
+        'taskDefinition': task_definition,
+        'launchType': 'FARGATE',
+        'count': 1,
+        'platformVersion': 'LATEST',
+        'networkConfiguration': {'awsvpcConfiguration': network},
+        'overrides': {
+            'containerOverrides': [{
+                'name': container_name,
+                'environment': [
+                    {'name': 'BURN_TASK_JSON', 'value': payload_json},
+                    {'name': 'BURN_ENGINE', 'value': 'ecs'},
+                ],
+            }],
+        },
+        'startedBy': f'qs-burn-{str(task_id)[:24]}',
+        'propagateTags': 'TASK_DEFINITION',
+        'tags': [
+            {'key': 'quickscribe:task', 'value': 'burn_subtitles'},
+            {'key': 'quickscribe:task_id', 'value': str(task_id)[:128]},
+        ],
+    }
+    max_attempts = int((os.environ.get('BURN_ECS_DISPATCH_RETRIES') or '4').strip() or 4)
+    backoff_sec = float((os.environ.get('BURN_ECS_DISPATCH_BACKOFF_SEC') or '1.5').strip() or 1.5)
+    last_err = None
+    response = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = ecs.run_task(**run_kwargs)
+            failures = response.get('failures') or []
+            tasks = response.get('tasks') or []
+            if failures and not tasks:
+                raise RuntimeError(f"ECS RunTask failures: {failures}")
+            if not tasks:
+                raise RuntimeError("ECS RunTask returned no tasks")
+            break
+        except Exception as e:
+            last_err = e
+            response = None
+            if attempt >= max_attempts:
+                break
+            sleep_s = backoff_sec * attempt
+            logging.warning(
+                "ECS burn dispatch exception (attempt %s/%s): %s; retrying in %.1fs",
+                attempt, max_attempts, e, sleep_s,
+            )
+            time.sleep(sleep_s)
+            ecs = boto3.client('ecs', region_name=region)
+    if not response or not (response.get('tasks') or []):
+        if last_err:
+            raise RuntimeError(f"ECS burn dispatch failed after {max_attempts} attempts: {last_err}")
+        raise RuntimeError(f"ECS burn dispatch failed after {max_attempts} attempts")
+
+    ecs_task_arn = (response['tasks'][0].get('taskArn') or '').strip()
+    _save_burn_task(task_id, {
+        'status': 'processing',
+        'mode': 'ecs',
+        'ecs_cluster': cluster,
+        'ecs_task_definition': task_definition,
+        'ecs_task_arn': ecs_task_arn,
+        **meta,
+    })
+    logging.info(
+        "ECS burn dispatched task_id=%s cluster=%s task=%s callback=%s",
+        task_id, cluster, ecs_task_arn or task_definition, callback_url,
+    )
+    threading.Thread(target=_watch_runpod_burn, args=(task_id,), daemon=True).start()
+
+
 def _queue_burn_task_on_lambda(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
-    """Dispatch burn task to AWS Lambda (async invoke) using presigned S3 URLs."""
+    """Dispatch burn task to AWS Lambda (async invoke) using presigned S3 URLs (legacy)."""
     function_name = _burn_lambda_function_name()
     if not function_name:
         raise RuntimeError("Burn Lambda is not configured (set BURN_LAMBDA_FUNCTION_NAME)")
@@ -19384,7 +19535,6 @@ def _queue_burn_task_on_lambda(task_id, input_s3_key, segments, user_id, callbac
         task_id, function_name, callback_url,
     )
     threading.Thread(target=_watch_runpod_burn, args=(task_id,), daemon=True).start()
-
 
 def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
     """Dispatch burn task to RunPod using presigned S3 URLs."""
@@ -19551,7 +19701,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
 
 @app.route('/api/burn_subtitles_server', methods=['POST'])
 def burn_subtitles_server():
-    """Start burn job on AWS Lambda (preferred) or RunPod CPU. Site does not run ffmpeg burn in production."""
+    """Start burn job on ECS Fargate (preferred) or RunPod CPU. Site does not run ffmpeg burn in production."""
     try:
         data = request.json or {}
         input_s3_key = data.get('input_s3_key')
@@ -19579,10 +19729,15 @@ def burn_subtitles_server():
         })
 
         engine = _burn_engine(force_local=force_local_burn)
-        if engine in ('lambda', 'runpod'):
+        if engine in ('ecs', 'runpod', 'lambda'):
             public_base = _burn_callback_base(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"
-            queue_fn = _queue_burn_task_on_lambda if engine == 'lambda' else _queue_burn_task_on_runpod
+            if engine == 'ecs':
+                queue_fn = _queue_burn_task_on_ecs
+            elif engine == 'lambda':
+                queue_fn = _queue_burn_task_on_lambda
+            else:
+                queue_fn = _queue_burn_task_on_runpod
             try:
                 queue_fn(
                     task_id=task_id,
@@ -19601,7 +19756,9 @@ def burn_subtitles_server():
                     "status": "processing",
                     "mode": engine,
                 }
-                if engine == 'lambda':
+                if engine == 'ecs':
+                    payload["ecs_task_definition"] = _burn_ecs_task_definition()
+                elif engine == 'lambda':
                     payload["lambda_function"] = _burn_lambda_function_name()
                 else:
                     payload["endpoint_id"] = _runpod_burn_endpoint_id()
@@ -19626,12 +19783,12 @@ def burn_subtitles_server():
             _save_burn_task(task_id, {
                 'status': 'failed',
                 'mode': engine or 'none',
-                'error': 'Burn Lambda or RunPod CPU endpoint is required',
+                'error': 'Burn ECS task definition or RunPod CPU endpoint is required',
             })
             return jsonify({
-                "error": "Subtitle burn runs on AWS Lambda (preferred) or RunPod CPU, not on the Site host.",
-                "detail": "Set BURN_LAMBDA_FUNCTION_NAME, or RUNPOD_CPU_ENDPOINT_ID + RUNPOD_API_KEY.",
-                "lambda_hint": _burn_lambda_function_name() or None,
+                "error": "Subtitle burn runs on ECS Fargate (preferred) or RunPod CPU, not on the Site host.",
+                "detail": "Set BURN_ECS_TASK_DEFINITION + BURN_ECS_SUBNETS, or RUNPOD_CPU_ENDPOINT_ID + RUNPOD_API_KEY.",
+                "ecs_hint": _burn_ecs_task_definition() or None,
                 "endpoint_hint": _runpod_burn_endpoint_id() or None,
             }), 503
 
