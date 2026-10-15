@@ -1,0 +1,27 @@
+# Container image for QuickScribe movie subtitle burn Lambda.
+# Build/push via: python scripts/setup_burn_subtitles_lambda.py --apply
+FROM public.ecr.aws/lambda/python:3.12
+
+# Static ffmpeg with libass (ASS/SRT burn) + Hebrew-capable fonts.
+ADD https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz /tmp/ffmpeg.tar.xz
+RUN mkdir -p /opt/bin /opt/fonts \
+    && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
+    && cp /tmp/ffmpeg-*/bin/ffmpeg /opt/bin/ffmpeg \
+    && chmod +x /opt/bin/ffmpeg \
+    && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-* \
+    && ((dnf install -y --setopt=install_weak_deps=False dejavu-sans-fonts \
+        || microdnf install -y dejavu-sans-fonts) \
+        && (cp -a /usr/share/fonts/dejavu* /opt/fonts/ 2>/dev/null || true) \
+        && (cp -a /usr/share/fonts/dejavu-sans-fonts /opt/fonts/ 2>/dev/null || true) \
+        && (dnf clean all || true) \
+        && rm -rf /var/cache/dnf /var/cache/yum \
+        || echo "warn: font packages unavailable; ASS may fall back to default fonts")
+
+ENV PATH="/opt/bin:${PATH}" \
+    FFMPEG_PATH=/opt/bin/ffmpeg \
+    BURN_FONTS_DIR=/opt/fonts \
+    BURN_FFMPEG_TIMEOUT_SEC=840
+
+COPY burn_subtitles_lambda.py ${LAMBDA_TASK_ROOT}/
+
+CMD ["burn_subtitles_lambda.handler"]

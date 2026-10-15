@@ -122,5 +122,32 @@ class BurnCallbackBaseTests(unittest.TestCase):
             )
 
 
+class BurnEngineTests(unittest.TestCase):
+    def test_prefers_lambda_over_runpod(self):
+        import siteapp
+
+        with patch.object(siteapp, "SIMULATION_MODE", False), patch.dict(
+            "os.environ",
+            {
+                "BURN_LAMBDA_FUNCTION_NAME": "quickscribe-burn-subtitles",
+                "RUNPOD_API_KEY": "k",
+                "RUNPOD_CPU_ENDPOINT_ID": "cpu-ep",
+            },
+            clear=False,
+        ):
+            self.assertEqual(siteapp._burn_engine(), "lambda")
+
+    def test_falls_back_to_runpod_without_lambda(self):
+        import siteapp
+
+        with patch.object(siteapp, "SIMULATION_MODE", False), patch.object(
+            siteapp, "RUNPOD_API_KEY", "k"
+        ), patch.object(siteapp, "RUNPOD_CPU_ENDPOINT_ID", "cpu-ep"), patch.dict(
+            "os.environ",
+            {"BURN_LAMBDA_FUNCTION_NAME": "", "BURN_LAMBDA_FUNCTION_ARN": ""},
+            clear=False,
+        ):
+            self.assertEqual(siteapp._burn_engine(), "runpod")
+
 if __name__ == "__main__":
     unittest.main()

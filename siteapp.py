@@ -1355,6 +1355,14 @@ def _runpod_burn_endpoint_id():
     )
 
 
+def _burn_lambda_function_name():
+    """AWS Lambda function name or ARN for movie subtitle burn."""
+    return (
+        (os.environ.get('BURN_LAMBDA_FUNCTION_NAME') or '').strip()
+        or (os.environ.get('BURN_LAMBDA_FUNCTION_ARN') or '').strip()
+    )
+
+
 def _burn_allow_local_fallback():
     """Local ffmpeg burn on Koyeb is dev-only unless explicitly enabled."""
     raw = os.environ.get('RUNPOD_BURN_ALLOW_LOCAL_FALLBACK')
@@ -1370,6 +1378,27 @@ def _burn_use_runpod(force_local=False):
     if SIMULATION_MODE and not allow_runpod_in_simulation:
         return False
     return bool((RUNPOD_API_KEY or '').strip() and _runpod_burn_endpoint_id())
+
+
+def _burn_engine(force_local=False):
+    """Preferred burn backend: lambda | runpod | local | none.
+
+    Lambda is preferred when configured so the RunPod CPU endpoint can be removed.
+    """
+    if force_local:
+        return 'local'
+    allow_remote_in_simulation = str(
+        os.environ.get('RUNPOD_ALLOW_IN_SIMULATION', 'true')
+    ).strip().lower() in ('1', 'true', 'yes', 'on')
+    if SIMULATION_MODE and not allow_remote_in_simulation:
+        return 'local' if _burn_allow_local_fallback() else 'none'
+    if _burn_lambda_function_name():
+        return 'lambda'
+    if _burn_use_runpod(force_local=False):
+        return 'runpod'
+    if _burn_allow_local_fallback():
+        return 'local'
+    return 'none'
 
 
 def _env_flag_true(name):
@@ -4143,12 +4172,30 @@ def _resolve_storage_profile(user_id, input_s3_key=None, is_medical=None):
     }
 
 
+def _s3_key_allowed_for_user(s3_key, user_id):
+    """True when the object key is scoped to this user (standard or HIPAA prefixes)."""
+    k = str(s3_key or '').strip()
+    uid = str(user_id or '').strip()
+    if not k:
+        return False
+    if k.startswith('users/anonymous/') or '/users/anonymous/' in k:
+        return bool(uid)
+    if not uid:
+        return False
+    needle = f'users/{uid}/'
+    return k.startswith(needle) or (needle in k)
+
+
 def _presign_bucket_for_key(user_id, s3_key, data=None):
-    """S3 bucket for presigned GET/HEAD: HIPAA paths or explicit isMedical."""
+    """S3 bucket for presigned GET/HEAD: key layout wins over client isMedical."""
     key = str(s3_key or '').strip()
     path_medical = _is_medical_s3_key(key)
-    explicit = _request_json_is_medical(data) if isinstance(data, dict) else False
-    medical = path_medical or explicit
+    # Never force the HIPAA bucket for clearly standard keys (users/{id}/input|output/...).
+    if key.startswith('users/') and not path_medical:
+        medical = False
+    else:
+        explicit = _request_json_is_medical(data) if isinstance(data, dict) else False
+        medical = path_medical or explicit
     prof = _resolve_storage_profile(user_id, input_s3_key=s3_key, is_medical=medical)
     return prof['bucket']
 
@@ -4760,17 +4807,12 @@ def get_presigned_url():
         if not s3_key:
             return jsonify({"error": "No s3Key provided"}), 400
 
-        # Per-user keys: only allow access to users/{user_id}/...
-        # Exception: users/anonymous/... is readable after guest→sign-in (claim/restore)
-        # when a userId is provided (signed-in user or still "anonymous").
-        if s3_key.startswith("users/"):
+        # Per-user keys (standard users/{id}/... and HIPAA raw-audio|transcripts|summaries/users/{id}/...).
+        # Exception: users/anonymous/... is readable after guest→sign-in (claim/restore).
+        if 'users/' in str(s3_key or ''):
             if not user_id:
                 return jsonify({"error": "userId required for user-scoped keys"}), 400
-            uid = str(user_id).strip()
-            if s3_key.startswith("users/anonymous/"):
-                if not uid:
-                    return jsonify({"error": "Access denied: key does not belong to user"}), 403
-            elif not s3_key.startswith(f"users/{uid}/"):
+            if not _s3_key_allowed_for_user(s3_key, user_id):
                 return jsonify({"error": "Access denied: key does not belong to user"}), 403
 
         bucket = _presign_bucket_for_key(user_id, s3_key, data)
@@ -4778,10 +4820,11 @@ def get_presigned_url():
             return jsonify({"error": "S3 bucket not configured"}), 500
 
         # Same-origin stream avoids S3 CORS (required for <video crossorigin="anonymous"> and fetch()).
+        # Use a relative URL — never PUBLIC_BASE_URL / ECS *.on.aws here, or www.getquickscribe.com
+        # pages get a cross-origin stream link and the browser blocks it.
         if _s3_key_needs_same_origin_stream(s3_key):
             tok = _media_stream_token_serializer().dumps({'user_id': user_id, 's3_key': s3_key})
-            base = _public_base_url(request)
-            url = f"{base}/api/stream_s3_media/{tok}"
+            url = f"/api/stream_s3_media/{tok}"
             return jsonify({"url": url, "via": "app_proxy"})
 
         force_presigned = bool(data.get('forcePresigned') or data.get('force_presigned'))
@@ -4829,12 +4872,8 @@ def stream_s3_media(token):
     s3_key = str((payload or {}).get('s3_key') or '').strip()
     if not s3_key:
         return jsonify({"error": "Invalid payload"}), 400
-    if s3_key.startswith('users/'):
-        # Mirror get_presigned_url: allow users/anonymous/... for any authenticated token user.
-        if s3_key.startswith('users/anonymous/'):
-            if not user_id:
-                return jsonify({"error": "Access denied"}), 403
-        elif not user_id or not s3_key.startswith(f'users/{user_id}/'):
+    if 'users/' in s3_key:
+        if not user_id or not _s3_key_allowed_for_user(s3_key, user_id):
             return jsonify({"error": "Access denied"}), 403
 
     bucket = _presign_bucket_for_key(user_id, s3_key, None)
@@ -4916,16 +4955,11 @@ def api_s3_exists():
         if not s3_key:
             return jsonify({"error": "No s3Key provided"}), 400
 
-        # Per-user keys: only allow access to users/{user_id}/...
-        # Same anonymous exception as get_presigned_url (guest claim/restore).
-        if s3_key.startswith("users/"):
+        # Per-user keys (standard + HIPAA prefixes). Same anonymous exception as get_presigned_url.
+        if 'users/' in str(s3_key or ''):
             if not user_id:
                 return jsonify({"error": "userId required for user-scoped keys"}), 400
-            uid = str(user_id).strip()
-            if s3_key.startswith("users/anonymous/"):
-                if not uid:
-                    return jsonify({"error": "Access denied: key does not belong to user"}), 403
-            elif not s3_key.startswith(f"users/{uid}/"):
+            if not _s3_key_allowed_for_user(s3_key, user_id):
                 return jsonify({"error": "Access denied: key does not belong to user"}), 403
 
         bucket = _presign_bucket_for_key(user_id, s3_key, data)
@@ -18643,9 +18677,15 @@ def _reconcile_burn_task(task_id, info, allow_fail_on_runpod_complete_missing_s3
 
 
 def _watch_runpod_burn(task_id):
-    """Poll RunPod + S3 when the CPU worker callback is delayed or hits another Site instance."""
+    """Poll S3 (+ RunPod when applicable) when the worker callback is delayed or hits another instance."""
     try:
-        timeout_sec = max(120, int(os.environ.get('RUNPOD_BURN_WATCH_TIMEOUT_SEC', '1800') or 1800))
+        info0 = _load_burn_task(task_id)
+        mode = str(info0.get('mode') or '').strip().lower()
+        # Lambda hard-caps at 900s; keep a little headroom for callback/S3.
+        default_timeout = '900' if mode == 'lambda' else '1800'
+        timeout_sec = max(120, int(os.environ.get('RUNPOD_BURN_WATCH_TIMEOUT_SEC', default_timeout) or default_timeout))
+        if mode == 'lambda':
+            timeout_sec = min(timeout_sec, 960)
         poll_sec = max(5, int(os.environ.get('RUNPOD_BURN_WATCH_POLL_SEC', '15') or 15))
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
@@ -18667,9 +18707,10 @@ def _watch_runpod_burn(task_id):
         if str(info.get('status') or '').lower() in ('completed', 'failed'):
             return
         info['status'] = 'failed'
-        info['error'] = f'RunPod burn timed out after {timeout_sec}s'
+        engine = str(info.get('mode') or 'remote').strip() or 'remote'
+        info['error'] = f'{engine} burn timed out after {timeout_sec}s'
         _save_burn_task(task_id, info)
-        logging.error("burn task watcher timeout task_id=%s", task_id)
+        logging.error("burn task watcher timeout task_id=%s mode=%s", task_id, engine)
     except Exception:
         logging.exception("_watch_runpod_burn failed task_id=%s", task_id)
 
@@ -19192,16 +19233,10 @@ def _build_output_key(user_id, input_s3_key, task_id):
     return f"users/{user_id}/output/{safe_name}_with_subtitles.mp4", safe_name
 
 
-def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
-    """Dispatch burn task to RunPod using presigned S3 URLs."""
-    endpoint_id = _runpod_burn_endpoint_id()
-    api_key = (RUNPOD_API_KEY or "").strip()
-    if not endpoint_id or not api_key:
-        raise RuntimeError("RunPod burn CPU endpoint is not configured (set RUNPOD_CPU_ENDPOINT_ID or RUNPOD_MOVIE_ENDPOINT_ID)")
-
+def _prepare_burn_worker_input(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
+    """Upload subtitle file + build the shared worker input (presigned URLs)."""
     bucket = os.environ.get('S3_BUCKET')
     s3_client = _s3_boto_client(bucket=bucket)
-
     if not bucket:
         raise RuntimeError("S3_BUCKET missing")
 
@@ -19247,24 +19282,130 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
         ExpiresIn=21600
     )
 
-    payload = {
-        "input": {
-            "task": "burn_subtitles",
-            "task_id": task_id,
-            "input_video_url": input_video_url,
-            "input_srt_url": input_subtitle_url,
-            "input_subtitle_format": subtitle_ext,
-            "output_upload_url": output_upload_url,
-            "output_s3_key": output_s3_key,
-            "subtitle_style": (subtitle_style or 'tiktok'),
-            "subtitle_color": (subtitle_color or 'yellow'),
-            "is_portrait": is_portrait,
-            "job_id": job_id,
-            "user_id": user_id,
-            "notify_email": notify_email,
-            "callback_url": callback_url,
-        }
+    worker_input = {
+        "task": "burn_subtitles",
+        "task_id": task_id,
+        "input_video_url": input_video_url,
+        "input_srt_url": input_subtitle_url,
+        "input_subtitle_format": subtitle_ext,
+        "output_upload_url": output_upload_url,
+        "output_s3_key": output_s3_key,
+        "subtitle_style": (subtitle_style or 'tiktok'),
+        "subtitle_color": (subtitle_color or 'yellow'),
+        "is_portrait": is_portrait,
+        "job_id": job_id,
+        "user_id": user_id,
+        "notify_email": notify_email,
+        "callback_url": callback_url,
     }
+    meta = {
+        'subtitle_format': subtitle_ext,
+        'output_s3_key': output_s3_key,
+        'subtitle_s3_key': subtitle_s3_key,
+        'safe_name': safe_name,
+        'bucket': bucket,
+        'user_id': user_id,
+        'job_id': job_id,
+        'notify_email': notify_email,
+        'started_at': time.time(),
+    }
+    return worker_input, meta
+
+
+def _queue_burn_task_on_lambda(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
+    """Dispatch burn task to AWS Lambda (async invoke) using presigned S3 URLs."""
+    function_name = _burn_lambda_function_name()
+    if not function_name:
+        raise RuntimeError("Burn Lambda is not configured (set BURN_LAMBDA_FUNCTION_NAME)")
+
+    worker_input, meta = _prepare_burn_worker_input(
+        task_id=task_id,
+        input_s3_key=input_s3_key,
+        segments=segments,
+        user_id=user_id,
+        callback_url=callback_url,
+        subtitle_style=subtitle_style,
+        is_portrait=is_portrait,
+        notify_email=notify_email,
+        job_id=job_id,
+        subtitle_color=subtitle_color,
+    )
+
+    region = (
+        (os.environ.get('BURN_LAMBDA_REGION') or '').strip()
+        or (os.environ.get('AWS_REGION') or '').strip()
+        or (os.environ.get('AWS_DEFAULT_REGION') or '').strip()
+        or 'eu-north-1'
+    )
+    import boto3
+    lam = boto3.client('lambda', region_name=region)
+    payload = json.dumps(worker_input).encode('utf-8')
+    max_attempts = int((os.environ.get('BURN_LAMBDA_DISPATCH_RETRIES') or '4').strip() or 4)
+    backoff_sec = float((os.environ.get('BURN_LAMBDA_DISPATCH_BACKOFF_SEC') or '1.5').strip() or 1.5)
+    last_err = None
+    response = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = lam.invoke(
+                FunctionName=function_name,
+                InvocationType='Event',
+                Payload=payload,
+            )
+            status_code = int(response.get('StatusCode') or 0)
+            if status_code in (200, 202):
+                break
+            raise RuntimeError(f"Lambda burn invoke HTTP {status_code}")
+        except Exception as e:
+            last_err = e
+            response = None
+            if attempt >= max_attempts:
+                break
+            sleep_s = backoff_sec * attempt
+            logging.warning(
+                "Lambda burn dispatch exception (attempt %s/%s): %s; retrying in %.1fs",
+                attempt, max_attempts, e, sleep_s,
+            )
+            time.sleep(sleep_s)
+            # Recreate client in case of transient credential/network issues.
+            lam = boto3.client('lambda', region_name=region)
+    if not response or int(response.get('StatusCode') or 0) not in (200, 202):
+        if last_err:
+            raise RuntimeError(f"Lambda burn dispatch failed after {max_attempts} attempts: {last_err}")
+        raise RuntimeError(f"Lambda burn dispatch failed after {max_attempts} attempts")
+
+    _save_burn_task(task_id, {
+        'status': 'processing',
+        'mode': 'lambda',
+        'lambda_function': function_name,
+        **meta,
+    })
+    logging.info(
+        "Lambda burn dispatched task_id=%s function=%s callback=%s",
+        task_id, function_name, callback_url,
+    )
+    threading.Thread(target=_watch_runpod_burn, args=(task_id,), daemon=True).start()
+
+
+def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callback_url, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
+    """Dispatch burn task to RunPod using presigned S3 URLs."""
+    endpoint_id = _runpod_burn_endpoint_id()
+    api_key = (RUNPOD_API_KEY or "").strip()
+    if not endpoint_id or not api_key:
+        raise RuntimeError("RunPod burn CPU endpoint is not configured (set RUNPOD_CPU_ENDPOINT_ID or RUNPOD_MOVIE_ENDPOINT_ID)")
+
+    worker_input, meta = _prepare_burn_worker_input(
+        task_id=task_id,
+        input_s3_key=input_s3_key,
+        segments=segments,
+        user_id=user_id,
+        callback_url=callback_url,
+        subtitle_style=subtitle_style,
+        is_portrait=is_portrait,
+        notify_email=notify_email,
+        job_id=job_id,
+        subtitle_color=subtitle_color,
+    )
+    payload = {"input": worker_input}
     endpoint_url = f"https://api.runpod.ai/v2/{endpoint_id}/run"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     dispatch_timeout = int((os.environ.get('RUNPOD_BURN_DISPATCH_TIMEOUT_SEC') or '35').strip() or 35)
@@ -19310,24 +19451,15 @@ def _queue_burn_task_on_runpod(task_id, input_s3_key, segments, user_id, callbac
     _save_burn_task(task_id, {
         'status': 'processing',
         'mode': 'runpod',
-        'subtitle_format': subtitle_ext,
-        'output_s3_key': output_s3_key,
-        'subtitle_s3_key': subtitle_s3_key,
-        'safe_name': safe_name,
-        'bucket': bucket,
-        'user_id': user_id,
-        'job_id': job_id,
-        'notify_email': notify_email,
         'endpoint_id': endpoint_id,
         'runpod_run_id': runpod_run_id,
-        'started_at': time.time(),
+        **meta,
     })
     logging.info(
         "RunPod burn dispatched task_id=%s endpoint=%s runpod_run_id=%s callback=%s",
         task_id, endpoint_id, runpod_run_id, callback_url,
     )
     threading.Thread(target=_watch_runpod_burn, args=(task_id,), daemon=True).start()
-
 def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None, is_portrait=False, notify_email=None, job_id=None, subtitle_color=None):
     """Background task: download from S3, check duration limit, burn subtitles, upload to S3, optional email."""
     bucket = os.environ.get('S3_BUCKET')
@@ -19419,7 +19551,7 @@ def _run_burn_task(task_id, input_s3_key, segments, user_id, subtitle_style=None
 
 @app.route('/api/burn_subtitles_server', methods=['POST'])
 def burn_subtitles_server():
-    """Start burn job on RunPod CPU. Koyeb does not run ffmpeg burn in production."""
+    """Start burn job on AWS Lambda (preferred) or RunPod CPU. Site does not run ffmpeg burn in production."""
     try:
         data = request.json or {}
         input_s3_key = data.get('input_s3_key')
@@ -19446,11 +19578,13 @@ def burn_subtitles_server():
             'started_at': time.time(),
         })
 
-        if _burn_use_runpod(force_local=force_local_burn):
+        engine = _burn_engine(force_local=force_local_burn)
+        if engine in ('lambda', 'runpod'):
             public_base = _burn_callback_base(request)
             callback_url = f"{public_base}/api/burn_subtitles_callback"
+            queue_fn = _queue_burn_task_on_lambda if engine == 'lambda' else _queue_burn_task_on_runpod
             try:
-                _queue_burn_task_on_runpod(
+                queue_fn(
                     task_id=task_id,
                     input_s3_key=input_s3_key,
                     segments=segments,
@@ -19462,33 +19596,42 @@ def burn_subtitles_server():
                     job_id=job_id,
                     subtitle_color=subtitle_color
                 )
-                return jsonify({
+                payload = {
                     "task_id": task_id,
                     "status": "processing",
-                    "mode": "runpod",
-                    "endpoint_id": _runpod_burn_endpoint_id(),
-                }), 202
+                    "mode": engine,
+                }
+                if engine == 'lambda':
+                    payload["lambda_function"] = _burn_lambda_function_name()
+                else:
+                    payload["endpoint_id"] = _runpod_burn_endpoint_id()
+                return jsonify(payload), 202
             except Exception as e:
-                logging.warning("RunPod burn dispatch failed: %s", e)
+                logging.warning("%s burn dispatch failed: %s", engine, e)
                 if not _burn_allow_local_fallback():
-                    _save_burn_task(task_id, {'status': 'failed', 'mode': 'runpod', 'error': f'RunPod dispatch failed: {e}'})
+                    _save_burn_task(task_id, {
+                        'status': 'failed',
+                        'mode': engine,
+                        'error': f'{engine} dispatch failed: {e}',
+                    })
                     return jsonify({
                         "task_id": task_id,
                         "status": "failed",
-                        "mode": "runpod",
-                        "error": "RunPod burn dispatch failed",
+                        "mode": engine,
+                        "error": f"{engine} burn dispatch failed",
                         "detail": str(e)[:500],
                     }), 503
 
         if not _burn_allow_local_fallback():
             _save_burn_task(task_id, {
                 'status': 'failed',
-                'mode': 'runpod',
-                'error': 'RunPod burn CPU endpoint is required',
+                'mode': engine or 'none',
+                'error': 'Burn Lambda or RunPod CPU endpoint is required',
             })
             return jsonify({
-                "error": "Subtitle burn runs on RunPod CPU, not on Koyeb.",
-                "detail": "Set RUNPOD_CPU_ENDPOINT_ID (or RUNPOD_MOVIE_ENDPOINT_ID) and RUNPOD_API_KEY on Koyeb.",
+                "error": "Subtitle burn runs on AWS Lambda (preferred) or RunPod CPU, not on the Site host.",
+                "detail": "Set BURN_LAMBDA_FUNCTION_NAME, or RUNPOD_CPU_ENDPOINT_ID + RUNPOD_API_KEY.",
+                "lambda_hint": _burn_lambda_function_name() or None,
                 "endpoint_hint": _runpod_burn_endpoint_id() or None,
             }), 503
 

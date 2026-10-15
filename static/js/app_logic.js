@@ -3548,6 +3548,34 @@ function deriveTranscriptJsonKeyFromInputS3Key(inputKey) {
     return s.replace(/\.[^/.]+$/i, '.json');
 }
 
+/** Presign/exists flag must follow the object key, not UI medical mode (mixed Personal library). */
+function qsPresignIsMedicalForKey(s3Key) {
+    try {
+        if (typeof isMedicalLayoutS3Key === 'function' && isMedicalLayoutS3Key(s3Key)) return true;
+    } catch (_) {}
+    return false;
+}
+
+/** Candidate transcript JSON keys (mirrors siteapp `_get_transcript_json_from_s3` fallbacks). */
+function qsTranscriptJsonKeysToTry(inputKey, storedResultKey) {
+    const keys = [];
+    const push = (k) => {
+        const s = String(k || '').trim();
+        if (s && !keys.includes(s)) keys.push(s);
+    };
+    push(storedResultKey);
+    const derived = deriveTranscriptJsonKeyFromInputS3Key(inputKey);
+    push(derived);
+    const s = String(inputKey || '').trim();
+    if (s.startsWith('raw-audio/')) {
+        push((`summaries/${s.slice('raw-audio/'.length)}`).replace(/\.[^/.]+$/i, '.json'));
+    } else if (s.includes('/raw-audio/') && !s.startsWith('raw-audio/')) {
+        push(s.replace('/raw-audio/', '/summaries/', 1).replace(/\.[^/.]+$/i, '.json'));
+        push(s.replace('/raw-audio/', '/transcripts/', 1).replace(/\.[^/.]+$/i, '.json'));
+    }
+    return keys;
+}
+
 function _s3KeyBasenameStem(key) {
     const part = String(key || '').trim().split('/').pop() || '';
     return part.replace(/\.[^.]+$/i, '');
@@ -3578,12 +3606,13 @@ async function qsFetchTranscriptJsonFromS3Key(resultS3Key) {
             body: JSON.stringify({
                 s3Key: key,
                 userId: user.id,
-                isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false,
+                isMedical: qsPresignIsMedicalForKey(key),
             }),
         });
         const urlJson = await urlRes.json().catch(() => ({}));
         if (!urlJson.url) return null;
-        return await fetch(urlJson.url).then((r) => r.json()).catch(() => null);
+        const streamUrl = qsNormalizeAbsoluteMediaUrl(urlJson.url);
+        return await fetch(streamUrl).then((r) => r.json()).catch(() => null);
     } catch (_) {
         return null;
     }
@@ -4886,7 +4915,28 @@ function qsRestoreUiAfterUploadConfirmCancel(opts) {
 function qsNormalizeAbsoluteMediaUrl(url) {
     const u = String(url || '').trim();
     if (!u) return u;
-    if (/^https?:\/\//i.test(u)) return u;
+    // App-proxy medical streams are same-origin relative paths.
+    if (u.startsWith('/')) {
+        try { return String(window.location.origin || '') + u; } catch (_) { return u; }
+    }
+    if (/^https?:\/\//i.test(u)) {
+        // Rewrite legacy absolute ECS/ALB stream links onto the current origin (avoids CORS).
+        try {
+            const parsed = new URL(u);
+            const host = String(parsed.hostname || '').toLowerCase();
+            if (
+                parsed.pathname.indexOf('/api/stream_s3_media/') === 0
+                && (
+                    host.endsWith('.on.aws')
+                    || host.endsWith('.elb.amazonaws.com')
+                    || (host.endsWith('.amazonaws.com') && host.indexOf('getquickscribe.com') < 0)
+                )
+            ) {
+                return String(window.location.origin || '') + parsed.pathname + parsed.search + parsed.hash;
+            }
+        } catch (_) {}
+        return u;
+    }
     if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/i.test(u)) return 'https://' + u.replace(/^\/+/, '');
     return u;
 }
@@ -8885,7 +8935,19 @@ async function initPersonalPage() {
     };
     /** Must match siteapp `_derive_output_key_base` + `.json` so Personal S3 probes find the transcript. */
     const deriveResultJsonKey = deriveTranscriptJsonKeyFromInputS3Key;
-    const canProbeKeyForUser = (key) => String(key || '').startsWith(`users/${user.id}/`);
+    const uid = String(user.id || '').trim();
+    const canProbeKeyForUser = (key) => {
+        const k = String(key || '').trim();
+        if (!k || !uid) return false;
+        // Standard + HIPAA top-level prefixes + legacy nested medical paths.
+        return (
+            k.startsWith(`users/${uid}/`)
+            || k.startsWith(`raw-audio/users/${uid}/`)
+            || k.startsWith(`transcripts/users/${uid}/`)
+            || k.startsWith(`summaries/users/${uid}/`)
+            || k.includes(`/users/${uid}/`)
+        );
+    };
     const extractDurationSeconds = (job) => {
         const md = (job && job.metadata && typeof job.metadata === 'object') ? job.metadata : {};
         const vals = [
@@ -8923,6 +8985,7 @@ async function initPersonalPage() {
                 md.transcript_exists === true ||
                 statusLooksTranscribed
             );
+            const probeKeys = qsTranscriptJsonKeysToTry(job.input_s3_key, resultKey || resultKeyMeta);
             return {
                 file_id: job.id,
                 file_name: String(md.display_name || '').trim() || displayNameFromKey(job.input_s3_key),
@@ -8931,7 +8994,8 @@ async function initPersonalPage() {
                 transcript_exists: transcriptExists,
                 s3_key: job.input_s3_key,
                 runpod_job_id: job.runpod_job_id || null,
-                derived_result_key: deriveResultJsonKey(job.input_s3_key)
+                derived_result_key: deriveResultJsonKey(job.input_s3_key),
+                _probe_keys: probeKeys,
             };
         })
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -8945,13 +9009,15 @@ async function initPersonalPage() {
             grouped.set(key, {
                 ...r,
                 _row_ids: [r.file_id],
-                _probe_keys: r.derived_result_key ? [r.derived_result_key] : [],
+                _probe_keys: Array.isArray(r._probe_keys) ? r._probe_keys.slice() : (r.derived_result_key ? [r.derived_result_key] : []),
                 _open_row_ts: r.transcript_exists ? new Date(r.created_at).getTime() : 0
             });
             return;
         }
         ex._row_ids.push(r.file_id);
-        if (r.derived_result_key) ex._probe_keys.push(r.derived_result_key);
+        (Array.isArray(r._probe_keys) ? r._probe_keys : (r.derived_result_key ? [r.derived_result_key] : [])).forEach((pk) => {
+            if (pk && !ex._probe_keys.includes(pk)) ex._probe_keys.push(pk);
+        });
         if (!ex.duration_seconds && r.duration_seconds) ex.duration_seconds = r.duration_seconds;
         if (new Date(r.created_at).getTime() > new Date(ex.created_at).getTime()) {
             ex.created_at = r.created_at;
@@ -9385,7 +9451,7 @@ async function initPersonalPage() {
                             body: JSON.stringify({
                                 s3Key: k,
                                 userId: user.id,
-                                isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false
+                                isMedical: qsPresignIsMedicalForKey(k),
                             })
                         });
                         const ej = await existsRes.json().catch(() => ({}));
@@ -9533,42 +9599,46 @@ async function initOpenInAppImpl(jobIdStr) {
         window._medicalHasResult = true;
         try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
     }
-    // Prefer transcript from S3 (result_s3_key); fallback to jobs.result
+    // Prefer transcript from S3 (result_s3_key); fallback to derived/legacy keys, then jobs.result
     let segments = [];
     let hasTranscriptForOpen = false;
-    let resultKeyToFetch = job.result_s3_key ? String(job.result_s3_key).trim() : '';
+    const storedResultKey = job.result_s3_key ? String(job.result_s3_key).trim() : '';
     const derivedResultKey = deriveTranscriptJsonKeyFromInputS3Key(job.input_s3_key);
-    if (!resultKeyToFetch && derivedResultKey) {
-        resultKeyToFetch = derivedResultKey;
-    }
-    if (resultKeyToFetch && derivedResultKey && !transcriptResultKeyMatchesInput(job.input_s3_key, resultKeyToFetch)) {
-        console.warn('[word-edit] open-in-app: result_s3_key does not match input_s3_key; using derived transcript key', {
+    const transcriptKeysToTry = qsTranscriptJsonKeysToTry(job.input_s3_key, storedResultKey);
+    if (storedResultKey && derivedResultKey && !transcriptResultKeyMatchesInput(job.input_s3_key, storedResultKey)) {
+        console.warn('[word-edit] open-in-app: result_s3_key does not match input_s3_key; trying derived keys too', {
             input_s3_key: job.input_s3_key,
-            stored_result_s3_key: resultKeyToFetch,
-            derived_result_key: derivedResultKey
+            stored_result_s3_key: storedResultKey,
+            derived_result_key: derivedResultKey,
+            keys_to_try: transcriptKeysToTry,
         });
-        resultKeyToFetch = derivedResultKey;
     }
 
-    const isMedical = typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false;
-    const _presignBody = (s3Key) => JSON.stringify({ s3Key, userId: user.id, isMedical });
+    const _presignBody = (s3Key) => JSON.stringify({
+        s3Key,
+        userId: user.id,
+        isMedical: qsPresignIsMedicalForKey(s3Key),
+    });
 
     // Fetch transcript JSON and media URL in parallel (was sequential ≈ 2× wait).
     const transcriptPromise = (async () => {
-        if (!resultKeyToFetch) return null;
-        try {
-            console.log('[word-edit] open-in-app: fetching transcript JSON', { result_s3_key: resultKeyToFetch });
-            const urlRes = await fetch('/api/get_presigned_url', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: _presignBody(resultKeyToFetch),
-            });
-            const urlJson = await urlRes.json().catch(() => ({}));
-            if (!urlJson.url) return null;
-            return await fetch(urlJson.url).then((r) => r.json()).catch(() => null);
-        } catch (_) {
-            return null;
+        if (!transcriptKeysToTry.length) return null;
+        for (const resultKeyToFetch of transcriptKeysToTry) {
+            try {
+                console.log('[word-edit] open-in-app: fetching transcript JSON', { result_s3_key: resultKeyToFetch });
+                const urlRes = await fetch('/api/get_presigned_url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: _presignBody(resultKeyToFetch),
+                });
+                const urlJson = await urlRes.json().catch(() => ({}));
+                if (!urlJson.url) continue;
+                const streamUrl = qsNormalizeAbsoluteMediaUrl(urlJson.url);
+                const parsed = await fetch(streamUrl).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+                if (parsed && typeof parsed === 'object') return parsed;
+            } catch (_) {}
         }
+        return null;
     })();
     const mediaPromise = (async () => {
         try {
@@ -9860,10 +9930,20 @@ async function runOpenQueryIfPresent() {
         const jobId = decodeURIComponent(m[1]).trim();
         if (!jobId) return;
         if (window.__qsOpenHandledFor === jobId) return;
+        const _qsOpenLooksLoaded = () => (
+            (typeof initOpenAppHasLoadedTranscriptPayload === 'function' && initOpenAppHasLoadedTranscriptPayload())
+            || (Array.isArray(window.currentSegments) && window.currentSegments.length > 0)
+            || !!(window.currentFormattedDoc && (
+                String(window.currentFormattedDoc.medical_chief_complaint || '').trim()
+                || String(window.currentFormattedDoc.overview || '').trim()
+            ))
+            || !!(document.getElementById('main-audio') && document.getElementById('main-audio').src)
+            || !!(document.getElementById('main-video') && document.getElementById('main-video').currentSrc)
+        );
         // If open is already in-flight (DOMContentLoaded + SIGNED_IN race), join that promise.
         if (_qsOpenInAppLocks.has(jobId)) {
             await _qsOpenInAppLocks.get(jobId);
-            window.__qsOpenHandledFor = jobId;
+            if (_qsOpenLooksLoaded()) window.__qsOpenHandledFor = jobId;
             return;
         }
         const { data: { user } } = await supabase.auth.getUser();
@@ -9871,7 +9951,12 @@ async function runOpenQueryIfPresent() {
         if (window.__qsOpenHandledFor === jobId) return;
         if (typeof initOpenInApp !== 'function') return;
         await initOpenInApp(jobId);
-        window.__qsOpenHandledFor = jobId;
+        // Only mark handled when something actually loaded — otherwise SIGNED_IN can retry.
+        if (_qsOpenLooksLoaded()) {
+            window.__qsOpenHandledFor = jobId;
+        } else if (typeof showStatus === 'function') {
+            showStatus('Could not open this recording. Try again.', true);
+        }
     } catch (e) {
         console.warn('[qs] runOpenQueryIfPresent failed', e);
     }
