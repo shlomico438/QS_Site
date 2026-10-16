@@ -14325,6 +14325,7 @@ if (postExpFbSubmit) {
                     like,
                     improve,
                     stars,
+                    userId: user.id,
                     source: (window._qsFeedbackModalSource || 'post_export'),
                     website: websiteEl ? websiteEl.value : ''
                 })

@@ -10524,6 +10524,28 @@ def medical_pricing_en():
     return render_template('medical_pricing.html', medical_entry=True)
 
 
+@app.route('/reviews')
+@app.route('/reviews/')
+def reviews():
+    items = _list_public_user_feedback()
+    return render_template(
+        'reviews.html',
+        reviews=items,
+        review_aggregate=_user_feedback_aggregate(items),
+    )
+
+
+@app.route('/en/reviews')
+@app.route('/en/reviews/')
+def reviews_en():
+    items = _list_public_user_feedback()
+    return render_template(
+        'reviews.html',
+        reviews=items,
+        review_aggregate=_user_feedback_aggregate(items),
+    )
+
+
 @app.route('/about')
 def about():
     return render_template('about.html')
@@ -14232,6 +14254,131 @@ def api_runpod_scale():
         return jsonify({"error": str(e)}), 500
 
 
+def _feedback_public_display_name(name, email=''):
+    """First name only — never publish an email on /reviews."""
+    raw = str(name or '').strip()
+    if raw:
+        raw = raw.replace('|', ' ').split()[0]
+        raw = raw.strip('.,;:')[:40]
+        if raw and '@' not in raw:
+            return raw
+    return ''
+
+
+def _persist_user_feedback(
+    *,
+    email='',
+    name='',
+    like='',
+    improve='',
+    stars=0,
+    source='post_export',
+    user_id=None,
+):
+    """Store feedback in Supabase. Public rows (stars>=1) appear on /reviews."""
+    try:
+        stars_n = int(stars or 0)
+    except (TypeError, ValueError):
+        stars_n = 0
+    if stars_n < 0 or stars_n > 5:
+        stars_n = 0
+    liked = str(like or '').strip()[:2000]
+    improve_txt = str(improve or '').strip()[:2000]
+    if not liked and not improve_txt and stars_n <= 0:
+        return False
+    try:
+        supabase_url, _service_key, headers = _supabase_rest_config()
+    except Exception as e:
+        logging.debug("user_feedback persist skipped (supabase unavailable): %s", e)
+        return False
+    payload = {
+        "source": str(source or "post_export").strip()[:80] or "post_export",
+        "stars": stars_n,
+        "liked": liked or None,
+        "improve": improve_txt or None,
+        "email": (str(email or "").strip()[:320] or None),
+        "name": (str(name or "").strip()[:200] or None),
+        "display_name": _feedback_public_display_name(name, email) or None,
+        "is_public": stars_n >= 1,
+    }
+    uid = str(user_id or "").strip()
+    if uid and uid.lower() != "anonymous":
+        payload["user_id"] = uid
+    try:
+        r = requests.post(
+            f"{supabase_url}/rest/v1/user_feedback",
+            headers={**headers, "Prefer": "return=minimal"},
+            json=payload,
+            timeout=10,
+        )
+        if r.status_code not in (200, 201, 204):
+            logging.warning(
+                "user_feedback persist HTTP %s: %s",
+                r.status_code,
+                (r.text or "")[:240],
+            )
+            return False
+        return True
+    except Exception as e:
+        logging.warning("user_feedback persist failed: %s", e)
+        return False
+
+
+def _list_public_user_feedback(limit=80):
+    """Public review cards for /reviews (no email, no improve)."""
+    try:
+        supabase_url, _service_key, headers = _supabase_rest_config()
+    except Exception:
+        return []
+    lim = max(1, min(int(limit or 80), 200))
+    try:
+        r = _supabase_http_request(
+            "GET",
+            f"{supabase_url}/rest/v1/user_feedback"
+            f"?is_public=eq.true&stars=gte.1"
+            f"&select=id,created_at,stars,liked,display_name,source"
+            f"&order=created_at.desc&limit={lim}",
+            headers=headers,
+            timeout=12,
+        )
+        if r.status_code != 200:
+            logging.warning("user_feedback list HTTP %s", r.status_code)
+            return []
+        rows = r.json() if r.content else []
+        out = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                stars = int(row.get("stars") or 0)
+            except (TypeError, ValueError):
+                stars = 0
+            if stars < 1:
+                continue
+            out.append({
+                "id": str(row.get("id") or ""),
+                "created_at": str(row.get("created_at") or ""),
+                "stars": stars,
+                "liked": str(row.get("liked") or "").strip(),
+                "display_name": str(row.get("display_name") or "").strip(),
+            })
+        return out
+    except Exception as e:
+        logging.warning("user_feedback list failed: %s", e)
+        return []
+
+
+def _user_feedback_aggregate(reviews):
+    rows = [r for r in (reviews or []) if isinstance(r, dict) and int(r.get("stars") or 0) >= 1]
+    if not rows:
+        return {"count": 0, "average": 0.0}
+    total = sum(int(r["stars"]) for r in rows)
+    return {
+        "count": len(rows),
+        "average": round(total / float(len(rows)), 1),
+    }
+
+
 REGISTRATION_FEEDBACK_RECIPIENT = "shlomi.cohen@getquickscribe.com"
 NEW_USER_NOTIFICATION_RECIPIENT = (
     os.environ.get('NEW_USER_NOTIFICATION_RECIPIENT') or 'shlomico1234@gmail.com'
@@ -14361,6 +14508,18 @@ def api_registration_feedback():
         if not email:
             return jsonify({"error": "email required for feedback"}), 400
         source = str(data.get("source") or "auth_modal").strip()[:80] or "auth_modal"
+        user_id = str(data.get("userId") or data.get("user_id") or "").strip() or None
+        stored = _persist_user_feedback(
+            email=email,
+            name=name,
+            like=like,
+            improve=improve,
+            stars=stars,
+            source=source,
+            user_id=user_id,
+        )
+        if not stored:
+            logging.warning("api_registration_feedback: supabase persist missed source=%s", source)
         body = (
             f"QuickScribe user feedback (optional)\n"
             f"Source: {source}\n\n"

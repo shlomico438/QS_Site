@@ -417,6 +417,9 @@
                 <a href="/free" data-i18n="nav_free">{% if qs_is_en %}Try free{% else %}נסו בחינם{% endif %}</a>
                 <a href="/pricing" data-i18n="nav_pricing">{% if qs_is_en %}Pricing{% else %}מחירים{% endif %}</a>
                 {% endif %}
+                {% if not (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) %}
+                <a href="{{ '/en/reviews' if qs_is_en else '/reviews' }}" data-i18n="nav_reviews">{% if qs_is_en %}Reviews{% else %}ביקורות{% endif %}</a>
+                {% endif %}
                 <a href="{{ '/en/medical/contact' if qs_is_en and (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else ('/medical/contact' if (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else '/contact') }}" data-i18n="nav_contact">{% if qs_is_en %}Contact{% else %}צור קשר{% endif %}</a>
             </nav>
             <nav class="site-footer-social" aria-label="{% if qs_is_en %}Social and reviews{% else %}רשתות וביקורות{% endif %}">

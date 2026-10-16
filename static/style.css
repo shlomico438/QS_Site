@@ -448,6 +448,45 @@ select.user-menu-profile-input {
     box-shadow: 0 4px 20px rgba(0,0,0,0.08);
     border: 1px solid #eee;
 }
+.reviews-aggregate {
+    font-size: 1.1rem;
+    margin: 0 0 1.25rem;
+}
+.reviews-aggregate strong {
+    font-size: 1.6rem;
+}
+.reviews-stars,
+.review-stars {
+    color: #f59e0b;
+    letter-spacing: 0.08em;
+}
+.reviews-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.review-card {
+    border: 1px solid #eee;
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: #fafafa;
+}
+.review-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin: 0 0 8px;
+    color: #64748b;
+    font-size: 0.9rem;
+}
+.review-body {
+    margin: 0;
+    color: #1e293b;
+    line-height: 1.55;
+}
 .products-page {
     max-width: 1120px;
 }

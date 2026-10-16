@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block page_title %}{% if qs_is_en %}Customer reviews | QuickScribe{% else %}ביקורות לקוחות | QuickScribe{% endif %}{% endblock %}
+{% block page_description %}{% if qs_is_en %}See ratings from people who exported a transcript with QuickScribe.{% else %}דירוגים מאנשים שייצאו תמלול ב-QuickScribe.{% endif %}{% endblock %}
+
+{% block structured_data %}
+{% if review_aggregate and review_aggregate.count %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org/",
+  "@type": "SoftwareApplication",
+  "name": "QuickScribe",
+  "url": "{{ qs_canonical_url }}",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "Web",
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": "{{ '%.1f'|format(review_aggregate.average) }}",
+    "bestRating": "5",
+    "worstRating": "1",
+    "ratingCount": "{{ review_aggregate.count }}"
+  },
+  "review": [
+    {%- for r in reviews %}
+    {
+      "@type": "Review",
+      "author": { "@type": "Person", "name": {{ (r.display_name or ('QuickScribe user' if qs_is_en else 'משתמש QuickScribe'))|tojson }} },
+      "datePublished": {{ (r.created_at[:10] if r.created_at else '')|tojson }},
+      "reviewRating": {
+        "@type": "Rating",
+        "ratingValue": "{{ r.stars }}",
+        "bestRating": "5",
+        "worstRating": "1"
+      }{% if r.liked %},
+      "reviewBody": {{ r.liked|tojson }}
+      {% endif %}
+    }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+  ]
+}
+</script>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="content-page reviews-page">
+    <h1 data-i18n="reviews_title">{% if qs_is_en %}Customer reviews{% else %}ביקורות לקוחות{% endif %}</h1>
+    <p data-i18n="reviews_intro">{% if qs_is_en %}Ratings from people who exported a transcript with QuickScribe.{% else %}דירוגים מאנשים שייצאו תמלול ב-QuickScribe.{% endif %}</p>
+
+    {% if review_aggregate and review_aggregate.count %}
+    <p class="reviews-aggregate" aria-label="{% if qs_is_en %}Average rating{% else %}דירוג ממוצע{% endif %}">
+        <strong>{{ '%.1f'|format(review_aggregate.average) }}</strong>
+        <span class="reviews-stars" aria-hidden="true">{% for i in range(1, 6) %}{% if i <= (review_aggregate.average|round|int) %}★{% else %}☆{% endif %}{% endfor %}</span>
+        <span data-i18n="reviews_count_prefix">{% if qs_is_en %}from{% else %}מתוך{% endif %}</span>
+        {{ review_aggregate.count }}
+        <span data-i18n="reviews_count_suffix">{% if qs_is_en %}reviews{% else %}ביקורות{% endif %}</span>
+    </p>
+    <ol class="reviews-list">
+        {% for r in reviews %}
+        <li class="review-card">
+            <p class="review-meta">
+                <span class="review-stars" aria-label="{{ r.stars }} / 5">{% for i in range(1, 6) %}{% if i <= r.stars %}★{% else %}☆{% endif %}{% endfor %}</span>
+                <span class="review-author">{{ r.display_name or ('QuickScribe user' if qs_is_en else 'משתמש QuickScribe') }}</span>
+                {% if r.created_at %}
+                <time datetime="{{ r.created_at[:10] }}">{{ r.created_at[:10] }}</time>
+                {% endif %}
+            </p>
+            {% if r.liked %}
+            <p class="review-body" dir="auto">{{ r.liked }}</p>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ol>
+    {% else %}
+    <p data-i18n="reviews_empty">{% if qs_is_en %}Reviews will appear here as customers rate their export.{% else %}הביקורות יופיעו כאן כשלקוחות ידרגו אחרי ייצוא.{% endif %}</p>
+    {% endif %}
+</div>
+{% endblock %}
