@@ -14659,7 +14659,8 @@ def _schedule_post_summary_formatting(
             )
             if clean_text:
                 existing_fmt["clean_transcript"] = clean_text
-                payload["formatted"] = existing_fmt
+            # Keep a client/guest cleanup already on the object if this pass came back empty.
+            payload["formatted"] = existing_fmt
             payload["segments"] = merged
             w2, c2 = _flatten_words_from_segments(merged)
             if w2 is not None and c2 is not None:

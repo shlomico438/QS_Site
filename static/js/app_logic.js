@@ -12179,12 +12179,17 @@ async function qsPersistFormattedDocToS3() {
         const { data: { user } } = await supabase.auth.getUser();
         const s3Key = (typeof currentJobInputS3KeyHint === 'function' ? currentJobInputS3KeyHint() : '') ||
             String(localStorage.getItem('lastS3Key') || '').trim();
-        if (!user || !s3Key || !(window.currentSegments || []).length) return;
+        // Guests still own users/anonymous/... — persist cleanup there so claim copies it.
+        const uid = String((user && user.id) || '').trim()
+            || (typeof qsIsAnonymousStandardS3Key === 'function' && qsIsAnonymousStandardS3Key(s3Key)
+                ? 'anonymous'
+                : '');
+        if (!uid || !s3Key || !(window.currentSegments || []).length) return;
         const saveFmtRes = await fetch('/api/save_job_result', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                userId: user.id,
+                userId: uid,
                 input_s3_key: s3Key,
                 segments: window.currentSegments,
                 words: window.currentWords || undefined,
