@@ -228,7 +228,10 @@ class QueueBurnTaskOnEcsTests(unittest.TestCase):
         kwargs = fake_ecs.run_task.call_args.kwargs
         self.assertEqual(kwargs["cluster"], "default")
         self.assertEqual(kwargs["taskDefinition"], "quickscribe-burn-subtitles")
-        self.assertEqual(kwargs["launchType"], "FARGATE")
+        self.assertNotIn("launchType", kwargs)
+        cps = kwargs["capacityProviderStrategy"]
+        self.assertEqual(cps[0]["capacityProvider"], "FARGATE_SPOT")
+        self.assertEqual(cps[1]["capacityProvider"], "FARGATE")
         awsvpc = kwargs["networkConfiguration"]["awsvpcConfiguration"]
         self.assertEqual(awsvpc["subnets"], ["subnet-a", "subnet-b"])
         self.assertEqual(awsvpc["securityGroups"], ["sg-1"])

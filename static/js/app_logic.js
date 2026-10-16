@@ -5269,7 +5269,8 @@ function qsIsAnonymousStandardS3Key(s3Key) {
 async function qsClaimAnonymousJobIfNeeded(options = {}) {
     const opts = options || {};
     try {
-        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return null;
+        // Do not skip because the UI is in medical mode — HIPAA keys are rejected
+        // server-side. Skipping here left regular guest .mkv files under anonymous.
         const s3Key = String(
             opts.inputS3Key
             || localStorage.getItem('lastS3Key')
@@ -5306,37 +5307,34 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                 : (Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC) || 0)
         ) || (typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec(jobId) : 0);
         const promise = (async () => {
-            const res = await fetch('/api/claim_anonymous_job', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`,
-                },
-                body: JSON.stringify({
-                    jobId,
-                    input_s3_key: s3Key,
-                    segments: window.currentSegments || [],
-                    ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
-                    ...(qsRecordingDisplayNameFromUpload()
-                        ? { displayName: qsRecordingDisplayNameFromUpload() }
-                        : {}),
-                }),
+            const body = JSON.stringify({
+                jobId,
+                input_s3_key: s3Key,
+                segments: window.currentSegments || [],
+                ...(mediaDurationSec > 0 ? { mediaDurationSec } : {}),
+                ...(qsRecordingDisplayNameFromUpload()
+                    ? { displayName: qsRecordingDisplayNameFromUpload() }
+                    : {}),
             });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
+            let res = null;
+            let data = {};
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                res = await fetch('/api/claim_anonymous_job', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`,
+                    },
+                    body,
+                });
+                data = await res.json().catch(() => ({}));
+                if (res.ok) break;
+                const retryable = res.status === 503 || res.status === 500 || data.retryable;
                 console.warn('[qs-claim] anonymous job claim failed', res.status, data);
-                return data;
+                if (!retryable || attempt >= 3) return data;
+                await new Promise((r) => setTimeout(r, 1500 * attempt));
             }
-            if (data.skipped) {
-                // Stale guest rows / already non-anonymous — not a real failure.
-                if (data.reason && data.reason !== 'not_anonymous') {
-                    console.info('[qs-claim] anonymous job claim skipped', {
-                        jobId,
-                        reason: data.reason,
-                        input_s3_key: data.input_s3_key || s3Key,
-                    });
-                }
-                window._qsAnonymousClaimDoneResults[jobId] = data;
+            if (!res || !res.ok) {
                 return data;
             }
             const newKey = String(data.input_s3_key || '').trim();
@@ -5348,6 +5346,31 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
                 || ''
             ).trim();
             const updateActivePointers = !opts.inputS3Key || !sessionJobId || sessionJobId === jobId;
+            // Soft-skip still returns the rewritten users/{id}/… key — update pointers so
+            // export does not stamp users/anonymous/… back onto the jobs row.
+            if (newKey && !qsIsAnonymousStandardS3Key(newKey) && updateActivePointers) {
+                try {
+                    localStorage.setItem('lastS3Key', newKey);
+                    localStorage.setItem('pendingS3Key', newKey);
+                } catch (_) {}
+            }
+            if (data.skipped) {
+                // Stale guest rows / already non-anonymous — not a real failure.
+                if (data.reason && data.reason !== 'not_anonymous') {
+                    console.info('[qs-claim] anonymous job claim skipped', {
+                        jobId,
+                        reason: data.reason,
+                        input_s3_key: newKey || s3Key,
+                        updated_active_pointers: !!(newKey && !qsIsAnonymousStandardS3Key(newKey) && updateActivePointers),
+                    });
+                }
+                // Never cache "missing storage" as done — a false HEAD miss must retry
+                // on export / next sign-in while the .mkv is still under anonymous.
+                if (data.reason !== 'anonymous_input_missing') {
+                    window._qsAnonymousClaimDoneResults[jobId] = data;
+                }
+                return data;
+            }
             if (newKey && updateActivePointers) {
                 try {
                     localStorage.setItem('lastS3Key', newKey);
@@ -5436,7 +5459,6 @@ window.qsRunPostSignInAnonymousClaims = qsRunPostSignInAnonymousClaims;
 /** Claim any jobs already attached to this user that still point at users/anonymous/ keys. */
 async function qsClaimAnonymousJobsOwnedByUser() {
     try {
-        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
         const { data: rows, error } = await supabase
@@ -5751,8 +5773,12 @@ async function qsRestorePendingGuestSessionAfterAuth(options = {}) {
             }
             if (s3Key) {
                 try {
-                    localStorage.setItem('lastS3Key', s3Key);
-                    localStorage.setItem('pendingS3Key', s3Key);
+                    const current = String(localStorage.getItem('lastS3Key') || '').trim();
+                    const alreadyClaimed = current && !qsIsAnonymousStandardS3Key(current);
+                    if (!alreadyClaimed) {
+                        localStorage.setItem('lastS3Key', s3Key);
+                        localStorage.setItem('pendingS3Key', s3Key);
+                    }
                 } catch (_) {}
             }
 
@@ -10101,10 +10127,17 @@ async function ensureJobRecordOnExport(opts) {
 
     // Guest → signed-in: move R2 objects under the user and charge minutes.
     // Reuse in-flight / done claim — never force a second parallel move.
+    // If the session still points at users/anonymous/…, always await claim so export
+    // cannot race and re-stamp the anonymous key after a soft-skip rewrite.
+    const sessionKeyBefore = String(localStorage.getItem('lastS3Key') || '').trim();
+    const mustAwaitClaim = awaitClaim || (
+        typeof qsIsAnonymousStandardS3Key === 'function'
+        && qsIsAnonymousStandardS3Key(sessionKeyBefore)
+    );
     if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
         try {
             const claimP = qsClaimAnonymousJobIfNeeded({ force: false });
-            if (awaitClaim) await claimP;
+            if (mustAwaitClaim) await claimP;
             else Promise.resolve(claimP).catch(() => {});
         } catch (_) {}
     }
@@ -10143,7 +10176,7 @@ async function ensureJobRecordOnExport(opts) {
         try {
             const { data: existing } = await supabase
                 .from('jobs')
-                .select('id')
+                .select('id,input_s3_key')
                 .eq('user_id', user.id)
                 .eq('runpod_job_id', jobId)
                 .order('created_at', { ascending: true })
@@ -10151,13 +10184,22 @@ async function ensureJobRecordOnExport(opts) {
                 .maybeSingle();
             if (existing && existing.id) {
                 localStorage.setItem('lastJobDbId', existing.id);
+                const existingKey = String(existing.input_s3_key || '').trim();
+                const patch = {
+                    status: 'exported',
+                    updated_at: new Date().toISOString(),
+                };
+                // Never overwrite a claimed users/{id}/… key with a stale anonymous pointer.
+                const s3IsAnon = typeof qsIsAnonymousStandardS3Key === 'function'
+                    && qsIsAnonymousStandardS3Key(s3Key);
+                const existingIsAnon = typeof qsIsAnonymousStandardS3Key === 'function'
+                    && qsIsAnonymousStandardS3Key(existingKey);
+                if (!s3IsAnon || !existingKey || existingIsAnon) {
+                    patch.input_s3_key = s3Key;
+                }
                 const { data: updated } = await supabase
                     .from('jobs')
-                    .update({
-                        status: 'exported',
-                        input_s3_key: s3Key,
-                        updated_at: new Date().toISOString(),
-                    })
+                    .update(patch)
                     .eq('id', existing.id)
                     .select('id');
                 if (updated && updated.length) {
@@ -13613,14 +13655,18 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             }
 
             const isHeBurn = String(document.documentElement.lang || '').toLowerCase().startsWith('he');
-            const encodingMsg = isHeBurn
-                ? 'יוצרים את הסרטון עם הכתוביות… זה יכול לקחת כמה דקות.'
-                : 'Creating your movie with subtitles… this can take a few minutes.';
+            const encodingMsg = isHeBurn ? 'יוצרים את הסרטון...' : 'Creating movie...';
             const progressBar = document.getElementById('progress-bar-legacy');
             const statusTxt = document.getElementById('upload-status');
             let burnProgressTimer = null;
+            // ECS Fargate burn is slower (~2–3 min for a short clip); ease bar over that window.
+            const burnProgressExpectedMs = Math.max(
+                60000,
+                Number(window.__QS_BURN_PROGRESS_EXPECTED_MS) || 150000
+            );
             const startBurnProgress = () => {
-                let pct = 8;
+                let pct = 4;
+                const t0 = Date.now();
                 if (mainBtn) mainBtn.innerText = creatingMovieText + ' ' + pct + '%';
                 if (progressBar) progressBar.style.width = pct + '%';
                 if (statusTxt) {
@@ -13629,11 +13675,14 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 }
                 setBurnProgress(pct, `${encodingMsg} ${pct}%`);
                 burnProgressTimer = setInterval(() => {
-                    pct = Math.min(95, pct + Math.max(1, Math.round((95 - pct) * 0.08)));
+                    const t = Math.min(1, (Date.now() - t0) / burnProgressExpectedMs);
+                    // Ease-out toward 94% over expectedMs; finish jumps to 100% on complete.
+                    const eased = 4 + 90 * (1 - Math.pow(1 - t, 2.2));
+                    pct = Math.max(pct, Math.min(94, Math.round(eased)));
                     if (mainBtn) mainBtn.innerText = creatingMovieText + ' ' + pct + '%';
                     if (progressBar) progressBar.style.width = pct + '%';
                     setBurnProgress(pct, `${encodingMsg} ${pct}%`);
-                }, 1200);
+                }, 2000);
             };
             const stopBurnProgress = (completed) => {
                 if (burnProgressTimer) {
@@ -13698,7 +13747,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     force_local_burn: forceLocalBurn
                 })
             });
-            const burnData = burnRes.ok ? await burnRes.json() : {};
+            const burnData = await burnRes.json().catch(() => ({}));
+            const ecsFailReason = (
+                (burnData && (burnData.fallback_detail || burnData.detail || burnData.error)) || ''
+            ).toString();
             logMovieStage('POST /api/burn_subtitles_server done', {
                 status: burnRes.status,
                 tookMs: Date.now() - tBurnStart,
@@ -13706,9 +13758,21 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 error: burnData && burnData.error ? burnData.error : undefined,
                 detail: burnData && burnData.detail ? burnData.detail : undefined,
                 fallback_from: burnData && burnData.fallback_from ? burnData.fallback_from : undefined,
+                fallback_detail: burnData && burnData.fallback_detail ? burnData.fallback_detail : undefined,
+                ecs_fail_reason: ecsFailReason || undefined,
+                response: burnData,
             });
+            if (burnData && burnData.fallback_from) {
+                console.warn(
+                    '[movie export] ECS burn failed; used',
+                    burnData.mode,
+                    'instead. Reason:',
+                    ecsFailReason || '(see response.fallback_detail / Network tab)',
+                );
+            }
             if (!burnRes.ok) {
-                const err = [burnData.error || burnRes.statusText, burnData.detail].filter(Boolean).join(' — ');
+                const err = [burnData.error || burnRes.statusText, burnData.detail || burnData.fallback_detail]
+                    .filter(Boolean).join(' — ');
                 throw new Error(err || 'Burn request failed');
             }
             const taskId = burnData.task_id;

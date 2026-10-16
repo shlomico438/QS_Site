@@ -20,7 +20,9 @@ python scripts/setup_burn_subtitles_ecs.py --apply --skip-build --image-uri 7603
 
 The script uses live Site network/roles when the profile can describe ECS; otherwise
 known Site defaults (subnets/SG/`ecsTaskExecutionRole`/`quickscribe_s3fullaccess`).
-Task family: `quickscribe-burn-subtitles` (2 vCPU / 4 GB).
+Task family: `quickscribe-burn-subtitles` (1 vCPU / 2 GB, low priority vs medical).
+Worker runs ffmpeg under `nice -n 19` with a single encode thread. Site prefers
+Fargate Spot (`BURN_ECS_USE_SPOT=true`) with on-demand Fargate as weight fallback.
 
 ## Site env
 
@@ -31,6 +33,7 @@ BURN_ECS_SUBNETS=subnet-aaa,subnet-bbb
 BURN_ECS_SECURITY_GROUPS=sg-ccc
 BURN_ECS_ASSIGN_PUBLIC_IP=ENABLED
 BURN_ECS_CONTAINER_NAME=burn
+BURN_ECS_USE_SPOT=true
 ENABLE_AUDIO_PREPROCESSING=false
 ```
 

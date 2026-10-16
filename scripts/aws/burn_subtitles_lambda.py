@@ -118,6 +118,8 @@ def _burn(video_path: Path, subs_path: Path, out_path: Path, subtitle_ext: str) 
         "-hide_banner",
         "-loglevel",
         "error",
+        "-threads",
+        "1",
         "-i",
         str(video_path),
         "-vf",
@@ -128,6 +130,8 @@ def _burn(video_path: Path, subs_path: Path, out_path: Path, subtitle_ext: str) 
         "veryfast",
         "-crf",
         "23",
+        "-threads",
+        "1",
         "-c:a",
         "aac",
         "-b:a",
@@ -138,11 +142,14 @@ def _burn(video_path: Path, subs_path: Path, out_path: Path, subtitle_ext: str) 
         "+faststart",
         str(out_path),
     ]
+    # Low OS priority so burn yields CPU if anything else shares the host/node.
+    if shutil.which("nice"):
+        cmd = ["nice", "-n", "19"] + cmd
     timeout = max(
         60,
         int(os.environ.get("BURN_FFMPEG_TIMEOUT_SEC", str(DEFAULT_FFMPEG_TIMEOUT_SEC)) or DEFAULT_FFMPEG_TIMEOUT_SEC),
     )
-    _log(f"ffmpeg start timeout={timeout}s filter={filter_name}")
+    _log(f"ffmpeg start timeout={timeout}s filter={filter_name} nice=19 threads=1")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "ffmpeg failed")[-800:]

@@ -234,18 +234,26 @@ def _s3_upload_accelerate_enabled_for_bucket(bucket):
     return v in ('1', 'true', 'yes', 'on')
 
 
-def _s3_boto_client(for_upload=False, bucket=None):
+def _s3_boto_client(for_upload=False, bucket=None, read_timeout=None, connect_timeout=None):
     """S3-compatible client: R2 for S3_BUCKET (RunPod), AWS for medical / SageMaker manifests."""
     use_r2 = _bucket_uses_r2(bucket)
     region = _s3_region_for_bucket(bucket)
     if not use_r2:
         region = _sanitize_aws_region(region, 'eu-north-1')
     try:
-        connect_to = max(1, int(os.environ.get('S3_CONNECT_TIMEOUT_SEC', '3') or 3))
+        connect_to = max(1, int(
+            connect_timeout
+            if connect_timeout is not None
+            else (os.environ.get('S3_CONNECT_TIMEOUT_SEC', '3') or 3)
+        ))
     except (TypeError, ValueError):
         connect_to = 3
     try:
-        read_to = max(2, int(os.environ.get('S3_READ_TIMEOUT_SEC', '8') or 8))
+        read_to = max(2, int(
+            read_timeout
+            if read_timeout is not None
+            else (os.environ.get('S3_READ_TIMEOUT_SEC', '8') or 8)
+        ))
     except (TypeError, ValueError):
         read_to = 8
     config_kw = {
@@ -3221,17 +3229,42 @@ def _apply_vocal_separation_failure(trigger_payload, source_s3_key, error_text):
 _vocal_separation_finish_lock = threading.Lock()
 
 
-def _s3_object_exists(bucket, key):
+def _s3_object_stat(bucket, key):
+    """Return 'exists', 'missing', or 'error'.
+
+    Timeouts, 403s, and transport failures must not be treated as missing —
+    that made guest-claim skip while the .mkv was still under users/anonymous/.
+    """
     if not bucket or not key:
-        return False
+        return 'missing'
     try:
         s3_client = _s3_boto_client(bucket=bucket)
         s3_client.head_object(Bucket=bucket, Key=key)
-        return True
-    except ClientError:
-        return False
-    except Exception:
-        return False
+        return 'exists'
+    except ClientError as ce:
+        code = str((ce.response or {}).get('Error', {}).get('Code') or '')
+        http = 0
+        try:
+            http = int(((ce.response or {}).get('ResponseMetadata') or {}).get('HTTPStatusCode') or 0)
+        except (TypeError, ValueError):
+            http = 0
+        if code in ('404', 'NoSuchKey', 'NotFound', 'NoSuchBucket') or http == 404:
+            return 'missing'
+        logging.warning(
+            "_s3_object_stat error bucket=%s key=%s code=%s http=%s",
+            bucket,
+            str(key)[-120:],
+            code,
+            http,
+        )
+        return 'error'
+    except Exception as e:
+        logging.warning("_s3_object_stat exception key=%s: %s", str(key)[-120:], e)
+        return 'error'
+
+
+def _s3_object_exists(bucket, key):
+    return _s3_object_stat(bucket, key) == 'exists'
 
 
 def _get_vocal_separation_meta_from_db(job_id):
@@ -8378,15 +8411,25 @@ def _s3_copy_then_delete(bucket, src_key, dst_key):
     bucket = str(bucket or '').strip()
     if not bucket or not src or not dst or src == dst:
         return False
-    s3_client = _s3_boto_client(bucket=bucket)
-    if _s3_object_exists(bucket, dst):
+    try:
+        copy_timeout = max(60, int(os.environ.get('S3_COPY_TIMEOUT_SEC', '300') or 300))
+    except (TypeError, ValueError):
+        copy_timeout = 300
+    s3_client = _s3_boto_client(bucket=bucket, read_timeout=copy_timeout, connect_timeout=10)
+    dst_stat = _s3_object_stat(bucket, dst)
+    if dst_stat == 'error':
+        raise RuntimeError(f"Could not stat destination object {dst[-80:]}")
+    if dst_stat == 'exists':
         try:
-            if _s3_object_exists(bucket, src):
+            if _s3_object_stat(bucket, src) == 'exists':
                 s3_client.delete_object(Bucket=bucket, Key=src)
         except Exception:
             logging.warning("claim: could not delete already-copied source %s", src[-80:])
         return True
-    if not _s3_object_exists(bucket, src):
+    src_stat = _s3_object_stat(bucket, src)
+    if src_stat == 'error':
+        raise RuntimeError(f"Could not stat source object {src[-80:]}")
+    if src_stat == 'missing':
         logging.info(
             "claim: skip missing source (already moved or never uploaded) src=%s dst=%s",
             src[-100:],
@@ -8882,8 +8925,23 @@ def api_claim_anonymous_job():
                         display_name=display_name,
                     )
 
-            src_exists = _s3_object_exists(bucket, input_s3_key)
-            dst_exists = _s3_object_exists(bucket, new_input)
+            src_stat = _s3_object_stat(bucket, input_s3_key)
+            dst_stat = _s3_object_stat(bucket, new_input)
+            if src_stat == 'error' or dst_stat == 'error':
+                logging.error(
+                    "claim_anonymous_job storage stat failed job_id=%s user=%s src=%s dst=%s",
+                    job_id,
+                    user_id[:8],
+                    src_stat,
+                    dst_stat,
+                )
+                return jsonify({
+                    "error": "Could not reach storage to claim this recording. Please retry.",
+                    "retryable": True,
+                    "reason": "storage_stat_error",
+                }), 503
+            src_exists = src_stat == 'exists'
+            dst_exists = dst_stat == 'exists'
             # Concurrent claim already moved primary object — finish DB/credits without 500.
             if not src_exists and dst_exists:
                 return _finalize_claimed_anonymous_job(
@@ -8902,8 +8960,90 @@ def api_claim_anonymous_job():
                     display_name=display_name,
                 )
             if not src_exists and not dst_exists:
-                # Stale DB row (old guest upload already deleted from R2). Soft-skip and
-                # rewrite owned job keys off users/anonymous/ so sign-in scans stop retrying.
+                # Media may be GC'd after guest transcription, but transcript JSON (and
+                # other siblings) can still sit under users/anonymous/output/. Move those,
+                # rewrite the jobs row, and charge — soft-skip only when nothing remains
+                # and we cannot bill from known duration.
+                related_missing = set(_collect_anonymous_job_s3_keys(bucket, input_s3_key) or [])
+                out_base = (
+                    input_s3_key.replace('/input/', '/output/', 1).rsplit('.', 1)[0]
+                    if '/input/' in input_s3_key
+                    else ''
+                )
+                if out_base:
+                    for candidate in (f"{out_base}.json", f"{out_base}.gpt.json"):
+                        related_missing.add(candidate)
+                moved_orphans = []
+                for src in sorted(related_missing):
+                    if src == input_s3_key:
+                        continue
+                    dst = _rewrite_anonymous_standard_s3_key(src, user_id)
+                    if not dst:
+                        continue
+                    try:
+                        if _s3_copy_then_delete(bucket, src, dst):
+                            moved_orphans.append({"from": src, "to": dst})
+                    except Exception as copy_err:
+                        logging.warning(
+                            "claim_anonymous_job orphan sibling move failed job_id=%s src=%s: %s",
+                            job_id,
+                            src[-100:],
+                            copy_err,
+                        )
+                orphan_result = None
+                if out_base:
+                    for candidate in (
+                        _rewrite_anonymous_standard_s3_key(f"{out_base}.json", user_id),
+                        _rewrite_anonymous_standard_s3_key(f"{out_base}.gpt.json", user_id),
+                    ):
+                        if candidate and _s3_object_exists(bucket, candidate):
+                            orphan_result = candidate
+                            break
+                existing_for_dur = existing if isinstance(existing, dict) else _get_job_row_by_runpod_job_id(
+                    job_id,
+                    select="id,user_id,input_s3_key,result_s3_key,credit_minutes_used,file_duration_sec,metadata",
+                )
+                known_duration = _resolve_claim_credit_duration_sec(
+                    job_id=job_id,
+                    bucket=bucket,
+                    input_s3_key=new_input,
+                    client_duration=client_duration,
+                    segments=segments,
+                    pending_info=pending_job_info.get(job_id) if isinstance(pending_job_info.get(job_id), dict) else None,
+                    job_metadata=(
+                        existing_for_dur.get('metadata')
+                        if isinstance(existing_for_dur, dict) and isinstance(existing_for_dur.get('metadata'), dict)
+                        else None
+                    ),
+                    result_s3_key=orphan_result,
+                    job_row=existing_for_dur if isinstance(existing_for_dur, dict) else None,
+                )
+                if moved_orphans or orphan_result or known_duration > 0:
+                    logging.info(
+                        "claim_anonymous_job media missing but reclaiming orphans "
+                        "job_id=%s user=%s moved=%s result=%s duration_sec=%s",
+                        job_id,
+                        user_id[:8],
+                        len(moved_orphans),
+                        bool(orphan_result),
+                        known_duration,
+                    )
+                    return _finalize_claimed_anonymous_job(
+                        user_id=user_id,
+                        job_id=job_id,
+                        old_input_key=input_s3_key,
+                        new_input=new_input,
+                        bucket=bucket,
+                        segments=segments,
+                        client_duration=client_duration if client_duration > 0 else known_duration,
+                        user_name=user_name,
+                        user_email=user_email,
+                        wallet=wallet,
+                        moved=moved_orphans,
+                        already_claimed=False,
+                        display_name=display_name,
+                    )
+                # Truly nothing left to claim or bill.
                 cleared = _clear_stale_anonymous_job_keys(
                     user_id=user_id,
                     job_id=job_id,
@@ -19386,7 +19526,6 @@ def _queue_burn_task_on_ecs(task_id, input_s3_key, segments, user_id, callback_u
     run_kwargs = {
         'cluster': cluster,
         'taskDefinition': task_definition,
-        'launchType': 'FARGATE',
         'count': 1,
         'platformVersion': 'LATEST',
         'networkConfiguration': {'awsvpcConfiguration': network},
@@ -19403,8 +19542,20 @@ def _queue_burn_task_on_ecs(task_id, input_s3_key, segments, user_id, callback_u
         # RunTask/PassRole are allowed. Identify jobs via startedBy + CloudWatch.
         'startedBy': f'qs-burn-{str(task_id)[:24]}',
     }
-    max_attempts = int((os.environ.get('BURN_ECS_DISPATCH_RETRIES') or '4').strip() or 4)
-    backoff_sec = float((os.environ.get('BURN_ECS_DISPATCH_BACKOFF_SEC') or '1.5').strip() or 1.5)
+    # Prefer Fargate Spot (interruptible / lower priority capacity) so burn yields to
+    # on-demand Site/medical work. Fall back to on-demand Fargate if Spot is unavailable.
+    use_spot = str(os.environ.get('BURN_ECS_USE_SPOT', 'true')).strip().lower() in (
+        '1', 'true', 'yes', 'on',
+    )
+    if use_spot:
+        run_kwargs['capacityProviderStrategy'] = [
+            {'capacityProvider': 'FARGATE_SPOT', 'weight': 4, 'base': 0},
+            {'capacityProvider': 'FARGATE', 'weight': 1, 'base': 0},
+        ]
+    else:
+        run_kwargs['launchType'] = 'FARGATE'
+    max_attempts = int((os.environ.get('BURN_ECS_DISPATCH_RETRIES') or '2').strip() or 2)
+    backoff_sec = float((os.environ.get('BURN_ECS_DISPATCH_BACKOFF_SEC') or '1.0').strip() or 1.0)
     last_err = None
     response = None
     for attempt in range(1, max_attempts + 1):
@@ -19420,6 +19571,27 @@ def _queue_burn_task_on_ecs(task_id, input_s3_key, segments, user_id, callback_u
         except Exception as e:
             last_err = e
             response = None
+            err_text = str(e)
+            # AccessDenied / auth will not heal on retry — fall back to RunPod immediately.
+            if 'AccessDenied' in err_text or 'Unauthorized' in err_text or 'not authorized' in err_text.lower():
+                logging.warning("ECS burn dispatch AccessDenied (no retry): %s", e)
+                break
+            # Spot / capacity-provider misconfig → demote to plain on-demand Fargate once.
+            spot_ish = (
+                'CapacityProvider' in err_text
+                or 'capacity provider' in err_text.lower()
+                or 'FARGATE_SPOT' in err_text
+            )
+            if use_spot and spot_ish and 'capacityProviderStrategy' in run_kwargs:
+                logging.warning(
+                    "ECS burn Spot/capacity provider failed; retrying with launchType=FARGATE: %s",
+                    e,
+                )
+                run_kwargs.pop('capacityProviderStrategy', None)
+                run_kwargs['launchType'] = 'FARGATE'
+                use_spot = False
+                ecs = boto3.client('ecs', region_name=region)
+                continue
             if attempt >= max_attempts:
                 break
             sleep_s = backoff_sec * attempt
@@ -19766,7 +19938,15 @@ def burn_subtitles_server():
                         payload["endpoint_id"] = _runpod_burn_endpoint_id()
                     if last_dispatch_err:
                         payload["fallback_from"] = engine
-                        payload["fallback_detail"] = str(last_dispatch_err)[:300]
+                        payload["fallback_detail"] = str(last_dispatch_err)[:500]
+                        # Also mirror to detail so browser logs show why ECS was skipped.
+                        payload["detail"] = payload["fallback_detail"]
+                        logging.warning(
+                            "burn fell back to %s after %s failed: %s",
+                            try_engine,
+                            engine,
+                            last_dispatch_err,
+                        )
                     return jsonify(payload), 202
                 except Exception as e:
                     last_dispatch_err = e

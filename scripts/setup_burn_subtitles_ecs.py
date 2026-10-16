@@ -40,9 +40,9 @@ TASK_FAMILY = "quickscribe-burn-subtitles"
 CONTAINER_NAME = "burn"
 SITE_CLUSTER = "default"
 SITE_SERVICE = "quickscribe-site"
-# 2 vCPU / 4 GB — enough for ffmpeg burn without starving the Site service.
-TASK_CPU = "2048"
-TASK_MEMORY = "4096"
+# 1 vCPU / 2 GB — slower burn, lower Fargate quota pressure vs Site/medical.
+TASK_CPU = "1024"
+TASK_MEMORY = "2048"
 LOG_GROUP = "/ecs/quickscribe-burn-subtitles"
 
 # Known Site network/roles (eu-north-1) when DescribeServices is denied (Koyeb profile).
@@ -303,6 +303,7 @@ def _print_site_env(
         log(f"BURN_ECS_SECURITY_GROUPS={','.join(security_groups)}")
     log(f"BURN_ECS_ASSIGN_PUBLIC_IP={assign_public_ip}")
     log("BURN_ECS_CONTAINER_NAME=burn")
+    log("BURN_ECS_USE_SPOT=true")
     log("ENABLE_AUDIO_PREPROCESSING=false")
     log("# Optional: remove RunPod CPU once burn works on ECS")
     log("# RUNPOD_CPU_ENDPOINT_ID=")
