@@ -13086,6 +13086,18 @@ async function _flushMobileBatchShare() {
 
 window._postExportFeedbackStars = 0;
 
+function qsSetPostExportRateHint(on) {
+    const hint = document.getElementById('post-exp-fb-rate-hint');
+    const stars = document.getElementById('post-exp-fb-stars');
+    const title = document.querySelector('#post-export-feedback-modal .reg-feedback-stars-title');
+    if (hint) {
+        hint.style.display = on ? 'block' : 'none';
+        hint.setAttribute('aria-hidden', on ? 'false' : 'true');
+    }
+    if (stars) stars.style.outline = on ? '2px solid #f59e0b' : '';
+    if (title) title.style.color = on ? '#b45309' : '';
+}
+
 function setPostExportFeedbackStars(n) {
     const v = Math.max(0, Math.min(5, Number(n) || 0));
     window._postExportFeedbackStars = v;
@@ -13095,6 +13107,7 @@ function setPostExportFeedbackStars(n) {
             btn.style.color = v >= sn ? '#f59e0b' : '#d1d5db';
         });
     } catch (_) {}
+    if (v > 0) qsSetPostExportRateHint(false);
 }
 
 function _qsFeedbackUserKey(user) {
@@ -13223,6 +13236,8 @@ async function maybeShowPostExportFeedbackModal(kind) {
     if (pi) pi.value = '';
     if (hp) hp.value = '';
     setPostExportFeedbackStars(0);
+    window._qsFeedbackRateAsked = false;
+    qsSetPostExportRateHint(false);
     try { if (typeof window.applyTranslations === 'function') window.applyTranslations(); } catch (_) {}
 }
 
@@ -14305,6 +14320,13 @@ if (postExpFbSubmit) {
         const stars = Number(window._postExportFeedbackStars || 0);
         if (!like && !improve && !stars) {
             closePostExportFeedbackModal();
+            return;
+        }
+        if ((like || improve) && stars < 1 && !window._qsFeedbackRateAsked) {
+            window._qsFeedbackRateAsked = true;
+            qsSetPostExportRateHint(true);
+            const starBox = document.getElementById('post-exp-fb-stars');
+            try { if (starBox) starBox.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
             return;
         }
         const info = getAuthUserDisplayInfo(user);
