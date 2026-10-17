@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -103,6 +104,47 @@ class CopyThenDeleteTimeoutTests(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 siteapp._s3_copy_then_delete("bucket", "src", "dst")
+
+
+class GuestJobTimingsTests(unittest.TestCase):
+    def tearDown(self):
+        import siteapp
+
+        siteapp._clear_pending_job_column_timings("job_guest_timings")
+        siteapp.pending_job_column_timings.pop("job_guest_timings", None)
+        siteapp.job_timings.pop("job_guest_timings", None)
+
+    def test_guest_update_stashes_until_claim(self):
+        import siteapp
+
+        with patch.dict(os.environ, {"SUPABASE_URL": "https://ex.supabase.co", "SUPABASE_SERVICE_ROLE_KEY": "k"}):
+            with patch.object(siteapp, "_jobs_patch_by_runpod_job_id", return_value=False) as patch_fn:
+                siteapp._update_job_timings("job_guest_timings", user_id="anonymous", gpt_sec=12.5, total_sec=80)
+                patch_fn.assert_called()
+            stashed = siteapp._load_pending_job_column_timings("job_guest_timings")
+            self.assertEqual(stashed.get("gpt_sec"), 12.5)
+            self.assertEqual(stashed.get("total_sec"), 80)
+            with patch.object(siteapp, "_jobs_patch_by_runpod_job_id", return_value=True) as apply_fn:
+                siteapp._apply_pending_job_column_timings(
+                    "job_guest_timings",
+                    "10ec2c3b-5173-4da1-bb11-06249dd46d11",
+                    result_payload={"formatted": {"gpt_format_sec": 41.2}},
+                )
+            apply_fn.assert_called_once()
+            body = apply_fn.call_args[0][2]
+            self.assertEqual(body.get("gpt_sec"), 12.5)
+            self.assertEqual(body.get("gpt_format_sec"), 41.2)
+            self.assertFalse(siteapp._load_pending_job_column_timings("job_guest_timings"))
+
+    def test_timings_from_transcript_payload(self):
+        import siteapp
+
+        self.assertEqual(
+            siteapp._timings_from_transcript_payload(
+                {"formatted": {"cleanup_generation_time": "33.1", "summary_generation_time": 8}}
+            ),
+            {"gpt_format_sec": 33.1, "gpt_sec": 8.0},
+        )
 
 
 if __name__ == "__main__":

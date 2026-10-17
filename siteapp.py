@@ -8782,6 +8782,17 @@ def _finalize_claimed_anonymous_job(
         except Exception:
             logging.warning("claim: persist file_duration_sec failed job=%s", job_id, exc_info=True)
 
+    try:
+        result_payload = None
+        if new_result:
+            try:
+                result_payload = _get_transcript_json_from_s3(user_id, new_input, stage='gpt')
+            except Exception:
+                result_payload = None
+        _apply_pending_job_column_timings(job_id, user_id, result_payload=result_payload)
+    except Exception:
+        logging.warning("claim: apply guest timings failed job=%s", job_id, exc_info=True)
+
     credit_info = _charge_job_credits(
         user_id,
         job_id,
@@ -10780,6 +10791,8 @@ def _medical_endpoint_status_payload():
 
 
 job_timings = {}  # job_id -> {"trigger_sec": float, "trigger_completed_at": float}
+# Guest jobs have no jobs row — keep column timings until claim writes them.
+pending_job_column_timings = {}  # job_id -> {gpt_sec, gpt_format_sec, total_sec, ...}
 gpu_started_at = {}  # job_id -> when worker called /api/gpu_started (container running)
 upload_complete = {}  # job_id -> True when trigger_processing called (upload done); worker polls until this
 
@@ -11436,6 +11449,103 @@ def _completed_job_payload_from_s3_convention(runpod_job_id):
     return None
 
 
+def _pending_job_column_timings_path(runpod_job_id):
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(runpod_job_id or ""))[:96]
+    if not safe:
+        return None
+    return os.path.join(tempfile.gettempdir(), f"qs_pending_job_timings_{safe}.json")
+
+
+def _load_pending_job_column_timings(runpod_job_id):
+    jid = str(runpod_job_id or "").strip()
+    merged = {}
+    if jid:
+        merged.update(pending_job_column_timings.get(jid) or {})
+        path = _pending_job_column_timings_path(jid)
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    disk = json.load(f)
+                if isinstance(disk, dict):
+                    merged.update({k: v for k, v in disk.items() if v is not None})
+            except Exception:
+                logging.debug("_update_job_timings: disk stash unreadable %s", jid)
+    return {k: v for k, v in merged.items() if v is not None}
+
+
+def _clear_pending_job_column_timings(runpod_job_id):
+    jid = str(runpod_job_id or "").strip()
+    if jid:
+        pending_job_column_timings.pop(jid, None)
+    path = _pending_job_column_timings_path(jid)
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _stash_pending_job_column_timings(runpod_job_id, payload):
+    jid = str(runpod_job_id or "").strip()
+    if not jid or not isinstance(payload, dict) or not payload:
+        return
+    prev = _load_pending_job_column_timings(jid)
+    prev.update({k: v for k, v in payload.items() if v is not None})
+    pending_job_column_timings[jid] = prev
+    path = _pending_job_column_timings_path(jid)
+    if path:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(prev, f)
+        except Exception:
+            logging.debug("_update_job_timings: disk stash write failed %s", jid)
+
+
+def _timings_from_transcript_payload(payload):
+    """Best-effort gpt_* seconds already stored on the result JSON."""
+    if not isinstance(payload, dict):
+        return {}
+    fmt = payload.get("formatted") if isinstance(payload.get("formatted"), dict) else {}
+    out = {}
+    pairs = (
+        ("gpt_sec", ("gpt_sec", "summary_generation_time")),
+        ("gpt_format_sec", ("gpt_format_sec", "cleanup_generation_time")),
+    )
+    for dest, keys in pairs:
+        for src in keys:
+            raw = fmt.get(src)
+            if raw is None:
+                raw = payload.get(src)
+            try:
+                if raw is not None:
+                    out[dest] = round(float(raw), 3)
+                    break
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _apply_pending_job_column_timings(runpod_job_id, user_id, result_payload=None):
+    """Write guest-stashed timing columns after a jobs row exists (claim)."""
+    jid = str(runpod_job_id or "").strip()
+    uid = str(user_id or "").strip()
+    if not jid or not uid or uid.lower() == "anonymous":
+        return
+    payload = _load_pending_job_column_timings(jid)
+    mem = dict(job_timings.get(jid) or {})
+    for k in ("trigger_sec", "trigger_completed_at"):
+        if mem.get(k) is not None and payload.get(k) is None:
+            payload[k] = mem[k]
+    from_json = _timings_from_transcript_payload(result_payload)
+    for k, v in from_json.items():
+        payload.setdefault(k, v)
+    if not payload:
+        return
+    if _jobs_patch_by_runpod_job_id(jid, uid, payload):
+        _clear_pending_job_column_timings(jid)
+        logging.info("_update_job_timings: claimed guest timings job %s %s", jid, list(payload.keys()))
+
+
 def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> None:
     """Update jobs table with PROCESS TIMING data. Matches by runpod_job_id column or metadata.job_id."""
     if not (os.environ.get('SUPABASE_URL') or '').strip() or not (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip():
@@ -11447,13 +11557,15 @@ def _update_job_timings(runpod_job_id: str, user_id: str = None, **timings) -> N
         return
     rid = str(runpod_job_id or "").strip()
     uid = str(user_id or "").strip().lower()
-    # Guest uploads have no jobs row until claim — do not warn on every callback.
+    # Guest uploads have no jobs row until claim — stash, then write on claim.
     if (not uid or uid == "anonymous") and rid:
+        _stash_pending_job_column_timings(rid, payload)
         miss_until = _job_row_missing_until.get(rid)
         if miss_until and time.monotonic() < miss_until:
             logging.debug("_update_job_timings: skip (no jobs row yet) %s", rid)
             return
     if _jobs_patch_by_runpod_job_id(runpod_job_id, user_id, payload):
+        _clear_pending_job_column_timings(rid)
         logging.info("_update_job_timings: updated job %s with %s", rid, list(payload.keys()))
         return
     if not uid or uid == "anonymous":
@@ -14818,6 +14930,8 @@ def _schedule_post_summary_formatting(
             )
             if clean_text:
                 existing_fmt["clean_transcript"] = clean_text
+            existing_fmt["gpt_format_sec"] = round(float(time.time() - t0), 3)
+            existing_fmt["cleanup_generation_time"] = existing_fmt["gpt_format_sec"]
             # Keep a client/guest cleanup already on the object if this pass came back empty.
             payload["formatted"] = existing_fmt
             payload["segments"] = merged
@@ -14849,6 +14963,7 @@ def _schedule_post_summary_formatting(
             cached['result_s3_key'] = result_s3_key
             job_results_cache[job_id] = cached
             socketio.emit('job_status_update', cached, room=job_id)
+            elapsed = time.time() - t0
             logging.info(
                 "gpu_callback: post-summary formatting done job_id=%s clean_chars=%s "
                 "segments=%s changed=%s mode=%s store_uid=%s sec=%.2f",
@@ -14858,8 +14973,16 @@ def _schedule_post_summary_formatting(
                 (meta or {}).get('changed_count'),
                 (meta or {}).get('mode'),
                 (store_uid or '')[:12],
-                time.time() - t0,
+                elapsed,
             )
+            try:
+                _update_job_timings(
+                    job_id,
+                    user_id=store_uid,
+                    gpt_format_sec=round(float(elapsed), 3),
+                )
+            except Exception:
+                logging.debug("gpu_callback: gpt_format_sec persist skipped job_id=%s", job_id)
         except Exception as err:
             logging.warning(
                 "gpu_callback: post-summary formatting background failed job_id=%s: %s",

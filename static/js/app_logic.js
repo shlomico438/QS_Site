@@ -15354,6 +15354,17 @@ function hasStandardFormattedSummary() {
     return false;
 }
 
+/** Merge formatted payloads without letting an empty clean_transcript wipe a finished cleanup. */
+function qsMergeFormattedDocs(prev, incoming) {
+    const base = (prev && typeof prev === 'object') ? prev : {};
+    const next = (incoming && typeof incoming === 'object') ? incoming : {};
+    const merged = { ...base, ...next };
+    const prevClean = String(base.clean_transcript || '').trim();
+    const nextClean = String(next.clean_transcript || '').trim();
+    if (prevClean && !nextClean) merged.clean_transcript = prevClean;
+    return normalizeFormattedFields(merged);
+}
+
 /** Merge formatted from a late gpu_callback / persist socket so a racing second update is not dropped. */
 function qsApplyIncomingFormattedFromPayload(rawResult, reason) {
     const incomingFmt = extractFormattedFromJobPayload(rawResult);
@@ -15361,7 +15372,7 @@ function qsApplyIncomingFormattedFromPayload(rawResult, reason) {
     const prev = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
         ? window.currentFormattedDoc
         : {};
-    window.currentFormattedDoc = normalizeFormattedFields({ ...prev, ...incomingFmt });
+    window.currentFormattedDoc = qsMergeFormattedDocs(prev, incomingFmt);
     window._qsDocPreferSegmentsAfterEdit = false;
     if (String(window.currentFormattedDoc.clean_transcript || '').trim()) {
         window._qsCleanupDone = true;
@@ -15612,6 +15623,29 @@ async function qsEnsureCleanTranscriptAfterSummary(options = {}) {
     });
 }
 window.qsEnsureCleanTranscriptAfterSummary = qsEnsureCleanTranscriptAfterSummary;
+
+/** Cleanup must not hold the summary spinner. Phase-B / client fallback continue in the background. */
+function qsKickoffBackgroundCleanup(jobId, options = {}) {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return;
+    if (window.__qsGptDisabled === true) return;
+    if (hasCleanTranscript()) return;
+    if (window._qsCleanupPromise) return;
+    const opts = {
+        timeoutMs: Number(options.timeoutMs) || 20000,
+        pollMs: Number(options.pollMs) || 2000,
+        jobId,
+        clientAttempts: Number(options.clientAttempts) || 2,
+    };
+    window._qsCleanupPromise = Promise.resolve()
+        .then(() => qsEnsureCleanTranscriptAfterSummary(opts))
+        .catch((err) => {
+            console.warn('[GPT] background cleanup failed', err);
+            return false;
+        })
+        .finally(() => {
+            window._qsCleanupPromise = null;
+        });
+}
 
 function syncStandardFormatTabs() {
     const summaryBtn = document.getElementById('format-mode-summary');
@@ -22530,7 +22564,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.currentFormattedDoc = null;
             }
         } else if (incomingFmt) {
-            window.currentFormattedDoc = normalizeFormattedFields({ ...(prevFmt || {}), ...incomingFmt });
+            window.currentFormattedDoc = qsMergeFormattedDocs(prevFmt, incomingFmt);
         } else if (jobId && (qsJobSummaryAlreadyDone(jobId) || (prevFmt && hasStandardFormattedSummary()))) {
             window.currentFormattedDoc = prevFmt;
         } else if (!jobId || jobId !== window._lastProcessedJobId) {
@@ -22839,21 +22873,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         renderStandardSummaryView();
                     }
                 } catch (_) {}
-                // Fast summary can land with empty clean_transcript — wait/retry until cleanup exists.
-                if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
-                    && !hasCleanTranscript()
-                    && typeof qsEnsureCleanTranscriptAfterSummary === 'function') {
-                    try {
-                        await qsEnsureCleanTranscriptAfterSummary({
-                            timeoutMs: 20000,
-                            pollMs: 2000,
-                            jobId,
-                            clientAttempts: 2,
-                        });
-                    } catch (cleanErr) {
-                        console.warn('[GPT] ensure clean_transcript after summary failed', cleanErr);
-                    }
-                }
+                // Fast summary can land with empty clean_transcript — cleanup continues off the spinner.
+                qsKickoffBackgroundCleanup(jobId, { timeoutMs: 20000, pollMs: 2000, clientAttempts: 2 });
                 return true;
             };
             // Persist socket may have already delivered server-side formatted while we waited.
@@ -22961,15 +22982,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         renderStandardSummaryView();
                     }
                 } catch (_) {}
-                if (!medFmt && !hasCleanTranscript() && typeof qsEnsureCleanTranscriptAfterSummary === 'function') {
-                    try {
-                        await qsEnsureCleanTranscriptAfterSummary({
-                            timeoutMs: 15000,
-                            pollMs: 2000,
-                            jobId: gptJobId,
-                            clientAttempts: 2,
-                        });
-                    } catch (_) {}
+                if (!medFmt && !hasCleanTranscript()) {
+                    qsKickoffBackgroundCleanup(gptJobId, { timeoutMs: 15000, pollMs: 2000, clientAttempts: 2 });
                 }
                 return true;
             } catch (e) {
@@ -22996,15 +23010,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (!(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
             setFormatViewMode('summary');
             renderStandardSummaryView();
-            if (!hasCleanTranscript() && typeof qsEnsureCleanTranscriptAfterSummary === 'function') {
-                try {
-                    await qsEnsureCleanTranscriptAfterSummary({
-                        timeoutMs: 20000,
-                        pollMs: 2000,
-                        jobId,
-                        clientAttempts: 2,
-                    });
-                } catch (_) {}
+            if (!hasCleanTranscript()) {
+                qsKickoffBackgroundCleanup(jobId, { timeoutMs: 20000, pollMs: 2000, clientAttempts: 2 });
             }
         }
         qsCompleteSummaryPipelineProgress();
