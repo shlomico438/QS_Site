@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 import hmac
 from datetime import datetime, timedelta, timezone
@@ -1147,6 +1148,177 @@ def _charge_medical_renewal(account: dict) -> dict:
         raise
 
 
+MEDICAL_MIC_EVENT_CAUSES = frozenset({
+    "no_mic",
+    "chrome_block",
+    "os_block",
+    "busy",
+    "hw_mute",
+    "dead_device",
+    "device_lost",
+    "too_quiet",
+    "overconstrained",
+})
+MEDICAL_MIC_EVENT_PHASES = frozenset({"start", "recording"})
+MEDICAL_MIC_EVENT_BROWSERS = frozenset({"chrome", "edge", "firefox", "safari", "other"})
+MEDICAL_MIC_EVENT_OSES = frozenset({"windows", "mac", "linux", "ios", "android", "other"})
+MEDICAL_MIC_EVENT_HOURLY_LIMIT = 30
+_MIC_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+
+
+class MedicalMicEventRejected(ValueError):
+    """Client payload failed the mic-event allowlist. Nothing is stored."""
+
+
+def _medical_mic_device_label(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    text = str(raw)
+    cleaned = []
+    for ch in text:
+        if ch.isprintable() and ch not in "\r\n\t":
+            cleaned.append(ch)
+        else:
+            cleaned.append(" ")
+    label = " ".join("".join(cleaned).split()).strip()
+    if not label:
+        return None
+    return label[:120]
+
+
+def medical_mic_event_fields(data: Any) -> Dict[str, Any]:
+    """Allowlisted columns only. Caller-supplied user ids are ignored."""
+    if not isinstance(data, dict):
+        raise MedicalMicEventRejected("invalid_body")
+    cause = str(data.get("cause") or "").strip()
+    phase = str(data.get("phase") or "").strip()
+    browser = str(data.get("browser_family") or "").strip().lower()
+    os_family = str(data.get("os_family") or "").strip().lower()
+    if cause not in MEDICAL_MIC_EVENT_CAUSES or phase not in MEDICAL_MIC_EVENT_PHASES:
+        raise MedicalMicEventRejected("invalid_cause_or_phase")
+    if browser not in MEDICAL_MIC_EVENT_BROWSERS or os_family not in MEDICAL_MIC_EVENT_OSES:
+        raise MedicalMicEventRejected("invalid_client_family")
+    session_raw = data.get("session_id")
+    session_id = None
+    if session_raw not in (None, ""):
+        session_id = str(session_raw).strip()
+        if not _MIC_SESSION_ID_RE.fullmatch(session_id):
+            raise MedicalMicEventRejected("invalid_session_id")
+    return {
+        "cause": cause,
+        "phase": phase,
+        "browser_family": browser,
+        "os_family": os_family,
+        "device_label": _medical_mic_device_label(data.get("device_label")),
+        "session_id": session_id,
+    }
+
+
+def medical_mic_recovery_seconds(data: Any) -> int:
+    if not isinstance(data, dict) or "recovery_seconds" not in data:
+        raise MedicalMicEventRejected("recovery_seconds_required")
+    raw = data.get("recovery_seconds")
+    if isinstance(raw, bool) or isinstance(raw, float):
+        raise MedicalMicEventRejected("invalid_recovery_seconds")
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise MedicalMicEventRejected("invalid_recovery_seconds")
+    if seconds < 0 or seconds > 24 * 3600:
+        raise MedicalMicEventRejected("invalid_recovery_seconds")
+    return seconds
+
+
+def _medical_mic_event_count_last_hour(user_id: str) -> int:
+    sa = _sa()
+    supabase_url, _, headers = sa._supabase_rest_config()
+    uid = quote(str(user_id), safe="")
+    since = quote((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(), safe="")
+    count_headers = dict(headers)
+    count_headers["Prefer"] = "count=exact"
+    count_headers["Range"] = "0-0"
+    response = sa._supabase_http_request(
+        "GET",
+        (
+            f"{supabase_url}/rest/v1/medical_mic_events"
+            f"?user_id=eq.{uid}&created_at=gte.{since}&select=id"
+        ),
+        headers=count_headers,
+        timeout=8,
+        retries=1,
+    )
+    if response.status_code not in (200, 206):
+        logging.warning("medical mic event count HTTP %s", response.status_code)
+        raise RuntimeError("mic event count failed")
+    content_range = str(response.headers.get("Content-Range") or "")
+    if "/" in content_range:
+        total = content_range.rsplit("/", 1)[-1].strip()
+        if total.isdigit():
+            return int(total)
+    rows = response.json() if response.text else []
+    return len(rows) if isinstance(rows, list) else 0
+
+
+def _medical_mic_event_insert(user_id: str, fields: Dict[str, Any]) -> str:
+    sa = _sa()
+    supabase_url, _, headers = sa._supabase_rest_config()
+    payload = {
+        "user_id": user_id,
+        "cause": fields["cause"],
+        "phase": fields["phase"],
+        "browser_family": fields["browser_family"],
+        "os_family": fields["os_family"],
+        "device_label": fields["device_label"],
+        "session_id": fields["session_id"],
+    }
+    insert_headers = dict(headers)
+    insert_headers["Prefer"] = "return=representation"
+    response = sa._supabase_http_request(
+        "POST",
+        f"{supabase_url}/rest/v1/medical_mic_events",
+        headers=insert_headers,
+        json=payload,
+        timeout=8,
+        retries=1,
+    )
+    if response.status_code not in (200, 201):
+        logging.warning("medical mic event insert HTTP %s", response.status_code)
+        raise RuntimeError("mic event insert failed")
+    rows = response.json() if response.text else []
+    row = rows[0] if isinstance(rows, list) and rows else {}
+    event_id = str(row.get("id") or "").strip()
+    if not event_id:
+        raise RuntimeError("mic event insert returned no id")
+    return event_id
+
+
+def _medical_mic_event_mark_recovered(user_id: str, event_id: str, recovery_seconds: int) -> bool:
+    sa = _sa()
+    supabase_url, _, headers = sa._supabase_rest_config()
+    uid = quote(str(user_id), safe="")
+    eid = quote(str(event_id), safe="")
+    patch_headers = dict(headers)
+    patch_headers["Prefer"] = "return=representation"
+    response = sa._supabase_http_request(
+        "PATCH",
+        (
+            f"{supabase_url}/rest/v1/medical_mic_events"
+            f"?id=eq.{eid}&user_id=eq.{uid}"
+        ),
+        headers=patch_headers,
+        json={"recovered": True, "recovery_seconds": int(recovery_seconds)},
+        timeout=8,
+        retries=1,
+    )
+    if response.status_code not in (200, 204):
+        logging.warning("medical mic event recovery HTTP %s", response.status_code)
+        raise RuntimeError("mic event recovery failed")
+    if response.status_code == 204 or not response.text:
+        return False
+    rows = response.json() if response.text else []
+    return bool(isinstance(rows, list) and rows)
+
+
 def register_medical_saas_routes(app) -> None:
     @app.route("/api/medical/account", methods=["GET"])
     def api_medical_account_status():
@@ -1475,3 +1647,48 @@ def register_medical_saas_routes(app) -> None:
                 "results": results,
             }
         ), 200
+
+    @app.route("/api/medical/mic-event", methods=["POST"])
+    def api_medical_mic_event():
+        """Record one medical microphone failure. user_id comes from the session."""
+        try:
+            fields = medical_mic_event_fields(request.get_json(silent=True))
+        except MedicalMicEventRejected as exc:
+            return jsonify({"error": str(exc)}), 400
+        user_id, _account, error_response = require_medical_entitlement(request)
+        if error_response:
+            return error_response
+        try:
+            if _medical_mic_event_count_last_hour(user_id) >= MEDICAL_MIC_EVENT_HOURLY_LIMIT:
+                return jsonify({"error": "mic_event_rate_limited"}), 429
+            event_id = _medical_mic_event_insert(user_id, fields)
+        except Exception:
+            logging.exception("medical mic event insert failed user=%s", str(user_id)[:8])
+            return jsonify({"error": "mic_event_unavailable"}), 503
+        logging.info(
+            "medical mic event user=%s cause=%s phase=%s",
+            str(user_id)[:8],
+            fields["cause"],
+            fields["phase"],
+        )
+        return jsonify({"id": event_id}), 201
+
+    @app.route("/api/medical/mic-event/<event_id>/recovered", methods=["POST"])
+    def api_medical_mic_event_recovered(event_id):
+        """Mark a mic failure recovered. Updates only the current user's row."""
+        try:
+            uuid.UUID(str(event_id or ""))
+            seconds = medical_mic_recovery_seconds(request.get_json(silent=True))
+        except (MedicalMicEventRejected, ValueError):
+            return jsonify({"error": "invalid_recovery"}), 400
+        user_id, _account, error_response = require_medical_entitlement(request)
+        if error_response:
+            return error_response
+        try:
+            updated = _medical_mic_event_mark_recovered(user_id, str(event_id), seconds)
+        except Exception:
+            logging.exception("medical mic event recovery failed user=%s", str(user_id)[:8])
+            return jsonify({"error": "mic_event_unavailable"}), 503
+        if not updated:
+            return jsonify({"error": "not_found"}), 404
+        return jsonify({"id": str(event_id)}), 200

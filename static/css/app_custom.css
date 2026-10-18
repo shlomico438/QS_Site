@@ -4031,12 +4031,14 @@ body.medical-mode:not(.medical-onboarding-pending) .medical-header-tools {
   font-size: 0.92rem;
   color: #0f172a;
 }
+.medical-mic-active-device,
 .medical-mic-default-hint {
   margin: 0 0 14px;
   font-size: 0.8rem;
   line-height: 1.4;
   color: #0f766e;
 }
+.medical-mic-active-device[hidden],
 .medical-mic-default-hint[hidden] {
   display: none !important;
 }
