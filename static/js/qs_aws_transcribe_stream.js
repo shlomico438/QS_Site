@@ -1368,6 +1368,12 @@ export class MedicalAwsTranscribeStream {
         return Number.isFinite(n) ? n : 0;
     }
 
+    /** Audio blocks measured since the capture graph started. 0 until the first buffer. */
+    getMeterTicks() {
+        const n = Number(this._meterTicks);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+
     /** Speech-boost factor last applied to ASR PCM (1–3). Used to match live bargraph feel. */
     getLastGain() {
         const n = Number(this._lastGain);
@@ -1593,7 +1599,7 @@ export class MedicalAwsTranscribeStream {
             if (this._ws) this._ws.close();
         } catch (_) {}
         this._ws = null;
-        void this._closeAudioContext();
+        return this._closeAudioContext();
     }
 }
 
