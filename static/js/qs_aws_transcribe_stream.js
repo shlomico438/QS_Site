@@ -55,6 +55,15 @@ function qsApplySpeechGain(float32, rms, peak) {
     return out;
 }
 
+function qsPcmWorkletUrl() {
+    const url = new URL('qs_pcm_capture_worklet.js', import.meta.url);
+    try {
+        const parent = new URL(import.meta.url);
+        if (parent.search && !url.search) url.search = parent.search;
+    } catch (_) {}
+    return url.href;
+}
+
 function qsGetGlobalSocket() {
     // app_logic / base.html attach Socket.IO on window.socket. This file is an ES
     // module, so a bare `socket` identifier does not resolve to window.socket.
@@ -936,22 +945,82 @@ export class MedicalAwsTranscribeStream {
         } catch (_) {}
     }
 
-    _setupAudioGraph(mediaStream) {
-        if (this._processor) return;
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (!AudioCtx) throw new Error('audio_context_unavailable');
-        this._audioCtx = new AudioCtx();
-        this._source = this._audioCtx.createMediaStreamSource(mediaStream);
-        // Request stereo input so we can explicitly downmix when devices ignore channelCount=1.
-        this._processor = this._audioCtx.createScriptProcessor(4096, 2, 1);
-        this._mutedGain = this._audioCtx.createGain();
-        this._mutedGain.gain.value = 0;
-        this._chunksSent = 0;
-        this._clearPreReadyBuffer();
-        this._armOwnRecordingClock();
+    _handleCaptureBlock(mono) {
+        if (!this._canCaptureAudio() || !mono || !mono.length) return;
+        // Meter from full-rate mono (same levels live + offline park). Do not require downsample.
+        let sumSq = 0;
+        let peak = 0;
+        for (let i = 0; i < mono.length; i++) {
+            const s = mono[i];
+            sumSq += s * s;
+            const a = Math.abs(s);
+            if (a > peak) peak = a;
+        }
+        this._lastRms = Math.sqrt(sumSq / mono.length);
+        this._lastPeak = peak;
+        if (this._lastRms < 0.008) this._lastQuietAt = Date.now();
+        this._lastGain = this.applySpeechGain ? qsSpeechGainAmount(this._lastRms, this._lastPeak) : 1;
+        this._meterTicks = (this._meterTicks || 0) + 1;
+        // Socket.IO failed: keep the capture graph alive only for the level meter.
+        if (this._meterOnly) {
+            if (this._meterTicks === 1 || this._meterTicks % 50 === 0) {
+                console.error(
+                    '[transcribe-stream] meter-only rms:',
+                    this._lastRms.toFixed(4),
+                    'peak:',
+                    this._lastPeak.toFixed(4),
+                    'gain:',
+                    this._lastGain.toFixed(2)
+                );
+            }
+            return;
+        }
+        const pcm = qsDownsampleFloat32(mono, this._audioCtx.sampleRate, this.sampleRateHz);
+        if (!pcm.length) return;
+        const audioPcm = this.applySpeechGain ? qsApplySpeechGain(pcm, this._lastRms, this._lastPeak) : pcm;
+        const pcmBuf = qsFloat32ToPcm16(audioPcm);
+        if (this._canSendLiveAudio()) {
+            this._sendAudioChunk(pcmBuf);
+            this._chunksSent += 1;
+        } else {
+            this._bufferPreReadyChunk(pcmBuf);
+            if (this._preReadyChunksBuffered === 1 || this._preReadyChunksBuffered % 20 === 0) {
+                console.info(
+                    '[transcribe-stream] buffering pre-transport audio:',
+                    this._preReadyChunksBuffered,
+                    'chunks,',
+                    this._preReadyBufferBytes,
+                    'bytes'
+                );
+            }
+        }
+        const totalChunks = this._chunksSent + this._preReadyChunksBuffered;
+        const logLevels = (
+            totalChunks === 1
+            || this._chunksSent === 1
+            || this._chunksSent === 10
+            || this._chunksSent === 25
+            || (this._chunksSent > 0 && this._chunksSent % 50 === 0)
+        );
+        if (logLevels) {
+            // console.error survives the prod console gate (info/warn are no-oped).
+            console.error(
+                '[transcribe-stream] audio chunks sent:',
+                this._chunksSent,
+                'rms:',
+                this._lastRms.toFixed(4),
+                'peak:',
+                this._lastPeak.toFixed(4),
+                'gain:',
+                this._lastGain.toFixed(2)
+            );
+        }
+    }
 
-        this._processor.onaudioprocess = (ev) => {
-            if (!this._canCaptureAudio()) return;
+    _createScriptProcessor() {
+        // Request stereo input so we can explicitly downmix when devices ignore channelCount=1.
+        const processor = this._audioCtx.createScriptProcessor(4096, 2, 1);
+        processor.onaudioprocess = (ev) => {
             const inBuf = ev.inputBuffer;
             const channels = inBuf.numberOfChannels || 1;
             let mono = inBuf.getChannelData(0);
@@ -961,76 +1030,57 @@ export class MedicalAwsTranscribeStream {
                 for (let i = 0; i < mono.length; i++) mixed[i] = 0.5 * (mono[i] + ch1[i]);
                 mono = mixed;
             }
-            // Meter from full-rate mono (same levels live + offline park). Do not require downsample.
-            let sumSq = 0;
-            let peak = 0;
-            for (let i = 0; i < mono.length; i++) {
-                const s = mono[i];
-                sumSq += s * s;
-                const a = Math.abs(s);
-                if (a > peak) peak = a;
-            }
-            this._lastRms = Math.sqrt(sumSq / mono.length);
-            this._lastPeak = peak;
-            if (this._lastRms < 0.008) this._lastQuietAt = Date.now();
-            this._lastGain = this.applySpeechGain ? qsSpeechGainAmount(this._lastRms, this._lastPeak) : 1;
-            this._meterTicks = (this._meterTicks || 0) + 1;
-            // Socket.IO failed: keep ScriptProcessor alive only for the level meter.
-            if (this._meterOnly) {
-                if (this._meterTicks === 1 || this._meterTicks % 50 === 0) {
-                    console.error(
-                        '[transcribe-stream] meter-only rms:',
-                        this._lastRms.toFixed(4),
-                        'peak:',
-                        this._lastPeak.toFixed(4),
-                        'gain:',
-                        this._lastGain.toFixed(2)
-                    );
-                }
-                return;
-            }
-            const pcm = qsDownsampleFloat32(mono, this._audioCtx.sampleRate, this.sampleRateHz);
-            if (!pcm.length) return;
-            const audioPcm = this.applySpeechGain ? qsApplySpeechGain(pcm, this._lastRms, this._lastPeak) : pcm;
-            const pcmBuf = qsFloat32ToPcm16(audioPcm);
-            if (this._canSendLiveAudio()) {
-                this._sendAudioChunk(pcmBuf);
-                this._chunksSent += 1;
-            } else {
-                this._bufferPreReadyChunk(pcmBuf);
-                if (this._preReadyChunksBuffered === 1 || this._preReadyChunksBuffered % 20 === 0) {
-                    console.info(
-                        '[transcribe-stream] buffering pre-transport audio:',
-                        this._preReadyChunksBuffered,
-                        'chunks,',
-                        this._preReadyBufferBytes,
-                        'bytes'
-                    );
-                }
-            }
-            const totalChunks = this._chunksSent + this._preReadyChunksBuffered;
-            const logLevels = (
-                totalChunks === 1
-                || this._chunksSent === 1
-                || this._chunksSent === 10
-                || this._chunksSent === 25
-                || (this._chunksSent > 0 && this._chunksSent % 50 === 0)
-            );
-            if (logLevels) {
-                // console.error survives the prod console gate (info/warn are no-oped).
-                console.error(
-                    '[transcribe-stream] audio chunks sent:',
-                    this._chunksSent,
-                    'rms:',
-                    this._lastRms.toFixed(4),
-                    'peak:',
-                    this._lastPeak.toFixed(4),
-                    'gain:',
-                    this._lastGain.toFixed(2)
-                );
-            }
+            this._handleCaptureBlock(mono);
         };
+        return processor;
+    }
 
+    async _createWorkletProcessor() {
+        if (!this._audioCtx.audioWorklet || typeof this._audioCtx.audioWorklet.addModule !== 'function') {
+            throw new Error('audio_worklet_unavailable');
+        }
+        await this._audioCtx.audioWorklet.addModule(qsPcmWorkletUrl());
+        const node = new AudioWorkletNode(this._audioCtx, 'qs-pcm-capture', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [1],
+        });
+        node.port.onmessage = (ev) => {
+            const samples = ev.data && ev.data.samples;
+            if (samples) this._handleCaptureBlock(samples);
+        };
+        return node;
+    }
+
+    async _setupAudioGraph(mediaStream) {
+        if (this._processor) return;
+        if (this._audioGraphSetup) return this._audioGraphSetup;
+        this._audioGraphSetup = this._setupAudioGraphNow(mediaStream);
+        try {
+            await this._audioGraphSetup;
+        } finally {
+            this._audioGraphSetup = null;
+        }
+    }
+
+    async _setupAudioGraphNow(mediaStream) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) throw new Error('audio_context_unavailable');
+        this._audioCtx = new AudioCtx();
+        this._source = this._audioCtx.createMediaStreamSource(mediaStream);
+        this._mutedGain = this._audioCtx.createGain();
+        this._mutedGain.gain.value = 0;
+        this._chunksSent = 0;
+        this._clearPreReadyBuffer();
+        this._armOwnRecordingClock();
+        let node = null;
+        try {
+            node = await this._createWorkletProcessor();
+        } catch (err) {
+            console.warn('[transcribe-stream] AudioWorklet unavailable; using ScriptProcessor', err);
+            node = this._createScriptProcessor();
+        }
+        this._processor = node;
         this._source.connect(this._processor);
         this._processor.connect(this._mutedGain);
         this._mutedGain.connect(this._audioCtx.destination);
@@ -1082,6 +1132,7 @@ export class MedicalAwsTranscribeStream {
             this._onVisibility = null;
         }
         try {
+            if (this._processor && this._processor.port) this._processor.port.onmessage = null;
             if (this._processor) this._processor.disconnect();
             if (this._source) this._source.disconnect();
             if (this._mutedGain) this._mutedGain.disconnect();
@@ -1244,9 +1295,9 @@ export class MedicalAwsTranscribeStream {
      * Start mic PCM capture immediately (before auth/socket awaits).
      * Keeps early speech in a local buffer until transport is armed.
      */
-    beginCapture(mediaStream) {
+    async beginCapture(mediaStream) {
         if (!mediaStream) throw new Error('media_stream_required');
-        this._setupAudioGraph(mediaStream);
+        await this._setupAudioGraph(mediaStream);
         void this._activateAudioCapture();
     }
 
@@ -1286,7 +1337,7 @@ export class MedicalAwsTranscribeStream {
     }
 
     async start(mediaStream) {
-        this.beginCapture(mediaStream);
+        await this.beginCapture(mediaStream);
         await this.connectAndAwaitReady();
     }
 
@@ -1563,7 +1614,7 @@ export class MedicalAwsTranscribeStream {
     }
 
     /**
-     * Live Socket.IO failed: drop transport but keep the mic ScriptProcessor running
+     * Live Socket.IO failed: drop transport but keep the mic capture graph running
      * so the UI level meter stays as sensitive as live mode (same RMS path).
      * Browser AGC is unchanged — this only preserves our capture graph.
      */
@@ -1590,7 +1641,7 @@ export class MedicalAwsTranscribeStream {
         } catch (_) {}
         this._ws = null;
         // Keep a single AudioContext graph alive — a second offline AudioContext on the
-        // same MediaStream often starves ScriptProcessor and kills bargraph sensitivity.
+        // same MediaStream often starves the capture node and kills bargraph sensitivity.
         try {
             if (this._audioCtx && this._audioCtx.state === 'suspended') {
                 void this._audioCtx.resume().catch(() => {});

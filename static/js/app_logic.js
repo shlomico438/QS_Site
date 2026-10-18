@@ -18457,7 +18457,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function qsReadLiveMicRms() {
-        // Same ScriptProcessor path live and offline-parked (not AGC / Socket.IO).
+        // Same capture graph live and offline-parked (not AGC / Socket.IO).
         const stream = window._medicalAwsTranscribeStream;
         if (stream && typeof stream.getLastRms === 'function') {
             const rms = Number(stream.getLastRms());
@@ -20262,7 +20262,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Capture PCM immediately — MediaRecorder UI may already be recording while auth/socket await.
         try {
             if (typeof stream.beginCapture === 'function') {
-                stream.beginCapture(mediaStream);
+                await stream.beginCapture(mediaStream);
             } else if (typeof stream.start === 'function') {
                 // Stale cached qs_aws_transcribe_stream.js without beginCapture — fall back.
                 console.warn('[medical] beginCapture missing; using stream.start() (hard-refresh recommended)');
@@ -21598,7 +21598,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window._medicalPendingGaps = [];
                 const mimeForWarmup = (rec.mimeType || recOpts.mimeType || 'audio/webm').toLowerCase();
                 void beginMedicalRecordingWarmup(mimeForWarmup);
-                // Bargraph: use parked live ScriptProcessor only. A second AudioContext on the
+                // Bargraph: use the parked live capture graph only. A second AudioContext on the
                 // same MediaStream starves the live graph and makes the bars look dead.
                 const parkedOk = window._medicalAwsTranscribeStream
                     && typeof window._medicalAwsTranscribeStream.isMeterOnly === 'function'
