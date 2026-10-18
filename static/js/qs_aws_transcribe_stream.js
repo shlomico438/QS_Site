@@ -208,9 +208,14 @@ export class MedicalAwsTranscribeStream {
         this._restartingAfterStall = false;
         this._stallRestartAt = 0;
         this._chunksSentAtStallRestart = 0;
+        // HTTP audio is only for Engine.IO polling, where the long-poll GET
+        // drops acks. A connected WebSocket must use socket emits: one POST
+        // per 85ms frame saturates the app and the live transcript stalls.
         this._httpAudio = true;
         this._httpAudioLogged = false;
         this._httpAudioFailed = false;
+        this._httpAudioBusy = false;
+        this._httpAudioQueue = [];
         this._gaps = [];
         this._openGap = null;
         this._gapSeq = 0;
@@ -756,9 +761,48 @@ export class MedicalAwsTranscribeStream {
         this._emitAudioWithAck(merged);
     }
 
+    _useHttpAudio() {
+        return !!(
+            this._httpAudio
+            && !this._httpAudioFailed
+            && this._socket
+            && this._socket.id
+            && this._isSocketPolling()
+        );
+    }
+
+    _enqueueHttpAudio(payload) {
+        const view = payload instanceof Uint8Array
+            ? payload
+            : new Uint8Array(payload instanceof ArrayBuffer ? payload : payload);
+        if (!view.byteLength) return;
+        this._httpAudioQueue.push(view);
+        this._pumpHttpAudio();
+    }
+
+    _pumpHttpAudio() {
+        if (this._httpAudioBusy || !this._httpAudioQueue.length) return;
+        const parts = this._httpAudioQueue;
+        this._httpAudioQueue = [];
+        let total = 0;
+        for (const part of parts) total += part.byteLength || 0;
+        if (!total) return;
+        const merged = new Uint8Array(total);
+        let offset = 0;
+        for (const part of parts) {
+            merged.set(part, offset);
+            offset += part.byteLength;
+        }
+        this._httpAudioBusy = true;
+        void this._postAudioHttp(merged).finally(() => {
+            this._httpAudioBusy = false;
+            this._pumpHttpAudio();
+        });
+    }
+
     _emitAudioWithAck(payload) {
-        if (this._httpAudio && !this._httpAudioFailed && this._socket && this._socket.id) {
-            void this._postAudioHttp(payload);
+        if (this._useHttpAudio()) {
+            this._enqueueHttpAudio(payload);
             return;
         }
         if (!this._socket) return;

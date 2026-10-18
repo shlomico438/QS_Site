@@ -1617,12 +1617,26 @@ function qsMedicalApplyAccessState(account) {
 }
 
 async function qsMedicalAccountFetch() {
-    const token = await qsSupabaseAccessToken();
-    if (!token) return null;
-    const res = await fetch('/api/medical/account', {
-        headers: { 'Authorization': `Bearer ${token}` },
-        cache: 'no-store',
-    });
+    const load = async () => {
+        const token = await qsSupabaseAccessToken();
+        if (!token) return null;
+        return fetch('/api/medical/account', {
+            headers: { 'Authorization': `Bearer ${token}` },
+            cache: 'no-store',
+        });
+    };
+    let res = await load();
+    if (res && res.status === 401) {
+        // Auth recovery can call this with a token that is still rotating.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        try {
+            if (typeof supabase !== 'undefined' && supabase.auth && typeof supabase.auth.getSession === 'function') {
+                await supabase.auth.getSession();
+            }
+        } catch (_) {}
+        res = await load();
+    }
+    if (!res) return null;
     if (!res.ok) throw new Error(`medical_account_http_${res.status}`);
     return await res.json();
 }
@@ -27035,6 +27049,18 @@ function qsApplyMedicalPersonalTemplateMeta(meta) {
     const profileStatus = String(meta.profile_status || '').trim().toLowerCase();
     const specialtyTemplate = source === 'orthopedics' || source === 'neurology' || source === 'psychology' || source === 'default';
     const savedProfileOff = specialtyTemplate || profileStatus === 'disabled' || (source && source !== 'doctor_profile' && source !== 'request_candidate');
+    // A slow profile response can arrive after a good one and report the
+    // specialty default when the lookup timed out. Do not wipe a template
+    // this page already loaded unless the profile was explicitly disabled.
+    if (
+        savedProfileOff
+        && source === 'default'
+        && profileStatus !== 'disabled'
+        && window._medicalPersonalTemplateActive
+    ) {
+        console.warn('[medical training] ignored late default template; keeping the active profile');
+        return;
+    }
     if (savedProfileOff && !meta.personal_template) {
         window._medicalPersonalTemplateActive = false;
         window._medicalPersonalSectionLabels = null;
