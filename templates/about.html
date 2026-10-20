@@ -1,15 +1,40 @@
 {% extends "base.html" %}
 
+{% block page_title %}{% if medical_entry %}{% if qs_is_en %}About QuickScribe Medical{% else %}אודות QuickScribe Medical{% endif %}{% elif qs_is_en %}About QuickScribe{% else %}אודות QuickScribe{% endif %}{% endblock %}
+
 {% block content %}
 <div class="content-page">
-    <h1 data-i18n="about_title">About QuickScribe</h1>
-    <p data-i18n="about_intro1">Founded in 2026 in Tel Aviv, Israel, QuickScribe is an AI-native transcription and documentation platform. We deliver highly accurate speech-to-text experiences in languages and professional domains where generic models fall short. By combining advanced speech recognition, language-specific optimization, and cloud-native AWS infrastructure (including Lambda and S3), we securely transform audio and video recordings into structured, actionable text for meetings, content creation, and research workflows.</p>
+    {% if medical_entry %}
+    <h1 data-i18n="about_medical_title">About QuickScribe Medical</h1>
+    <p data-i18n="about_medical_intro1">QuickScribe Medical is an AI-powered medical transcription and documentation platform, founded in 2026 in Tel Aviv, Israel. We turn what is said in the consultation room into accurate, usable text in Hebrew, English, and a mix of both.</p>
+    <p data-i18n="about_medical_intro2">By combining advanced speech recognition, medical-terminology optimization and secure AWS cloud infrastructure, we give healthcare professionals their documentation time back.</p>
 
     <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
 
     <h2 data-i18n="about_mission_title">Our Mission</h2>
-    <p data-i18n="about_mission1">Our mission is to deliver fast, secure, and highly accurate domain-specific transcription that removes localized language barriers.</p>
-    <p data-i18n="about_mission2">In healthcare, our goal is deeply personal: to liberate clinicians from their keyboards, allowing medical professionals to look into the eyes of their patients instead of staring at a screen.</p>
+    <p data-i18n="about_medical_mission1">To free medical professionals from the keyboard, so they can look at their patients instead of the screen.</p>
+    <p data-i18n="about_medical_mission2">Fast, secure and accurate transcription that understands the language doctors actually speak.</p>
+
+    <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
+
+    <h2 data-i18n="about_privacy_title">Privacy and Security</h2>
+    <p data-i18n="about_privacy_intro">Medical information is among the most sensitive data there is, and we treat it that way.</p>
+    <ul class="about-privacy-list" style="margin: 12px 0 0; padding-inline-start: 1.25rem; color: #555; line-height: 1.55;">
+        <li data-i18n="about_privacy_hipaa">QuickScribe Medical is built on AWS infrastructure that supports HIPAA requirements, implemented in line with HIPAA security and privacy safeguards.</li>
+        <li data-i18n="about_privacy_region">Recordings and transcripts are processed and stored in AWS Europe (Stockholm).</li>
+        <li data-i18n="about_privacy_encryption">Recordings and transcripts are encrypted in transit over HTTPS and at rest with AWS KMS.</li>
+    </ul>
+    {% else %}
+    <h1 data-i18n="about_title">About QuickScribe</h1>
+    <p data-i18n="about_intro1">QuickScribe is an AI-powered transcription and documentation platform, founded in 2026 in Tel Aviv, Israel. We deliver highly accurate speech-to-text in the languages and professional domains where generic models fall short.</p>
+    <p data-i18n="about_intro2">By combining advanced speech recognition, language-specific optimization and secure AWS cloud infrastructure, we turn audio and video recordings into structured, usable text for meetings, lectures, content creation, subtitling and research.</p>
+
+    <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
+
+    <h2 data-i18n="about_mission_title">Our Mission</h2>
+    <p data-i18n="about_mission1">To deliver fast, secure and accurate transcription for the languages and domains that global solutions miss, removing local language barriers.</p>
+    <p><span data-i18n="about_mission2">Alongside our general-purpose product, we also built a dedicated solution for healthcare professionals: </span><a id="about-medical-product-link" href="{% if qs_is_en %}/en/medical{% else %}/medical{% endif %}">QuickScribe Medical</a>.</p>
+    {% endif %}
 
     <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
 
@@ -18,9 +43,9 @@
     <div class="team-member" style="margin-top: 20px;">
         <h3 style="margin-bottom: 5px; color: #333;" data-i18n="about_shlomi_name">Shlomi Cohen</h3>
         <span style="color: #5d5dff; font-weight: 600; font-size: 0.95rem;" data-i18n="about_shlomi_role">Founder & CEO</span>
-        <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio1">Shlomi Cohen is a technology leader with more than 15 years of experience in communications, wireless systems, IoT, embedded platforms, and voice technologies.</p>
-        <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio2">Before founding QuickScribe, Shlomi held senior engineering and architecture roles at DSP Group, Altair Semiconductor, and Alvarion Technologies, where he led the development of innovative, globally deployed smart voice and wireless solutions. He has contributed to multiple patented technologies across voice systems and communication platforms.</p>
-        <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio3">At QuickScribe, Shlomi leads product strategy, AI architecture, cloud infrastructure, and the development of language-specific transcription technologies designed to maximize accuracy and usability for professional users.</p>
+        <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio1">Shlomi Cohen is a technology leader with more than 15 years of experience in communications, wireless systems, IoT, embedded platforms and voice technologies.</p>
+        <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio2">Before founding QuickScribe, Shlomi held senior engineering and architecture roles at DSP Group, Altair Semiconductor and Alvarion Technologies, where he led the development of innovative smart-voice and wireless solutions deployed worldwide. He has contributed to several patented technologies in voice systems and communication platforms.</p>
+        <p style="margin-top: 10px; color: #555;" data-i18n="about_shlomi_bio3">At QuickScribe, Shlomi leads product strategy, AI architecture, cloud infrastructure and the development of language-optimized transcription technology, built to maximize accuracy and usability for professional users.</p>
     </div>
 
     <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
