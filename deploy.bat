@@ -85,6 +85,34 @@ set "IMMUTABLE_IMAGE=%IMAGE_REPOSITORY%:%IMAGE_TAG%"
 set "LATEST_IMAGE=%IMAGE_REPOSITORY%:latest"
 set "SERVICE_REVISION_FILE=%TEMP%\quickscribe-service-revision-%RANDOM%.txt"
 
+echo Checking Docker...
+docker info >nul 2>&1
+if not errorlevel 1 goto :docker_ready
+
+echo Docker is not running. Starting Docker Desktop...
+set "DOCKER_DESKTOP="
+if exist "%ProgramFiles%\Docker\Docker\Docker Desktop.exe" set "DOCKER_DESKTOP=%ProgramFiles%\Docker\Docker\Docker Desktop.exe"
+if not defined DOCKER_DESKTOP if exist "%ProgramFiles(x86)%\Docker\Docker\Docker Desktop.exe" set "DOCKER_DESKTOP=%ProgramFiles(x86)%\Docker\Docker\Docker Desktop.exe"
+if not defined DOCKER_DESKTOP (
+    echo Error: Docker is not running and Docker Desktop was not found.
+    exit /b 1
+)
+start "" "%DOCKER_DESKTOP%"
+
+set "DOCKER_WAIT=0"
+:wait_docker
+if !DOCKER_WAIT! GEQ 36 (
+    echo Error: Docker did not become ready within 3 minutes.
+    exit /b 1
+)
+timeout /t 5 /nobreak >nul
+set /a DOCKER_WAIT+=1
+docker info >nul 2>&1
+if errorlevel 1 goto :wait_docker
+
+:docker_ready
+echo Docker is ready.
+
 echo [1/6] Building fresh Docker image %IMAGE_TAG%...
 docker build --pull --label "quickscribe.build=%IMAGE_TAG%" -t "%IMMUTABLE_IMAGE%" .
 if %errorlevel% neq 0 (

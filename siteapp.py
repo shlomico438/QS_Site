@@ -524,6 +524,11 @@ _PERSONAL_TEMPLATE_RUNTIME_RULES = (
     "\"לא צוין\" / \"Not discussed\" — do not invent HTN/DM/exam normals/recommendation lists.\n"
     "- Short, silent, or test transcripts must produce a sparse note (headings + לא צוין), "
     "not a full filled clinic letter.\n"
+    "- The JSON field names are storage only. Do not add a title for a field, a box, or a specialty section.\n"
+    "- The only section headings in the note are the headings in the doctor's latest training letter, copied exactly and in that order. "
+    "Do not rename a heading and do not add a heading that is not in that letter, including סיבת הפנייה, תלונה עיקרית, "
+    "בדיקה, בדיקה נוירולוגית, אלרגיה, הערכה ותוכנית, המלצות והמשך, המלצות למטופל, ממצאים, הנדון, ברקע, המלצות, "
+    "Chief Complaint, HPI, Neurological Examination, Assessment, or Plan, unless that exact heading is in the letter.\n"
 )
 
 
@@ -4514,7 +4519,7 @@ def _wrap_text_to_max_chars(text, max_chars=None):
     return '\n\n'.join(blocks_out).strip()
 
 
-def _build_rtl_docx(lines, bold_first=False):
+def _build_rtl_docx(lines, bold_first=False, bold_mask=None):
     """
     Build a guaranteed-RTL DOCX completely from scratch as a ZIP with
     hand-crafted XML.  No python-docx template is loaded so every byte is
@@ -4525,7 +4530,7 @@ def _build_rtl_docx(lines, bold_first=False):
     para_xmls = []
     for i, line in enumerate(lines):
         line_s = str(line or '').strip()
-        bold = bold_first and i == 0
+        bold = (bold_first and i == 0) or bool(bold_mask and i < len(bold_mask) and bold_mask[i])
         # Match empiric Word LTR->RTL diff: rsidP on paragraph + jc="left" within bidi paragraph.
         ppr = '<w:pPr><w:bidi w:val="1"/><w:jc w:val="left"/></w:pPr>'
         p_open = f'<w:p w:rsidP="{DOCX_RSID_P}">'
@@ -12239,7 +12244,307 @@ def _strip_leading_medical_section_header(text, section_key=None):
     return t
 
 
-def _medical_summary_from_parsed(parsed, want_hebrew):
+_FOREIGN_PERSONAL_TEMPLATE_HEADINGS = (
+    "סיבת הפנייה",
+    "תלונה עיקרית / hpi",
+    "תלונה עיקרית",
+    "היסטוריה, תרופות ובדיקה נוירולוגית",
+    "בדיקה נוירולוגית",
+    "הערכה ותוכנית",
+    "המלצות והמשך",
+    "המלצות למטופל",
+    "אלרגיה",
+    "ממצאים",
+    "בדיקה",
+    "תלונה",
+    "chief complaint (cc)",
+    "chief complaint",
+    "history of present illness (hpi)",
+    "history of present illness",
+    "neurological examination",
+    "assessment (impression)",
+    "assessment",
+    "plan",
+    "hpi",
+)
+
+
+def _normalize_template_heading(line):
+    s = str(line or "").replace("*", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"^[\s:：\-–—]+|[\s:：\-–—]+$", "", s)
+    return s.strip().lower()
+
+
+def _personal_template_allowed_headings(prompt_text):
+    """Headings the doctor's own template tells the model to write."""
+    allowed = set()
+    for line in str(prompt_text or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        low = raw.lower()
+        if "exact internal heading" in low or "exact heading" in low:
+            for chunk in re.split(r"[,،|/]", raw):
+                for match in re.findall(r"[\u0590-\u05FF][\u0590-\u05FF\s\-–—]{0,24}", chunk):
+                    norm = _normalize_template_heading(match)
+                    if norm:
+                        allowed.add(norm)
+        norm_line = _normalize_template_heading(raw)
+        if (
+            norm_line
+            and len(norm_line) <= 24
+            and len(norm_line.split()) <= 3
+            and re.search(r"[\u0590-\u05FF]", norm_line)
+            and not re.search(r"[.!?A-Za-z]", raw)
+        ):
+            allowed.add(norm_line)
+    return allowed
+
+
+def _strip_headings_outside_personal_template(text, prompt_text):
+    """Drop box titles and specialty headings that are not in this doctor's template."""
+    allowed = _personal_template_allowed_headings(prompt_text)
+    foreign = [h for h in _FOREIGN_PERSONAL_TEMPLATE_HEADINGS if h not in allowed]
+    foreign.sort(key=len, reverse=True)
+    kept = []
+    for line in str(text or "").split("\n"):
+        probe = line.replace("*", "").strip()
+        norm = _normalize_template_heading(probe)
+        if norm and norm not in allowed and norm in _FOREIGN_PERSONAL_TEMPLATE_HEADINGS:
+            replacement = ""
+            for heading in allowed:
+                if norm.startswith(heading) and len(heading) > len(replacement):
+                    replacement = heading
+            if replacement:
+                kept.append(replacement)
+            continue
+        replaced = line
+        if norm not in allowed:
+            for heading in foreign:
+                match = re.match(
+                    re.escape(heading) + r"\s*[:：\-–—]\s*(.*)$",
+                    probe,
+                    flags=re.IGNORECASE,
+                )
+                if not match:
+                    continue
+                rest = match.group(1).strip()
+                replaced = rest
+                break
+        if replaced.strip():
+            kept.append(replaced)
+        elif not probe:
+            kept.append(line)
+    return "\n".join(kept).strip()
+
+
+_STRAY_TEMPLATE_HEADINGS = _FOREIGN_PERSONAL_TEMPLATE_HEADINGS + (
+    "הנדון",
+    "ברקע",
+    "המלצות",
+    "רגישות",
+    "תרופות",
+    "לסיכום",
+    "בבדיקה",
+    "פתיחה",
+    "רקע",
+    "שלי",
+)
+
+
+def _extract_doctor_template_headings(text):
+    """Ordered section labels the doctor marked in the training letter.
+
+    A heading is a bold line whose label is a short Hebrew phrase. The label is
+    the text before a colon or dash, so ``רגישות- לא ידוע`` yields ``רגישות``.
+    """
+    headings = []
+    seen = set()
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if "**" not in line:
+            continue
+        probe = re.sub(r"\s+", " ", line.replace("*", " ")).strip()
+        probe = re.sub(r"^[\s·•]+", "", probe).strip()
+        probe = re.sub(r"[\s:：\-–—]+$", "", probe).strip()
+        if not probe or len(probe) > 80:
+            continue
+        match = re.match(
+            r"^([\u0590-\u05FF][\u0590-\u05FF\s]{0,22}?)(?:\s*[-–—:：]\s*\S.*)?$",
+            probe,
+        )
+        if not match:
+            continue
+        label = re.sub(r"\s+", " ", match.group(1)).strip(" :-–—")
+        if not label or len(label) > 24 or len(label.split()) > 3 or re.search(r"\d", label):
+            continue
+        norm = _normalize_template_heading(label)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        headings.append(label)
+    return headings
+
+
+def _latest_doctor_training_letter(user_id):
+    """Latest training letter for this doctor. Callers must not log the text."""
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return ""
+    try:
+        from urllib.parse import quote
+        supabase_url, _service_key, headers = _supabase_rest_config()
+        uid = quote(user_id, safe="")
+        url = (
+            f"{supabase_url}/rest/v1/doctor_prompt_training_examples"
+            f"?user_id=eq.{uid}&select=doctor_summary&order=created_at.desc&limit=1"
+        )
+        r = requests.get(url, headers=headers, timeout=12)
+        if r.status_code != 200:
+            return ""
+        rows = r.json() if r.text else []
+        if not rows:
+            return ""
+        return str((rows[0] or {}).get("doctor_summary") or "")
+    except Exception:
+        logging.warning("doctor training letter lookup failed")
+        return ""
+
+
+_TRAINING_BULLET_RE = re.compile(r"^([·•∙▪◦‣])\s+\S")
+
+
+def _strip_training_bullet(line):
+    return re.sub(r"^[·•∙▪◦‣]\s*", "", str(line or "")).strip()
+
+
+def _split_fact_lines(text):
+    """One clinical fact per line. A period between sentences starts a new line."""
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+(?=[\u0590-\u05FFA-Za-z])", raw)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _training_section_bullets(letter, headings):
+    """Marker used in each training section that is written as a bullet list."""
+    titles = [str(h).strip() for h in (headings or []) if str(h).strip()]
+    if len(titles) < 2:
+        return {}
+    counts = {title: {} for title in titles}
+    current = None
+    for raw in str(letter or "").splitlines():
+        probe = raw.replace("*", "").strip()
+        if not probe:
+            continue
+        matched = _match_doctor_heading_line(probe, titles)
+        if matched:
+            current = matched[0]
+            continue
+        if not current:
+            continue
+        mark = _TRAINING_BULLET_RE.match(probe)
+        if not mark:
+            continue
+        marker = mark.group(1)
+        counts[current][marker] = counts[current].get(marker, 0) + 1
+    bullets = {}
+    for title, found in counts.items():
+        if not found or sum(found.values()) < 2:
+            continue
+        bullets[title] = max(found.items(), key=lambda item: item[1])[0]
+    return bullets
+
+
+def _bulletize_section_lines(lines, marker):
+    """Turn a paragraph into one training-style bullet per fact."""
+    items = []
+    for raw in lines or []:
+        for fact in _split_fact_lines(_strip_training_bullet(raw)):
+            if fact.startswith(marker):
+                items.append(fact)
+            else:
+                items.append(f"{marker} {fact}")
+    return items
+
+
+def _heading_block(title, lines):
+    body = "\n".join(line for line in lines if str(line).strip()).strip()
+    return title if not body else f"{title}\n{body}"
+
+
+def _match_doctor_heading_line(probe, headings):
+    """Return (canonical heading, remainder) when a line opens one of the doctor's sections."""
+    text = re.sub(r"\s+", " ", str(probe or "").replace("*", " ")).strip()
+    if not text or "/" in text:
+        return None
+    for title in sorted(headings, key=len, reverse=True):
+        if _normalize_template_heading(text) == _normalize_template_heading(title):
+            return title, ""
+        match = re.match(re.escape(title) + r"\s*[-–—:：]\s*(.*)$", text)
+        if match:
+            return title, match.group(1).strip()
+        prefixed = "ב" + title
+        if text == prefixed:
+            return title, ""
+        if text.startswith(prefixed) and re.match(r"^[\s\-–—:：]", text[len(prefixed):]):
+            return title, text[len(prefixed):].strip(" :-–—")
+    return None
+
+
+def _enforce_doctor_template_headings(chief, exam, rec, headings, bullets=None):
+    """Rebuild the note so its section headings are exactly the training letter's, in that order."""
+    titles = [str(h).strip() for h in (headings or []) if str(h).strip()]
+    if len(titles) < 2:
+        return chief, exam, rec
+    norms = {_normalize_template_heading(title) for title in titles}
+    buckets = {title: [] for title in titles}
+    current = None
+    preamble = []
+    stray = {
+        _normalize_template_heading(h)
+        for h in _STRAY_TEMPLATE_HEADINGS
+        if _normalize_template_heading(h) not in norms
+    }
+    for raw in "\n".join(str(part or "") for part in (chief, exam, rec)).splitlines():
+        probe = raw.replace("*", "").strip()
+        if not probe:
+            continue
+        matched = _match_doctor_heading_line(probe, titles)
+        if matched:
+            current, rest = matched
+            if rest:
+                buckets[current].append(rest)
+            continue
+        norm = _normalize_template_heading(probe)
+        if "/" in probe or (norm and norm in stray):
+            continue
+        if current:
+            buckets[current].append(raw.rstrip())
+        else:
+            preamble.append(raw.rstrip())
+    if preamble:
+        buckets[titles[0]] = preamble + buckets[titles[0]]
+    bullet_map = bullets if isinstance(bullets, dict) else {}
+    blocks = []
+    for title in titles:
+        lines = buckets[title]
+        marker = str(bullet_map.get(title) or "").strip()
+        if marker:
+            lines = _bulletize_section_lines(lines, marker)
+        else:
+            split_lines = []
+            for line in lines:
+                split_lines.extend(_split_fact_lines(line))
+            lines = split_lines
+        blocks.append(_heading_block(title, lines))
+    letter = "\n\n".join(blocks).strip()
+    return letter, "", ""
+
+
+def _medical_summary_from_parsed(parsed, want_hebrew, keep_personal_headings=False):
     """Map OpenAI three-part clinical JSON (+ legacy overview/key_points) to stored formatted fields."""
     p = parsed or {}
     # Standard medical JSON keys, plus psychology semantic aliases (central_themes / …).
@@ -12269,9 +12574,10 @@ def _medical_summary_from_parsed(parsed, want_hebrew):
     chief_t, kp_t = _maybe_translate_summary_to_hebrew(chief, kp_for_tr, want_hebrew)
     exam_t = kp_t[0] if len(kp_t) >= 1 else exam
     rec_t = kp_t[1] if len(kp_t) >= 2 else rec
-    chief_t = _strip_leading_medical_section_header(chief_t, "chief")
-    rec_t = _strip_leading_medical_section_header(rec_t, "rec")
-    exam_t = _strip_leading_medical_section_header(exam_t, "exam")
+    if not keep_personal_headings:
+        chief_t = _strip_leading_medical_section_header(chief_t, "chief")
+        rec_t = _strip_leading_medical_section_header(rec_t, "rec")
+        exam_t = _strip_leading_medical_section_header(exam_t, "exam")
     chief_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(chief_t))
     rec_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(rec_t))
     exam_t = _strip_leading_exam_trace_legacy_prefix(exam_t)
@@ -12684,7 +12990,45 @@ def _format_unified_transcript_openai(
             user_id=user_id,
             prompt_override=medical_task2_prompt_override,
         )
-        if (neuro or ortho) and not personal_task2:
+        template_headings = []
+        template_bullets = {}
+        if personal_task2:
+            training_letter = _latest_doctor_training_letter(user_id)
+            template_headings = _extract_doctor_template_headings(training_letter)
+            template_bullets = _training_section_bullets(training_letter, template_headings)
+            heading_lines = "\n".join(f"- {heading}" for heading in template_headings)
+            bullet_lines = "\n".join(
+                f"- {heading}: start every fact with {marker!r} on its own line"
+                for heading, marker in template_bullets.items()
+            )
+            bullet_clause = (
+                "The training letter writes these sections as bullet lists. Use the same bullet, one fact per line. "
+                "Do not join those facts into a paragraph:\n"
+                f"{bullet_lines}\n"
+                if bullet_lines
+                else ""
+            )
+            heading_clause = (
+                "The doctor's training letter uses these section headings, in this order, and no others:\n"
+                f"{heading_lines}\n"
+                "Copy each heading exactly onto its own line. Do not rename one and do not add a heading that is not in this list.\n"
+                "Write each fact on its own line. Do not merge several facts into one paragraph.\n"
+                f"{bullet_clause}"
+                if len(template_headings) >= 2
+                else "Use only the section headings written in the doctor's training letter, copied exactly and in that order.\n"
+            )
+            summary_heading_rule = (
+                "CRITICAL — the doctor's training letter is the only note structure. Do not combine it with a specialty template, an older template, or a stock heading list.\n"
+                "chief_complaint, examination_transcript, and patient_recommendations are storage fields only. "
+                "Do NOT write a title that names a field, a box, or a merged pane.\n"
+                f"{heading_clause}"
+                "Never add סיבת הפנייה, תלונה עיקרית, תלונה, בדיקה, בדיקה נוירולוגית, "
+                "היסטוריה, תרופות ובדיקה נוירולוגית, אלרגיה, הערכה ותוכנית, המלצות והמשך, המלצות למטופל, ממצאים, "
+                "הנדון, ברקע, המלצות, Chief Complaint, HPI, History of Present Illness, Neurological Examination, Assessment, or Plan "
+                "unless that exact word is one of the training headings listed above.\n"
+                "Fill the body only from the current transcript.\n"
+            )
+        elif (neuro or ortho):
             if neuro:
                 forbidden_labels = (
                     "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
@@ -12709,31 +13053,6 @@ def _format_unified_transcript_openai(
                 f"({forbidden_labels} or English equivalents). "
                 f"DO include the internal {specialty_name} subsection headings required by Task 2 "
                 f"{internal_headings}. "
-            )
-        elif (neuro or ortho) and personal_task2:
-            if neuro:
-                forbidden_labels = (
-                    "'תלונה עיקרית / HPI:', 'היסטוריה, תרופות ובדיקה נוירולוגית:', 'הערכה ותוכנית:', "
-                    "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
-                    "'Chief Complaint', 'History of Present Illness', 'Assessment', 'Plan:', "
-                )
-                specialty_name = "neurology"
-            else:
-                forbidden_labels = (
-                    "'תלונה עיקרית / אנמנזה:', 'בדיקה אורתופדית:', 'הערכה ותוכנית:', "
-                    "'תלונה:', 'ממצאים:', 'המלצות למטופל:', "
-                    "'Chief Complaint', 'Orthopedic examination', 'Range of Motion', 'Assessment', 'Plan:', "
-                )
-                specialty_name = "orthopedics"
-            summary_heading_rule = (
-                "CRITICAL — personal template replaces specialty completely (do NOT combine):\n"
-                f"Do NOT use {specialty_name} specialty outer titles at all "
-                f"({forbidden_labels} or English specialty equivalents).\n"
-                "Follow ONLY the doctor's personal Task 2 template for structure and internal headings "
-                "(e.g. ברקע / רגישות / תרופות / לסיכום / המלצות when that is the personal template).\n"
-                f"Do NOT wrap personal headings inside {specialty_name} section titles.\n"
-                "Fill checklist/body content only from the current transcript; leave undiscussed lines blank or לא צוין. "
-                "Never invent a full clinic letter from the personal template alone. "
             )
         elif psych:
             forbidden_labels = (
@@ -12772,6 +13091,10 @@ def _format_unified_transcript_openai(
         json_tail = (
             "Return as JSON fields only: clean_transcript, chief_complaint, examination_transcript, patient_recommendations.\n"
         )
+        if personal_task2:
+            json_tail += (
+                "The three summary fields are storage only. Write the doctor's personal template and no other headings.\n"
+            )
     else:
         task2_source = None
         system_prompt = (
@@ -12808,7 +13131,34 @@ def _format_unified_transcript_openai(
     )
     clean_transcript = _wrap_text_to_max_chars(str((parsed or {}).get("clean_transcript") or "").strip())
     if is_medical:
-        summary_block = _medical_summary_from_parsed(parsed, want_hebrew)
+        personal_summary = task2_source in ("doctor_profile", "request_candidate")
+        summary_block = _medical_summary_from_parsed(
+            parsed, want_hebrew, keep_personal_headings=personal_summary
+        )
+        if personal_summary:
+            for key in (
+                "medical_chief_complaint",
+                "medical_examination_transcript",
+                "medical_patient_recommendations",
+            ):
+                summary_block[key] = _strip_headings_outside_personal_template(summary_block.get(key), task2)
+            chief_out, exam_out, rec_out = _enforce_doctor_template_headings(
+                summary_block.get("medical_chief_complaint"),
+                summary_block.get("medical_examination_transcript"),
+                summary_block.get("medical_patient_recommendations"),
+                template_headings,
+                template_bullets,
+            )
+            summary_block["medical_chief_complaint"] = chief_out
+            summary_block["medical_examination_transcript"] = exam_out
+            summary_block["medical_patient_recommendations"] = rec_out
+            summary_block["overview"] = summary_block["medical_chief_complaint"]
+            summary_block["key_points"] = [
+                x for x in (
+                    summary_block["medical_examination_transcript"],
+                    summary_block["medical_patient_recommendations"],
+                ) if x
+            ]
         out = _medical_apply_format_guardrail(
             transcript_text,
             {
@@ -13844,6 +14194,8 @@ def api_medical_training_profile():
             'Hebrew', 'he', user_id=user_id, prompt_override=None, single_shot=True
         )
         latest_example = None
+        template_headings = []
+        template_bullets = {}
         try:
             from urllib.parse import quote
             supabase_url, _service_key, headers = _supabase_rest_config()
@@ -13859,6 +14211,8 @@ def api_medical_training_profile():
                 if rows:
                     ex = rows[0] or {}
                     preview_meta = ex.get('candidate_preview') if isinstance(ex.get('candidate_preview'), dict) else {}
+                    template_headings = _extract_doctor_template_headings(ex.get("doctor_summary"))
+                    template_bullets = _training_section_bullets(ex.get("doctor_summary"), template_headings)
                     latest_example = {
                         "id": ex.get("id"),
                         "created_at": ex.get("created_at"),
@@ -13890,6 +14244,16 @@ def api_medical_training_profile():
             "resolved_task2_prompt": _prompt or '',
             "resolved_task2_prompt_chars": len(_prompt or ''),
             "specialty": _medical_professional_specialty(user_id),
+            "template_headings": (
+                []
+                if str(pub.get("status") or "").strip().lower() == "disabled" or not (production or active or candidate)
+                else template_headings
+            ),
+            "template_bullets": (
+                {}
+                if str(pub.get("status") or "").strip().lower() == "disabled" or not (production or active or candidate)
+                else template_bullets
+            ),
             "section_labels": (
                 {}
                 if str(pub.get("status") or "").strip().lower() == "disabled" or not (production or active or candidate)
@@ -13968,21 +14332,18 @@ def _execute_medical_training_learn(data):
         "Also learn reusable style preferences: tone, brevity, emphasis, omission of filler, and wording habits. "
         "Encode the template explicitly inside candidate_prompt so future notes follow the same structure even when "
         "the specialty default differs. "
-        "CRITICAL: If the gold example uses Hebrew clinic headings such as ברקע, רגישות, תרופות, בבדיקה, לסיכום, המלצות "
-        "(or similar), you MUST REPLACE specialty-default English headings "
-        "(Chief Complaint, HPI, Neurological Examination, Assessment, Plan, etc.) with the doctor's exact Hebrew "
-        "headings and checklist layout. Do not keep CC/HPI/Assessment-Plan scaffolding. "
-        "Suggested JSON field mapping for that Hebrew clinic layout: "
-        "chief_complaint ← ברקע and לסיכום (when present); "
-        "examination_transcript ← רגישות, תרופות, בבדיקה; "
-        "patient_recommendations ← המלצות (and the closing signature block if the doctor uses one). "
-        "Keep internal headings inside field values. Treat checklist rows as OPTIONAL SLOTS: include the label "
+        "CRITICAL: Copy the section headings from the doctor's gold letter exactly, in that order. "
+        "Do not rename them and do not add a stock heading (הנדון, ברקע, המלצות, סיבת הפנייה, Chief Complaint, HPI, "
+        "Neurological Examination, Assessment, Plan) unless that exact heading is in the gold letter. "
+        "Replace any specialty-default English scaffolding with the doctor's headings. "
+        "The three JSON fields are storage only. Keep the doctor's headings inside the field values. "
+        "Treat checklist rows as OPTIONAL SLOTS: include the label "
         "only as a blank prompt when relevant; never bake the gold example's filled clinical answers "
         "(HTN details, carotid duplex phone numbers, specific exam normals, etc.) into the permanent prompt. "
         "Blank checklist rows stay as blank prompts to fill from the "
         "transcript — never invent labs, diagnoses, meds, or phone numbers. "
         "Map into chief_complaint, examination_transcript, patient_recommendations. "
-        "In section_labels, set short UI titles matching the doctor's template (e.g. chief=ברקע, exam=בבדיקה, rec=המלצות). "
+        "In section_labels, you may set short UI titles, but do not invent a merged title and do not rename the doctor's headings. "
         "In learned_rules, list concise reusable rules (template sections first, then style). "
         "If the current prompt already contains CASE blocks for more than one visit type, "
         "update only the CASE that matches this gold example and copy every other CASE block through unchanged."
@@ -13997,10 +14358,10 @@ def _execute_medical_training_learn(data):
             base_for_optimizer = prior_personal
         else:
             base_for_optimizer = (
-                "Personal Hebrew neurology clinic note template (NOT the English CC/HPI specialty default).\n"
+                "Personal clinic note template (NOT the English CC/HPI specialty default).\n"
                 "Required JSON fields: chief_complaint, examination_transcript, patient_recommendations.\n"
-                "Use the doctor's Hebrew headings from their gold example (ברקע / רגישות / תרופות / בבדיקה / "
-                "לסיכום / המלצות) inside those fields. Never invent clinical data.\n"
+                "Copy the section headings from the doctor's gold letter exactly, in that order. "
+                "Do not rename them and do not add headings that are not in the gold letter. Never invent clinical data.\n"
             )
     user_prompt = (
         "Current Task 2 prompt (starting point — REPLACE structure if the gold example differs. "
@@ -14069,6 +14430,8 @@ def _execute_medical_training_learn(data):
         "rationale": str((learned or {}).get('rationale') or ''),
         "learned_rules": (learned or {}).get('learned_rules') if isinstance((learned or {}).get('learned_rules'), list) else [],
         "section_labels": section_labels,
+        "template_headings": _extract_doctor_template_headings(doctor_summary),
+        "template_bullets": _training_section_bullets(doctor_summary, _extract_doctor_template_headings(doctor_summary)),
         "profile": _doctor_prompt_public_profile(updated_profile),
         "example_id": example.get("id"),
     }
@@ -14660,6 +15023,64 @@ def api_registration_feedback():
         return jsonify({"error": str(e)}), 500
 
 
+def _medical_export_field_is_blank(text):
+    t = str(text or '').strip().rstrip('.').strip()
+    return t.lower() in ('', 'לא צוין', 'not specified', 'n/a')
+
+
+def _medical_summary_docx_lines(chief, exam, rec, specialty, personal=False, headings=None):
+    """One Word paragraph per screen line. A personal letter is not wrapped in specialty titles."""
+    heading_norms = {
+        _normalize_template_heading(h)
+        for h in (headings or [])
+        if str(h or '').strip()
+    }
+
+    def split_field(text):
+        out = []
+        bold = []
+        for raw in str(text or '').replace('\r\n', '\n').split('\n'):
+            line = raw.strip()
+            if not line:
+                out.append('')
+                bold.append(False)
+                continue
+            out.append(line)
+            bold.append(_normalize_template_heading(line) in heading_norms)
+        while out and not out[-1]:
+            out.pop()
+            bold.pop()
+        return out, bold
+
+    if personal:
+        parts = []
+        mask = []
+        for chunk in (chief, exam, rec):
+            if _medical_export_field_is_blank(chunk):
+                continue
+            lines, flags = split_field(chunk)
+            if parts and lines:
+                parts.append('')
+                mask.append(False)
+            parts.extend(lines)
+            mask.extend(flags)
+        return parts, mask
+
+    labels = _medical_summary_section_labels(specialty)
+    parts = []
+    mask = []
+    for label, chunk in ((labels['chief'], chief), (labels['exam'], exam), (labels['rec'], rec)):
+        if parts:
+            parts.append('')
+            mask.append(False)
+        parts.append(f"{label}:")
+        mask.append(True)
+        lines, flags = split_field(chunk or 'לא צוין.')
+        parts.extend(lines)
+        mask.extend(flags)
+    return parts, mask
+
+
 @app.route('/api/export_docx', methods=['POST'])
 def api_export_docx():
     """
@@ -14707,22 +15128,19 @@ def api_export_docx():
                 fmt = {'clean_transcript': raw_text, 'overview': '', 'key_points': []}
                 format_source = 'raw_no_gpt'
 
+        bold_mask = None
         if kind == 'summary':
             mc = str(fmt.get('medical_chief_complaint') or '').strip()
             me = str(fmt.get('medical_examination_transcript') or '').strip()
             mr = str(fmt.get('medical_patient_recommendations') or '').strip()
             if mc or me or mr:
                 specialty = str(data.get('professionalSpecialty') or data.get('professional_specialty') or '').strip()
-                labels = _medical_summary_section_labels(specialty)
-                lines = []
-                lines.append(f"{labels['chief']}:")
-                lines.append(mc or 'לא צוין.')
-                lines.append('')
-                lines.append(f"{labels['exam']}:")
-                lines.append(me or 'לא צוין.')
-                lines.append('')
-                lines.append(f"{labels['rec']}:")
-                lines.append(mr or 'לא צוין.')
+                personal = bool(data.get('personalTemplate') or data.get('personal_template'))
+                raw_headings = data.get('templateHeadings') or data.get('template_headings') or []
+                headings = raw_headings if isinstance(raw_headings, list) else []
+                lines, bold_mask = _medical_summary_docx_lines(
+                    mc, me, mr, specialty, personal=personal, headings=headings,
+                )
             else:
                 overview   = str(fmt.get('overview') or '').strip()
                 key_points = [str(p).strip() for p in (fmt.get('key_points') or []) if str(p).strip()]
@@ -14742,7 +15160,7 @@ def api_export_docx():
             lines = _docx_body_lines_from_clean_transcript(clean)
             dl_name = filename + '.docx'
 
-        docx_bytes = _build_rtl_docx(lines)
+        docx_bytes = _build_rtl_docx(lines, bold_mask=bold_mask)
 
         from flask import send_file
         out = BytesIO(docx_bytes)

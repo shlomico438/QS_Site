@@ -5908,16 +5908,10 @@ function qsSyncMedicalTranscriptSignatureNode(show, signatureText) {
         if (node) node.remove();
         return;
     }
-    let boxes = tw.querySelectorAll('[data-medical-edit-box]');
-    let lastBox = boxes.length ? boxes[boxes.length - 1] : null;
-    if (!lastBox && qsMedicalLiveCaptureActive() && typeof qsRenderMedicalEditableTranscriptBoxes === 'function') {
-        // Create the live text box before the first ASR words arrive. The
-        // signature is anchored at its end, while speech fills in above it.
-        qsRenderMedicalEditableTranscriptBoxes(['']);
-        boxes = tw.querySelectorAll('[data-medical-edit-box]');
-        lastBox = boxes.length ? boxes[boxes.length - 1] : null;
-        node = tw.querySelector('[data-medical-transcript-signature]');
-    }
+    const boxes = tw.querySelectorAll('[data-medical-edit-box]');
+    const lastBox = boxes.length ? boxes[boxes.length - 1] : null;
+    // A saved signature is not transcript text. Do not open an empty box for it;
+    // that box blocked the "listening" line until the first spoken words.
     if (!lastBox) {
         if (node) node.remove();
         return;
@@ -10445,8 +10439,162 @@ function _stripLeadingMedicalSectionHeader(text) {
     return t;
 }
 
+const _FOREIGN_PERSONAL_TEMPLATE_HEADINGS = [
+    'סיבת הפנייה',
+    'תלונה עיקרית / hpi',
+    'תלונה עיקרית',
+    'היסטוריה, תרופות ובדיקה נוירולוגית',
+    'בדיקה נוירולוגית',
+    'הערכה ותוכנית',
+    'המלצות והמשך',
+    'המלצות למטופל',
+    'אלרגיה',
+    'ממצאים',
+    'בדיקה',
+    'תלונה',
+    'chief complaint',
+    'hpi',
+    'neurological examination',
+    'assessment',
+    'plan',
+];
+
+function _normalizePersonalTemplateHeading(line) {
+    return String(line || '')
+        .replace(/\*/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/^[\s:：\-–—]+|[\s:：\-–—]+$/gu, '')
+        .trim()
+        .toLowerCase();
+}
+
+/** Drop specialty and box titles that are not part of a trained doctor's template. */
+function _stripHeadingsOutsidePersonalTemplate(text) {
+    if (!window._medicalPersonalTemplateActive) return String(text || '');
+    const keep = new Set(['הנדון', 'ברקע', 'רגישות', 'תרופות', 'בבדיקה', 'לסיכום', 'המלצות']);
+    const labels = window._medicalPersonalSectionLabels;
+    if (labels && typeof labels === 'object') {
+        for (const value of Object.values(labels)) {
+            const norm = _normalizePersonalTemplateHeading(value);
+            if (norm) keep.add(norm);
+        }
+    }
+    const foreign = _FOREIGN_PERSONAL_TEMPLATE_HEADINGS
+        .filter((heading) => !keep.has(heading))
+        .sort((a, b) => b.length - a.length);
+    const kept = [];
+    for (const line of String(text || '').split('\n')) {
+        const probe = line.replace(/\*/g, '').trim();
+        const norm = _normalizePersonalTemplateHeading(probe);
+        if (norm && !keep.has(norm) && _FOREIGN_PERSONAL_TEMPLATE_HEADINGS.includes(norm)) {
+            let replacement = '';
+            for (const heading of keep) {
+                if (norm.startsWith(heading) && heading.length > replacement.length) replacement = heading;
+            }
+            if (replacement) kept.push(replacement);
+            continue;
+        }
+        let next = line;
+        if (!keep.has(norm)) {
+            for (const heading of foreign) {
+                const match = new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[:：\\-–—]\\s*(.*)$`, 'i').exec(probe);
+                if (!match) continue;
+                next = match[1].trim();
+                break;
+            }
+        }
+        if (String(next || '').trim()) kept.push(next);
+        else if (!probe) kept.push(line);
+    }
+    return kept.join('\n').trim();
+}
+
+const _STRAY_TEMPLATE_HEADINGS = _FOREIGN_PERSONAL_TEMPLATE_HEADINGS.concat([
+    'הנדון', 'ברקע', 'המלצות', 'רגישות', 'תרופות', 'לסיכום', 'בבדיקה', 'פתיחה', 'רקע', 'שלי',
+]);
+
+function _qsMatchDoctorHeadingLine(probe, headings) {
+    const text = String(probe || '').replace(/\*/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!text || text.includes('/')) return null;
+    const ordered = headings.slice().sort((a, b) => b.length - a.length);
+    for (const title of ordered) {
+        if (_normalizePersonalTemplateHeading(text) === _normalizePersonalTemplateHeading(title)) {
+            return { title, rest: '' };
+        }
+        const match = new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[-–—:：]\\s*(.*)$`).exec(text);
+        if (match) return { title, rest: String(match[1] || '').trim() };
+        const prefixed = `ב${title}`;
+        if (text === prefixed) return { title, rest: '' };
+        if (text.startsWith(prefixed) && /^[\s\-–—:：]/.test(text.slice(prefixed.length))) {
+            return { title, rest: text.slice(prefixed.length).replace(/^[\s:：\-–—]+/, '').trim() };
+        }
+    }
+    return null;
+}
+
+function _qsApplyDoctorTemplateHeadings(text, headings) {
+    const titles = (Array.isArray(headings) ? headings : []).map((h) => String(h || '').trim()).filter(Boolean);
+    if (titles.length < 2) return String(text || '').trim();
+    const norms = new Set(titles.map((title) => _normalizePersonalTemplateHeading(title)));
+    const stray = new Set(
+        _STRAY_TEMPLATE_HEADINGS
+            .map((heading) => _normalizePersonalTemplateHeading(heading))
+            .filter((heading) => heading && !norms.has(heading))
+    );
+    const buckets = Object.fromEntries(titles.map((title) => [title, []]));
+    let current = '';
+    const preamble = [];
+    for (const raw of String(text || '').split('\n')) {
+        const probe = raw.replace(/\*/g, '').trim();
+        if (!probe) continue;
+        const matched = _qsMatchDoctorHeadingLine(probe, titles);
+        if (matched) {
+            current = matched.title;
+            if (matched.rest) buckets[current].push(matched.rest);
+            continue;
+        }
+        const norm = _normalizePersonalTemplateHeading(probe);
+        if (probe.includes('/') || (norm && stray.has(norm))) continue;
+        if (current) buckets[current].push(raw.replace(/\s+$/u, ''));
+        else preamble.push(raw.replace(/\s+$/u, ''));
+    }
+    if (preamble.length) buckets[titles[0]] = preamble.concat(buckets[titles[0]]);
+    const bullets = window._medicalTemplateBullets && typeof window._medicalTemplateBullets === 'object'
+        ? window._medicalTemplateBullets
+        : {};
+    return titles.map((title) => {
+        let lines = buckets[title].filter((line) => String(line || '').trim());
+        const marker = String(bullets[title] || '').trim();
+        if (marker) lines = _qsBulletizeSectionLines(lines, marker);
+        else lines = lines.flatMap((line) => _qsSplitFactLines(line));
+        const body = lines.join('\n').trim();
+        return body ? `${title}\n${body}` : title;
+    }).join('\n\n');
+}
+
+function _qsSplitFactLines(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return [];
+    return raw.split(/(?<=[.!?])\s+(?=[\u0590-\u05FFA-Za-z])/u).map((part) => part.trim()).filter(Boolean);
+}
+
+function _qsBulletizeSectionLines(lines, marker) {
+    const items = [];
+    for (const raw of lines || []) {
+        const stripped = String(raw || '').replace(/^[·•∙▪◦‣]\s*/u, '').trim();
+        for (const fact of _qsSplitFactLines(stripped)) {
+            items.push(fact.startsWith(marker) ? fact : `${marker} ${fact}`);
+        }
+    }
+    return items;
+}
+
 function _medicalSummaryFieldBody(text, sectionKey) {
-    let t = _stripLeadingMedicalSectionHeader(text);
+    let t = _stripHeadingsOutsidePersonalTemplate(text);
+    if (!window._medicalPersonalTemplateActive) {
+        t = _stripLeadingMedicalSectionHeader(t);
+    }
     if (sectionKey === 'exam') t = _stripLeadingMedicalExamLegacyPrefix(t);
     return t;
 }
@@ -12010,10 +12158,12 @@ function renderMedicalTrainingPanel(container) {
                 window._medicalTrainingCandidatePrompt = learned.candidate_prompt || '';
                 window._medicalTrainingLastExampleId = learned.example_id || '';
                 window._medicalTrainingLearnedRules = Array.isArray(learned.learned_rules) ? learned.learned_rules : [];
-                if (learned.section_labels || learned.candidate_prompt) {
+                if (learned.section_labels || learned.candidate_prompt || learned.template_headings) {
                     qsApplyMedicalPersonalTemplateMeta({
                         personal_template: true,
                         section_labels: learned.section_labels,
+                        template_headings: learned.template_headings,
+                        template_bullets: learned.template_bullets,
                         active_prompt_chars: String(learned.candidate_prompt || '').length,
                     });
                 }
@@ -14040,6 +14190,17 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         const _buildKindText = (kind, payload) => {
             if (kind === 'summary') {
                 if (payload.mc || payload.me || payload.mr) {
+                    if (window._medicalPersonalTemplateActive) {
+                        const headings = Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : [];
+                        const note = _qsApplyDoctorTemplateHeadings(
+                            [payload.mc, payload.me, payload.mr].filter((part) => {
+                                const t = String(part || '').trim().replace(/\.+$/u, '').trim();
+                                return t && t !== 'לא צוין' && t.toLowerCase() !== 'not specified';
+                            }).join('\n\n'),
+                            headings
+                        );
+                        return note;
+                    }
                     const lines = [];
                     lines.push(`${_medicalSummarySectionLabel('chief')}:`);
                     lines.push(payload.mc || 'לא צוין.');
@@ -14125,7 +14286,9 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     isMedical: typeof isMedicalModeEnabled === 'function' ? isMedicalModeEnabled() : false,
                     professionalSpecialty: typeof qsMedicalProfessionalSpecialty === 'function'
                         ? qsMedicalProfessionalSpecialty()
-                        : ''
+                        : '',
+                    personalTemplate: !!window._medicalPersonalTemplateActive,
+                    templateHeadings: Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : []
                 })
             });
             if (!res.ok) {
@@ -26991,7 +27154,6 @@ function qsMedicalSectionLabelsAreKnownStock(labels) {
         QS_MEDICAL_SUMMARY_SECTION_LABELS_PSYCHOLOGY,
         QS_MEDICAL_SUMMARY_SECTION_LABELS_NEUROLOGY,
         QS_MEDICAL_SUMMARY_SECTION_LABELS_ORTHOPEDICS,
-        QS_MEDICAL_SUMMARY_SECTION_LABELS_CLINIC,
         QS_MEDICAL_SUMMARY_SECTION_LABELS,
     ].some((stock) => qsMedicalSectionLabelsMatch(labels, stock));
 }
@@ -27064,8 +27226,12 @@ function qsApplyMedicalPersonalTemplateMeta(meta) {
     if (savedProfileOff && !meta.personal_template) {
         window._medicalPersonalTemplateActive = false;
         window._medicalPersonalSectionLabels = null;
+        window._medicalTemplateHeadings = [];
+        window._medicalTemplateBullets = {};
         try { localStorage.removeItem('qs_medical_personal_template'); } catch (_) {}
         try { localStorage.removeItem('qs_medical_section_labels'); } catch (_) {}
+        try { localStorage.removeItem('qs_medical_template_headings'); } catch (_) {}
+        try { localStorage.removeItem('qs_medical_template_bullets'); } catch (_) {}
         return;
     }
     const labels = meta.section_labels && typeof meta.section_labels === 'object' ? meta.section_labels : null;
@@ -27077,6 +27243,14 @@ function qsApplyMedicalPersonalTemplateMeta(meta) {
         || Number(meta.production_prompt_chars || 0) > 0
     );
     window._medicalPersonalTemplateActive = hasPersonal;
+    if (Array.isArray(meta.template_headings) && meta.template_headings.length) {
+        window._medicalTemplateHeadings = meta.template_headings
+            .map((heading) => String(heading || '').trim())
+            .filter(Boolean);
+    }
+    if (meta.template_bullets && typeof meta.template_bullets === 'object' && !Array.isArray(meta.template_bullets)) {
+        window._medicalTemplateBullets = meta.template_bullets;
+    }
     if (labels && (labels.chief || labels.exam || labels.rec)) {
         window._medicalPersonalSectionLabels = {
             chief: String(labels.chief || '').trim(),
@@ -27092,6 +27266,12 @@ function qsApplyMedicalPersonalTemplateMeta(meta) {
                 JSON.stringify(window._medicalPersonalSectionLabels)
             );
         }
+        if (Array.isArray(window._medicalTemplateHeadings) && window._medicalTemplateHeadings.length) {
+            localStorage.setItem('qs_medical_template_headings', JSON.stringify(window._medicalTemplateHeadings));
+        }
+        if (window._medicalTemplateBullets && Object.keys(window._medicalTemplateBullets).length) {
+            localStorage.setItem('qs_medical_template_bullets', JSON.stringify(window._medicalTemplateBullets));
+        }
     } catch (_) {}
 }
 
@@ -27106,6 +27286,21 @@ function qsRestoreMedicalPersonalTemplateMetaFromStorage() {
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed === 'object') {
                 window._medicalPersonalSectionLabels = parsed;
+                window._medicalPersonalTemplateActive = true;
+            }
+        }
+        const bulletRaw = localStorage.getItem('qs_medical_template_bullets');
+        if (bulletRaw) {
+            const parsedBullets = JSON.parse(bulletRaw);
+            if (parsedBullets && typeof parsedBullets === 'object' && !Array.isArray(parsedBullets)) {
+                window._medicalTemplateBullets = parsedBullets;
+            }
+        }
+        const headingRaw = localStorage.getItem('qs_medical_template_headings');
+        if (headingRaw) {
+            const parsedHeadings = JSON.parse(headingRaw);
+            if (Array.isArray(parsedHeadings) && parsedHeadings.length) {
+                window._medicalTemplateHeadings = parsedHeadings.map((heading) => String(heading || '').trim()).filter(Boolean);
                 window._medicalPersonalTemplateActive = true;
             }
         }
@@ -27128,9 +27323,18 @@ async function qsHydrateMedicalPersonalTemplateProfile(options) {
             resolved_task2_source: data.resolved_task2_source,
             profile_status: data.profile && data.profile.status,
             section_labels: data.section_labels,
+            template_headings: data.template_headings,
+            template_bullets: data.template_bullets,
             active_prompt_chars: data.profile && data.profile.active_prompt_chars,
             production_prompt_chars: data.production_prompt_chars,
         });
+        if (
+            String(window.medicalActiveTab || '') === 'summary'
+            && window.currentFormattedDoc
+            && typeof renderTranscriptFromCues === 'function'
+        ) {
+            try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
+        }
         window._medicalPersonalTemplateHydrated = true;
         if (data.resolved_task2_source === 'doctor_profile') {
             qsSetMedicalStyleConfigured(true);
@@ -27153,9 +27357,6 @@ window.qsHydrateMedicalPersonalTemplateProfile = qsHydrateMedicalPersonalTemplat
 /** If body text already uses personal clinic headings, keep those UI labels only while training is on. */
 function qsInferPersonalTemplateFromSummaryDoc(fmt) {
     if (!window._medicalPersonalTemplateActive) return false;
-    if (qsIsMedicalOrthopedicsSpecialty() || qsIsMedicalNeurologySpecialty() || qsIsMedicalPsychologySpecialty()) {
-        return false;
-    }
     const blob = [
         fmt && fmt.medical_chief_complaint,
         fmt && fmt.medical_examination_transcript,
@@ -27188,6 +27389,7 @@ function _medicalSummarySectionHeadHtml(title, sectionKey, esc) {
 
 /** Hebrew/English clinic subsection titles that should render as bold section heads inside a pane. */
 const QS_MEDICAL_SUMMARY_SUBHEADINGS = [
+    'הנדון',
     'ברקע',
     'רגישות',
     'תרופות',
@@ -27211,9 +27413,11 @@ function _medicalSummaryLineLooksLikeSubheading(line) {
     if (!raw || raw.length > 48) return false;
     const normalized = raw.replace(/[:：.\s]+$/u, '').trim().toLowerCase();
     if (!normalized) return false;
-    if (!window._medicalPersonalTemplateActive && ['ברקע', 'בבדיקה', 'המלצות', 'רגישות', 'תרופות', 'לסיכום'].includes(normalized)) {
+    if (!window._medicalPersonalTemplateActive && ['הנדון', 'ברקע', 'בבדיקה', 'המלצות', 'רגישות', 'תרופות', 'לסיכום'].includes(normalized)) {
         return false;
     }
+    const trained = Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : [];
+    if (trained.some((heading) => _normalizePersonalTemplateHeading(heading) === normalized)) return true;
     return QS_MEDICAL_SUMMARY_SUBHEADINGS.some((h) => h.toLowerCase() === normalized);
 }
 
@@ -27974,6 +28178,10 @@ function renderTranscriptFromCues(cues) {
             const chief = _medicalSummaryFieldBody(fmt.medical_chief_complaint, 'chief');
             const exam = _medicalSummaryFieldBody(fmt.medical_examination_transcript, 'exam');
             const rec = _medicalSummaryFieldBody(fmt.medical_patient_recommendations, 'rec');
+            const personalHeadings = Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : [];
+            const personalNote = window._medicalPersonalTemplateActive
+                ? _qsApplyDoctorTemplateHeadings([chief, exam, rec].filter(Boolean).join('\n\n'), personalHeadings)
+                : '';
             const chiefLabel = _medicalSummarySectionLabel('chief');
             const examLabel = _medicalSummarySectionLabel('exam');
             const recLabel = _medicalSummarySectionLabel('rec');
@@ -27981,6 +28189,14 @@ function renderTranscriptFromCues(cues) {
             const examHasOwnHeads = /(?:^|\n)\s*(רגישות|תרופות|לסיכום)\s*$/m.test(String(exam || '').trim())
                 || /(?:^|\n)\s*(רגישות|תרופות|לסיכום)\s*\n/m.test(String(exam || ''));
             const hideExamOuter = !!(window._medicalPersonalTemplateActive && examHasOwnHeads);
+            if (personalNote) {
+                const noteHtml = _formatMedicalSummaryBodyHtml(personalNote, esc, emptyMsg);
+                container.innerHTML = `
+            <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
+                <div id="medical-summary-chief" data-medical-section="chief">${noteHtml}</div>
+            </div>
+        `;
+            } else {
             const chiefHtml = _formatMedicalSummaryBodyHtml(chief || emptyMsg, esc, emptyMsg, {
                 skipFirstHeadingIfMatches: chiefLabel,
             });
@@ -28000,6 +28216,7 @@ function renderTranscriptFromCues(cues) {
                 <div id="medical-summary-rec" data-medical-section="rec">${recHtml}</div>
             </div>
         `;
+            }
         } else {
             const overview = String(fmt.overview || '').trim();
             const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
