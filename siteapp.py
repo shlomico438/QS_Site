@@ -12412,7 +12412,7 @@ def _latest_doctor_training_letter(user_id):
         return ""
 
 
-_TRAINING_BULLET_RE = re.compile(r"^([·•∙▪◦‣])\s+\S")
+_TRAINING_BULLET_RE = re.compile(r"^([·•∙▪◦‣])(?:\s*$|\s*\S)")
 
 
 def _strip_training_bullet(line):
@@ -12449,6 +12449,7 @@ def _training_section_bullets(letter, headings):
         if not mark:
             continue
         marker = mark.group(1)
+        # A marker alone on its line still counts; the fact is on the following lines.
         counts[current][marker] = counts[current].get(marker, 0) + 1
     bullets = {}
     for title, found in counts.items():
