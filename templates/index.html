@@ -435,9 +435,9 @@ try {
             <div class="switches-top-bar">
                 <div class="toggles-group">
                     <div class="format-ab-switch" id="format-mode-switch" role="tablist" data-i18n-aria-label="format_view_aria" aria-label="{% if qs_is_en %}View format{% else %}פורמט תצוגה{% endif %}">
-                        <button type="button" class="format-ab-option is-active" id="format-mode-summary" role="tab" aria-selected="true" aria-controls="transcript-window" tabindex="0" data-i18n="tab_summary"><span aria-hidden="true">📝</span> {% if qs_is_en %}Summary{% else %}סיכום{% endif %}</button>
-                        <button type="button" class="format-ab-option" id="format-mode-doc" role="tab" aria-selected="false" aria-controls="transcript-window" tabindex="-1" data-i18n="tab_doc"><span aria-hidden="true">📄</span> {% if qs_is_en %}Transcript{% else %}תמלול{% endif %}</button>
-                        <button type="button" class="format-ab-option" id="format-mode-subtitle" role="tab" aria-selected="false" aria-controls="transcript-window" tabindex="-1" data-i18n="tab_subtitle"><span aria-hidden="true">⏱️</span> {% if qs_is_en %}Timestamps{% else %}חותמות זמן{% endif %}</button>
+                        <button type="button" class="format-ab-option is-active" id="format-mode-summary" role="tab" aria-selected="true" aria-controls="transcript-window" tabindex="0"><span aria-hidden="true">📝</span> <span data-i18n="tab_summary">{% if qs_is_en %}Summary{% else %}סיכום{% endif %}</span></button>
+                        <button type="button" class="format-ab-option" id="format-mode-doc" role="tab" aria-selected="false" aria-controls="transcript-window" tabindex="-1"><span aria-hidden="true">📄</span> <span data-i18n="tab_doc">{% if qs_is_en %}Transcript{% else %}תמלול{% endif %}</span></button>
+                        <button type="button" class="format-ab-option" id="format-mode-subtitle" role="tab" aria-selected="false" aria-controls="transcript-window" tabindex="-1"><span aria-hidden="true">⏱️</span> <span data-i18n="tab_subtitle">{% if qs_is_en %}Timestamps{% else %}חותמות זמן{% endif %}</span></button>
                     </div>
                     <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider" aria-hidden="true"></span></div><span data-i18n="speaker">{% if qs_is_en %}Speaker{% else %}דובר{% endif %}</span></label>
                 </div>
