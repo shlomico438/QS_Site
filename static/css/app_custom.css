@@ -248,6 +248,12 @@ body.medical-mode .upload-zone-app-footer .medical-aws-footnote::before,
     color: var(--nav-utility-sign-in);
     font-weight: 800;
 }
+button.nav-utility-link,
+button.nav-utility-sign-in,
+button.nav-auth-btn-mobile {
+    appearance: none;
+    -webkit-appearance: none;
+}
 .nav-utility-sign-in:hover,
 .nav-utility-sign-in:focus-visible {
     color: var(--nav-utility-sign-in-hover);
@@ -9211,4 +9217,121 @@ body:has(.transcription-wrapper.qs-processing-active) .main-app-container > .upl
 body:has(.transcription-wrapper.qs-processing-active) .main-app-container > .upload-zone .regular-record-btn,
 body:has(.transcription-wrapper.qs-processing-active) .main-app-container > .upload-zone #regular-record-btn {
   display: none !important;
+}
+
+/* =========================
+   ACCESSIBILITY (IS 5568 / WCAG 2.1 AA)
+========================= */
+.qs-skip-link {
+    position: absolute;
+    inset-inline-start: 12px;
+    top: 8px;
+    z-index: 10000;
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: #111827;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 0.95rem;
+    text-decoration: none;
+    transform: translateY(-160%);
+    transition: transform 0.15s ease;
+}
+.qs-skip-link:focus,
+.qs-skip-link:focus-visible {
+    transform: translateY(0);
+    outline: var(--focus-ring-outline);
+    outline-offset: var(--focus-ring-offset);
+}
+
+:focus {
+    outline: none;
+}
+:focus-visible {
+    outline: var(--focus-ring-outline);
+    outline-offset: var(--focus-ring-offset);
+}
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible),
+[role="button"]:focus:not(:focus-visible),
+summary:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible) {
+    outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+    .qs-skip-link {
+        transition: none;
+    }
+}
+
+/* Stretched link for use-case cards: heading is the accessible name */
+.seo-use-case-card {
+    position: relative;
+}
+.seo-use-case-card .seo-stretched-link {
+    text-decoration: none;
+    color: inherit;
+}
+.seo-use-case-card .seo-stretched-link::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+}
+.seo-use-case-card .seo-stretched-link:focus-visible {
+    outline: none;
+}
+.seo-use-case-card:has(.seo-stretched-link:focus-visible) {
+    outline: var(--focus-ring-outline);
+    outline-offset: var(--focus-ring-offset);
+}
+
+.a11y-statement {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+    line-height: 1.7;
+}
+.a11y-statement h1 {
+    margin: 0 0 8px;
+    color: #111827;
+}
+.a11y-statement h2 {
+    margin: 28px 0 10px;
+    color: #1e3a8a;
+    font-size: 1.15rem;
+}
+.a11y-statement-updated {
+    color: #4b5563;
+    margin: 0 0 20px;
+}
+.a11y-statement ul {
+    padding-inline-start: 1.25rem;
+}
+.a11y-statement li {
+    margin-bottom: 0.45rem;
+}
+
+.visually-hidden,
+.sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
 }

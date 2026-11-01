@@ -141,6 +141,7 @@
     </noscript>
 
     {# Early auth shell: open Sign In modal before the large app_logic module finishes. #}
+    <script src="{{ url_for('static', filename='js/qs_a11y.js') }}?v={{ static_asset_version }}" defer></script>
     <script src="{{ url_for('static', filename='js/qs_auth_shell.js') }}?v={{ static_asset_version }}" defer></script>
     {# Signed-in account chrome injected after auth — omitted from guest SSR for crawlers. #}
     <script src="{{ url_for('static', filename='js/qs_account_chrome.js') }}?v={{ static_asset_version }}" defer></script>
@@ -266,17 +267,19 @@
     src="https://www.facebook.com/tr?id=1955862168459302&ev=PageView&noscript=1"
     alt="" /></noscript>
 
+    <a href="#main" class="qs-skip-link" data-i18n="skip_to_main">{% if qs_is_en %}Skip to main content{% else %}דלג לתוכן הראשי{% endif %}</a>
+
     <!-- Two-tier site header: utility bar (session/locale) + main marketing navigation -->
     <header class="site-header navbar" id="site-header" dir="ltr">
         <!-- Tier 1: utility bar -->
-        <div class="navbar-utility" aria-label="Utility navigation">
+        <nav class="navbar-utility" aria-label="{% if qs_is_en %}Utility navigation{% else %}ניווט עזר{% endif %}" data-i18n-aria-label="nav_utility_aria">
             <div class="navbar-utility-inner" dir="ltr">
                 <div class="navbar-utility-start">
                     <div class="navbar-utility-locale-tools">
                     <div class="lang-switcher-wrap" id="lang-switcher-wrap">
-                        <div class="lang-switcher-trigger" id="lang-switcher-trigger" title="Language" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false">
+                        <div class="lang-switcher-trigger" id="lang-switcher-trigger" title="{% if qs_is_en %}Language{% else %}שפה{% endif %}" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" data-i18n-aria-label="lang_switcher_aria" aria-label="{% if qs_is_en %}Language{% else %}שפה{% endif %}">
                             <svg class="lang-globe" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                            <span class="lang-initials" id="lang-initials">He</span>
+                            <span class="lang-initials" id="lang-initials" lang="en">He</span>
                         </div>
                         <div class="lang-switcher-menu" id="lang-switcher-menu" role="listbox">
                             <button type="button" class="lang-option" data-lang="he">עברית</button>
@@ -320,10 +323,10 @@
                 </div>
                 <div class="navbar-utility-end" id="nav-utility-session">
                     <span id="nav-utility-signed-in-host"></span>
-                    <a href="#" class="nav-utility-link nav-utility-sign-in" id="nav-auth-btn" data-i18n="nav_sign_in">{% if qs_is_en %}Sign In{% else %}התחברות{% endif %}</a>
+                    <button type="button" class="nav-utility-link nav-utility-sign-in" id="nav-auth-btn" data-i18n="nav_sign_in">{% if qs_is_en %}Sign In{% else %}התחברות{% endif %}</button>
                 </div>
             </div>
-        </div>
+        </nav>
 
         <!-- Tier 2: main navigation bar -->
         <div class="navbar-main">
@@ -344,7 +347,7 @@
                     <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="nav-logo-image" width="48" height="48">
                 </a>
 
-                <nav class="nav-menu nav-menu-desktop" id="nav-menu-desktop" aria-label="Primary navigation">
+                <nav class="nav-menu nav-menu-desktop" id="nav-menu-desktop" aria-label="{% if qs_is_en %}Primary navigation{% else %}ניווט ראשי{% endif %}" data-i18n-aria-label="nav_primary_aria">
                     <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">{% if qs_is_en %}Pricing{% else %}מחירים{% endif %}</a>
                     {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                     <a href="/resources" class="nav-item nav-resources-link" data-i18n="nav_resources">{% if qs_is_en %}Resources{% else %}משאבים{% endif %}</a>
@@ -358,16 +361,16 @@
 
                 <div class="navbar-main-actions">
                     <a href="/personal" class="nav-cta-btn" id="nav-dashboard-cta" data-i18n="nav_personal" hidden style="display:none;">Personal Area</a>
-                    <button type="button" class="hamburger-menu" id="hamburger-menu" aria-label="Open menu" aria-expanded="false" aria-controls="nav-menu-mobile">
-                        <span></span>
-                        <span></span>
-                        <span></span>
+                    <button type="button" class="hamburger-menu" id="hamburger-menu" data-i18n-aria-label="nav_open_menu_aria" aria-label="{% if qs_is_en %}Open menu{% else %}פתח תפריט{% endif %}" aria-expanded="false" aria-controls="nav-menu-mobile">
+                        <span aria-hidden="true"></span>
+                        <span aria-hidden="true"></span>
+                        <span aria-hidden="true"></span>
                     </button>
                 </div>
             </div>
 
             <!-- Mobile navigation drawer -->
-            <nav class="nav-menu nav-menu-mobile" id="nav-menu" aria-label="Mobile navigation" hidden>
+            <nav class="nav-menu nav-menu-mobile" id="nav-menu" aria-label="{% if qs_is_en %}Mobile navigation{% else %}ניווט לנייד{% endif %}" data-i18n-aria-label="nav_mobile_aria" hidden>
                 <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">{% if qs_is_en %}Pricing{% else %}מחירים{% endif %}</a>
                 {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                 <a href="/resources" class="nav-item nav-resources-link" data-i18n="nav_resources">{% if qs_is_en %}Resources{% else %}משאבים{% endif %}</a>
@@ -380,7 +383,7 @@
                 <a href="/personal" class="nav-item nav-cta-btn nav-cta-btn--mobile" id="nav-new-session-btn" data-i18n="nav_personal" hidden style="display:none;">Personal Area</a>
                 <span id="nav-guest-free-tier-mobile" class="nav-guest-free-tier nav-guest-free-tier--mobile">30 דקות תמלול חינם בכל חודש</span>
                 <span id="nav-mobile-signed-in-host"></span>
-                <a href="#" class="nav-item nav-auth-btn-mobile" id="nav-auth-btn-mobile" data-i18n="nav_sign_in">{% if qs_is_en %}Sign In{% else %}התחברות{% endif %}</a>
+                <button type="button" class="nav-item nav-auth-btn-mobile" id="nav-auth-btn-mobile" data-i18n="nav_sign_in">{% if qs_is_en %}Sign In{% else %}התחברות{% endif %}</button>
             </nav>
         </div>
     </header>
@@ -391,7 +394,7 @@
     {% include 'snippets/medical_pricing_modal.html' %}
     {% endif %}
 
-    <main class="main-content" style="flex:1; min-height:0;">
+    <main id="main" class="main-content" tabindex="-1" style="flex:1; min-height:0;">
         {% block content %}{% endblock %}
     </main>
     {# After SEO markup exists: hide landing if resuming an active job (before app_logic). #}
@@ -421,6 +424,7 @@
                 <a href="{{ '/en/reviews' if qs_is_en else '/reviews' }}" data-i18n="nav_reviews">{% if qs_is_en %}Reviews{% else %}ביקורות{% endif %}</a>
                 {% endif %}
                 <a href="{{ '/en/medical/contact' if qs_is_en and (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else ('/medical/contact' if (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else '/contact') }}" data-i18n="nav_contact">{% if qs_is_en %}Contact{% else %}צור קשר{% endif %}</a>
+                <a href="{{ '/en/accessibility' if qs_is_en else '/accessibility' }}" data-i18n="footer_accessibility">{% if qs_is_en %}Accessibility statement{% else %}הצהרת נגישות{% endif %}</a>
             </nav>
             <nav class="site-footer-social" aria-label="{% if qs_is_en %}Social and reviews{% else %}רשתות וביקורות{% endif %}">
                 {% include "snippets/social_profile_links.html" %}
