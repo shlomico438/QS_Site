@@ -1210,30 +1210,55 @@ function qsMedicalWirePlanButtons(root = document) {
         cards.forEach((card) => {
             const selected = card === selectedCard;
             card.classList.toggle('is-selected', selected);
-            card.setAttribute('aria-selected', selected ? 'true' : 'false');
+            card.removeAttribute('role');
+            card.removeAttribute('tabindex');
+            card.removeAttribute('aria-selected');
+            const mark = card.querySelector('.medical-plan-selected-mark');
+            if (mark) mark.hidden = !selected;
+            const radio = card.querySelector('input.medical-plan-radio');
+            if (radio) {
+                radio.checked = selected;
+                // Native radiogroup: keep radios in tab order only for the selected one.
+                radio.tabIndex = selected ? 0 : -1;
+            }
         });
     };
     cards.forEach((card) => {
+        // Prefer native radio selection over role="option" on <article>.
+        card.removeAttribute('role');
+        card.removeAttribute('tabindex');
+        card.removeAttribute('aria-selected');
         if (card._qsMedicalCardWired === true) return;
         card._qsMedicalCardWired = true;
-        card.setAttribute('role', 'option');
-        card.tabIndex = 0;
-        card.addEventListener('click', () => selectCard(card));
-        card.addEventListener('keydown', (event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            selectCard(card);
+        const radio = card.querySelector('input.medical-plan-radio');
+        if (radio) {
+            radio.addEventListener('change', () => {
+                if (radio.checked) selectCard(card);
+            });
+        }
+        card.addEventListener('click', (event) => {
+            if (event.target && event.target.closest && event.target.closest('[data-medical-plan]')) return;
+            if (radio) {
+                radio.checked = true;
+                selectCard(card);
+            } else {
+                selectCard(card);
+            }
         });
     });
-    if (cards.length && !cards.some((card) => card.classList.contains('is-selected'))) {
-        selectCard(cards.find((card) => card.classList.contains('is-recommended')) || cards[0]);
-    }
+    const preselected = cards.find((card) => {
+        const radio = card.querySelector('input.medical-plan-radio');
+        return (radio && radio.checked) || card.classList.contains('is-selected');
+    }) || cards.find((card) => card.classList.contains('is-recommended')) || cards[0];
+    if (preselected) selectCard(preselected);
 
     root.querySelectorAll('[data-medical-plan]').forEach((button) => {
         if (button._qsMedicalPlanWired === true) return;
         button._qsMedicalPlanWired = true;
         button.addEventListener('click', () => {
             const plan = String(button.getAttribute('data-medical-plan') || '');
+            const ownerCard = button.closest('.medical-pricing-card');
+            if (ownerCard) selectCard(ownerCard);
             if (typeof window.qsStartMedicalPlanCheckout === 'function') {
                 void window.qsStartMedicalPlanCheckout(plan);
                 return;
@@ -1375,24 +1400,72 @@ function qsOpenMedicalPricingModal() {
     }
     const pricing = source.cloneNode(true);
     pricing.removeAttribute('id');
-    pricing.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    // Keep label↔control associations; prefix ids so they stay unique vs the page section.
+    const idMap = new Map();
+    pricing.querySelectorAll('[id]').forEach((el) => {
+        const oldId = el.id;
+        if (!oldId) return;
+        const nextId = `modal-${oldId}`;
+        idMap.set(oldId, nextId);
+        el.id = nextId;
+    });
+    pricing.querySelectorAll('[for]').forEach((el) => {
+        const oldFor = el.getAttribute('for');
+        if (oldFor && idMap.has(oldFor)) el.setAttribute('for', idMap.get(oldFor));
+    });
+    pricing.querySelectorAll('[aria-labelledby]').forEach((el) => {
+        const next = String(el.getAttribute('aria-labelledby') || '')
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((id) => idMap.get(id) || id)
+            .join(' ');
+        if (next) el.setAttribute('aria-labelledby', next);
+    });
+    pricing.querySelectorAll('[aria-describedby]').forEach((el) => {
+        const next = String(el.getAttribute('aria-describedby') || '')
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((id) => idMap.get(id) || id)
+            .join(' ');
+        if (next) el.setAttribute('aria-describedby', next);
+    });
+    pricing.querySelectorAll('input.medical-plan-radio').forEach((el) => {
+        el.setAttribute('name', 'medical_plan_modal');
+    });
     content.replaceChildren(pricing);
     qsMedicalWirePlanButtons(content);
     qsMedicalSetPricingMessage();
     qsMedicalRefreshPricingUi();
     try { document.body.appendChild(modal); } catch (_) {}
-    modal.hidden = false;
-    modal.setAttribute('aria-hidden', 'false');
+    if (typeof window.qsA11yOpenDialog === 'function') {
+        window.qsA11yOpenDialog(modal, {
+            focusSelector: '#medical-pricing-modal-close',
+            onEscape: () => {
+                if (typeof window.qsCloseMedicalPricingModal === 'function') {
+                    window.qsCloseMedicalPricingModal();
+                }
+            },
+            display: 'flex',
+        });
+    } else {
+        modal.hidden = false;
+        modal.setAttribute('aria-hidden', 'false');
+        document.getElementById('medical-pricing-modal-close')?.focus();
+    }
     document.body.classList.add('medical-pricing-modal-open');
-    document.getElementById('medical-pricing-modal-close')?.focus();
 }
 window.qsOpenMedicalPricingModal = qsOpenMedicalPricingModal;
 
 function qsCloseMedicalPricingModal() {
     const modal = document.getElementById('medical-pricing-modal');
     if (!modal) return;
-    modal.hidden = true;
-    modal.setAttribute('aria-hidden', 'true');
+    if (typeof window.qsA11yCloseDialog === 'function') {
+        window.qsA11yCloseDialog(modal);
+    } else {
+        modal.hidden = true;
+        modal.setAttribute('aria-hidden', 'true');
+        modal.style.display = 'none';
+    }
     document.body.classList.remove('medical-pricing-modal-open');
 }
 window.qsCloseMedicalPricingModal = qsCloseMedicalPricingModal;
@@ -1465,13 +1538,17 @@ function qsShowMedicalGuestTryModal(options) {
         tryBtn.textContent = T('medical_guest_try_continue', 'המשך במצב צפייה בלבד');
         if (cancelBtn) cancelBtn.textContent = T('cancel', 'ביטול');
         const cleanup = (choice) => {
-            modal.style.display = 'none';
-            modal.setAttribute('aria-hidden', 'true');
             registerBtn.removeEventListener('click', onRegister);
             tryBtn.removeEventListener('click', onTry);
             if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
             modal.removeEventListener('click', onBackdrop);
-            document.removeEventListener('keydown', onEsc);
+            if (typeof window.qsA11yCloseDialog === 'function') {
+                window.qsA11yCloseDialog(modal);
+            } else {
+                modal.style.display = 'none';
+                modal.setAttribute('aria-hidden', 'true');
+                modal.hidden = true;
+            }
             resolve(choice);
         };
         const onRegister = () => cleanup('register');
@@ -1482,15 +1559,21 @@ function qsShowMedicalGuestTryModal(options) {
         };
         const onCancel = () => cleanup(null);
         const onBackdrop = (e) => { if (e.target === modal) cleanup(null); };
-        const onEsc = (e) => { if (e.key === 'Escape') cleanup(null); };
         registerBtn.addEventListener('click', onRegister);
         tryBtn.addEventListener('click', onTry);
         if (cancelBtn) cancelBtn.addEventListener('click', onCancel);
         modal.addEventListener('click', onBackdrop);
-        document.addEventListener('keydown', onEsc);
-        modal.style.display = 'flex';
-        modal.setAttribute('aria-hidden', 'false');
-        try { registerBtn.focus(); } catch (_) {}
+        if (typeof window.qsA11yOpenDialog === 'function') {
+            window.qsA11yOpenDialog(modal, {
+                focusSelector: '#medical-guest-try-register',
+                onEscape: onCancel,
+            });
+        } else {
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+            modal.hidden = false;
+            try { registerBtn.focus(); } catch (_) {}
+        }
     });
 }
 
@@ -2432,28 +2515,38 @@ function qsShowMedicalWakeChoiceModal() {
             return;
         }
         const cleanup = (choice) => {
-            modal.style.display = 'none';
-            modal.setAttribute('aria-hidden', 'true');
             waitBtn.removeEventListener('click', onWait);
             recordBtn.removeEventListener('click', onRecord);
             if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
             modal.removeEventListener('click', onBackdrop);
-            document.removeEventListener('keydown', onEsc);
+            if (typeof window.qsA11yCloseDialog === 'function') {
+                window.qsA11yCloseDialog(modal);
+            } else {
+                modal.style.display = 'none';
+                modal.setAttribute('aria-hidden', 'true');
+                modal.hidden = true;
+            }
             resolve(choice);
         };
         const onWait = () => cleanup('wait');
         const onRecord = () => cleanup('record');
         const onCancel = () => cleanup(null);
         const onBackdrop = (e) => { if (e.target === modal) cleanup(null); };
-        const onEsc = (e) => { if (e.key === 'Escape') cleanup(null); };
         waitBtn.addEventListener('click', onWait);
         recordBtn.addEventListener('click', onRecord);
         if (cancelBtn) cancelBtn.addEventListener('click', onCancel);
         modal.addEventListener('click', onBackdrop);
-        document.addEventListener('keydown', onEsc);
-        modal.style.display = 'flex';
-        modal.setAttribute('aria-hidden', 'false');
-        try { waitBtn.focus(); } catch (_) {}
+        if (typeof window.qsA11yOpenDialog === 'function') {
+            window.qsA11yOpenDialog(modal, {
+                focusSelector: '#medical-wake-choice-wait',
+                onEscape: onCancel,
+            });
+        } else {
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+            modal.hidden = false;
+            try { waitBtn.focus(); } catch (_) {}
+        }
     });
 }
 
@@ -11965,8 +12058,13 @@ function qsCloseMedicalTrainingModal() {
     const ta = document.getElementById('medical-training-doctor-summary');
     if (ta) window._medicalTrainingDoctorDraft = _qsMedicalTrainingEditorGetText(ta);
     if (modal) {
-        modal.style.display = 'none';
-        modal.setAttribute('aria-hidden', 'true');
+        if (typeof window.qsA11yCloseDialog === 'function') {
+            window.qsA11yCloseDialog(modal);
+        } else {
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+            modal.hidden = true;
+        }
     }
     window._medicalTrainingModalOpen = false;
     // After a successful save, closing via אישור should leave a clean open state next time.
@@ -11983,8 +12081,16 @@ function qsOpenMedicalTrainingModal() {
     window._medicalTrainingModalOpen = true;
     window._medicalTrainingPanelExpanded = true;
     renderMedicalTrainingPanel(body);
-    modal.style.display = 'flex';
-    modal.setAttribute('aria-hidden', 'false');
+    if (typeof window.qsA11yOpenDialog === 'function') {
+        window.qsA11yOpenDialog(modal, {
+            focusSelector: '#medical-training-modal-close',
+            onEscape: () => qsCloseMedicalTrainingModal(),
+        });
+    } else {
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden', 'false');
+        modal.hidden = false;
+    }
 }
 
 function qsRefreshMedicalTrainingModalIfOpen() {
@@ -15450,8 +15556,16 @@ if (authSubmitBtn) {
 
             console.error('[auth] magic link sent to', email, sentViaServer ? '(site link)' : '(supabase otp)');
             qsClearAuthError();
+            const linkSentMsg = typeof window.t === 'function'
+                ? (window.t('check_email_link') || window.t('link_sent'))
+                : 'Link sent! Check your email for the login link.';
+            const authStatus = document.getElementById('auth-status');
+            if (authStatus) {
+                authStatus.textContent = linkSentMsg;
+                authStatus.style.display = 'block';
+            }
             if (typeof showStatus === 'function') {
-                showStatus(typeof window.t === 'function' ? window.t('check_email_link') : "Check your email for the login link.", false);
+                showStatus(linkSentMsg, false);
             }
             authSubmitBtn.innerText = typeof window.t === 'function' ? window.t('link_sent') : "Link sent! Check your email.";
         } catch (err) {
@@ -17859,15 +17973,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 resolve(window.confirm(T('medical_delete_recording_message') || 'Are you sure you want to delete this recording?'));
                 return;
             }
-            medicalDeleteConfirmModal.style.display = 'flex';
-            medicalDeleteConfirmModal.setAttribute('aria-hidden', 'false');
             const cleanup = () => {
-                medicalDeleteConfirmModal.style.display = 'none';
-                medicalDeleteConfirmModal.setAttribute('aria-hidden', 'true');
                 medicalDeleteConfirmYes.removeEventListener('click', onYes);
                 medicalDeleteConfirmNo.removeEventListener('click', onNo);
                 medicalDeleteConfirmModal.removeEventListener('click', onBackdrop);
-                document.removeEventListener('keydown', onEsc);
+                if (typeof window.qsA11yCloseDialog === 'function') {
+                    window.qsA11yCloseDialog(medicalDeleteConfirmModal);
+                } else {
+                    medicalDeleteConfirmModal.style.display = 'none';
+                    medicalDeleteConfirmModal.setAttribute('aria-hidden', 'true');
+                    medicalDeleteConfirmModal.hidden = true;
+                }
             };
             const onYes = () => {
                 cleanup();
@@ -17880,13 +17996,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const onBackdrop = (e) => {
                 if (e.target === medicalDeleteConfirmModal) onNo();
             };
-            const onEsc = (e) => {
-                if (e.key === 'Escape') onNo();
-            };
             medicalDeleteConfirmYes.addEventListener('click', onYes);
             medicalDeleteConfirmNo.addEventListener('click', onNo);
             medicalDeleteConfirmModal.addEventListener('click', onBackdrop);
-            document.addEventListener('keydown', onEsc);
+            if (typeof window.qsA11yOpenDialog === 'function') {
+                window.qsA11yOpenDialog(medicalDeleteConfirmModal, {
+                    // Safe action first for destructive confirmation (WCAG / IS 5568).
+                    focusSelector: '#medical-delete-confirm-no',
+                    onEscape: onNo,
+                });
+            } else {
+                medicalDeleteConfirmModal.style.display = 'flex';
+                medicalDeleteConfirmModal.setAttribute('aria-hidden', 'false');
+                medicalDeleteConfirmModal.hidden = false;
+                try { medicalDeleteConfirmNo.focus(); } catch (_) {}
+            }
         });
     }
 
@@ -18594,6 +18718,19 @@ document.addEventListener('DOMContentLoaded', () => {
             span.classList.toggle('is-active', on);
             span.classList.toggle('is-hot', on && idx >= spans.length - 2);
         });
+        meter.setAttribute('aria-valuenow', String(n));
+        const textAlt = document.getElementById('medical-mic-level-text');
+        if (textAlt) {
+            const T = typeof window.t === 'function' ? window.t : function (k) { return k; };
+            const next = n > 0
+                ? (T('medical_mic_level_active') || 'Microphone is picking up sound')
+                : (T('medical_mic_level_silent') || 'No sound detected');
+            // Throttle live announcements: update only when silence ↔ sound flips.
+            if (textAlt.dataset.lastState !== next) {
+                textAlt.dataset.lastState = next;
+                textAlt.textContent = next;
+            }
+        }
     }
 
     function qsSetMedicalLiveLevel(activeBars) {
@@ -18608,6 +18745,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const level = on ? Math.max(0.22, (idx + 1) / spans.length) : 0.14;
             span.style.transform = `scaleY(${level})`;
         });
+        meter.setAttribute('aria-valuenow', String(n));
     }
 
     function qsShowMedicalLiveLevelMeter(visible) {
@@ -18615,6 +18753,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!meter) return;
         meter.hidden = !visible;
         meter.classList.toggle('is-visible', !!visible);
+        // Keep meter in accessibility tree while recording so level is available; hide when idle.
         meter.setAttribute('aria-hidden', visible ? 'false' : 'true');
         if (!visible) qsSetMedicalLiveLevel(0);
     }
@@ -18938,8 +19077,13 @@ document.addEventListener('DOMContentLoaded', () => {
         qsStopMedicalMicTest();
         const modal = document.getElementById('medical-mic-test-modal');
         if (!modal) return;
-        modal.style.display = 'none';
-        modal.setAttribute('aria-hidden', 'true');
+        if (typeof window.qsA11yCloseDialog === 'function') {
+            window.qsA11yCloseDialog(modal);
+        } else {
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+            modal.hidden = true;
+        }
     }
 
     async function qsOpenMedicalMicTestModal(options) {
@@ -18953,8 +19097,16 @@ document.addEventListener('DOMContentLoaded', () => {
         qsSetMedicalSettingsOpen(false);
         const modal = document.getElementById('medical-mic-test-modal');
         if (!modal) return;
-        modal.style.display = 'flex';
-        modal.setAttribute('aria-hidden', 'false');
+        if (typeof window.qsA11yOpenDialog === 'function') {
+            window.qsA11yOpenDialog(modal, {
+                focusSelector: '#medical-mic-device-select',
+                onEscape: () => qsCloseMedicalMicTestModal(),
+            });
+        } else {
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+            modal.hidden = false;
+        }
         qsSetMedicalMicTestStatus('', false);
         qsUpdateMedicalMicTestButtonUi();
         applyStatus();
@@ -19396,7 +19548,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (medicalRecordBtn) {
             medicalRecordBtn.classList.toggle('is-recording', isRecording);
             medicalRecordBtn.classList.toggle('is-paused', isPaused);
-            medicalRecordBtn.setAttribute('aria-pressed', isPaused ? 'true' : 'false');
+            // Pressed while an active capture session is running (recording, not paused/idle).
+            medicalRecordBtn.setAttribute('aria-pressed', isRecording ? 'true' : 'false');
         }
         // Recording: show pause bars. Paused/idle: show mic (tap to resume / start).
         if (medicalRecordMicSvg) medicalRecordMicSvg.style.display = isPaused || isIdle ? '' : 'none';
@@ -20221,6 +20374,9 @@ document.addEventListener('DOMContentLoaded', () => {
         el.hidden = false;
         el.removeAttribute('hidden');
         el.setAttribute('data-mode', filling ? 'filling' : (offline ? 'offline' : 'paused'));
+        // Offline/connection errors are assertive; other status updates stay polite.
+        el.setAttribute('role', offline ? 'alert' : 'status');
+        el.setAttribute('aria-live', offline ? 'assertive' : 'polite');
         el.style.display = 'flex';
         window._medicalLiveBannerVisible = true;
         window._medicalLiveBannerMode = filling ? 'filling' : (offline ? 'offline' : 'paused');

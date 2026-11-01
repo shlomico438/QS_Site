@@ -30,7 +30,7 @@
     function qsDialogPanel(backdrop) {
         if (!backdrop) return null;
         return (
-            backdrop.querySelector('[role="dialog"]')
+            backdrop.querySelector('[role="dialog"], [role="alertdialog"]')
             || backdrop.querySelector('.auth-modal-card')
             || backdrop.querySelector('.seo-sales-modal')
             || backdrop.querySelector('.medical-confirm-modal')
