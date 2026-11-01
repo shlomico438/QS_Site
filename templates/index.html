@@ -703,8 +703,7 @@ try {
             <div class="upload-zone-app-footer" dir="{{ 'ltr' if qs_is_en else 'rtl' }}">
                 <span class="site-footer-copy" data-i18n="footer_copyright">© 2026 QuickScribe. All rights reserved.</span>
                 {% if medical_entry %}
-                <a class="site-footer-copy site-footer-privacy-link" href="/legal#privacy" data-i18n="footer_privacy">{% if qs_is_en %}Privacy policy{% else %}מדיניות פרטיות{% endif %}</a>
-                <a class="site-footer-copy" href="/legal#terms" data-i18n="footer_legal">{% if qs_is_en %}Terms of use{% else %}תנאי שימוש{% endif %}</a>
+                <a class="site-footer-copy" href="/legal" data-i18n="footer_legal">{% if qs_is_en %}Terms &amp; Policy{% else %}תנאים ומדיניות{% endif %}</a>
                 {% endif %}
                 <a class="site-footer-copy" href="{% if medical_entry %}{{ '/en/medical/accessibility' if qs_is_en else '/medical/accessibility' }}{% else %}{{ '/en/accessibility' if qs_is_en else '/accessibility' }}{% endif %}" data-i18n="footer_accessibility">{% if qs_is_en %}Accessibility statement{% else %}הצהרת נגישות{% endif %}</a>
                 <span class="medical-aws-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</span>

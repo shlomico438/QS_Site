@@ -426,12 +426,7 @@
                 <a href="{{ '/en/reviews' if qs_is_en else '/reviews' }}" data-i18n="nav_reviews">{% if qs_is_en %}Reviews{% else %}ביקורות{% endif %}</a>
                 {% endif %}
                 <a href="{{ '/en/medical/contact' if qs_is_en and (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else ('/medical/contact' if (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else '/contact') }}" data-i18n="nav_contact">{% if qs_is_en %}Contact{% else %}צור קשר{% endif %}</a>
-                {% if medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical') %}
-                <a href="/legal#privacy" class="site-footer-privacy-link" data-i18n="footer_privacy">{% if qs_is_en %}Privacy policy{% else %}מדיניות פרטיות{% endif %}</a>
-                <a href="/legal#terms" data-i18n="footer_legal">{% if qs_is_en %}Terms of use{% else %}תנאי שימוש{% endif %}</a>
-                {% else %}
                 <a href="/legal" data-i18n="footer_legal">{% if qs_is_en %}Terms &amp; Policy{% else %}תנאים ומדיניות{% endif %}</a>
-                {% endif %}
                 <a href="{% if medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical') %}{{ '/en/medical/accessibility' if qs_is_en else '/medical/accessibility' }}{% else %}{{ '/en/accessibility' if qs_is_en else '/accessibility' }}{% endif %}" data-i18n="footer_accessibility">{% if qs_is_en %}Accessibility statement{% else %}הצהרת נגישות{% endif %}</a>
             </nav>
             <nav class="site-footer-social" aria-label="{% if qs_is_en %}Social and reviews{% else %}רשתות וביקורות{% endif %}">
