@@ -375,9 +375,14 @@
             payUseHours = next;
             const valueEl = document.getElementById('seo-pay-hours-value');
             const priceEl = document.getElementById('seo-pay-use-price');
+            const minusBtnSync = document.getElementById('seo-pay-hours-minus');
             if (valueEl) {
                 valueEl.textContent = String(next);
                 valueEl.dataset.hours = String(next);
+            }
+            if (minusBtnSync) {
+                minusBtnSync.disabled = next <= 1;
+                minusBtnSync.setAttribute('aria-disabled', next <= 1 ? 'true' : 'false');
             }
             if (priceEl) {
                 const isEn = String(document.documentElement.lang || '').toLowerCase().startsWith('en');

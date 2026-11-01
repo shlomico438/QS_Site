@@ -27,10 +27,21 @@
             }
             try { document.body.appendChild(modal); } catch (_) {}
             modal.style.zIndex = '14000';
-            modal.style.display = 'flex';
-            modal.setAttribute('aria-hidden', 'false');
+            if (typeof window.qsA11yOpenDialog === 'function') {
+                window.qsA11yOpenDialog(modal, {
+                    focusSelector: '#google-login, #auth-email, #auth-submit-btn',
+                    onEscape: function () { window.toggleModal(false); },
+                });
+            } else {
+                modal.style.display = 'flex';
+                modal.hidden = false;
+                modal.setAttribute('aria-hidden', 'false');
+            }
+        } else if (typeof window.qsA11yCloseDialog === 'function') {
+            window.qsA11yCloseDialog(modal);
         } else {
             modal.style.display = 'none';
+            modal.hidden = true;
             modal.setAttribute('aria-hidden', 'true');
         }
     };

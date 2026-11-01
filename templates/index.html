@@ -58,30 +58,39 @@ try {
                     {% if qs_is_en %}Tailored Solutions for Every Workflow{% else %}פתרונות מותאמים לכל תהליך עבודה{% endif %}
                 </h2>
                 <div class="seo-use-cases-grid">
-                    <a href="/resources/lectures" class="seo-card seo-use-case-card">
+                    <article class="seo-card seo-use-case-card">
                         <h3>
-                            {% if qs_is_en %}🎓 Academic &amp; Research Insights{% else %}🎓 אקדמיה ותובנות מחקר{% endif %}
+                            <a href="/resources/lectures" class="seo-stretched-link">
+                                <span aria-hidden="true">🎓</span>
+                                {% if qs_is_en %}Academic &amp; Research Insights{% else %}אקדמיה ותובנות מחקר{% endif %}
+                            </a>
                         </h3>
                         <p>
                             {% if qs_is_en %}Convert long lectures, recorded Zoom classes, and research interviews into organized text. Speed up study summaries and review complex material instantly.{% else %}המירו הרצאות ארוכות, שיעורי זום מוקלטים וראיונות מחקר לטקסט מאורגן. האיצו סיכומי לימוד וסקירת חומר מורכב במהירות.{% endif %}
                         </p>
-                    </a>
-                    <a href="/resources/subtitles" class="seo-card seo-use-case-card">
+                    </article>
+                    <article class="seo-card seo-use-case-card">
                         <h3>
-                            {% if qs_is_en %}🎬 Social Media &amp; Content Creators{% else %}🎬 רשתות חברתיות ויוצרי תוכן{% endif %}
+                            <a href="/resources/subtitles" class="seo-stretched-link">
+                                <span aria-hidden="true">🎬</span>
+                                {% if qs_is_en %}Social Media &amp; Content Creators{% else %}רשתות חברתיות ויוצרי תוכן{% endif %}
+                            </a>
                         </h3>
                         <p>
                             {% if qs_is_en %}Generate perfectly timed SRT subtitles for YouTube, TikTok, and podcasts. Export subtitles seamlessly to cut editing workflows in half.{% else %}צרו כתוביות SRT מתוזמנות ליוטיוב, טיקטוק ופודקאסטים. ייצאו כתוביות בקלות וקצרו את זמן העריכה.{% endif %}
                         </p>
-                    </a>
-                    <a href="/resources/legal-interviews" class="seo-card seo-use-case-card">
+                    </article>
+                    <article class="seo-card seo-use-case-card">
                         <h3>
-                            {% if qs_is_en %}⚖️ Legal, Translation &amp; Enterprise{% else %}⚖️ משפטי, תרגום וארגונים{% endif %}
+                            <a href="/resources/legal-interviews" class="seo-stretched-link">
+                                <span aria-hidden="true">⚖️</span>
+                                {% if qs_is_en %}Legal, Translation &amp; Enterprise{% else %}משפטי, תרגום וארגונים{% endif %}
+                            </a>
                         </h3>
                         <p>
                             {% if qs_is_en %}Built for professionals who require precise Hebrew transcription for depth interviews, legal documentation, and localized translation workflows.{% else %}נבנה לאנשי מקצוע הזקוקים לתמלול עברי מדויק עבור ראיונות עומק, תיעוד משפטי ותהליכי לוקליזציה ותרגום.{% endif %}
                         </p>
-                    </a>
+                    </article>
                 </div>
                 </div>
             </section>
@@ -155,7 +164,7 @@ try {
 
         <div id="invoice-billing-modal" class="seo-sales-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="seo-sales-modal" role="dialog" aria-modal="true" aria-labelledby="invoice-billing-title">
-                <button type="button" class="seo-sales-modal-close" id="invoice-billing-close" aria-label="Close">✕</button>
+                <button type="button" class="seo-sales-modal-close" id="invoice-billing-close" data-i18n-aria-label="a11y_dialog_close" aria-label="{% if qs_is_en %}Close dialog{% else %}סגור חלון{% endif %}"><span aria-hidden="true">✕</span></button>
                 <h3 id="invoice-billing-title">פרטים לחשבונית</h3>
                 <p class="seo-sales-modal-sub">נדרש לצורך הפקת חשבונית מס קבלה (נשמר במכשיר זה לרכישות הבאות).</p>
                 <label class="seo-sales-label" for="invoice-tax-id-input">ת.ז. / ח.פ.</label>
@@ -171,7 +180,7 @@ try {
 
         <div id="sales-contact-modal" class="seo-sales-modal-backdrop" style="display:none;" aria-hidden="true">
             <div class="seo-sales-modal" role="dialog" aria-modal="true" aria-labelledby="sales-contact-title">
-                <button type="button" class="seo-sales-modal-close" id="sales-contact-close" aria-label="{% if qs_is_en %}Close{% else %}סגור{% endif %}">✕</button>
+                <button type="button" class="seo-sales-modal-close" id="sales-contact-close" data-i18n-aria-label="a11y_dialog_close" aria-label="{% if qs_is_en %}Close dialog{% else %}סגור חלון{% endif %}"><span aria-hidden="true">✕</span></button>
                 <h3 id="sales-contact-title" data-i18n="sales_contact_title">{% if qs_is_en %}Contact Sales{% else %}צור קשר למכירות{% endif %}</h3>
                 <p class="seo-sales-modal-sub" data-i18n="sales_contact_sub">{% if qs_is_en %}Tell us what you need and we will get back to you.{% else %}כתבו לנו ונחזור אליכם בהקדם.{% endif %}</p>
                 <label class="seo-sales-label" for="sales-contact-email-input" data-i18n="sales_contact_email">{% if qs_is_en %}Email (optional){% else %}אימייל (אופציונלי){% endif %}</label>
@@ -250,9 +259,10 @@ try {
         </div>
         {% endif %}
 
-         <div id="auth-modal" class="auth-modal-backdrop" style="display:none; position:fixed; z-index:14000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center;">
-            <div class="auth-modal-card" style="position:relative; background: white; padding: 28px; border-radius: 16px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
-                <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">Get Started</h3>
+         <div id="auth-modal" class="auth-modal-backdrop" style="display:none; position:fixed; z-index:14000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center;" aria-hidden="true" hidden>
+            <div class="auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1" style="position:relative; background: white; padding: 28px; border-radius: 16px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
+                <button type="button" class="auth-modal-close" id="auth-modal-close" data-i18n-aria-label="a11y_dialog_close" aria-label="{% if qs_is_en %}Close dialog{% else %}סגור חלון{% endif %}" style="position:absolute; inset-inline-end:12px; top:12px; border:none; background:transparent; font-size:1.4rem; line-height:1; cursor:pointer; color:#4b5563;">&times;</button>
+                <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">{% if qs_is_en %}Get Started{% else %}התחילו כאן{% endif %}</h3>
                 <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">Sign in to save your transcript history.</p>
 
                 {% if medical_entry %}
@@ -275,10 +285,10 @@ try {
                 {% endif %}
 
                 <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
-                    <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;">
-                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="14" height="14" alt="Google">
+                    <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;" aria-hidden="true">
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="14" height="14" alt="">
                     </span>
-                    <span data-i18n="continue_google">Continue with Google</span>
+                    <span data-i18n="continue_google">{% if qs_is_en %}Continue with Google{% else %}המשך עם Google{% endif %}</span>
                 </button>
 
                 <div id="auth-provider-divider" style="display: flex; align-items: center; margin: 28px 0;">
@@ -297,14 +307,14 @@ try {
 
                 <p id="auth-mode-switch-row" style="margin-top:20px; font-size: 0.875rem; color: #4b5563;">
                     <span id="auth-switch-text" data-i18n="already_have">Already have an account?</span>
-                    <a href="#" id="toggle-auth-mode" style="color:#1e3a8a; font-weight:600; text-decoration: none; margin-left: 4px;" data-i18n="log_in">Log In</a>
+                    <button type="button" id="toggle-auth-mode" style="color:#1e3a8a; font-weight:600; text-decoration: none; margin-inline-start: 4px; border:none; background:none; cursor:pointer; font:inherit;" data-i18n="log_in">{% if qs_is_en %}Log In{% else %}התחברות{% endif %}</button>
                 </p>
             </div>
         </div>
 
-        <div id="post-export-feedback-modal" style="display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.55); align-items:center; justify-content: center; backdrop-filter: blur(3px);" aria-hidden="true">
-            <div class="post-export-feedback-card" style="position:relative; background: white; padding: 24px; border-radius: 16px; width: 100%; max-width: 400px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.12);">
-                <h3 style="margin: 0 0 6px; font-size: 1.2rem; color: #111827;" data-i18n="post_export_feedback_title">רגע משוב?</h3>
+        <div id="post-export-feedback-modal" style="display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.55); align-items:center; justify-content: center; backdrop-filter: blur(3px);" aria-hidden="true" hidden>
+            <div class="post-export-feedback-card" role="dialog" aria-modal="true" aria-labelledby="post-export-feedback-title" tabindex="-1" style="position:relative; background: white; padding: 24px; border-radius: 16px; width: 100%; max-width: 400px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.12);">
+                <h3 id="post-export-feedback-title" style="margin: 0 0 6px; font-size: 1.2rem; color: #111827;" data-i18n="post_export_feedback_title">רגע משוב?</h3>
                 <p style="font-size: 0.85rem; color: #6b7280; margin: 0 0 16px;" data-i18n="post_export_feedback_sub">באופן אופציונלי — נשמח לשמוע מה אפשר לשפר</p>
                 <div class="registration-feedback-block post-export-feedback-inner">
                     <label for="post-exp-fb-like" class="reg-feedback-label" data-i18n="reg_feedback_like">What did you like?</label>
@@ -313,12 +323,13 @@ try {
                     <textarea id="post-exp-fb-improve" dir="auto" rows="2" class="reg-feedback-textarea" style="width:100%; padding:10px; margin-bottom:8px; border:1px solid #d1d5db; border-radius:8px; font-size: 13px; resize: vertical; box-sizing: border-box;"></textarea>
                     <p class="reg-feedback-stars-title" style="text-align: center; font-size: 0.8rem; color: #4b5563; margin: 0 0 4px; width: 100%;" data-i18n="post_export_feedback_stars">דירוג (אופציונלי)</p>
                     <p id="post-exp-fb-rate-hint" data-i18n="post_export_feedback_please_rate" style="display:none; text-align:center; font-size:0.85rem; color:#b45309; margin:0 0 8px; width:100%;" aria-hidden="true">כתבתם משוב — אפשר גם לדרג בכוכבים?</p>
-                    <div id="post-exp-fb-stars" style="display:flex; justify-content:center; gap:6px; margin-bottom:14px; width:100%;" role="group">
-                        <button type="button" class="post-exp-star-btn" data-post-exp-star="1" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
-                        <button type="button" class="post-exp-star-btn" data-post-exp-star="2" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
-                        <button type="button" class="post-exp-star-btn" data-post-exp-star="3" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
-                        <button type="button" class="post-exp-star-btn" data-post-exp-star="4" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
-                        <button type="button" class="post-exp-star-btn" data-post-exp-star="5" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;">★</button>
+                    <div id="post-exp-fb-stars" style="display:flex; justify-content:center; gap:6px; margin-bottom:14px; width:100%;" role="group" aria-labelledby="post-export-feedback-stars-label">
+                        <p id="post-export-feedback-stars-label" class="visually-hidden" data-i18n="post_export_feedback_stars">דירוג (אופציונלי)</p>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="1" aria-pressed="false" aria-label="{% if qs_is_en %}1 out of 5{% else %}1 מתוך 5{% endif %}" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;"><span aria-hidden="true">★</span></button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="2" aria-pressed="false" aria-label="{% if qs_is_en %}2 out of 5{% else %}2 מתוך 5{% endif %}" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;"><span aria-hidden="true">★</span></button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="3" aria-pressed="false" aria-label="{% if qs_is_en %}3 out of 5{% else %}3 מתוך 5{% endif %}" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;"><span aria-hidden="true">★</span></button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="4" aria-pressed="false" aria-label="{% if qs_is_en %}4 out of 5{% else %}4 מתוך 5{% endif %}" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;"><span aria-hidden="true">★</span></button>
+                        <button type="button" class="post-exp-star-btn" data-post-exp-star="5" aria-pressed="false" aria-label="{% if qs_is_en %}5 out of 5{% else %}5 מתוך 5{% endif %}" style="font-size:1.4rem; line-height:1; padding:4px 6px; border:none; background:transparent; cursor:pointer; color:#d1d5db;"><span aria-hidden="true">★</span></button>
                     </div>
                 </div>
                 <input type="text" name="website" id="post-exp-fb-website" autocomplete="off" tabindex="-1" style="position:absolute; left:-9999px; width:1px; height:1px; opacity:0;" aria-hidden="true">
@@ -407,14 +418,14 @@ try {
         <div id="audio-player-container" style="display: none; margin-bottom: 12px;">
             <audio id="main-audio" controls style="width: 100%; max-width: 100%;">
                 <source id="audio-source" src="" type="audio/mpeg">
-                Your browser does not support the audio tag.
+                <span lang="en">Your browser does not support the audio tag.</span>
             </audio>
         </div>
         <div id="video-wrapper" style="display: none; margin-bottom: 12px; align-items: stretch;">
             <div id="video-player-container" style="flex: 1;">
                 <video id="main-video" controls crossorigin="anonymous" playsinline webkit-playsinline controlslist="nodownload noplaybackrate noremoteplayback" disablepictureinpicture disableremoteplayback oncontextmenu="return false;">
                     <source id="video-source" src="" type="video/mp4">
-                    Your browser does not support the video tag.
+                    <span lang="en">Your browser does not support the video tag.</span>
                 </video>
                 <p id="video-mov-hint" class="video-mov-hint" style="display: none; margin: 6px 0 0; font-size: 0.8rem; color: #6b7280;" data-i18n="mov_hint">If the video doesn't play, try Safari or export as MP4 (H.264).</p>
             </div>
@@ -423,12 +434,12 @@ try {
         <div class="transcription-wrapper">
             <div class="switches-top-bar">
                 <div class="toggles-group">
-                    <div class="format-ab-switch" id="format-mode-switch" role="group" data-i18n-aria-label="format_view_aria" aria-label="פורמט תצוגה">
-        <button type="button" class="format-ab-option is-active" id="format-mode-summary" data-i18n="tab_summary">📝 סיכום</button>
-                        <button type="button" class="format-ab-option" id="format-mode-doc" data-i18n="tab_doc">📄 תמלול</button>
-                        <button type="button" class="format-ab-option" id="format-mode-subtitle" data-i18n="tab_subtitle">⏱️ חותמות זמן</button>
+                    <div class="format-ab-switch" id="format-mode-switch" role="tablist" data-i18n-aria-label="format_view_aria" aria-label="{% if qs_is_en %}View format{% else %}פורמט תצוגה{% endif %}">
+                        <button type="button" class="format-ab-option is-active" id="format-mode-summary" role="tab" aria-selected="true" aria-controls="transcript-window" tabindex="0" data-i18n="tab_summary"><span aria-hidden="true">📝</span> {% if qs_is_en %}Summary{% else %}סיכום{% endif %}</button>
+                        <button type="button" class="format-ab-option" id="format-mode-doc" role="tab" aria-selected="false" aria-controls="transcript-window" tabindex="-1" data-i18n="tab_doc"><span aria-hidden="true">📄</span> {% if qs_is_en %}Transcript{% else %}תמלול{% endif %}</button>
+                        <button type="button" class="format-ab-option" id="format-mode-subtitle" role="tab" aria-selected="false" aria-controls="transcript-window" tabindex="-1" data-i18n="tab_subtitle"><span aria-hidden="true">⏱️</span> {% if qs_is_en %}Timestamps{% else %}חותמות זמן{% endif %}</button>
                     </div>
-                    <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider"></span></div><span data-i18n="speaker">Speaker</span></label>
+                    <label id="toggle-speaker-wrap"><div class="toggle-switch"><input type="checkbox" id="toggle-speaker" disabled onchange ="document.getElementById('transcript-window').classList.toggle('hide-speaker', !this.checked)"><span class="slider" aria-hidden="true"></span></div><span data-i18n="speaker">{% if qs_is_en %}Speaker{% else %}דובר{% endif %}</span></label>
                 </div>
             </div>
             <div class="transcript-area-wrap">
@@ -444,9 +455,9 @@ try {
                 <span class="medical-live-status-banner-track" aria-hidden="true"><span></span></span>
             </div>
             <div id="medical-result-tabs" style="display:none;">
-                <div class="medical-result-tabs-main">
-                <button type="button" id="medical-tab-transcript" class="format-ab-option is-active" data-i18n="medical_tab_transcript">תמלול מלא</button>
-                <button type="button" id="medical-tab-summary" class="format-ab-option" data-i18n="medical_tab_summary">סיכום רפואי</button>
+                <div class="medical-result-tabs-main" role="tablist" data-i18n-aria-label="format_view_aria" aria-label="{% if qs_is_en %}View format{% else %}פורמט תצוגה{% endif %}">
+                <button type="button" id="medical-tab-transcript" class="format-ab-option is-active" role="tab" aria-selected="true" aria-controls="transcript-window" tabindex="0" data-i18n="medical_tab_transcript">תמלול מלא</button>
+                <button type="button" id="medical-tab-summary" class="format-ab-option" role="tab" aria-selected="false" aria-controls="transcript-window" tabindex="-1" data-i18n="medical_tab_summary">סיכום רפואי</button>
                 <button type="button" id="medical-style-learn-badge" class="medical-style-learn-badge" hidden data-i18n="medical_learn_my_style">✨ התאם לסגנון הכתיבה שלי</button>
                 </div>
             </div>
@@ -497,7 +508,7 @@ try {
                         <p class="qs-feature-showcase-subtitle" data-i18n="showcase_subtitle">ערכו, עצבו, תרגמו וייצאו — הכל במקום אחד.</p>
                     </div>
                     <div class="qs-feature-showcase-carousel">
-                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-prev" aria-label="Previous slide">‹</button>
+                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-prev" data-i18n-aria-label="a11y_carousel_prev" aria-label="{% if qs_is_en %}Previous slide{% else %}שקופית קודמת{% endif %}"><span aria-hidden="true">‹</span></button>
                         <div class="qs-feature-showcase-card">
                             <div class="qs-feature-showcase-media">
                                 <span class="qs-feature-showcase-slide-badge">Aa</span>
@@ -508,7 +519,7 @@ try {
                                 <p class="qs-feature-showcase-slide-body"></p>
                             </div>
                         </div>
-                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-next" aria-label="Next slide">›</button>
+                        <button type="button" class="qs-feature-showcase-nav qs-feature-showcase-next" data-i18n-aria-label="a11y_carousel_next" aria-label="{% if qs_is_en %}Next slide{% else %}שקופית הבאה{% endif %}"><span aria-hidden="true">›</span></button>
                     </div>
                     <div class="qs-feature-showcase-dots" role="tablist" aria-label="Feature slides"></div>
                 </div>
@@ -632,18 +643,18 @@ try {
                                 <button class="subtitle-color-btn" type="button" data-subtitle-color="yellow" title="Yellow"></button>
                                 <button class="subtitle-color-btn" type="button" data-subtitle-color="white" title="White"></button>
                             </div>
-                            <div id="subtitle-style-list" class="subtitle-style-drawer-list">
-                                <button class="subtitle-style-card" data-style="tiktok" type="button">
-                                    <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;" data-i18n="tiktok_bold">TikTok Bold</div>
-                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="tiktok_desc">Big • Bold</div>
+                            <div id="subtitle-style-list" class="subtitle-style-drawer-list" role="radiogroup" data-i18n-aria-label="a11y_subtitle_styles" aria-label="{% if qs_is_en %}Subtitle styles{% else %}סגנונות כתוביות{% endif %}">
+                                <button class="subtitle-style-card" data-style="tiktok" type="button" role="radio" aria-checked="false">
+                                    <div style="font-size: 0.9rem; font-weight: 700; margin-bottom: 2px;" data-i18n="tiktok_bold" lang="en">TikTok Bold</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="tiktok_desc" lang="en">Big • Bold</div>
                                 </button>
-                                <button class="subtitle-style-card" data-style="clean" type="button">
-                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="clean_pro">Clean Pro</div>
-                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="clean_desc">Minimal • Soft</div>
+                                <button class="subtitle-style-card" data-style="clean" type="button" role="radio" aria-checked="false">
+                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="clean_pro" lang="en">Clean Pro</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="clean_desc" lang="en">Minimal • Soft</div>
                                 </button>
-                                <button class="subtitle-style-card" data-style="cinematic" type="button">
-                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="cinematic">Cinematic</div>
-                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="cinematic_desc">Serif • Caps</div>
+                                <button class="subtitle-style-card" data-style="cinematic" type="button" role="radio" aria-checked="false">
+                                    <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 2px;" data-i18n="cinematic" lang="en">Cinematic</div>
+                                    <div style="font-size: 0.65rem; color: #6b7280;" data-i18n="cinematic_desc" lang="en">Serif • Caps</div>
                                 </button>
                             </div>
                         </div>
@@ -743,6 +754,7 @@ try {
             </div>
             <div class="upload-zone-app-footer" dir="ltr">
                 <span class="site-footer-copy" data-i18n="footer_copyright">© 2026 QuickScribe. All rights reserved.</span>
+                <a class="site-footer-copy" href="{{ '/en/accessibility' if qs_is_en else '/accessibility' }}" data-i18n="footer_accessibility">{% if qs_is_en %}Accessibility statement{% else %}הצהרת נגישות{% endif %}</a>
                 <span class="medical-aws-footnote" dir="auto" data-i18n="medical_aws_footnote">Built on AWS infrastructure</span>
             </div>
         </div>
@@ -764,8 +776,12 @@ try {
         const salesContactBtn = document.getElementById('seo-contact-sales-btn');
         const closeSalesModal = () => {
             if (!salesModal) return;
-            salesModal.style.display = 'none';
-            salesModal.setAttribute('aria-hidden', 'true');
+            if (typeof window.qsA11yCloseDialog === 'function') window.qsA11yCloseDialog(salesModal);
+            else {
+                salesModal.style.display = 'none';
+                salesModal.hidden = true;
+                salesModal.setAttribute('aria-hidden', 'true');
+            }
         };
         const prefillSalesEmail = async () => {
             if (!salesEmail || String(salesEmail.value || '').trim()) return;
@@ -783,10 +799,19 @@ try {
             }
             setSelectedPlan('enterprise');
             if (!salesModal) return;
-            salesModal.style.display = 'flex';
-            salesModal.setAttribute('aria-hidden', 'false');
+            if (typeof window.qsA11yOpenDialog === 'function') {
+                window.qsA11yOpenDialog(salesModal, {
+                    returnFocus: salesContactBtn || document.activeElement,
+                    focusSelector: '#sales-contact-message-input',
+                    onEscape: closeSalesModal,
+                });
+            } else {
+                salesModal.style.display = 'flex';
+                salesModal.hidden = false;
+                salesModal.setAttribute('aria-hidden', 'false');
+                if (salesMessage) setTimeout(() => { try { salesMessage.focus(); } catch (_) {} }, 50);
+            }
             void prefillSalesEmail();
-            if (salesMessage) setTimeout(() => { try { salesMessage.focus(); } catch (_) {} }, 50);
         };
         if (salesContactBtn) salesContactBtn.addEventListener('click', openSalesModal);
         if (salesCancelBtn) salesCancelBtn.addEventListener('click', closeSalesModal);

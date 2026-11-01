@@ -7094,9 +7094,23 @@ window.toggleModal = function(show, opts) {
             modal.style.zIndex = '14000';
             qsClearAuthError();
             try { applyAuthModalMode(); } catch (_) {}
+            if (typeof window.qsA11yOpenDialog === 'function') {
+                window.qsA11yOpenDialog(modal, {
+                    focusSelector: '#google-login, #auth-email, #auth-submit-btn',
+                    onEscape: () => window.toggleModal(false),
+                });
+            } else {
+                modal.style.display = 'flex';
+                modal.hidden = false;
+                modal.setAttribute('aria-hidden', 'false');
+            }
+        } else if (typeof window.qsA11yCloseDialog === 'function') {
+            window.qsA11yCloseDialog(modal);
+        } else {
+            modal.style.display = 'none';
+            modal.hidden = true;
+            modal.setAttribute('aria-hidden', 'true');
         }
-        modal.style.display = show ? 'flex' : 'none';
-        try { modal.setAttribute('aria-hidden', show ? 'false' : 'true'); } catch (_) {}
     }
 };
 
@@ -13270,7 +13284,9 @@ function setPostExportFeedbackStars(n) {
     try {
         document.querySelectorAll('.post-exp-star-btn').forEach((btn) => {
             const sn = parseInt(btn.getAttribute('data-post-exp-star'), 10);
-            btn.style.color = v >= sn ? '#f59e0b' : '#d1d5db';
+            const on = v >= sn;
+            btn.style.color = on ? '#f59e0b' : '#d1d5db';
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
         });
     } catch (_) {}
     if (v > 0) qsSetPostExportRateHint(false);
@@ -14190,6 +14206,8 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
         const _buildKindText = (kind, payload) => {
             if (kind === 'summary') {
                 if (payload.mc || payload.me || payload.mr) {
+                    const painted = _qsVisibleMedicalSummaryExport();
+                    if (painted && painted.text) return painted.text;
                     if (window._medicalPersonalTemplateActive) {
                         const headings = Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : [];
                         const note = _qsApplyDoctorTemplateHeadings(
@@ -14288,7 +14306,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                         ? qsMedicalProfessionalSpecialty()
                         : '',
                     personalTemplate: !!window._medicalPersonalTemplateActive,
-                    templateHeadings: Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : []
+                    templateHeadings: Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : [],
+                    screenLines: kind === 'summary'
+                        ? ((_qsVisibleMedicalSummaryExport() || {}).lines || [])
+                        : []
                 })
             });
             if (!res.ok) {
@@ -15839,9 +15860,17 @@ function setFormatViewMode(mode) {
     const docBtn = document.getElementById('format-mode-doc');
     const summaryBtn = document.getElementById('format-mode-summary');
     const next = String(mode || 'summary').toLowerCase();
-    if (subtitleBtn) subtitleBtn.classList.toggle('is-active', next === 'subtitle');
-    if (docBtn) docBtn.classList.toggle('is-active', next === 'doc');
-    if (summaryBtn) summaryBtn.classList.toggle('is-active', next === 'summary');
+    const applyTab = (btn, active) => {
+        if (!btn) return;
+        btn.classList.toggle('is-active', active);
+        if (btn.getAttribute('role') === 'tab') {
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+            btn.tabIndex = active ? 0 : -1;
+        }
+    };
+    applyTab(subtitleBtn, next === 'subtitle');
+    applyTab(docBtn, next === 'doc');
+    applyTab(summaryBtn, next === 'summary');
     window.qsFormatViewMode = next;
     syncStandardFormatTabs();
     if (next === 'doc' && !(typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())) {
@@ -17232,9 +17261,17 @@ document.addEventListener('DOMContentLoaded', () => {
             window.medicalActiveTab = 'transcript';
         }
         const isSummary = String(window.medicalActiveTab || 'transcript') === 'summary';
-        if (medicalTabTranscript) medicalTabTranscript.classList.toggle('is-active', !isSummary);
+        const syncMedicalTab = (btn, active) => {
+            if (!btn) return;
+            btn.classList.toggle('is-active', active);
+            if (btn.getAttribute('role') === 'tab') {
+                btn.setAttribute('aria-selected', active ? 'true' : 'false');
+                btn.tabIndex = active ? 0 : -1;
+            }
+        };
+        syncMedicalTab(medicalTabTranscript, !isSummary);
         if (medicalTabSummary) {
-            medicalTabSummary.classList.toggle('is-active', isSummary);
+            syncMedicalTab(medicalTabSummary, isSummary);
             medicalTabSummary.setAttribute('aria-disabled', 'false');
             medicalTabSummary.classList.remove('is-disabled');
         }
@@ -25131,9 +25168,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         
         // Update card selection
         document.querySelectorAll('.subtitle-style-card').forEach(card => {
-            card.classList.remove('active');
-            if (card.dataset.style === style) {
-                card.classList.add('active');
+            const on = card.dataset.style === style;
+            card.classList.toggle('active', on);
+            if (card.getAttribute('role') === 'radio') {
+                card.setAttribute('aria-checked', on ? 'true' : 'false');
             }
         });
         // Rebuild VTT so cue position matches style (TikTok = centered, clean/cinematic = default)
@@ -27156,6 +27194,36 @@ function qsMedicalSectionLabelsAreKnownStock(labels) {
         QS_MEDICAL_SUMMARY_SECTION_LABELS_ORTHOPEDICS,
         QS_MEDICAL_SUMMARY_SECTION_LABELS,
     ].some((stock) => qsMedicalSectionLabelsMatch(labels, stock));
+}
+
+/** The summary currently painted on screen, so Word and TXT match that view. */
+function _qsVisibleMedicalSummaryExport() {
+    const root = document.getElementById('medical-summary-content');
+    if (!root) return null;
+    const nodes = root.querySelectorAll('.medical-summary-section-title, .medical-summary-subhead, .medical-summary-body-text');
+    if (!nodes.length) return null;
+    const lines = [];
+    nodes.forEach((el) => {
+        const isPaneTitle = el.classList.contains('medical-summary-section-title');
+        const isHeading = isPaneTitle || el.classList.contains('medical-summary-subhead');
+        const raw = String(el.textContent || '').replace(/\u00a0/g, ' ').replace(/\r\n/g, '\n');
+        const parts = raw.split('\n').map((line) => line.replace(/\s+$/u, ''));
+        while (parts.length && !parts[0].trim()) parts.shift();
+        while (parts.length && !parts[parts.length - 1].trim()) parts.pop();
+        if (!parts.length) return;
+        if (isPaneTitle && lines.length && lines[lines.length - 1].text !== '') {
+            lines.push({ text: '', bold: false });
+        }
+        parts.forEach((line) => {
+            lines.push({ text: line, bold: isHeading && !!line.trim() });
+        });
+    });
+    while (lines.length && !lines[lines.length - 1].text) lines.pop();
+    if (!lines.some((line) => String(line.text || '').trim())) return null;
+    return {
+        text: lines.map((line) => line.text).join('\n').trim(),
+        lines
+    };
 }
 
 function _medicalSummarySectionLabel(sectionKey) {

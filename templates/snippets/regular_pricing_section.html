@@ -82,9 +82,9 @@
                 <small>{% if qs_is_en %}/ hour{% else %}לשעה{% endif %}</small>
             </div>
             <div class="seo-pay-hours" id="seo-pay-hours">
-                <button type="button" class="seo-pay-hours-btn" id="seo-pay-hours-minus" aria-label="{% if qs_is_en %}Fewer hours{% else %}פחות שעות{% endif %}">−</button>
-                <span id="seo-pay-hours-value" data-hours="1">1</span>
-                <button type="button" class="seo-pay-hours-btn" id="seo-pay-hours-plus" aria-label="{% if qs_is_en %}More hours{% else %}יותר שעות{% endif %}">+</button>
+                <button type="button" class="seo-pay-hours-btn" id="seo-pay-hours-minus" data-i18n-aria-label="a11y_hours_decrease" aria-label="{% if qs_is_en %}Decrease hours{% else %}הפחת שעה{% endif %}"><span aria-hidden="true">−</span></button>
+                <output id="seo-pay-hours-value" data-hours="1" for="seo-pay-hours-minus seo-pay-hours-plus" data-i18n-aria-label="a11y_hours_value" aria-live="polite" aria-atomic="true" aria-label="{% if qs_is_en %}Hours to purchase{% else %}מספר שעות לתשלום{% endif %}">1</output>
+                <button type="button" class="seo-pay-hours-btn" id="seo-pay-hours-plus" data-i18n-aria-label="a11y_hours_increase" aria-label="{% if qs_is_en %}Increase hours{% else %}הוסף שעה{% endif %}"><span aria-hidden="true">+</span></button>
             </div>
             <ul class="seo-pricing-features">
                 <li class="seo-pricing-feature-highlight" id="seo-pay-hours-note">
