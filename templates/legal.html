@@ -1,65 +1,21 @@
-<!DOCTYPE html>
-<html lang="he" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QuickScribe - Legal</title>
-    <link rel="canonical" href="{{ qs_canonical_url }}">
-    <link rel="alternate" hreflang="he" href="{{ qs_hreflang_he }}">
-    <link rel="alternate" hreflang="en" href="{{ qs_hreflang_en }}">
-    <link rel="alternate" hreflang="x-default" href="{{ qs_hreflang_default }}">
-    <!-- Google tag (gtag.js) — Google Analytics 4 -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-QDEKS23DSF"></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-QDEKS23DSF');
-    </script>
-    <!-- Meta Pixel Code -->
-    <script>
-    !function(f,b,e,v,n,t,s)
-    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
-    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
-    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
-    n.queue=[];t=b.createElement(e);t.async=!0;
-    t.src=v;s=b.getElementsByTagName(e)[0];
-    s.parentNode.insertBefore(t,s)}(window, document,'script',
-    'https://connect.facebook.net/en_US/fbevents.js');
-    fbq('init', '1955862168459302');
-    fbq('track', 'PageView');
-    </script>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; padding: 20px; color: #333; }
-        .legal-container { max-width: 900px; margin: 0 auto; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .top-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
-        .back-btn { padding: 10px 16px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #111827; text-decoration: none; font-weight: 600; display: inline-block; }
-        .back-btn:hover { background: #f3f4f6; }
-        h1 { color: #1e3a8a; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
-        h2 { color: #2563eb; margin-top: 30px; }
-        h3 { color: #374151; margin-top: 20px; }
-        p { margin-bottom: 15px; line-height: 1.8; }
-        ul { margin-bottom: 20px; }
-        li { margin-bottom: 8px; }
-        .date { font-style: italic; color: #666; margin-bottom: 20px; display: block; }
-        .document { display: none; }
-        .active { display: block; }
-        .en-dir { direction: ltr; text-align: left; }
-    </style>
-</head>
-<body>
-    <noscript><img height="1" width="1" style="display:none"
-    src="https://www.facebook.com/tr?id=1955862168459302&ev=PageView&noscript=1"
-    alt="" /></noscript>
+{% extends "base.html" %}
 
-<div class="legal-container">
-    <div class="top-actions">
-        <a href="/" class="back-btn" id="back-home-link">חזרה לעמוד הראשי</a>
+{% block page_title %}{% if qs_is_en %}Privacy Policy & Terms of Service | QuickScribe{% else %}מדיניות פרטיות ותנאי שימוש | QuickScribe{% endif %}{% endblock %}
+
+{% block page_description %}{% if qs_is_en %}QuickScribe privacy policy and terms of service.{% else %}מדיניות הפרטיות ותנאי השימוש של QuickScribe.{% endif %}{% endblock %}
+
+{% block content %}
+{% set _is_medical = medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical') %}
+<div class="content-page legal-statement" dir="{{ 'ltr' if qs_is_en else 'rtl' }}">
+    <div class="legal-top-actions">
+        <a href="{% if _is_medical %}{% if qs_is_en %}/en/medical{% else %}/medical{% endif %}{% else %}{% if qs_is_en %}/en{% else %}/{% endif %}{% endif %}" class="legal-back-btn" id="back-home-link">
+            {% if qs_is_en %}Back to Home{% else %}חזרה לעמוד הראשי{% endif %}
+        </a>
     </div>
 
-    <div id="doc-he" class="document active">
+    <div id="doc-he" class="legal-document{% if not qs_is_en %} is-active{% endif %}" dir="rtl" lang="he"{% if qs_is_en %} hidden{% endif %}>
         <h1>מדיניות פרטיות ותנאי שימוש</h1>
-        <span class="date">עדכון אחרון: 28 בספטמבר, 2026</span>
+        <p class="legal-updated"><time datetime="2026-09-28">עדכון אחרון: 28 בספטמבר, 2026</time></p>
 
         <h2 id="privacy">1. מדיניות פרטיות</h2>
         <p>ב-QuickScribe, העיקרון המנחה שלנו הוא לאסוף רק את המידע הנחוץ לנו כדי לספק לך את השירות.</p>
@@ -104,11 +60,11 @@
         <p>אין הגבלה על מספר ההפניות. הפניה עצמית אסורה (אותו חשבון, אותה כתובת דוא״ל, אותו אמצעי תשלום או אותה כתובת IP). QuickScribe שומרת לעצמה את הזכות לבטל בונוסים שניתנו בפעילות שנראית כהונאה.</p>
     </div>
 
-    <div id="doc-en" class="document en-dir">
-        <h1>Privacy Policy & Terms of Service</h1>
-        <span class="date">Last Updated: September 28, 2026</span>
+    <div id="doc-en" class="legal-document{% if qs_is_en %} is-active{% endif %}" dir="ltr" lang="en"{% if not qs_is_en %} hidden{% endif %}>
+        <h1>Privacy Policy &amp; Terms of Service</h1>
+        <p class="legal-updated"><time datetime="2026-09-28">Last Updated: September 28, 2026</time></p>
 
-        <h2 id="privacy">1. Privacy Policy</h2>
+        <h2 id="privacy-en">1. Privacy Policy</h2>
         <p>At QuickScribe, our guiding principle is to collect only what we need.</p>
 
         <h3>A. Information Collection</h3>
@@ -120,7 +76,7 @@
         <h3>C. Data Retention and Deletion</h3>
         <p>We may maintain your content as long as your account is active. If you delete your account, access is blocked immediately. Given database backups, your account information will be permanently deleted from our systems within 90 days.</p>
 
-        <h2 id="terms">2. Terms of Service</h2>
+        <h2 id="terms-en">2. Terms of Service</h2>
         <h3>A. Account terms</h3>
         <ul>
             <li>You are responsible for keeping your account secure. The company is not liable for any damage resulting from a failure to meet this security obligation.</li>
@@ -149,34 +105,46 @@
 </div>
 
 <script>
+(function () {
     function showDoc(lang) {
-        document.getElementById('doc-he').classList.remove('active');
-        document.getElementById('doc-en').classList.remove('active');
-        
-        if (lang === 'he') {
-            document.getElementById('doc-he').classList.add('active');
-            document.body.dir = 'rtl';
-            document.documentElement.lang = 'he';
-            var back = document.getElementById('back-home-link');
-            if (back) back.textContent = 'חזרה לעמוד הראשי';
-        } else {
-            document.getElementById('doc-en').classList.add('active');
-            document.body.dir = 'ltr';
-            document.documentElement.lang = 'en';
-            var backEn = document.getElementById('back-home-link');
-            if (backEn) backEn.textContent = 'Back to Home';
+        var he = document.getElementById('doc-he');
+        var en = document.getElementById('doc-en');
+        var back = document.getElementById('back-home-link');
+        var wrap = document.querySelector('.legal-statement');
+        if (!he || !en) return;
+        var isEn = lang === 'en';
+        he.classList.toggle('is-active', !isEn);
+        en.classList.toggle('is-active', isEn);
+        he.hidden = isEn;
+        en.hidden = !isEn;
+        if (wrap) {
+            wrap.dir = isEn ? 'ltr' : 'rtl';
+        }
+        if (back) {
+            back.textContent = isEn ? 'Back to Home' : 'חזרה לעמוד הראשי';
+        }
+        // Keep #privacy / #terms on the visible document for footer deep-links.
+        var hePrivacy = he.querySelector('h2');
+        var heTerms = he.querySelectorAll('h2')[1];
+        var enPrivacy = en.querySelector('h2');
+        var enTerms = en.querySelectorAll('h2')[1];
+        if (hePrivacy) hePrivacy.id = isEn ? 'privacy-he' : 'privacy';
+        if (heTerms) heTerms.id = isEn ? 'terms-he' : 'terms';
+        if (enPrivacy) enPrivacy.id = isEn ? 'privacy' : 'privacy-en';
+        if (enTerms) enTerms.id = isEn ? 'terms' : 'terms-en';
+        if (location.hash === '#privacy' || location.hash === '#terms') {
+            var target = document.getElementById(location.hash.slice(1));
+            if (target && typeof target.scrollIntoView === 'function') {
+                try { target.scrollIntoView({ block: 'start' }); } catch (_) {}
+            }
         }
     }
 
-    // Auto-select language from globe preference (saved in localStorage by the app)
-    (function initLegalLanguage() {
-        var preferred = 'he';
-        try {
-            preferred = (localStorage.getItem('locale') || 'he').toLowerCase();
-        } catch (_) {}
-        showDoc(preferred.startsWith('en') ? 'en' : 'he');
-    })();
+    var preferred = document.documentElement.lang || 'he';
+    try {
+        preferred = (localStorage.getItem('locale') || preferred || 'he').toLowerCase();
+    } catch (_) {}
+    showDoc(preferred.startsWith('en') ? 'en' : 'he');
+})();
 </script>
-
-</body>
-</html>
+{% endblock %}

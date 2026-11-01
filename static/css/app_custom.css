@@ -974,32 +974,59 @@ header.site-header.navbar {
 
 /*
  * Document-style pages (a11y statement, about, blog, resources, …):
- * The app shell uses body height:100vh + main overflow:hidden so the footer can sit
- * below the viewport and only appear after an awkward outer scroll. Use normal
- * document flow here: page scrolls, footer follows the content (and stays at the
- * bottom when the page is short via flex-grow on main).
+ * Keep the site footer pinned to the bottom of the viewport. Long content scrolls
+ * inside <main> — users should not have to scroll past the whole article to see
+ * privacy / accessibility links.
  */
+html:has(main.main-content .personal-area-page),
+html:has(main.main-content .blog-page),
+html:has(main.main-content .resources-page),
+html:has(main.main-content .content-page),
+html:has(main.main-content .a11y-statement),
+html:has(main.main-content .legal-statement),
+html:has(main.main-content .accuracy-page) {
+    height: 100% !important;
+}
 body:has(main.main-content .personal-area-page),
 body:has(main.main-content .blog-page),
 body:has(main.main-content .resources-page),
 body:has(main.main-content .content-page),
 body:has(main.main-content .a11y-statement),
+body:has(main.main-content .legal-statement),
 body:has(main.main-content .accuracy-page) {
-    height: auto !important;
-    min-height: 100vh !important;
-    overflow-x: hidden !important;
-    overflow-y: auto !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    max-height: 100vh !important;
+    max-height: 100dvh !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
 }
 main.main-content:has(.personal-area-page),
 main.main-content:has(.blog-page),
 main.main-content:has(.resources-page),
 main.main-content:has(.content-page),
 main.main-content:has(.a11y-statement),
+main.main-content:has(.legal-statement),
 main.main-content:has(.accuracy-page) {
-    flex: 1 0 auto !important;
-    overflow: visible !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
     height: auto !important;
     max-height: none !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+}
+body:has(main.main-content .personal-area-page) > footer.site-footer,
+body:has(main.main-content .blog-page) > footer.site-footer,
+body:has(main.main-content .resources-page) > footer.site-footer,
+body:has(main.main-content .content-page) > footer.site-footer,
+body:has(main.main-content .a11y-statement) > footer.site-footer,
+body:has(main.main-content .legal-statement) > footer.site-footer,
+body:has(main.main-content .accuracy-page) > footer.site-footer {
+    display: block !important;
+    flex-shrink: 0 !important;
+    position: relative !important;
+    z-index: 5;
 }
 .blog-table-wrap {
     overflow-x: auto;
@@ -8777,6 +8804,30 @@ html[dir="rtl"] .upload-status {
     flex: 0 0 auto !important;
     min-height: auto !important;
   }
+
+  /* Keep sticky site footer on document pages (a11y / legal / about / …) on mobile too. */
+  body:has(main.main-content .content-page),
+  body:has(main.main-content .a11y-statement),
+  body:has(main.main-content .legal-statement),
+  body:has(main.main-content .blog-page),
+  body:has(main.main-content .resources-page),
+  body:has(main.main-content .accuracy-page),
+  body:has(main.main-content .personal-area-page) {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+  }
+  body:has(main.main-content .content-page) main.main-content,
+  body:has(main.main-content .a11y-statement) main.main-content,
+  body:has(main.main-content .legal-statement) main.main-content,
+  body:has(main.main-content .blog-page) main.main-content,
+  body:has(main.main-content .resources-page) main.main-content,
+  body:has(main.main-content .accuracy-page) main.main-content,
+  body:has(main.main-content .personal-area-page) main.main-content {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+  }
 }
 
 body.has-transcript-actions .main-app-container:not(.medical-mode) > .upload-zone,
@@ -9343,11 +9394,66 @@ textarea:focus:not(:focus-visible) {
     outline-offset: var(--focus-ring-offset);
 }
 
-.a11y-statement {
+.a11y-statement,
+.legal-statement {
     max-width: 720px;
     margin: 0 auto;
-    padding: 32px 20px 64px;
+    padding: 32px 20px 40px;
     line-height: 1.7;
+    box-sizing: border-box;
+    width: 100%;
+}
+.legal-statement {
+    max-width: 900px;
+}
+.legal-top-actions {
+    display: flex;
+    justify-content: flex-start;
+    margin-bottom: 16px;
+}
+.legal-back-btn {
+    padding: 10px 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    color: #111827;
+    text-decoration: none;
+    font-weight: 600;
+    display: inline-block;
+}
+.legal-back-btn:hover,
+.legal-back-btn:focus-visible {
+    background: #f3f4f6;
+}
+.legal-document[hidden] {
+    display: none !important;
+}
+.legal-statement h1 {
+    margin: 0 0 8px;
+    color: #1e3a8a;
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 10px;
+}
+.legal-statement h2 {
+    margin: 28px 0 10px;
+    color: #2563eb;
+    font-size: 1.15rem;
+}
+.legal-statement h3 {
+    margin: 20px 0 8px;
+    color: #374151;
+}
+.legal-updated {
+    color: #4b5563;
+    margin: 0 0 20px;
+    font-style: italic;
+}
+.legal-statement ul {
+    padding-inline-start: 1.25rem;
+    margin-bottom: 20px;
+}
+.legal-statement li {
+    margin-bottom: 0.45rem;
 }
 .a11y-statement h1 {
     margin: 0 0 8px;
