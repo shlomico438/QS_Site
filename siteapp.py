@@ -10721,6 +10721,22 @@ def legal():
     return render_template('legal.html')
 
 
+@app.route('/accessibility')
+@app.route('/accessibility/')
+def accessibility_statement():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/accessibility', code=301)
+    return render_template('accessibility.html')
+
+
+@app.route('/en/accessibility')
+@app.route('/en/accessibility/')
+def accessibility_statement_en():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/en/accessibility', code=301)
+    return render_template('accessibility.html')
+
+
 @app.route('/loaderio-c1e5fa75e4a82891e47b968c879d134b/')
 @app.route('/loaderio-c1e5fa75e4a82891e47b968c879d134b.txt')
 @app.route('/loaderio-c1e5fa75e4a82891e47b968c879d134b.html')

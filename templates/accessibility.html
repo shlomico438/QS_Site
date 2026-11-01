@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{#
+  Accessibility statement (הצהרת נגישות).
+  REQUIRED: Have an accessibility/legal professional review this text
+  before publishing. Coordinator name, email, and phone below are placeholders.
+#}
+
+{% block page_title %}{% if qs_is_en %}Accessibility statement | QuickScribe{% else %}הצהרת נגישות | QuickScribe{% endif %}{% endblock %}
+
+{% block page_description %}{% if qs_is_en %}QuickScribe accessibility statement — commitment to Israeli Standard IS 5568 / WCAG 2.1 Level AA.{% else %}הצהרת הנגישות של QuickScribe — התחייבות לתקן ישראלי ת״י 5568 / WCAG 2.1 ברמת AA.{% endif %}{% endblock %}
+
+{% block content %}
+<div class="content-page a11y-statement" dir="{{ 'ltr' if qs_is_en else 'rtl' }}">
+    {% if qs_is_en %}
+    <h1>Accessibility statement</h1>
+    <p class="a11y-statement-updated"><time datetime="2026-11-01">Last updated: 1 November 2026</time></p>
+
+    <h2>Our commitment</h2>
+    <p>
+        QuickScribe is committed to making getquickscribe.com accessible to people with disabilities,
+        in accordance with Israeli Standard <span lang="he">ת״י 5568</span> and the Equal Rights for
+        Persons with Disabilities Regulations (Service Accessibility Adjustments), 2013
+        (regulation 35ו). Our target is <abbr title="Web Content Accessibility Guidelines">WCAG</abbr> 2.1 Level AA.
+    </p>
+
+    <h2>Measures we take</h2>
+    <ul>
+        <li>Semantic HTML landmarks, headings, and labels</li>
+        <li>Keyboard access to interactive controls, including dialogs</li>
+        <li>Visible focus indicators and sufficient color contrast</li>
+        <li>Localized interface in Hebrew and English, with document language set correctly</li>
+        <li>Support for browser zoom and <code>prefers-reduced-motion</code></li>
+    </ul>
+
+    <h2>Known limitations</h2>
+    <ul>
+        <li>Some third-party payment and analytics embeds may not meet the same standard as our own pages.</li>
+        <li>Live transcription and media editor screens are complex; we continue improving keyboard and screen-reader support there.</li>
+        <li>Older exported documents (Word, video burns) inherit the accessibility of those file formats.</li>
+    </ul>
+
+    <h2>Compatibility</h2>
+    <p>
+        The site is designed to work with current versions of Chrome, Firefox, Edge, and Safari,
+        and with common assistive technologies such as NVDA, JAWS, and VoiceOver.
+    </p>
+
+    <h2>Feedback and contact</h2>
+    <p>
+        If you encounter an accessibility barrier, please contact our accessibility coordinator.
+        We aim to respond within five business days.
+    </p>
+    <ul>
+        <li>Coordinator: [NAME]</li>
+        <li>Email: <a href="mailto:[EMAIL]">[EMAIL]</a></li>
+        <li>Phone: <a href="tel:[PHONE]">[PHONE]</a></li>
+        <li>General contact: <a href="mailto:info@getquickscribe.com">info@getquickscribe.com</a></li>
+    </ul>
+
+    <h2>Enforcement</h2>
+    <p>
+        If you are not satisfied with our response, you may contact the Commission for Equal Rights
+        of Persons with Disabilities at the Israeli Ministry of Justice.
+    </p>
+    {% else %}
+    <h1>הצהרת נגישות</h1>
+    <p class="a11y-statement-updated"><time datetime="2026-11-01">עודכן לאחרונה: 1 בנובמבר 2026</time></p>
+
+    <h2>המחויבות שלנו</h2>
+    <p>
+        QuickScribe מחויבת להנגשת האתר getquickscribe.com לאנשים עם מוגבלויות,
+        בהתאם לתקן ישראלי ת״י 5568 ולתקנות שוויון זכויות לאנשים עם מוגבלות
+        (התאמות נגישות לשירות), התשע״ג־2013 (תקנה 35ו). יעד הנגישות שלנו הוא
+        <abbr lang="en" title="Web Content Accessibility Guidelines">WCAG</abbr> 2.1 ברמת AA.
+    </p>
+
+    <h2>מה אנחנו עושים</h2>
+    <ul>
+        <li>שימוש בסימני HTML סמנטיים, כותרות ותוויות</li>
+        <li>גישה במקלדת לרכיבים אינטראקטיביים, כולל חלונות דו־שיח</li>
+        <li>סימון מיקוד ברור וניגודיות צבע מספקת</li>
+        <li>ממשק בעברית ובאנגלית, עם הגדרת שפת המסמך הנכונה</li>
+        <li>תמיכה בזום בדפדפן וב־<code lang="en">prefers-reduced-motion</code></li>
+    </ul>
+
+    <h2>מגבלות ידועות</h2>
+    <ul>
+        <li>רכיבי תשלום ואנליטיקה של צד שלישי עלולים שלא לעמוד באותו תקן כמו דפי האתר שלנו.</li>
+        <li>מסכי תמלול חי ועורך המדיה מורכבים; אנחנו ממשיכים לשפר בהם את התמיכה במקלדת ובקורא מסך.</li>
+        <li>מסמכים שיוצאו בעבר (Word, וידאו עם כתוביות חרוטות) יורשים את רמת הנגישות של אותם פורמטים.</li>
+    </ul>
+
+    <h2>תאימות</h2>
+    <p>
+        האתר מיועד לעבודה עם גרסאות עדכניות של Chrome, Firefox, Edge ו־Safari,
+        ועם טכנולוגיות מסייעות נפוצות כגון NVDA, JAWS ו־VoiceOver.
+    </p>
+
+    <h2>משוב ויצירת קשר</h2>
+    <p>
+        אם נתקלתם בחסם נגישות, אנא פנו לרכז/ת הנגישות שלנו.
+        נשתדל להשיב תוך חמישה ימי עסקים.
+    </p>
+    <ul>
+        <li>רכז/ת נגישות: [NAME]</li>
+        <li>דוא״ל: <a href="mailto:[EMAIL]" dir="ltr">[EMAIL]</a></li>
+        <li>טלפון: <a href="tel:[PHONE]" dir="ltr">[PHONE]</a></li>
+        <li>יצירת קשר כללית: <a href="mailto:info@getquickscribe.com" dir="ltr">info@getquickscribe.com</a></li>
+    </ul>
+
+    <h2>אכיפה</h2>
+    <p>
+        אם אינכם מרוצים מהטיפול בפנייה, ניתן לפנות לנציבות שוויון זכויות לאנשים עם מוגבלות
+        במשרד המשפטים.
+    </p>
+    {% endif %}
+</div>
+{% endblock %}
