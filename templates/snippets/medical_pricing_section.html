@@ -1,26 +1,38 @@
 <section class="medical-pricing-section" id="medical-pricing-section" aria-labelledby="medical-pricing-title">
-    <h2 id="medical-pricing-title" data-i18n="medical_pricing_title">Simple plans by transcription hours</h2>
-    <div class="medical-pricing-grid">
-        <article class="medical-pricing-card">
-            <h3>Starter</h3>
-            <div class="medical-plan-price"><span data-i18n="medical_plan_price_starter">$75</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
-            <strong data-i18n="medical_plan_hours_starter">30 transcription hours per month</strong>
-            <button type="button" data-medical-plan="starter" data-i18n="medical_plan_select_starter">Choose Starter</button>
+    <h2 id="medical-pricing-title" data-i18n="medical_pricing_title">{% if qs_is_en %}Simple plans by transcription hours{% else %}מסלולים פשוטים לפי שעות תמלול{% endif %}</h2>
+    <div class="medical-pricing-grid" role="radiogroup" aria-labelledby="medical-pricing-title">
+        <article class="medical-pricing-card" data-medical-plan-card="starter">
+            <input type="radio" class="visually-hidden medical-plan-radio" name="medical_plan" id="medical-plan-starter" value="starter">
+            <label class="medical-pricing-card-body" for="medical-plan-starter">
+                <span class="medical-plan-selected-mark" data-i18n="medical_plan_selected" hidden>{% if qs_is_en %}Selected{% else %}נבחר{% endif %}</span>
+                <h3 lang="en">Starter</h3>
+                <div class="medical-plan-price"><span data-i18n="medical_plan_price_starter">{% if qs_is_en %}$75{% else %}₪149{% endif %}</span> <small data-i18n="medical_plan_per_month">{% if qs_is_en %}/ month{% else %}/ חודש{% endif %}</small></div>
+                <strong data-i18n="medical_plan_hours_starter">{% if qs_is_en %}30 transcription hours per month{% else %}30 שעות תמלול בחודש{% endif %}</strong>
+            </label>
+            <button type="button" data-medical-plan="starter" data-i18n="medical_plan_select_starter">{% if qs_is_en %}Choose Starter{% else %}בחירת Starter{% endif %}</button>
         </article>
-        <article class="medical-pricing-card is-recommended">
-            <span class="medical-recommended-badge" data-i18n="medical_plan_recommended">Recommended</span>
-            <h3>Professional</h3>
-            <div class="medical-plan-price"><span data-i18n="medical_plan_price_professional">$125</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
-            <strong data-i18n="medical_plan_hours_professional">60 transcription hours per month</strong>
-            <button type="button" data-medical-plan="professional" data-i18n="medical_plan_select_professional">Choose Professional</button>
+        <article class="medical-pricing-card is-recommended" data-medical-plan-card="professional">
+            <input type="radio" class="visually-hidden medical-plan-radio" name="medical_plan" id="medical-plan-professional" value="professional" checked>
+            <label class="medical-pricing-card-body" for="medical-plan-professional">
+                <span class="medical-recommended-badge" id="medical-plan-recommended-badge" data-i18n="medical_plan_recommended">{% if qs_is_en %}Recommended{% else %}מומלץ{% endif %}</span>
+                <span class="medical-plan-selected-mark" data-i18n="medical_plan_selected" hidden>{% if qs_is_en %}Selected{% else %}נבחר{% endif %}</span>
+                <h3 lang="en">Professional</h3>
+                <div class="medical-plan-price"><span data-i18n="medical_plan_price_professional">{% if qs_is_en %}$125{% else %}₪249{% endif %}</span> <small data-i18n="medical_plan_per_month">{% if qs_is_en %}/ month{% else %}/ חודש{% endif %}</small></div>
+                <strong data-i18n="medical_plan_hours_professional">{% if qs_is_en %}60 transcription hours per month{% else %}60 שעות תמלול בחודש{% endif %}</strong>
+            </label>
+            <button type="button" data-medical-plan="professional" aria-describedby="medical-plan-recommended-badge" data-i18n="medical_plan_select_professional">{% if qs_is_en %}Choose Professional{% else %}בחירת Professional{% endif %}</button>
         </article>
-        <article class="medical-pricing-card">
-            <h3>Clinic</h3>
-            <div class="medical-plan-price"><span data-i18n="medical_plan_price_clinic">$350</span> <small data-i18n="medical_plan_per_month">/ month</small></div>
-            <strong data-i18n="medical_plan_hours_clinic">180 transcription hours per month</strong>
-            <span data-i18n="medical_plan_seats_clinic">Up to 5 professionals</span>
-            <button type="button" data-medical-plan="clinic" data-i18n="medical_plan_select_clinic">Choose Clinic</button>
+        <article class="medical-pricing-card" data-medical-plan-card="clinic">
+            <input type="radio" class="visually-hidden medical-plan-radio" name="medical_plan" id="medical-plan-clinic" value="clinic">
+            <label class="medical-pricing-card-body" for="medical-plan-clinic">
+                <span class="medical-plan-selected-mark" data-i18n="medical_plan_selected" hidden>{% if qs_is_en %}Selected{% else %}נבחר{% endif %}</span>
+                <h3 lang="en">Clinic</h3>
+                <div class="medical-plan-price"><span data-i18n="medical_plan_price_clinic">{% if qs_is_en %}$350{% else %}₪699{% endif %}</span> <small data-i18n="medical_plan_per_month">{% if qs_is_en %}/ month{% else %}/ חודש{% endif %}</small></div>
+                <strong data-i18n="medical_plan_hours_clinic">{% if qs_is_en %}180 transcription hours per month{% else %}180 שעות תמלול בחודש{% endif %}</strong>
+                <span data-i18n="medical_plan_seats_clinic">{% if qs_is_en %}Up to 5 professionals{% else %}עד 5 אנשי מקצוע{% endif %}</span>
+            </label>
+            <button type="button" data-medical-plan="clinic" data-i18n="medical_plan_select_clinic">{% if qs_is_en %}Choose Clinic{% else %}בחירת Clinic{% endif %}</button>
         </article>
     </div>
-    <p class="medical-overage-note" data-i18n="medical_overage_note">Additional transcription beyond quota: $3 per hour.</p>
+    <p class="medical-overage-note" data-i18n="medical_overage_note">{% if qs_is_en %}Additional transcription beyond quota: $3 per hour.{% else %}תמלול נוסף מעבר למכסה: ₪6 לשעה.{% endif %}</p>
 </section>
