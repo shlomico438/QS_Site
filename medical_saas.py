@@ -229,7 +229,7 @@ def medical_entitlement(account: Optional[dict], now: Optional[datetime] = None)
 
 
 def _medical_last_billing_failure(user_id: str) -> Optional[str]:
-    """Latest failed renewal/Cardcom reason for ops + past_due UI (may be None)."""
+    """Latest failed renewal/Cardcom reason for ops logs (may be None). Not for end-user UI."""
     uid = str(user_id or "").strip()
     if not uid:
         return None
@@ -257,6 +257,13 @@ def _medical_last_billing_failure(user_id: str) -> Optional[str]:
         return None
 
 
+def _medical_billing_failure_public(raw: Optional[str]) -> Optional[str]:
+    """Never expose Cardcom/Shva terminal jargon to the client; ops see the raw reason in logs."""
+    if str(raw or "").strip():
+        return "payment_failed"
+    return None
+
+
 def medical_account_public(account: dict) -> dict:
     entitlement = medical_entitlement(account)
     plan = str(account.get("subscription_plan") or "trial")
@@ -272,9 +279,16 @@ def medical_account_public(account: dict) -> dict:
         if trial_end and plan == "trial"
         else None
     )
-    last_failure = None
+    last_failure_public = None
     if status.lower() == "past_due":
-        last_failure = _medical_last_billing_failure(str(account.get("user_id") or ""))
+        raw_failure = _medical_last_billing_failure(str(account.get("user_id") or ""))
+        if raw_failure:
+            logging.info(
+                "medical past_due billing failure user=%s reason=%s",
+                str(account.get("user_id") or "")[:8],
+                raw_failure[:300],
+            )
+        last_failure_public = _medical_billing_failure_public(raw_failure)
     return {
         **entitlement,
         "isMedicalUser": True,
@@ -297,7 +311,7 @@ def medical_account_public(account: dict) -> dict:
         "overageHours": round(overage_seconds / 3600.0, 2),
         "overageAmountIls": round(overage_seconds / 3600.0 * OVERAGE_ILS_PER_HOUR, 2),
         "seatLimit": int(account.get("seat_limit") or 1),
-        "lastBillingFailure": last_failure,
+        "lastBillingFailure": last_failure_public,
     }
 
 

@@ -1683,11 +1683,8 @@ function qsMedicalApplyAccessState(account) {
         } else if (reason === 'billing_cycle_expired') {
             msg = 'תקופת המנוי הסתיימה. אם החיוב האוטומטי לא עבר, בחרו מסלול כדי לחדש.';
         } else if (reason === 'subscription_past_due') {
-            msg = 'החיוב החודשי נכשל. עדכנו אמצעי תשלום או בחרו מסלול מחדש כדי להמשיך.';
-            const detail = String(account.lastBillingFailure || account.last_billing_failure || '').trim();
-            if (detail) {
-                msg += ' (' + detail + ')';
-            }
+            // Never append raw Cardcom/Shva failure text (EMV, brand agreements, codes) — ops-only.
+            msg = 'החיוב החודשי נכשל. עדכנו אמצעי תשלום או בחרו מסלול מחדש כדי להמשיך. אם הבעיה נמשכת, צרו קשר עם התמיכה.';
         } else if (reason.indexOf('subscription_') === 0) {
             msg = 'המנוי אינו פעיל כרגע. בחרו מסלול כדי להמשיך לתמלל.';
         }

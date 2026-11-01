@@ -15045,6 +15045,31 @@ def _medical_export_field_is_blank(text):
     return t.lower() in ('', 'לא צוין', 'not specified', 'n/a')
 
 
+def _medical_summary_screen_lines(screen_lines):
+    """Word paragraphs taken from the summary the doctor is looking at."""
+    parts = []
+    mask = []
+    for item in screen_lines or []:
+        if isinstance(item, dict):
+            text = str(item.get('text') if item.get('text') is not None else '')
+            bold = bool(item.get('bold'))
+        else:
+            text = str(item or '')
+            bold = False
+        text = text.replace('\r\n', '\n').replace('\r', '')
+        if '\n' in text:
+            for piece in text.split('\n'):
+                parts.append(piece.strip())
+                mask.append(bold and bool(piece.strip()))
+            continue
+        parts.append(text.strip())
+        mask.append(bold and bool(text.strip()))
+    while parts and not parts[-1]:
+        parts.pop()
+        mask.pop()
+    return parts, mask
+
+
 def _medical_summary_docx_lines(chief, exam, rec, specialty, personal=False, headings=None):
     """One Word paragraph per screen line. A personal letter is not wrapped in specialty titles."""
     heading_norms = {
@@ -15155,9 +15180,16 @@ def api_export_docx():
                 personal = bool(data.get('personalTemplate') or data.get('personal_template'))
                 raw_headings = data.get('templateHeadings') or data.get('template_headings') or []
                 headings = raw_headings if isinstance(raw_headings, list) else []
-                lines, bold_mask = _medical_summary_docx_lines(
-                    mc, me, mr, specialty, personal=personal, headings=headings,
-                )
+                screen_lines = data.get('screenLines') or data.get('screen_lines') or []
+                if isinstance(screen_lines, list) and any(
+                    str((item or {}).get('text') if isinstance(item, dict) else item or '').strip()
+                    for item in screen_lines
+                ):
+                    lines, bold_mask = _medical_summary_screen_lines(screen_lines)
+                else:
+                    lines, bold_mask = _medical_summary_docx_lines(
+                        mc, me, mr, specialty, personal=personal, headings=headings,
+                    )
             else:
                 overview   = str(fmt.get('overview') or '').strip()
                 key_points = [str(p).strip() for p in (fmt.get('key_points') or []) if str(p).strip()]
