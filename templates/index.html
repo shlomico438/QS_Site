@@ -22,7 +22,7 @@ try {
 <div class="app-mode">
     <div class="main-app-container{% if medical_entry %} medical-mode{% endif %}" id="main-app-container">
         {# Visible on first paint for guests (mobile LCP). Hidden for medical entry or active job via CSS / tiny boot script. #}
-        <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content"{% if medical_entry %} style="display:none;"{% endif %}>
+        <section id="seo-home-content" class="seo-home-content" aria-label="QuickScribe homepage content"{% if medical_entry %} hidden inert style="display:none;" aria-hidden="true"{% endif %}>
             <div class="seo-landing-hero seo-landing-band seo-landing-bg-white">
                 <div class="seo-landing-inner">
                     <div class="seo-hero-grid">
@@ -168,9 +168,9 @@ try {
                 <h3 id="invoice-billing-title">פרטים לחשבונית</h3>
                 <p class="seo-sales-modal-sub">נדרש לצורך הפקת חשבונית מס קבלה (נשמר במכשיר זה לרכישות הבאות).</p>
                 <label class="seo-sales-label" for="invoice-tax-id-input">ת.ז. / ח.פ.</label>
-                <input type="text" id="invoice-tax-id-input" class="seo-sales-input" inputmode="numeric" autocomplete="off" maxlength="9" required>
+                <input type="text" id="invoice-tax-id-input" class="seo-sales-input" inputmode="numeric" autocomplete="off" maxlength="9" required aria-required="true">
                 <label class="seo-sales-label" for="invoice-city-input">ישוב (עיר)</label>
-                <input type="text" id="invoice-city-input" class="seo-sales-input" autocomplete="address-level2" required>
+                <input type="text" id="invoice-city-input" class="seo-sales-input" autocomplete="address-level2" required aria-required="true">
                 <div class="seo-sales-modal-actions">
                     <button type="button" id="invoice-billing-continue-btn" class="seo-btn seo-btn-medical">המשך לתשלום</button>
                     <button type="button" id="invoice-billing-cancel-btn" class="seo-btn seo-btn-secondary">ביטול</button>
@@ -267,19 +267,19 @@ try {
 
                 {% if medical_entry %}
                 <div id="auth-medical-specialty-wrap" style="display:none; text-align:start;">
-                    <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;" data-i18n="medical_specialty_label">Choose your professional field</label>
-                    <select id="auth-medical-specialty" aria-label="Professional specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;">
-                        <option value="" data-i18n="medical_specialty_placeholder">Choose your professional field</option>
-                        <option value="physician" data-i18n="medical_specialty_physician">Family medicine</option>
-                        <option value="neurology" data-i18n="medical_specialty_neurology">Neurology</option>
-                        <option value="orthopedics" data-i18n="medical_specialty_orthopedics">Orthopedics</option>
-                        <option value="psychologist" data-i18n="medical_specialty_psychologist">Psychology</option>
-                        <option value="occupational_therapist" data-i18n="medical_specialty_occupational_therapist">Occupational therapy</option>
-                        <option value="physiotherapist" data-i18n="medical_specialty_physiotherapist">Physiotherapy</option>
-                        <option value="speech_therapist" data-i18n="medical_specialty_speech_therapist">Speech therapy</option>
-                        <option value="nurse" data-i18n="medical_specialty_nurse">Nursing</option>
-                        <option value="social_worker" data-i18n="medical_specialty_social_worker">Medical social work</option>
-                        <option value="other" data-i18n="medical_specialty_other">Other healthcare profession</option>
+                    <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;" data-i18n="medical_specialty_label">בחרו תחום מקצועי</label>
+                    <select id="auth-medical-specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;" required aria-required="true">
+                        <option value="" disabled selected data-i18n="medical_specialty_placeholder">— בחרו תחום —</option>
+                        <option value="physician" data-i18n="medical_specialty_physician">רפואת משפחה</option>
+                        <option value="neurology" data-i18n="medical_specialty_neurology">נוירולוגיה</option>
+                        <option value="orthopedics" data-i18n="medical_specialty_orthopedics">אורתופדיה</option>
+                        <option value="psychologist" data-i18n="medical_specialty_psychologist">פסיכולוגיה</option>
+                        <option value="occupational_therapist" data-i18n="medical_specialty_occupational_therapist">ריפוי בעיסוק</option>
+                        <option value="physiotherapist" data-i18n="medical_specialty_physiotherapist">פיזיותרפיה</option>
+                        <option value="speech_therapist" data-i18n="medical_specialty_speech_therapist">קלינאות תקשורת</option>
+                        <option value="nurse" data-i18n="medical_specialty_nurse">סיעוד</option>
+                        <option value="social_worker" data-i18n="medical_specialty_social_worker">עבודה סוציאלית רפואית</option>
+                        <option value="other" data-i18n="medical_specialty_other">מקצוע בריאות אחר</option>
                     </select>
                 </div>
                 {% endif %}
@@ -298,10 +298,13 @@ try {
                 </div>
 
                 <div id="signup-fields">
-                    <input type="text" id="auth-name" data-i18n-placeholder="full_name" placeholder="Full Name (optional)" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+                    <label for="auth-name" class="visually-hidden" data-i18n="full_name">{% if qs_is_en %}Full Name (optional){% else %}שם מלא (אופציונלי){% endif %}</label>
+                    <input type="text" id="auth-name" name="name" autocomplete="name" data-i18n-placeholder="full_name" placeholder="Full Name (optional)" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
                 </div>
-                <input type="email" id="auth-email" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:6px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+                <label for="auth-email" class="visually-hidden" data-i18n="email_address">{% if qs_is_en %}Email Address{% else %}כתובת אימייל{% endif %}</label>
+                <input type="email" id="auth-email" name="email" autocomplete="email" required aria-required="true" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:6px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;" lang="en" dir="ltr">
                 <p id="auth-error" role="alert" aria-live="polite" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:8px; background:#fef2f2; color:#b91c1c; font-size:0.875rem; line-height:1.45; text-align:start;"></p>
+                <p id="auth-status" role="status" aria-live="polite" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:8px; background:#ecfdf5; color:#065f46; font-size:0.875rem; line-height:1.45; text-align:start;"></p>
 
                 <button type="button" id="auth-submit-btn" style="width:100%; padding:14px; background:#ffffff; color:#1a2b4b; border:1px solid #1a2b4b; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1rem; transition: background 0.2s, color 0.2s;" data-i18n="send_magic_link">Send me a link</button>
 
@@ -341,8 +344,8 @@ try {
         </div>
 
         {% if medical_entry %}
-        <div id="medical-delete-confirm-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
-            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-delete-confirm-title">
+        <div id="medical-delete-confirm-modal" class="medical-confirm-modal-backdrop" style="display:none;" hidden aria-hidden="true">
+            <div class="medical-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="medical-delete-confirm-title" aria-describedby="medical-delete-confirm-message">
                 <h3 id="medical-delete-confirm-title" data-i18n="medical_delete_recording_title">מחיקת הקלטה</h3>
                 <p id="medical-delete-confirm-message" data-i18n="medical_delete_recording_message">האם אתה בטוח שברצונך למחוק הקלטה זו?</p>
                 <div class="medical-confirm-modal-actions">
@@ -351,19 +354,19 @@ try {
                 </div>
             </div>
         </div>
-        <div id="medical-wake-choice-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
-            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-wake-choice-title">
-                <h3 id="medical-wake-choice-title" data-i18n="medical_wake_choice_title">העירת מערכת התמלול</h3>
+        <div id="medical-wake-choice-modal" class="medical-confirm-modal-backdrop" style="display:none;" hidden aria-hidden="true">
+            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-wake-choice-title" aria-describedby="medical-wake-choice-message">
+                <h3 id="medical-wake-choice-title" data-i18n="medical_wake_choice_title">הפעלת מערכת התמלול</h3>
                 <p id="medical-wake-choice-message" data-i18n="medical_wake_choice_message">המערכת במצב שינה. איך תרצה להמשיך?</p>
                 <div class="medical-confirm-modal-actions medical-wake-choice-actions">
-                    <button type="button" id="medical-wake-choice-wait" class="medical-confirm-btn primary" data-i18n="medical_wake_choice_wait">המתן להתכוננות</button>
-                    <button type="button" id="medical-wake-choice-record" class="medical-confirm-btn primary" data-i18n="medical_wake_choice_record">הקלט בזמן ההתכוננות</button>
+                    <button type="button" id="medical-wake-choice-wait" class="medical-confirm-btn primary" data-i18n="medical_wake_choice_wait">המתן עד שהמערכת תהיה מוכנה</button>
+                    <button type="button" id="medical-wake-choice-record" class="medical-confirm-btn primary" data-i18n="medical_wake_choice_record">הקלט בזמן שהמערכת מתכוננת</button>
                 </div>
                 <button type="button" id="medical-wake-choice-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
             </div>
         </div>
-        <div id="medical-guest-try-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
-            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-guest-try-title">
+                <div id="medical-guest-try-modal" class="medical-confirm-modal-backdrop" style="display:none;" hidden aria-hidden="true">
+            <div class="medical-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="medical-guest-try-title" aria-describedby="medical-guest-try-message">
                 <h3 id="medical-guest-try-title" data-i18n="medical_guest_try_title">שמרו על העבודה שלכם</h3>
                 <p id="medical-guest-try-message" data-i18n="medical_guest_try_message">כדי למנוע אובדן נתונים וכדי שתוכלו להעתיק את התוצאה, עליכם להיות מחוברים לחשבון. ההרשמה היא בחינם.</p>
                 <div class="medical-confirm-modal-actions medical-wake-choice-actions">
@@ -373,20 +376,20 @@ try {
                 <button type="button" id="medical-guest-try-cancel" class="medical-wake-choice-cancel" data-i18n="cancel">ביטול</button>
             </div>
         </div>
-        <div id="medical-training-modal" class="medical-confirm-modal-backdrop medical-training-modal-backdrop" style="display:none;" aria-hidden="true">
+        <div id="medical-training-modal" class="medical-confirm-modal-backdrop medical-training-modal-backdrop" style="display:none;" hidden aria-hidden="true">
             <div class="medical-confirm-modal medical-training-modal" role="dialog" aria-modal="true" aria-labelledby="medical-training-modal-title">
                 <div class="medical-training-modal-header">
                     <h3 id="medical-training-modal-title" data-i18n="medical_training_modal_title">מצב אימון: סגנון ותבנית סיכום אישית</h3>
-                    <button type="button" id="medical-training-modal-close" class="medical-training-modal-close" aria-label="Close" title="Close">&times;</button>
+                    <button type="button" id="medical-training-modal-close" class="medical-training-modal-close" data-i18n-aria-label="medical_mic_close" aria-label="{% if qs_is_en %}Close{% else %}סגור{% endif %}" title="{% if qs_is_en %}Close{% else %}סגור{% endif %}">&times;</button>
                 </div>
                 <div id="medical-training-modal-body" class="medical-training-modal-body"></div>
             </div>
         </div>
-        <div id="medical-mic-test-modal" class="medical-confirm-modal-backdrop" style="display:none;" aria-hidden="true">
+        <div id="medical-mic-test-modal" class="medical-confirm-modal-backdrop" style="display:none;" hidden aria-hidden="true">
             <div class="medical-confirm-modal medical-mic-test-card" role="dialog" aria-modal="true" aria-labelledby="medical-mic-test-title">
-                <h3 id="medical-mic-test-title" data-i18n="medical_mic_title">Microphone</h3>
-                <label for="medical-mic-device-select" class="medical-mic-device-label" data-i18n="medical_mic_device_label">Microphone</label>
-                <select id="medical-mic-device-select" class="medical-mic-device-select" aria-label="Microphone"></select>
+                <h3 id="medical-mic-test-title" data-i18n="medical_mic_title">מיקרופון</h3>
+                <label for="medical-mic-device-select" class="medical-mic-device-label" data-i18n="medical_mic_device_label">מיקרופון</label>
+                <select id="medical-mic-device-select" class="medical-mic-device-select"></select>
                 <p id="medical-mic-active-device" class="medical-mic-active-device" hidden></p>
                 <p id="medical-mic-default-hint" class="medical-mic-default-hint" hidden data-i18n="medical_mic_saved_default">This microphone is saved as your default for recordings.</p>
                 <div class="medical-mic-test-row">
@@ -394,9 +397,10 @@ try {
                         <span class="medical-mic-test-btn-dot" aria-hidden="true"></span>
                         <span id="medical-mic-test-btn-label" data-i18n="medical_mic_test">Test microphone</span>
                     </button>
-                    <div id="medical-mic-level-meter" class="medical-mic-level-meter" aria-hidden="true">
-                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                    <div id="medical-mic-level-meter" class="medical-mic-level-meter" role="meter" aria-valuemin="0" aria-valuemax="8" aria-valuenow="0" data-i18n-aria-label="medical_mic_level_aria" aria-label="{% if qs_is_en %}Microphone input level{% else %}עוצמת קלט המיקרופון{% endif %}">
+                        <span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>
                     </div>
+                    <p id="medical-mic-level-text" class="visually-hidden" aria-live="polite"></p>
                 </div>
                 <p id="medical-mic-test-status" class="medical-mic-test-status" role="status" aria-live="polite"></p>
                 <button type="button" id="medical-mic-test-close" class="medical-confirm-btn secondary" data-i18n="medical_mic_close">Close</button>
@@ -476,7 +480,7 @@ try {
                 </div>
                 <div id="transcript-window" contenteditable="false"></div>
                 {% if medical_entry %}
-                <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="polite"></div>
+                <div id="medical-recording-timer-slot" class="medical-recording-timer-slot" style="display:none;" aria-live="off"></div>
                 <div id="medical-default-signature" class="medical-default-signature" hidden>
                     <span class="medical-default-signature-view">
                         <span class="medical-default-signature-text"></span>
@@ -722,7 +726,7 @@ try {
                         </button>
                         <span class="medical-side-action-label" data-i18n="medical_delete">מחק</span>
                     </div>
-                    <button id="medical-record-btn" type="button" class="medical-circle-btn medical-circle-btn-record" aria-label="Record">
+                    <button id="medical-record-btn" type="button" class="medical-circle-btn medical-circle-btn-record" data-i18n-aria-label="medical_recording" aria-label="{% if qs_is_en %}Record{% else %}הקלטה{% endif %}" aria-pressed="false">
                         <span class="medical-record-outer">
                             <span id="medical-record-shape" class="medical-record-shape">
                                 <svg id="medical-record-mic-svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -736,12 +740,12 @@ try {
                             </span>
                         </span>
                     </button>
-                    <div id="medical-live-level-meter" class="medical-live-level-meter" aria-hidden="true" hidden>
-                        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                    <div id="medical-live-level-meter" class="medical-live-level-meter" role="meter" aria-valuemin="0" aria-valuemax="8" aria-valuenow="0" data-i18n-aria-label="medical_mic_level_aria" aria-label="{% if qs_is_en %}Microphone input level{% else %}עוצמת קלט המיקרופון{% endif %}" aria-hidden="true" hidden>
+                        <span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>
                     </div>
                     <div id="medical-confirm-stack" class="medical-side-action-stack medical-side-action-spacer" style="display:none;" aria-hidden="true"></div>
                 </div>
-                <div id="medical-record-timer" class="medical-record-timer" style="visibility:hidden;"></div>
+                <div id="medical-record-timer" class="medical-record-timer" role="timer" aria-live="off" style="visibility:hidden;"></div>
             </div>
             <button id="medical-upload-new-session-btn" class="btn btn-primary medical-upload-new-session-btn" type="button" style="display:none;" data-i18n="new_session">סשן חדש</button>
             {% endif %}

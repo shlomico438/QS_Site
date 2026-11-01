@@ -82,10 +82,18 @@ header.navbar,
     text-decoration: none;
     font-weight: 500;
 }
+.site-footer-nav a.site-footer-privacy-link {
+    font-weight: 800;
+    color: #0f766e; /* ~4.7:1 on footer bg; prominent for healthcare */
+}
 .site-footer-nav a:hover,
 .site-footer-nav a:focus-visible {
     color: #3730a3;
     text-decoration: underline;
+}
+.site-footer-nav a.site-footer-privacy-link:hover,
+.site-footer-nav a.site-footer-privacy-link:focus-visible {
+    color: #115e59;
 }
 .site-footer-copy,
 .site-footer-follow {
@@ -2190,8 +2198,14 @@ html[dir="rtl"] .seo-credit-bundle-item {
     border: 1px solid #d7e7e5;
     border-radius: 16px;
     background: #fff;
-    cursor: pointer;
+    cursor: default;
     transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.medical-pricing-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    cursor: pointer;
 }
 .medical-pricing-card.is-recommended {
     border-color: #99f6e4;
@@ -2202,8 +2216,8 @@ html[dir="rtl"] .seo-credit-bundle-item {
     box-shadow: 0 14px 38px rgba(15, 118, 110, .2);
     transform: translateY(-3px);
 }
-.medical-pricing-card:focus-visible {
-    outline: 3px solid rgba(13, 148, 136, .3);
+.medical-pricing-card:has(.medical-plan-radio:focus-visible) {
+    outline: var(--focus-ring-outline, 2px solid #4338ca);
     outline-offset: 3px;
 }
 .medical-recommended-badge {
@@ -2218,8 +2232,23 @@ html[dir="rtl"] .seo-credit-bundle-item {
     font-size: .77rem;
     font-weight: 800;
 }
+.medical-plan-selected-mark {
+    display: inline-flex;
+    align-self: flex-start;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #ecfdf5;
+    color: #065f46;
+    font-size: 0.75rem;
+    font-weight: 800;
+}
+.medical-plan-selected-mark:not([hidden])::before {
+    content: "✓ ";
+}
 .medical-plan-price { color: #0f766e; font-size: 1.8rem; font-weight: 850; }
-.medical-plan-price small { color: #64748b; font-size: .85rem; }
+.medical-plan-price small { color: #475569; font-size: .85rem; }
 .medical-pricing-card button {
     margin-top: auto;
     padding: 11px;
