@@ -147,6 +147,11 @@ header.navbar,
 body:has(#main-app-container) > footer.site-footer {
     display: none !important;
 }
+/* Medical guests/onboarding hide .upload-zone — keep the real site footer visible there. */
+body.medical-mode.medical-onboarding-pending:has(#main-app-container) > footer.site-footer,
+html.qs-medical-entry body.medical-onboarding-pending:has(#main-app-container) > footer.site-footer {
+    display: block !important;
+}
 :root {
     --qs-upload-bar-compact: 84px;
     --qs-upload-bar-landing: 132px;
@@ -967,22 +972,34 @@ header.site-header.navbar {
     }
 }
 
-/* Personal area: allow main to scroll so user can see all files */
-main.main-content:has(.personal-area-page) {
-    overflow-y: auto !important;
+/*
+ * Document-style pages (a11y statement, about, blog, resources, …):
+ * The app shell uses body height:100vh + main overflow:hidden so the footer can sit
+ * below the viewport and only appear after an awkward outer scroll. Use normal
+ * document flow here: page scrolls, footer follows the content (and stays at the
+ * bottom when the page is short via flex-grow on main).
+ */
+body:has(main.main-content .personal-area-page),
+body:has(main.main-content .blog-page),
+body:has(main.main-content .resources-page),
+body:has(main.main-content .content-page),
+body:has(main.main-content .a11y-statement),
+body:has(main.main-content .accuracy-page) {
+    height: auto !important;
+    min-height: 100vh !important;
     overflow-x: hidden !important;
-}
-/* Blog page: allow vertical scrolling for long posts */
-main.main-content:has(.blog-page) {
     overflow-y: auto !important;
-    overflow-x: hidden !important;
 }
-/* Marketing / SEO pages (resources, about, contact, pricing, …): body is 100vh + main overflow:hidden for the app shell */
+main.main-content:has(.personal-area-page),
+main.main-content:has(.blog-page),
 main.main-content:has(.resources-page),
 main.main-content:has(.content-page),
+main.main-content:has(.a11y-statement),
 main.main-content:has(.accuracy-page) {
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
+    flex: 1 0 auto !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
 }
 .blog-table-wrap {
     overflow-x: auto;

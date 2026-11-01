@@ -1,0 +1,58 @@
+{# Shared sign-in / register dialog — must live in base so nav "Sign In" works on every page. #}
+{% set _auth_medical = medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical') %}
+<div id="auth-modal" class="auth-modal-backdrop" style="display:none; position:fixed; z-index:14000; left:0; top:0; width:100%; height:100%; background: rgba(0,0,0,0.7); align-items:center; justify-content:center;" aria-hidden="true" hidden>
+    <div class="auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1" style="position:relative; background: white; padding: 28px; border-radius: 16px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);">
+        <button type="button" class="auth-modal-close" id="auth-modal-close" data-i18n-aria-label="a11y_dialog_close" aria-label="{% if qs_is_en %}Close dialog{% else %}סגור חלון{% endif %}" style="position:absolute; inset-inline-end:12px; top:12px; border:none; background:transparent; font-size:1.4rem; line-height:1; cursor:pointer; color:#4b5563;">&times;</button>
+        <h3 id="modal-title" style="margin-bottom: 8px; font-size: 1.5rem; color: #111827;" data-i18n="get_started">{% if qs_is_en %}Get Started{% else %}התחילו כאן{% endif %}</h3>
+        <p id="auth-modal-subtitle" style="font-size: 0.875rem; color: #6b7280; margin-bottom: 24px;" data-i18n="sign_in_to_save">{% if qs_is_en %}Sign in to save your transcript history.{% else %}התחברו כדי לשמור את היסטוריית התמלולים.{% endif %}</p>
+
+        {% if _auth_medical %}
+        <div id="auth-medical-specialty-wrap" style="display:none; text-align:start;">
+            <label for="auth-medical-specialty" style="display:block; margin:0 0 8px; font-size:0.875rem; font-weight:600; color:#334155;" data-i18n="medical_specialty_label">בחרו תחום מקצועי</label>
+            <select id="auth-medical-specialty" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:8px; background:#fff; font-size:14px;" required aria-required="true">
+                <option value="" disabled selected data-i18n="medical_specialty_placeholder">— בחרו תחום —</option>
+                <option value="physician" data-i18n="medical_specialty_physician">רפואת משפחה</option>
+                <option value="neurology" data-i18n="medical_specialty_neurology">נוירולוגיה</option>
+                <option value="orthopedics" data-i18n="medical_specialty_orthopedics">אורתופדיה</option>
+                <option value="psychologist" data-i18n="medical_specialty_psychologist">פסיכולוגיה</option>
+                <option value="occupational_therapist" data-i18n="medical_specialty_occupational_therapist">ריפוי בעיסוק</option>
+                <option value="physiotherapist" data-i18n="medical_specialty_physiotherapist">פיזיותרפיה</option>
+                <option value="speech_therapist" data-i18n="medical_specialty_speech_therapist">קלינאות תקשורת</option>
+                <option value="nurse" data-i18n="medical_specialty_nurse">סיעוד</option>
+                <option value="social_worker" data-i18n="medical_specialty_social_worker">עבודה סוציאלית רפואית</option>
+                <option value="other" data-i18n="medical_specialty_other">מקצוע בריאות אחר</option>
+            </select>
+        </div>
+        {% endif %}
+
+        <button id="google-login" type="button" style="width:100%; padding: 12px; border: 1px solid #4285F4; background: #4285F4; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 600; color: #ffffff; font-family: Roboto, Arial, sans-serif; box-shadow: 0 3px 10px rgba(66,133,244,0.35); transition: background 0.2s, box-shadow 0.2s;" onmouseover="this.style.background='#3367D6';this.style.borderColor='#3367D6'" onmouseout="this.style.background='#4285F4';this.style.borderColor='#4285F4'">
+            <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#fff; border-radius:4px;" aria-hidden="true">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="14" height="14" alt="">
+            </span>
+            <span data-i18n="continue_google">{% if qs_is_en %}Continue with Google{% else %}המשך עם Google{% endif %}</span>
+        </button>
+
+        <div id="auth-provider-divider" style="display: flex; align-items: center; margin: 28px 0;">
+            <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
+            <span style="margin: 0 12px; color: #9ca3af; font-size: 0.75rem; font-weight: 600;" data-i18n="or_email">OR EMAIL</span>
+            <hr style="flex:1; border:0; border-top:1px solid #f3f4f6;">
+        </div>
+
+        <div id="signup-fields">
+            <label for="auth-name" class="visually-hidden" data-i18n="full_name">{% if qs_is_en %}Full Name (optional){% else %}שם מלא (אופציונלי){% endif %}</label>
+            <input type="text" id="auth-name" name="name" autocomplete="name" data-i18n-placeholder="full_name" placeholder="Full Name (optional)" style="width:100%; padding:12px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;">
+        </div>
+        <label for="auth-email" class="visually-hidden" data-i18n="email_address">{% if qs_is_en %}Email Address{% else %}כתובת אימייל{% endif %}</label>
+        <input type="email" id="auth-email" name="email" autocomplete="email" required aria-required="true" data-i18n-placeholder="email_address" placeholder="Email Address" style="width:100%; padding:12px; margin-bottom:6px; border:1px solid #d1d5db; border-radius:8px; font-size: 14px;" lang="en" dir="ltr">
+        <p id="auth-error" role="alert" aria-live="polite" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:8px; background:#fef2f2; color:#b91c1c; font-size:0.875rem; line-height:1.45; text-align:start;"></p>
+        <p id="auth-status" role="status" aria-live="polite" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:8px; background:#ecfdf5; color:#065f46; font-size:0.875rem; line-height:1.45; text-align:start;"></p>
+
+        <button type="button" id="auth-submit-btn" style="width:100%; padding:14px; background:#ffffff; color:#1a2b4b; border:1px solid #1a2b4b; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1rem; transition: background 0.2s, color 0.2s;" data-i18n="send_magic_link">Send me a link</button>
+        <p id="auth-magic-link-spam-hint" style="margin:10px 0 0; font-size:0.8rem; color:#64748b; line-height:1.45; text-align:start;" data-i18n="magic_link_spam_hint">{% if qs_is_en %}The sign-in email sometimes lands in Spam / Junk — please check there too.{% else %}מייל ההתחברות לפעמים מגיע לספאם / דואר זבל — כדאי לבדוק גם שם.{% endif %}</p>
+
+        <p id="auth-mode-switch-row" style="margin-top:20px; font-size: 0.875rem; color: #4b5563;">
+            <span id="auth-switch-text" data-i18n="already_have">Already have an account?</span>
+            <button type="button" id="toggle-auth-mode" style="color:#1e3a8a; font-weight:600; text-decoration: none; margin-inline-start: 4px; border:none; background:none; cursor:pointer; font:inherit;" data-i18n="log_in">{% if qs_is_en %}Log In{% else %}התחברות{% endif %}</button>
+        </p>
+    </div>
+</div>

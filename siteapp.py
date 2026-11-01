@@ -9788,12 +9788,14 @@ def _magic_link_email_copy(locale: str, action_link: str) -> tuple[str, str, str
             "לחצו על הקישור הבא כדי להיכנס:\n"
             f"{action_link}\n\n"
             "הקישור חד-פעמי. אם לא ביקשתם להתחבר, התעלמו מההודעה.\n"
+            "טיפ: אם לא מצאתם את המייל בתיבה הראשית, בדקו גם בספאם / דואר זבל.\n"
         )
         html = (
             "<p>זוהי הודעת התחברות לחשבון QuickScribe שלכם.</p>"
             "<p>לחצו על הקישור הבא כדי להיכנס:</p>"
             f"<p><a href=\"{safe_link}\">{safe_link}</a></p>"
             "<p>הקישור חד-פעמי. אם לא ביקשתם להתחבר, התעלמו מההודעה.</p>"
+            "<p style=\"color:#64748b;font-size:13px;\">טיפ: אם לא מצאתם את המייל בתיבה הראשית, בדקו גם בספאם / דואר זבל.</p>"
         )
         return subject, text, html
     subject = 'Sign in to your QuickScribe account'
@@ -9802,12 +9804,14 @@ def _magic_link_email_copy(locale: str, action_link: str) -> tuple[str, str, str
         "Open this link to continue:\n"
         f"{action_link}\n\n"
         "This link can be used once. If you did not try to sign in, ignore this message.\n"
+        "Tip: if you don’t see this in your inbox, check Spam / Junk too.\n"
     )
     html = (
         "<p>This is a sign-in email for your QuickScribe account.</p>"
         "<p>Open this link to continue:</p>"
         f"<p><a href=\"{safe_link}\">{safe_link}</a></p>"
         "<p>This link can be used once. If you did not try to sign in, ignore this message.</p>"
+        "<p style=\"color:#64748b;font-size:13px;\">Tip: if you don’t see this in your inbox, check Spam / Junk too.</p>"
     )
     return subject, text, html
 
@@ -10683,6 +10687,57 @@ def medical_blog_he():
 def accuracy():
     return render_template('accuracy.html')
 
+
+@app.route('/medical/accuracy')
+@app.route('/medical/accuracy/')
+def medical_accuracy():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/medical/accuracy', code=301)
+    return render_template('accuracy.html', medical_entry=True)
+
+
+@app.route('/en/medical/accuracy')
+def medical_accuracy_en():
+    return render_template('accuracy.html', medical_entry=True)
+
+
+@app.route('/en/medical/accuracy/')
+def medical_accuracy_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/medical/accuracy' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
+
+
+@app.route('/medical/resources')
+@app.route('/medical/resources/')
+def medical_resources_pillar():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/medical/resources', code=301)
+    from resources_content import get_resource_page
+
+    page = get_resource_page('')
+    if not page:
+        return ('Not Found', 404)
+    return render_template('resources_page.html', resource_page=page, medical_entry=True)
+
+
+@app.route('/en/medical/resources')
+def medical_resources_pillar_en():
+    from resources_content import get_resource_page
+
+    page = get_resource_page('')
+    if not page:
+        return ('Not Found', 404)
+    return render_template('resources_page.html', resource_page=page, medical_entry=True)
+
+
+@app.route('/en/medical/resources/')
+def medical_resources_pillar_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/medical/resources' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
+
+
 @app.route('/contact')
 def contact():
     return render_template('contact.html')
@@ -10735,6 +10790,26 @@ def accessibility_statement_en():
     if request.path.endswith('/') and request.path != '/':
         return redirect('/en/accessibility', code=301)
     return render_template('accessibility.html')
+
+
+@app.route('/medical/accessibility')
+@app.route('/medical/accessibility/')
+def medical_accessibility_statement():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/medical/accessibility', code=301)
+    return render_template('accessibility.html', medical_entry=True)
+
+
+@app.route('/en/medical/accessibility')
+def medical_accessibility_statement_en():
+    return render_template('accessibility.html', medical_entry=True)
+
+
+@app.route('/en/medical/accessibility/')
+def medical_accessibility_statement_en_slash():
+    qs = request.query_string.decode('utf-8', errors='ignore')
+    target = '/en/medical/accessibility' + (('?' + qs) if qs else '')
+    return redirect(target, code=301)
 
 
 @app.route('/loaderio-c1e5fa75e4a82891e47b968c879d134b/')

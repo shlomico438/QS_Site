@@ -54,6 +54,7 @@
             btn.onclick = function (e) {
                 if (e && e.preventDefault) e.preventDefault();
                 window.__QS_AUTH_MODAL_USER_OPENED = true;
+                try { document.documentElement.classList.add('qs-auth-explicit-open'); } catch (_) {}
                 if (id === 'medical-open-login-btn') {
                     try { window.isSignUpMode = false; } catch (_) {}
                 }

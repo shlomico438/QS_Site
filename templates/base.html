@@ -262,7 +262,7 @@
     {% block head_extra %}{% endblock %}
 </head>
 
-<body class="{% if medical_entry | default(false) %}medical-mode{% else %}qs-homepage-landing{% endif %}" style="display:flex; flex-direction:column; height:100vh; min-height:0;">
+<body class="{% if medical_entry | default(false) %}medical-mode{% else %}qs-homepage-landing{% endif %}{% if medical_entry | default(false) and request.path.rstrip('/') in ('/medical', '/en/medical') %} medical-onboarding-pending{% endif %}" style="display:flex; flex-direction:column; height:100vh; min-height:0;">
     <noscript><img height="1" width="1" style="display:none"
     src="https://www.facebook.com/tr?id=1955862168459302&ev=PageView&noscript=1"
     alt="" /></noscript>
@@ -390,6 +390,8 @@
 
     {# user-menu-panel injected by qs_account_chrome.js after signed-in session is confirmed #}
 
+    {% include 'snippets/auth_modal.html' %}
+
     {% if medical_entry | default(false) %}
     {% include 'snippets/medical_pricing_modal.html' %}
     {% endif %}
@@ -430,7 +432,7 @@
                 {% else %}
                 <a href="/legal" data-i18n="footer_legal">{% if qs_is_en %}Terms &amp; Policy{% else %}תנאים ומדיניות{% endif %}</a>
                 {% endif %}
-                <a href="{{ '/en/accessibility' if qs_is_en else '/accessibility' }}" data-i18n="footer_accessibility">{% if qs_is_en %}Accessibility statement{% else %}הצהרת נגישות{% endif %}</a>
+                <a href="{% if medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical') %}{{ '/en/medical/accessibility' if qs_is_en else '/medical/accessibility' }}{% else %}{{ '/en/accessibility' if qs_is_en else '/accessibility' }}{% endif %}" data-i18n="footer_accessibility">{% if qs_is_en %}Accessibility statement{% else %}הצהרת נגישות{% endif %}</a>
             </nav>
             <nav class="site-footer-social" aria-label="{% if qs_is_en %}Social and reviews{% else %}רשתות וביקורות{% endif %}">
                 {% include "snippets/social_profile_links.html" %}
