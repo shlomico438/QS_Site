@@ -9141,9 +9141,23 @@ async function initPersonalPage() {
                 statusLooksTranscribed
             );
             const probeKeys = qsTranscriptJsonKeysToTry(job.input_s3_key, resultKey || resultKeyMeta);
+            const keyHint = String(job.input_s3_key || '');
+            const isMedicalJob = (
+                (typeof isMedicalLayoutS3Key === 'function' && isMedicalLayoutS3Key(keyHint))
+                || (typeof isMedicalLayoutRawAudioKey === 'function' && isMedicalLayoutRawAudioKey(keyHint))
+                || !!String(md.patient_name || '').trim()
+                || qsIsAutoMedicalRecordingLabel(md.display_name || displayNameFromKey(keyHint))
+            );
+            const rawName = String(md.patient_name || md.display_name || '').trim()
+                || displayNameFromKey(keyHint);
+            const patientIdNumber = qsNormalizeMedicalPatientIdNumber(
+                md.patient_id_number || md.patientIdNumber || md.national_id || ''
+            );
+            const fileName = isMedicalJob ? qsMedicalPersonalListTitle(rawName) : rawName;
             return {
                 file_id: job.id,
-                file_name: String(md.display_name || '').trim() || displayNameFromKey(job.input_s3_key),
+                file_name: fileName,
+                patient_id_number: patientIdNumber,
                 created_at: job.created_at,
                 duration_seconds: extractDurationSeconds(job),
                 transcript_exists: transcriptExists,
@@ -9151,6 +9165,8 @@ async function initPersonalPage() {
                 runpod_job_id: job.runpod_job_id || null,
                 derived_result_key: deriveResultJsonKey(job.input_s3_key),
                 _probe_keys: probeKeys,
+                _is_medical: isMedicalJob,
+                _base_name: rawName,
             };
         })
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -9158,7 +9174,10 @@ async function initPersonalPage() {
     const grouped = new Map();
     const normName = (s) => String(s || '').trim().toLowerCase();
     rows.forEach((r) => {
-        const key = normName(r.file_name);
+        // Medical visits: keep one row per job so same patient on different days stays searchable.
+        const key = r._is_medical
+            ? `medical:${r.file_id}`
+            : normName(r.file_name);
         const ex = grouped.get(key);
         if (!ex) {
             grouped.set(key, {
@@ -9338,6 +9357,10 @@ async function initPersonalPage() {
             const dateText = formatDate(file.created_at);
             const durText = formatDuration(file.duration_seconds);
             const metaText = durText ? `${dateText} • ${durText}` : dateText;
+            const idLabel = (typeof window.t === 'function' ? window.t('medical_summary_patient_id_heading') : '') || 'ת.ז.';
+            const patientIdText = file.patient_id_number
+                ? `${idLabel}: ${file.patient_id_number}`
+                : '';
             const isRenaming = renamingId === file.file_id;
             item.innerHTML = `
                 <div class="personal-recording-row">
@@ -9353,6 +9376,7 @@ async function initPersonalPage() {
                                </div>`
                             : `<div class="personal-recording-name">🎬 ${escapeHtml(file.file_name)}</div>`
                         }
+                        ${patientIdText ? `<div class="personal-recording-patient-id">${escapeHtml(patientIdText)}</div>` : ''}
                         <div class="personal-recording-date">${escapeHtml(metaText)}</div>
                     </div>
                 </div>
@@ -9471,7 +9495,11 @@ async function initPersonalPage() {
                             const idx = files.findIndex((f) => f.file_id === file.file_id);
                             if (idx >= 0) files.splice(idx, 1);
                             const q = String(searchInput.value || '').trim().toLowerCase();
-                            filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+                            filtered = q ? files.filter((f) => (
+                                String(f.file_name || '').toLowerCase().includes(q)
+                                || String(f.patient_id_number || '').includes(q)
+                                || String(f._base_name || '').toLowerCase().includes(q)
+                            )) : files.slice();
                             render();
                             if (typeof showStatus === 'function') showStatus('Recording deleted', false);
                         } catch (err) {
@@ -9504,7 +9532,11 @@ async function initPersonalPage() {
                         renamingId = null;
                         renameDraft = '';
                         const q = String(searchInput.value || '').trim().toLowerCase();
-                        filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+                        filtered = q ? files.filter((f) => (
+                            String(f.file_name || '').toLowerCase().includes(q)
+                            || String(f.patient_id_number || '').includes(q)
+                            || String(f._base_name || '').toLowerCase().includes(q)
+                        )) : files.slice();
                         render();
                         if (typeof showStatus === 'function') showStatus('Recording renamed', false);
                     } catch (err) {
@@ -9526,7 +9558,11 @@ async function initPersonalPage() {
 
     searchInput.addEventListener('input', () => {
         const q = String(searchInput.value || '').trim().toLowerCase();
-        filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+        filtered = q ? files.filter((f) => (
+                            String(f.file_name || '').toLowerCase().includes(q)
+                            || String(f.patient_id_number || '').includes(q)
+                            || String(f._base_name || '').toLowerCase().includes(q)
+                        )) : files.slice();
         render();
     });
 
@@ -9561,7 +9597,11 @@ async function initPersonalPage() {
                     if (removeSet.has(files[i].file_id)) files.splice(i, 1);
                 }
                 const q = String(searchInput.value || '').trim().toLowerCase();
-                filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+                filtered = q ? files.filter((f) => (
+                            String(f.file_name || '').toLowerCase().includes(q)
+                            || String(f.patient_id_number || '').includes(q)
+                            || String(f._base_name || '').toLowerCase().includes(q)
+                        )) : files.slice();
                 render();
                 if (typeof showStatus === 'function') {
                     showStatus(
@@ -9628,7 +9668,11 @@ async function initPersonalPage() {
                 return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
             });
             const q = String(searchInput.value || '').trim().toLowerCase();
-            filtered = q ? files.filter((f) => String(f.file_name || '').toLowerCase().includes(q)) : files.slice();
+            filtered = q ? files.filter((f) => (
+                            String(f.file_name || '').toLowerCase().includes(q)
+                            || String(f.patient_id_number || '').includes(q)
+                            || String(f._base_name || '').toLowerCase().includes(q)
+                        )) : files.slice();
             render();
         }
     })();
@@ -9690,7 +9734,7 @@ async function initOpenInAppImpl(jobIdStr) {
     // Use maybeSingle() to avoid 406 when no row matches (PostgREST returns 406 for .single() when 0 rows).
     const _looksLikeUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(v || '').trim());
     const tryByUuidFirst = _looksLikeUuid(jobIdStr);
-    const _jobSelect = 'id, input_s3_key, result_s3_key';
+    const _jobSelect = 'id, input_s3_key, result_s3_key, metadata';
 
     let job = null;
     let error = null;
@@ -9753,6 +9797,19 @@ async function initOpenInAppImpl(jobIdStr) {
         window.medicalActiveTab = 'transcript';
         window._medicalHasResult = true;
         try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
+        try {
+            const mdOpen = (job.metadata && typeof job.metadata === 'object') ? job.metadata : {};
+            const patientOpen = String(mdOpen.patient_name || mdOpen.display_name || '').trim();
+            const patientIdOpen = qsNormalizeMedicalPatientIdNumber(
+                mdOpen.patient_id_number || mdOpen.patientIdNumber || ''
+            );
+            if ((patientOpen && !qsIsAutoMedicalRecordingLabel(patientOpen)) || patientIdOpen) {
+                qsSetMedicalPatientNameInput(
+                    (patientOpen && !qsIsAutoMedicalRecordingLabel(patientOpen)) ? patientOpen : '',
+                    patientIdOpen
+                );
+            }
+        } catch (_) {}
     }
     // Prefer transcript from S3 (result_s3_key); fallback to derived/legacy keys, then jobs.result
     let segments = [];
@@ -9812,16 +9869,60 @@ async function initOpenInAppImpl(jobIdStr) {
     if (tr) {
         hasTranscriptForOpen = true;
         try {
-            const trFmt = pickFormattedFromObject(tr);
+            let trFmt = pickFormattedFromObject(tr);
+            // Medical: summary may live only under summaries/... — merge if transcript JSON lacks it.
+            if (
+                (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+                && !(trFmt && (
+                    String(trFmt.medical_chief_complaint || '').trim()
+                    || String(trFmt.overview || '').trim()
+                    || String(trFmt.medical_examination_transcript || '').trim()
+                ))
+            ) {
+                try {
+                    const summaryKeys = qsTranscriptJsonKeysToTry(job.input_s3_key, '').filter((k) => (
+                        String(k || '').includes('/summaries/') || String(k || '').startsWith('summaries/')
+                    ));
+                    for (const sk of summaryKeys) {
+                        const urlRes = await fetch('/api/get_presigned_url', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: _presignBody(sk),
+                        });
+                        const urlJson = await urlRes.json().catch(() => ({}));
+                        if (!urlJson.url) continue;
+                        const parsed = await fetch(qsNormalizeAbsoluteMediaUrl(urlJson.url))
+                            .then((r) => (r.ok ? r.json() : null))
+                            .catch(() => null);
+                        const sumFmt = pickFormattedFromObject(parsed);
+                        if (sumFmt && (
+                            String(sumFmt.medical_chief_complaint || '').trim()
+                            || String(sumFmt.overview || '').trim()
+                            || String(sumFmt.medical_examination_transcript || '').trim()
+                        )) {
+                            trFmt = { ...(trFmt || {}), ...sumFmt };
+                            console.info('[word-edit] open-in-app: merged medical summary from', sk);
+                            break;
+                        }
+                    }
+                } catch (sumErr) {
+                    console.warn('[word-edit] open-in-app: summary mirror load failed', sumErr);
+                }
+            }
             if (trFmt) {
                 window.currentFormattedDoc = trFmt;
                 window._qsDocPreferSegmentsAfterEdit = false;
                 if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
+                try { qsApplyPatientNameToCurrentFormattedDoc(); } catch (_) {}
             }
             const cleanLen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
             console.log('[word-edit] open-in-app: formatted in transcript JSON', {
                 found: !!trFmt,
                 clean_transcript_length: cleanLen,
+                has_medical_summary: !!(trFmt && (
+                    String(trFmt.medical_chief_complaint || '').trim()
+                    || String(trFmt.overview || '').trim()
+                )),
                 top_level_keys: tr && typeof tr === 'object' ? Object.keys(tr).slice(0, 25) : [],
                 has_formatted_key: !!(tr && tr.formatted),
                 note: cleanLen
@@ -10084,6 +10185,19 @@ async function initOpenInAppImpl(jobIdStr) {
     try {
         if (isMedicalModeEnabled() && typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs();
     } catch (_) {}
+    // Medical reopen: if a saved summary exists, do not treat Summary click as "needs GPT".
+    try {
+        if (
+            isMedicalModeEnabled()
+            && typeof qsMedicalHasFormattedSummary === 'function'
+            && qsMedicalHasFormattedSummary()
+        ) {
+            window._qsMedicalStreamAwaitingSummary = null;
+            window._qsSummaryGptDoneJobId = localStorage.getItem('lastJobId') || job.id;
+            window._medicalHasResult = true;
+            console.info('[medical] open-in-app: saved summary ready for Summary tab');
+        }
+    } catch (_) {}
     if (typeof window.showSubtitleStyleSelector === 'function') window.showSubtitleStyleSelector();
     const speakerToggle = document.getElementById('toggle-speaker');
     if (window.aiDiarizationRan && speakerToggle) speakerToggle.checked = true;
@@ -10154,14 +10268,249 @@ function qsRecordingDisplayNameFromUpload() {
     return '';
 }
 
-async function createJobOnUpload({ jobId, s3Key, displayName } = {}) {
+function qsMedicalPatientNameInput() {
+    return document.getElementById('medical-patient-name');
+}
+
+function qsMedicalPatientIdInput() {
+    return document.getElementById('medical-patient-id');
+}
+
+function qsNormalizeMedicalPatientIdNumber(raw) {
+    return String(raw || '').replace(/[^\d]/g, '').slice(0, 20);
+}
+
+function qsReadMedicalPatientName() {
+    const el = qsMedicalPatientNameInput();
+    const fromInput = String((el && el.value) || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+    if (fromInput) return fromInput;
+    return String(window._medicalPatientNameFromJob || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+}
+
+function qsReadMedicalPatientIdNumber() {
+    const el = qsMedicalPatientIdInput();
+    const fromInput = qsNormalizeMedicalPatientIdNumber(el && el.value);
+    if (fromInput) return fromInput;
+    return qsNormalizeMedicalPatientIdNumber(window._medicalPatientIdFromJob);
+}
+
+function qsSetMedicalPatientNameInput(name, idNumber) {
+    const n = String(name || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+    window._medicalPatientNameFromJob = n || '';
+    const el = qsMedicalPatientNameInput();
+    if (el && n) el.value = n;
+    if (idNumber != null) {
+        const idn = qsNormalizeMedicalPatientIdNumber(idNumber);
+        window._medicalPatientIdFromJob = idn || '';
+        const idEl = qsMedicalPatientIdInput();
+        if (idEl) idEl.value = idn;
+    }
+}
+
+function qsClearMedicalPatientName() {
+    const el = qsMedicalPatientNameInput();
+    if (el) el.value = '';
+    window._medicalPatientNameFromJob = '';
+    const idEl = qsMedicalPatientIdInput();
+    if (idEl) idEl.value = '';
+    window._medicalPatientIdFromJob = '';
+    // New visit: stop binding renames to the previous patient's job.
+    try { qsClearMedicalSessionJobDbId(); } catch (_) {}
+}
+
+/** Strip a bare patient-name / "שם: X" line that was mistakenly put inside הנדון. */
+function qsStripLeadingPatientNameLine(text, name) {
+    const body = String(text || '').replace(/^\uFEFF/, '').trim();
+    if (!body) return '';
+    const n = String(name || '').trim();
+    const lines = body.split(/\r?\n/);
+    const first = String(lines[0] || '').trim();
+    if (!first) return body;
+    const firstNorm = first.replace(/^שם\s*:\s*/i, '').replace(/^name\s*:\s*/i, '').trim();
+    const isNameLine = (
+        (n && (first === n || firstNorm === n || first === `שם: ${n}` || first === `Name: ${n}`))
+        || /^שם\s*:\s*.+/i.test(first)
+        || /^name\s*:\s*.+/i.test(first)
+    );
+    if (!isNameLine) return body;
+    return lines.slice(1).join('\n').replace(/^\s+/, '');
+}
+
+/**
+ * Keep patient name as a top-level summary field (rendered as "שם: …"),
+ * and remove it from inside הנדון / chief so it is not buried there.
+ */
+function qsPrependPatientNameToFormattedDoc(fmt, nameOverride, idOverride) {
+    if (!fmt || typeof fmt !== 'object') return fmt;
+    const name = String(nameOverride != null ? nameOverride : qsReadMedicalPatientName()).trim();
+    const idNumber = qsNormalizeMedicalPatientIdNumber(
+        idOverride != null ? idOverride : qsReadMedicalPatientIdNumber()
+    );
+    if (name) fmt.patient_name = name;
+    if (idNumber) fmt.patient_id_number = idNumber;
+    else if ('patient_id_number' in fmt && !idNumber) {
+        // Keep previously saved ID unless explicitly cleared via empty input restore path.
+    }
+    if (!String(fmt.patient_name || '').trim() && !String(fmt.patient_id_number || '').trim()) return fmt;
+    const resolved = String(fmt.patient_name || name || '').trim();
+    if (resolved && fmt.medical_chief_complaint != null) {
+        fmt.medical_chief_complaint = qsStripLeadingPatientNameLine(fmt.medical_chief_complaint, resolved);
+    }
+    if (resolved && fmt.overview != null) {
+        fmt.overview = qsStripLeadingPatientNameLine(fmt.overview, resolved);
+    }
+    return fmt;
+}
+
+function qsApplyPatientNameToCurrentFormattedDoc() {
+    if (!window.currentFormattedDoc || typeof window.currentFormattedDoc !== 'object') return;
+    window.currentFormattedDoc = qsPrependPatientNameToFormattedDoc(
+        { ...window.currentFormattedDoc },
+        qsReadMedicalPatientName(),
+        qsReadMedicalPatientIdNumber()
+    );
+}
+
+function qsMedicalSummaryPatientDisplayName(fmt) {
+    const fromFmt = String((fmt && fmt.patient_name) || '').trim();
+    if (fromFmt) return fromFmt;
+    return qsReadMedicalPatientName();
+}
+
+function qsMedicalSummaryPatientDisplayId(fmt) {
+    const fromFmt = qsNormalizeMedicalPatientIdNumber(fmt && fmt.patient_id_number);
+    if (fromFmt) return fromFmt;
+    return qsReadMedicalPatientIdNumber();
+}
+
+function qsMedicalSummaryPatientHeadingLabel() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    return T('medical_summary_patient_name_heading') || 'שם';
+}
+
+function qsMedicalSummaryPatientIdHeadingLabel() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    return T('medical_summary_patient_id_heading') || 'ת.ז.';
+}
+
+function qsMedicalSummaryPatientHeadingHtml(esc, fmt) {
+    const name = qsMedicalSummaryPatientDisplayName(fmt);
+    const idNumber = qsMedicalSummaryPatientDisplayId(fmt);
+    if (!name && !idNumber) return '';
+    const label = qsMedicalSummaryPatientHeadingLabel();
+    const idLabel = qsMedicalSummaryPatientIdHeadingLabel();
+    const idLine = idNumber
+        ? `<div class="medical-summary-patient-id" contenteditable="false">` +
+          `<span class="medical-summary-patient-id-label">${esc(idLabel)}:</span> ` +
+          `<span class="medical-summary-patient-id-value">${esc(idNumber)}</span>` +
+          `</div>`
+        : '';
+    const nameLine = name
+        ? `<div class="medical-summary-patient-name-line">` +
+          `<span class="medical-summary-patient-name-label">${esc(label)}:</span> ` +
+          `<span class="medical-summary-patient-name-value">${esc(name)}</span>` +
+          `</div>`
+        : '';
+    return (
+        `<div id="medical-summary-patient-name" class="medical-summary-patient-name" contenteditable="false">` +
+        `${nameLine}${idLine}` +
+        `</div>`
+    );
+}
+
+function qsMedicalSummaryPatientHeadingText(fmt) {
+    const name = qsMedicalSummaryPatientDisplayName(fmt);
+    const idNumber = qsMedicalSummaryPatientDisplayId(fmt);
+    const lines = [];
+    if (name) lines.push(`${qsMedicalSummaryPatientHeadingLabel()}: ${name}`);
+    if (idNumber) lines.push(`${qsMedicalSummaryPatientIdHeadingLabel()}: ${idNumber}`);
+    return lines.join('\n');
+}
+
+/** Only rename the job created for the *current* medical visit — never lastJobDbId from a prior patient. */
+function qsBindMedicalSessionJobDbId(dbId) {
+    const id = String(dbId || '').trim();
+    window._medicalSessionJobDbId = id || null;
+}
+
+function qsClearMedicalSessionJobDbId() {
+    window._medicalSessionJobDbId = null;
+}
+
+function qsIsAutoMedicalRecordingLabel(name) {
+    const raw = String(name || '').trim().replace(/\.[^.]+$/, '');
+    if (!raw) return false;
+    return (
+        /^medical_recording(?:_\d+)?$/i.test(raw)
+        || /^medical_recording_\d+/i.test(raw)
+    );
+}
+
+function qsMedicalPersonalListTitle(name) {
+    const patient = String(name || '').trim();
+    if (patient && !qsIsAutoMedicalRecordingLabel(patient)) return patient;
+    return (typeof T === 'function' ? T('personal_medical_recording_fallback') : '') || 'Recording';
+}
+
+async function qsSyncMedicalPatientNameToCurrentJob(nameOverride, idOverride) {
+    if (typeof isMedicalModeEnabled === 'function' && !isMedicalModeEnabled()) return;
+    const name = String(nameOverride != null ? nameOverride : qsReadMedicalPatientName()).trim();
+    const idNumber = qsNormalizeMedicalPatientIdNumber(
+        idOverride != null ? idOverride : qsReadMedicalPatientIdNumber()
+    );
+    if (!name && !idNumber) return;
+    // Bind only to this visit's job. Typing the next patient must not rename the previous recording.
+    const dbId = String(window._medicalSessionJobDbId || '').trim();
+    if (!dbId) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || !user.id) return;
+    try {
+        const body = {
+            userId: user.id,
+            patient_id_number: idNumber,
+        };
+        if (name) {
+            body.new_name = name;
+            body.patient_name = name;
+        }
+        const rr = await fetch(`/recording/${encodeURIComponent(dbId)}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!rr.ok) {
+            console.warn('[qs] medical patient fields rename failed', rr.status);
+        }
+    } catch (err) {
+        console.warn('[qs] medical patient fields sync failed', err);
+    }
+}
+
+async function createJobOnUpload({ jobId, s3Key, displayName, patientName, patientIdNumber } = {}) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
     const info = getAuthUserDisplayInfo(user);
     const user_name = info.displayName === 'Account' ? null : info.displayName;
     const user_email = info.email || null;
-    const niceName = String(displayName || qsRecordingDisplayNameFromUpload() || '').trim();
+    const patient = String(patientName || (
+        (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+            ? qsReadMedicalPatientName()
+            : ''
+    ) || '').trim();
+    const patientId = qsNormalizeMedicalPatientIdNumber(
+        patientIdNumber != null
+            ? patientIdNumber
+            : ((typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+                ? qsReadMedicalPatientIdNumber()
+                : '')
+    );
+    const niceName = String(
+        displayName
+        || patient
+        || qsRecordingDisplayNameFromUpload()
+        || ''
+    ).trim();
     const durationSec = (
         (typeof qsRecallMediaDurationSec === 'function' ? qsRecallMediaDurationSec(jobId) : 0)
         || Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC)
@@ -10179,6 +10528,8 @@ async function createJobOnUpload({ jobId, s3Key, displayName } = {}) {
         metadata: {
             job_id: jobId,
             ...(niceName ? { display_name: niceName, original_filename: niceName } : {}),
+            ...(patient ? { patient_name: patient } : {}),
+            ...(patientId ? { patient_id_number: patientId } : {}),
             ...(Number.isFinite(durationSec) && durationSec > 0
                 ? { file_duration_sec: durationSec, credit_file_duration_sec: durationSec }
                 : {}),
@@ -10190,7 +10541,12 @@ async function createJobOnUpload({ jobId, s3Key, displayName } = {}) {
         console.error('createJobOnUpload:', error);
         return;
     }
-    if (data && data.id) localStorage.setItem('lastJobDbId', data.id);
+    if (data && data.id) {
+        localStorage.setItem('lastJobDbId', data.id);
+        if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+            qsBindMedicalSessionJobDbId(data.id);
+        }
+    }
 }
 
 async function updateJobStatus(dbId, status, resultPayload = null) {
@@ -10769,6 +11125,10 @@ function normalizeFormattedFields(f) {
             ? f.action_items.map((p) => normalizeActionItemEntry(p)).filter(Boolean)
             : []
     };
+    const patientName = String(f.patient_name || '').trim();
+    if (patientName) out.patient_name = patientName;
+    const patientIdNumber = qsNormalizeMedicalPatientIdNumber(f.patient_id_number || f.patientIdNumber);
+    if (patientIdNumber) out.patient_id_number = patientIdNumber;
     if (
         f.medical_chief_complaint != null ||
         f.medical_examination_transcript != null ||
@@ -11103,11 +11463,16 @@ function getMedicalActiveTabTextForCopy() {
     if (live && (active === 'transcript' || !hasSegments)) return qsAppendMedicalDefaultSignature(live);
     if (active === 'summary') {
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object') ? window.currentFormattedDoc : {};
+        const patientHeading = qsMedicalSummaryPatientHeadingText(fmt);
         const mc = String(fmt.medical_chief_complaint || '').trim();
         const me = String(fmt.medical_examination_transcript || '').trim();
         const mr = String(fmt.medical_patient_recommendations || '').trim();
         if (mc || me || mr) {
             const lines = [];
+            if (patientHeading) {
+                lines.push(patientHeading);
+                lines.push('');
+            }
             lines.push(`${_medicalSummarySectionLabel('chief')}:`);
             lines.push(mc || 'לא צוין.');
             lines.push('');
@@ -11121,6 +11486,10 @@ function getMedicalActiveTabTextForCopy() {
         const overview = String(fmt.overview || '').trim();
         const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
         const lines = [];
+        if (patientHeading) {
+            lines.push(patientHeading);
+            lines.push('');
+        }
         lines.push('סקירה:');
         lines.push(overview || 'אין סיכום רפואי זמין עדיין.');
         lines.push('');
@@ -12467,14 +12836,30 @@ async function qsPersistFormattedDocToS3() {
             || (typeof qsIsAnonymousStandardS3Key === 'function' && qsIsAnonymousStandardS3Key(s3Key)
                 ? 'anonymous'
                 : '');
-        if (!uid || !s3Key || !(window.currentSegments || []).length) return;
+        if (!uid || !s3Key) return;
+        let segments = Array.isArray(window.currentSegments) ? window.currentSegments.slice() : [];
+        // Medical live visits often have transcript boxes but empty segments — still persist the summary.
+        if (!segments.length) {
+            const live = String(
+                (typeof buildTranscriptTextForGptFormat === 'function' ? buildTranscriptTextForGptFormat() : '')
+                || window._medicalLiveStreamText
+                || (window.currentFormattedDoc && window.currentFormattedDoc.clean_transcript)
+                || ''
+            ).trim();
+            if (live) {
+                segments = [{ start: 0, end: Math.max(1, live.length / 12), text: live }];
+                window.currentSegments = segments;
+            }
+        }
+        if (!segments.length && !(window.currentWords || []).length) return;
+        try { qsApplyPatientNameToCurrentFormattedDoc(); } catch (_) {}
         const saveFmtRes = await fetch('/api/save_job_result', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 userId: uid,
                 input_s3_key: s3Key,
-                segments: window.currentSegments,
+                segments,
                 words: window.currentWords || undefined,
                 captions: window.currentCaptions || undefined,
                 formatted: window.currentFormattedDoc,
@@ -12484,6 +12869,8 @@ async function qsPersistFormattedDocToS3() {
         });
         if (saveFmtRes.ok) {
             await syncJobResultS3KeyFromSaveResponse(saveFmtRes, localStorage.getItem('lastJobDbId'));
+        } else {
+            console.warn('[GPT] save formatted payload HTTP', saveFmtRes.status);
         }
     } catch (e) {
         console.warn('[GPT] save formatted payload failed:', e);
@@ -12969,12 +13356,61 @@ async function runFormatTranscriptSummaryRequests(fullText, targetLang, jobId) {
     if (!userId) {
         console.warn('[export] medical format missing userId — personal template may fall back to specialty default');
     }
-    const res = await fetch('/api/format_transcript_summary', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ ...base(), text: fullText })
+    // Client abort so a slow GPT-5/personal-template call cannot leave Summary "stuck" for minutes.
+    // Server short-medical budget is ~75s; keep a little headroom for network/proxy.
+    let abortTimer = null;
+    const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const clientTimeoutMs = Math.max(
+        45000,
+        Number(window.__QS_MEDICAL_SUMMARY_CLIENT_TIMEOUT_MS) || 100000
+    );
+    if (controller) {
+        abortTimer = setTimeout(() => {
+            try { controller.abort(); } catch (_) {}
+        }, clientTimeoutMs);
+    }
+    const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    console.info('[export] medical format_transcript_summary fetch start', {
+        chars: String(fullText || '').length,
+        jobId: jobId || null,
+        clientTimeoutMs,
     });
+    let res;
+    try {
+        res = await fetch('/api/format_transcript_summary', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ ...base(), text: fullText }),
+            signal: controller ? controller.signal : undefined,
+        });
+    } catch (fetchErr) {
+        const aborted = !!(controller && controller.signal && controller.signal.aborted)
+            || /abort/i.test(String((fetchErr && fetchErr.name) || ''))
+            || /abort/i.test(String((fetchErr && fetchErr.message) || ''));
+        console.warn('[export] medical format_transcript_summary fetch failed', {
+            aborted,
+            elapsedMs: Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0),
+            err: String((fetchErr && fetchErr.message) || fetchErr || ''),
+        });
+        return {
+            ok: false,
+            res: { status: aborted ? 408 : 0 },
+            fmt: {
+                error: aborted
+                    ? `סיכום רפואי נקטע אחרי ${Math.round(clientTimeoutMs / 1000)} שניות (OpenAI איטי או לא מגיב)`
+                    : String((fetchErr && fetchErr.message) || fetchErr || 'network_error'),
+            },
+        };
+    } finally {
+        if (abortTimer) clearTimeout(abortTimer);
+    }
     const fmt = await res.json().catch(() => ({}));
+    console.info('[export] medical format_transcript_summary fetch done', {
+        ok: !!(res.ok && fmt && !fmt.error),
+        status: res.status,
+        elapsedMs: Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0),
+        source: fmt && fmt.medical_task2_prompt_source,
+    });
     if (!res.ok || !fmt || typeof fmt !== 'object' || fmt.error) {
         return { ok: false, res, fmt };
     }
@@ -13141,6 +13577,9 @@ async function ensureFormattedViaApiForExport(options) {
         }
         window.currentFormattedDoc = normalizeFormattedFields(rawFmt);
         window._qsDocPreferSegmentsAfterEdit = false;
+        if (medFmt) {
+            try { qsApplyPatientNameToCurrentFormattedDoc(); } catch (_) {}
+        }
         console.log(
             '[export] GPT formatting computed for export (clean_transcript length=%s)',
             String(window.currentFormattedDoc.clean_transcript || '').length
@@ -13185,7 +13624,8 @@ async function ensureFormattedViaApiForExport(options) {
                 });
             } catch (_) {}
         }
-        if (!opts.deferPersist) {
+        // Medical: always persist summary so Personal Area reopen can show it (even when UI deferred upload).
+        if (!opts.deferPersist || medFmt) {
             try {
                 await qsPersistFormattedDocToS3();
             } catch (e) {
@@ -13227,11 +13667,40 @@ async function ensureFormattedViaApiForExport(options) {
  * Clinical paragraphs stay in the session target language (usually Hebrew)—not the colored UI hints.
  * Unsaved edits in the summary pane are not sent here; calling this after local edits will overwrite them.
  */
-window.qsRegenerateMedicalSummaryFromTranscript = async function qsRegenerateMedicalSummaryFromTranscript(options) {
-    return ensureFormattedViaApiForExport({
-        forceMedicalSummary: true,
-        ...(options && typeof options === 'object' ? options : {}),
+function qsPromiseWithTimeout(promise, timeoutMs, label) {
+    const ms = Math.max(1000, Number(timeoutMs) || 0);
+    if (!ms) return Promise.resolve(promise);
+    let timer = null;
+    return new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+            reject(new Error(`${label || 'operation'} timed out after ${Math.round(ms / 1000)}s`));
+        }, ms);
+        Promise.resolve(promise).then(
+            (value) => {
+                if (timer) clearTimeout(timer);
+                resolve(value);
+            },
+            (err) => {
+                if (timer) clearTimeout(timer);
+                reject(err);
+            }
+        );
     });
+}
+
+window.qsRegenerateMedicalSummaryFromTranscript = async function qsRegenerateMedicalSummaryFromTranscript(options) {
+    const wallMs = Math.max(
+        20000,
+        Number((options && options.timeoutMs) || window.__QS_MEDICAL_SUMMARY_WALL_TIMEOUT_MS) || 90000
+    );
+    return qsPromiseWithTimeout(
+        ensureFormattedViaApiForExport({
+            forceMedicalSummary: true,
+            ...(options && typeof options === 'object' ? options : {}),
+        }),
+        wallMs,
+        'medical_summary'
+    );
 };
 
 async function tryRecoverSegmentsForExport() {
@@ -19881,6 +20350,8 @@ document.addEventListener('DOMContentLoaded', () => {
     async function createMedicalUploadSession(mimeRaw) {
         const mime = normalizeMedicalUploadMime(mimeRaw);
         const ext = medicalBlobExtensionFromMime(mime);
+        // New upload session = new visit. Unbind so typing the next patient cannot rename the previous job.
+        try { qsClearMedicalSessionJobDbId(); } catch (_) {}
         if (typeof window.qsDismissActiveJob === 'function') {
             window.qsDismissActiveJob();
         }
@@ -19914,7 +20385,18 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('lastS3Key', session.s3Key);
         localStorage.setItem('pendingS3Key', session.s3Key);
         localStorage.setItem('lastJobId', session.jobId);
-        if (typeof createJobOnUpload === 'function') await createJobOnUpload({ jobId: session.jobId, s3Key: session.s3Key });
+        const patientName = typeof qsReadMedicalPatientName === 'function' ? qsReadMedicalPatientName() : '';
+        const patientIdNumber = typeof qsReadMedicalPatientIdNumber === 'function' ? qsReadMedicalPatientIdNumber() : '';
+        if (patientName) window.originalFileName = patientName;
+        if (typeof createJobOnUpload === 'function') {
+            await createJobOnUpload({
+                jobId: session.jobId,
+                s3Key: session.s3Key,
+                displayName: patientName || undefined,
+                patientName: patientName || undefined,
+                patientIdNumber: patientIdNumber || undefined,
+            });
+        }
         try { if (typeof window.qsEmitJoinRoom === 'function') window.qsEmitJoinRoom(session.jobId); } catch (_) {}
         qsUploadTrace('medical_upload_session_ready', { jobId: session.jobId, s3Key: session.s3Key });
         return session;
@@ -21005,6 +21487,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             window._qsMedicalStreamAwaitingSummary = session.jobId;
         }
+
+        try { await qsSyncMedicalPatientNameToCurrentJob(); } catch (_) {}
 
         const completeRes = await fetch('/api/medical/complete_stream_transcription', {
             method: 'POST',
@@ -22455,6 +22939,43 @@ document.addEventListener('DOMContentLoaded', () => {
             else qsInsertNewlineInMedicalTranscriptBox(last);
         });
     }
+    const medicalPatientNameInput = document.getElementById('medical-patient-name');
+    const medicalPatientIdInput = document.getElementById('medical-patient-id');
+    if ((medicalPatientNameInput || medicalPatientIdInput) && !window._qsMedicalPatientFieldsWired) {
+        window._qsMedicalPatientFieldsWired = true;
+        let patientNameSyncTimer = null;
+        const schedulePatientNameSync = () => {
+            clearTimeout(patientNameSyncTimer);
+            patientNameSyncTimer = setTimeout(() => {
+                void qsSyncMedicalPatientNameToCurrentJob();
+            }, 400);
+        };
+        const onPatientFieldFocus = () => {
+            // After a finished visit, editing identity is for the *next* patient — do not rename the last job.
+            if (window._medicalHasResult === true) {
+                try { qsClearMedicalSessionJobDbId(); } catch (_) {}
+            }
+        };
+        [medicalPatientNameInput, medicalPatientIdInput].filter(Boolean).forEach((el) => {
+            el.addEventListener('focus', onPatientFieldFocus);
+            el.addEventListener('change', () => { void qsSyncMedicalPatientNameToCurrentJob(); });
+            el.addEventListener('blur', () => { void qsSyncMedicalPatientNameToCurrentJob(); });
+            el.addEventListener('input', schedulePatientNameSync);
+        });
+        if (medicalPatientIdInput) {
+            medicalPatientIdInput.addEventListener('input', () => {
+                const cleaned = qsNormalizeMedicalPatientIdNumber(medicalPatientIdInput.value);
+                if (medicalPatientIdInput.value !== cleaned) {
+                    const pos = medicalPatientIdInput.selectionStart;
+                    medicalPatientIdInput.value = cleaned;
+                    try {
+                        const next = Math.max(0, Math.min(cleaned.length, Number(pos) - 1));
+                        medicalPatientIdInput.setSelectionRange(next, next);
+                    } catch (_) {}
+                }
+            });
+        }
+    }
     const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
     const medicalToolbarNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
     const startMedicalNewSessionFromUi = (e) => {
@@ -22479,6 +23000,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function clearMedicalDiscardedRecordingSession() {
         // Full session wipe after trash (מחק): all transcript boxes + live ASR state.
         try { if (typeof qsMedicalClearTypoFixUndo === 'function') qsMedicalClearTypoFixUndo(); } catch (_) {}
+        try { if (typeof qsClearMedicalPatientName === 'function') qsClearMedicalPatientName(); } catch (_) {}
         window._medicalLiveStreamText = '';
         window._medicalUnsavedBoxes = [];
         window._medicalLiveLastBoxDirty = false;
@@ -22724,6 +23246,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         forceMedicalSummary: true,
                         skipUiRender: true,
                         deferPersist: true,
+                        timeoutMs: Number(window.__QS_MEDICAL_SUMMARY_WALL_TIMEOUT_MS) || 90000,
                     });
                     if (summaryOk) {
                         window._qsMedicalStreamAwaitingSummary = null;
@@ -22748,6 +23271,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (summaryErr) {
                     summaryOk = false;
                     console.warn('[medical] summary failed before upload', summaryErr);
+                    if (typeof showStatus === 'function') {
+                        showStatus(
+                            String((summaryErr && summaryErr.message) || summaryErr || 'Summary timed out').slice(0, 180),
+                            true
+                        );
+                    }
                     window.medicalActiveTab = 'transcript';
                     try { updateMedicalTabUi(); } catch (_) {}
                 } finally {
@@ -22945,6 +23474,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function qsMarkMedicalSessionPersisted() {
         window._medicalSessionPersisted = true;
+        // Visit is done — further patient-name edits belong to the next recording.
+        try { qsClearMedicalSessionJobDbId(); } catch (_) {}
     }
     window.qsMarkMedicalSessionPersisted = qsMarkMedicalSessionPersisted;
 
@@ -23097,6 +23628,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         try { await qsMaybeSaveDefaultSignatureFromExport(qsMedicalTranscriptTextForSignature()); } catch (_) {}
+        try { if (typeof qsClearMedicalPatientName === 'function') qsClearMedicalPatientName(); } catch (_) {}
         openFilePickerAfterDisclaimer();
     }
     window.confirmAndStartMedicalNewSession = confirmAndStartMedicalNewSession;
@@ -28396,9 +28928,14 @@ function renderTranscriptFromCues(cues) {
         const summaryDirection = uiRtl ? 'rtl' : 'ltr';
         const summaryAlign = uiRtl ? 'right' : 'left';
         if (hasStructured) {
-            const chief = _medicalSummaryFieldBody(fmt.medical_chief_complaint, 'chief');
-            const exam = _medicalSummaryFieldBody(fmt.medical_examination_transcript, 'exam');
-            const rec = _medicalSummaryFieldBody(fmt.medical_patient_recommendations, 'rec');
+            try { qsApplyPatientNameToCurrentFormattedDoc(); } catch (_) {}
+            const fmtNamed = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : fmt;
+            const patientHeadHtml = qsMedicalSummaryPatientHeadingHtml(esc, fmtNamed);
+            const chief = _medicalSummaryFieldBody(fmtNamed.medical_chief_complaint, 'chief');
+            const exam = _medicalSummaryFieldBody(fmtNamed.medical_examination_transcript, 'exam');
+            const rec = _medicalSummaryFieldBody(fmtNamed.medical_patient_recommendations, 'rec');
             const personalHeadings = Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : [];
             const personalNote = window._medicalPersonalTemplateActive
                 ? _qsApplyDoctorTemplateHeadings([chief, exam, rec].filter(Boolean).join('\n\n'), personalHeadings)
@@ -28414,6 +28951,7 @@ function renderTranscriptFromCues(cues) {
                 const noteHtml = _formatMedicalSummaryBodyHtml(personalNote, esc, emptyMsg);
                 container.innerHTML = `
             <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
+                ${patientHeadHtml}
                 <div id="medical-summary-chief" data-medical-section="chief">${noteHtml}</div>
             </div>
         `;
@@ -28429,6 +28967,7 @@ function renderTranscriptFromCues(cues) {
             });
             container.innerHTML = `
             <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
+                ${patientHeadHtml}
                 ${_medicalSummarySectionHeadHtml(chiefLabel, 'chief', esc)}
                 <div id="medical-summary-chief" data-medical-section="chief">${chiefHtml}</div>
                 ${hideExamOuter ? '' : _medicalSummarySectionHeadHtml(examLabel, 'exam', esc)}
@@ -28439,13 +28978,19 @@ function renderTranscriptFromCues(cues) {
         `;
             }
         } else {
-            const overview = String(fmt.overview || '').trim();
-            const points = Array.isArray(fmt.key_points) ? fmt.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
+            try { qsApplyPatientNameToCurrentFormattedDoc(); } catch (_) {}
+            const fmtNamed = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
+                ? window.currentFormattedDoc
+                : fmt;
+            const patientHeadHtml = qsMedicalSummaryPatientHeadingHtml(esc, fmtNamed);
+            const overview = String(fmtNamed.overview || '').trim();
+            const points = Array.isArray(fmtNamed.key_points) ? fmtNamed.key_points.map((p) => String(p || '').trim()).filter(Boolean) : [];
             const pointsHtml = points.length
                 ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;" contenteditable="false">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
                 : `<div id="medical-summary-empty" style="color:#6b7280;" contenteditable="false">${esc(emptyMsg)}</div>`;
             container.innerHTML = `
             <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
+                ${patientHeadHtml}
                 <div style="font-weight:700; margin-bottom:6px;" contenteditable="false">${esc(_medicalText('medical_summary_overview', 'Overview'))}</div>
                 <div id="medical-summary-overview">${esc(overview || emptyMsg)}</div>
                 <div style="font-weight:700; margin:14px 0 6px;" contenteditable="false">${esc(_medicalText('medical_summary_key_points', 'Key points'))}</div>

@@ -4788,6 +4788,64 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
   font-size: 0.78rem;
 }
 
+#medical-session-header .medical-patient-name-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 2px;
+}
+
+#medical-session-header .medical-patient-name-label {
+  margin: 0;
+  color: #0f766e;
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#medical-session-header .medical-patient-name-input,
+#medical-session-header .medical-patient-id-input {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  background: #fff;
+  color: #134e4a;
+  font-size: 0.95rem;
+  line-height: 1.3;
+}
+
+#medical-session-header .medical-patient-name-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 360px;
+}
+
+#medical-session-header .medical-patient-id-label {
+  margin: 0;
+  margin-inline-start: 4px;
+  color: #0f766e;
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#medical-session-header .medical-patient-id-input {
+  flex: 0 1 150px;
+  min-width: 110px;
+  max-width: 180px;
+  letter-spacing: 0.02em;
+}
+
+#medical-session-header .medical-patient-name-input:focus,
+#medical-session-header .medical-patient-id-input:focus {
+  outline: 2px solid #14b8a6;
+  outline-offset: 1px;
+  border-color: #2dd4bf;
+}
+
 .medical-warmup-banner {
   display: none;
   align-items: center;
@@ -8688,6 +8746,35 @@ html[dir="rtl"] .upload-status {
   flex: 1;
   text-align: right;
   direction: rtl;
+}
+.medical-summary-patient-name {
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #ccfbf1;
+  color: #0f766e;
+  font-size: 1.15rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+.medical-summary-patient-name-label,
+.medical-summary-patient-id-label {
+  font-weight: 800;
+}
+.medical-summary-patient-name-value,
+.medical-summary-patient-id-value {
+  font-weight: 800;
+}
+.medical-summary-patient-id {
+  margin-top: 4px;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #0f766e;
+}
+.personal-recording-patient-id {
+  margin-top: 2px;
+  color: #0f766e;
+  font-size: 0.88rem;
+  font-weight: 600;
 }
 .medical-summary-section-copy {
   width: 32px;

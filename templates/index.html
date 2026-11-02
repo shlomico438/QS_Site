@@ -249,6 +249,33 @@ try {
                     Choose plan
                 </button>
             </div>
+            <div class="medical-patient-name-wrap">
+                <label for="medical-patient-name" class="medical-patient-name-label" data-i18n="medical_patient_name_label">Patient name</label>
+                <input
+                    type="text"
+                    id="medical-patient-name"
+                    class="medical-patient-name-input"
+                    name="medical-patient-name"
+                    autocomplete="off"
+                    maxlength="120"
+                    dir="auto"
+                    data-i18n-placeholder="medical_patient_name_placeholder"
+                    placeholder="{% if qs_is_en %}Optional — helps find this visit later{% else %}אופציונלי — כדי למצוא את הביקור אחר כך{% endif %}"
+                >
+                <label for="medical-patient-id" class="medical-patient-id-label" data-i18n="medical_patient_id_label">ID</label>
+                <input
+                    type="text"
+                    id="medical-patient-id"
+                    class="medical-patient-id-input"
+                    name="medical-patient-id"
+                    inputmode="numeric"
+                    autocomplete="off"
+                    maxlength="20"
+                    dir="ltr"
+                    data-i18n-placeholder="medical_patient_id_placeholder"
+                    placeholder="{% if qs_is_en %}Optional ID{% else %}ת.ז. אופציונלי{% endif %}"
+                >
+            </div>
         </section>
         <div id="medical-warmup-banner" class="medical-warmup-banner" style="display:none;" role="status" aria-live="polite" dir="rtl">
             <span id="medical-warmup-banner-icon" class="medical-warmup-banner-icon" aria-hidden="true">💤</span>

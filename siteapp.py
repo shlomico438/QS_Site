@@ -5571,6 +5571,12 @@ def _normalize_formatted_dict_for_storage(formatted):
         "key_points": [str(p).strip() for p in (formatted.get("key_points") or []) if str(p).strip()],
         "action_items": _normalize_action_items_list(formatted.get("action_items")),
     }
+    patient_name = str(formatted.get("patient_name") or "").strip()
+    if patient_name:
+        out["patient_name"] = patient_name[:120]
+    patient_id_number = re.sub(r"\D+", "", str(formatted.get("patient_id_number") or formatted.get("patientIdNumber") or ""))
+    if patient_id_number:
+        out["patient_id_number"] = patient_id_number[:20]
     for mk in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
         if mk in formatted:
             out[mk] = str(formatted.get(mk) or "").strip()
@@ -9542,8 +9548,6 @@ def recording_rename(file_id):
         new_name = str(data.get('new_name') or '').strip()
         if not user_id or not file_id:
             return jsonify({"error": "userId and file_id required"}), 400
-        if not new_name:
-            return jsonify({"error": "new_name is required"}), 400
 
         supabase_url = os.environ.get('SUPABASE_URL', '').rstrip('/')
         service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
@@ -9551,7 +9555,10 @@ def recording_rename(file_id):
             return jsonify({"error": "Server not configured for rename"}), 503
 
         headers = _supabase_service_headers(service_key)
-        get_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}&select=id,metadata"
+        get_url = (
+            f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}"
+            f"&select=id,metadata,input_s3_key"
+        )
         r_get = requests.get(get_url, headers=headers, timeout=12)
         if r_get.status_code != 200:
             return jsonify({"error": r_get.text or f"HTTP {r_get.status_code}"}), r_get.status_code
@@ -9560,14 +9567,38 @@ def recording_rename(file_id):
             return jsonify({"error": "Recording not found"}), 404
 
         metadata = rows[0].get('metadata') if isinstance(rows[0].get('metadata'), dict) else {}
-        metadata['display_name'] = new_name
+        patient_name = str(data.get('patient_name') or data.get('patientName') or '').strip()
+        has_patient_id_key = ('patient_id_number' in data) or ('patientIdNumber' in data)
+        patient_id_raw = data.get('patient_id_number') if 'patient_id_number' in data else data.get('patientIdNumber')
+        patient_id_number = re.sub(r'\D+', '', str(patient_id_raw or ''))[:20] if has_patient_id_key else None
+        if not new_name and patient_id_number is None:
+            return jsonify({"error": "new_name or patient_id_number required"}), 400
+        if new_name:
+            metadata['display_name'] = new_name
+            has_patient_meta = bool(str(metadata.get('patient_name') or '').strip())
+            is_medical_row = _is_medical_s3_key(str(rows[0].get('input_s3_key') or ''))
+            if patient_name:
+                metadata['patient_name'] = patient_name[:120]
+            elif has_patient_meta or is_medical_row:
+                # Keep Personal Area / medical list labels in sync with rename.
+                metadata['patient_name'] = new_name[:120]
+        if patient_id_number is not None:
+            if patient_id_number:
+                metadata['patient_id_number'] = patient_id_number
+            else:
+                metadata.pop('patient_id_number', None)
         patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}"
         payload = {"metadata": metadata, "updated_at": datetime.utcnow().isoformat() + "Z"}
         r_patch = requests.patch(patch_url, headers={**headers, "Prefer": "return=representation"}, json=payload, timeout=12)
         if r_patch.status_code not in (200, 204):
             return jsonify({"error": r_patch.text or f"HTTP {r_patch.status_code}"}), r_patch.status_code
 
-        return jsonify({"ok": True, "file_id": file_id, "file_name": new_name}), 200
+        return jsonify({
+            "ok": True,
+            "file_id": file_id,
+            "file_name": new_name or str(metadata.get('display_name') or metadata.get('patient_name') or ''),
+            "patient_id_number": metadata.get('patient_id_number') or '',
+        }), 200
     except Exception as e:
         logging.exception("recording_rename failed")
         return jsonify({"error": str(e)}), 500
@@ -12070,7 +12101,7 @@ def _openai_model_supports_custom_temperature(model: str) -> bool:
     return True
 
 
-def _openai_reasoning_effort_for_model(model: str) -> str:
+def _openai_reasoning_effort_for_model(model: str, override=None) -> str:
     """GPT-5.6 defaults to medium and can think for minutes on a short note.
 
     low is the fastest effort that still reasons. none is faster. Override with
@@ -12079,13 +12110,21 @@ def _openai_reasoning_effort_for_model(model: str) -> str:
     m = (model or "").strip().lower()
     if not (m.startswith("gpt-5") or re.match(r"^o[0-9]", m)):
         return ""
-    raw = (os.environ.get("GPT_REASONING_EFFORT") or "low").strip().lower()
+    raw = str(override if override is not None else (os.environ.get("GPT_REASONING_EFFORT") or "low")).strip().lower()
     if raw not in ("none", "low", "medium", "high", "xhigh", "max"):
         raw = "low"
     return raw
 
 
-def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_retries=0, model_name=None, temperature=0.2):
+def _openai_chat_json_completion(
+    system_prompt,
+    user_prompt,
+    timeout_sec,
+    read_retries=0,
+    model_name=None,
+    temperature=0.2,
+    reasoning_effort=None,
+):
     """POST chat completions; return parsed JSON object from message content.
 
     Uses (connect, read) timeouts so slow generations get the full read budget.
@@ -12105,14 +12144,21 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
     }
     if _openai_model_supports_custom_temperature(model):
         payload["temperature"] = temperature
-    reasoning_effort = _openai_reasoning_effort_for_model(model)
-    if reasoning_effort:
-        payload["reasoning_effort"] = reasoning_effort
-    read_t = max(60, int(timeout_sec))
+    effort = _openai_reasoning_effort_for_model(model, override=reasoning_effort)
+    if effort:
+        payload["reasoning_effort"] = effort
+    read_t = max(30, int(timeout_sec))
     connect_t = min(30, max(10, read_t // 8))
     timeout_tuple = (connect_t, read_t)
-    last_timeout_exc = None
     started = time.time()
+    logging.info(
+        "OpenAI format start model=%s reasoning_effort=%s timeout_read=%ss retries=%s prompt_chars=%s",
+        model,
+        effort or "default",
+        read_t,
+        read_retries,
+        len(str(system_prompt or "")) + len(str(user_prompt or "")),
+    )
     for attempt in range(read_retries + 1):
         try:
             resp = requests.post(
@@ -12136,12 +12182,11 @@ def _openai_chat_json_completion(system_prompt, user_prompt, timeout_sec, read_r
             logging.info(
                 "OpenAI format model=%s reasoning_effort=%s elapsed=%.1fs",
                 model,
-                reasoning_effort or "default",
+                effort or "default",
                 time.time() - started,
             )
             return json.loads(content)
         except requests.exceptions.ReadTimeout as e:
-            last_timeout_exc = e
             if attempt >= read_retries:
                 raise RuntimeError(
                     f"OpenAI read timed out after {read_t}s (connect {connect_t}s), "
@@ -13063,10 +13108,49 @@ def _format_unified_transcript_openai(
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
         raise RuntimeError("empty transcript")
+    transcript_chars = len(str(transcript_text or ""))
+    short_medical = bool(is_medical and transcript_chars <= max(
+        400, int(os.environ.get('MEDICAL_GPT_SHORT_TRANSCRIPT_CHARS', '1200') or 1200)
+    ))
     if timeout_sec is None:
-        timeout_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
+        if is_medical:
+            # Medical UI cannot sit on stacked OpenAI reads (was 270s × 3 ≈ 13+ min).
+            # Do NOT inherit GPT_FORMAT_TIMEOUT_SEC=270 from non-medical config.
+            default_med = 75 if short_medical else 120
+            raw_timeout = (
+                os.environ.get('MEDICAL_GPT_SHORT_TIMEOUT_SEC' if short_medical else 'MEDICAL_GPT_TIMEOUT_SEC')
+                or ''
+            ).strip()
+            try:
+                timeout_sec = int(raw_timeout) if raw_timeout else default_med
+            except (TypeError, ValueError):
+                timeout_sec = default_med
+            timeout_sec = max(30, min(timeout_sec, 180))
+        else:
+            timeout_sec = int(os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270') or 270)
     if read_retries is None:
-        read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
+        if is_medical:
+            # Default 0 — one attempt only. Retries made Summary look permanently stuck.
+            # Ignore GPT_FORMAT_READ_RETRIES for medical (that default of 2 is for long non-medical chunks).
+            raw_retries = (
+                os.environ.get('MEDICAL_GPT_SHORT_READ_RETRIES' if short_medical else 'MEDICAL_GPT_READ_RETRIES')
+                or '0'
+            ).strip()
+            try:
+                read_retries = max(0, int(raw_retries or 0))
+            except (TypeError, ValueError):
+                read_retries = 0
+        else:
+            read_retries = max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 2))
+    medical_reasoning_effort = None
+    if is_medical:
+        # Personal templates on GPT-5 can "think" for minutes; keep medical visits snappy.
+        medical_reasoning_effort = (
+            os.environ.get('MEDICAL_GPT_SHORT_REASONING_EFFORT' if short_medical else 'MEDICAL_GPT_REASONING_EFFORT')
+            or os.environ.get('GPT_REASONING_EFFORT_SHORT' if short_medical else '')
+            or os.environ.get('GPT_REASONING_EFFORT')
+            or ('none' if short_medical else 'low')
+        ).strip().lower() or ('none' if short_medical else 'low')
     lang_hint = str(target_lang or 'he').strip().lower()[:8]
     want_hebrew = lang_hint.startswith('he')
     output_lang_label = 'Hebrew' if want_hebrew else target_lang
@@ -13218,8 +13302,23 @@ def _format_unified_transcript_openai(
         "Transcript:\n\n"
         f"{transcript_text}"
     )
+    if is_medical:
+        logging.info(
+            "medical unified format start chars=%s short=%s timeout=%ss retries=%s reasoning=%s user=%s",
+            transcript_chars,
+            short_medical,
+            timeout_sec,
+            read_retries,
+            medical_reasoning_effort or 'default',
+            (str(user_id or '')[:12] or 'anon'),
+        )
     parsed = _openai_chat_json_completion(
-        system_prompt, user_prompt, timeout_sec, read_retries=read_retries, model_name=gpt_model
+        system_prompt,
+        user_prompt,
+        timeout_sec,
+        read_retries=read_retries,
+        model_name=gpt_model,
+        reasoning_effort=medical_reasoning_effort,
     )
     clean_transcript = _wrap_text_to_max_chars(str((parsed or {}).get("clean_transcript") or "").strip())
     if is_medical:
