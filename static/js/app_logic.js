@@ -19033,6 +19033,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 lastErr = err;
             }
         }
+        // Browsers sometimes throw a one-shot NotFoundError while the device list settles.
+        if (!stream && lastErr && (
+            lastErr.name === 'NotFoundError'
+            || /requested device not found|no microphone|device not found/i.test(String(lastErr.message || ''))
+        )) {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            try {
+                stream = await openAttempt({ audio: true });
+            } catch (retryErr) {
+                lastErr = retryErr;
+            }
+        }
         if (!stream) throw lastErr || new Error('getUserMedia_failed');
         if (!id && savedId && saved.label) {
             const used = qsOpenedMedicalMicDeviceId(stream);
@@ -19263,10 +19275,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function qsReadLiveMicRms() {
         // Same capture graph live and offline-parked (not AGC / Socket.IO).
+        // valid:false means "no sample yet" — callers must not treat that as digital silence.
         const stream = window._medicalAwsTranscribeStream;
         if (stream && typeof stream.getLastRms === 'function') {
+            const ticks = typeof stream.getMeterTicks === 'function' ? Number(stream.getMeterTicks()) : 0;
             const rms = Number(stream.getLastRms());
-            if (Number.isFinite(rms)) {
+            if (ticks > 0 && Number.isFinite(rms)) {
                 const peak = (typeof stream.getLastPeak === 'function')
                     ? Number(stream.getLastPeak())
                     : 0;
@@ -19278,6 +19292,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     peak: Number.isFinite(peak) ? peak : 0,
                     speechGain: Number.isFinite(gain) && gain > 0 ? gain : 1,
                     fromAnalyser: false,
+                    valid: true,
                 };
             }
         }
@@ -19300,7 +19315,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const boost = (!rms || rms <= 0.002)
                     ? 1
                     : Math.max(1, Math.min(3, 0.03 / rms, 0.92 / Math.max(0.001, peak)));
-                return { rms: rms * boost, peak: peak * boost, speechGain: 1, fromAnalyser: false };
+                return { rms: rms * boost, peak: peak * boost, speechGain: 1, fromAnalyser: false, valid: true };
             } catch (_) {}
         }
         const wf = window._medicalWave;
@@ -19319,10 +19334,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     peak,
                     speechGain: 1,
                     fromAnalyser: true,
+                    valid: true,
                 };
             } catch (_) {}
         }
-        return { rms: 0, peak: 0, speechGain: 1, fromAnalyser: false };
+        return { rms: 0, peak: 0, speechGain: 1, fromAnalyser: false, valid: false };
     }
 
     function qsStartMedicalLiveLevelMeter() {
@@ -19610,31 +19626,40 @@ document.addEventListener('DOMContentLoaded', () => {
         const tracks = stream && stream.getAudioTracks ? stream.getAudioTracks() : [];
         const track = tracks && tracks[0] ? tracks[0] : null;
         let startedAt = Date.now();
-        let sampling = false;
-        let sampleStart = 0;
-        let maxPeak = 0;
         let phase = 'startup';
         let pausedAt = 0;
         let lastTicks = 0;
         let lastTickChangeAt = 0;
         let zeroSince = 0;
+        let zeroSamples = 0;
         let lowSince = 0;
+        let mutedSince = 0;
+        let startupZeroSince = 0;
+        let startupZeroSamples = 0;
         let cutoffNotified = false;
         let lowNotified = false;
         const silenceLevel = 0.0001;
         const quietRms = 0.008;
         const speechRms = 0.02;
-        const sampleMs = 1500;
-        const waitMeterMs = 2500;
+        // Require sustained valid zeros — a single empty meter frame must not fire "no mic".
+        const startupZeroMs = 2000;
+        const startupMinSamples = 12;
+        const waitMeterMs = 4000;
         const cutoffZeroMs = 3000;
-        const meterFreezeMs = 2000;
+        const cutoffMinSamples = 15;
+        const meterFreezeMs = 3000;
+        const hwMuteMs = 2000;
         const lowMs = 30000;
 
         const enterHealth = () => {
             phase = 'health';
             lastTickChangeAt = Date.now();
             zeroSince = 0;
+            zeroSamples = 0;
             lowSince = 0;
+            mutedSince = 0;
+            startupZeroSince = 0;
+            startupZeroSamples = 0;
         };
 
         const notifyCutoff = (statusKind) => {
@@ -19664,6 +19689,32 @@ document.addEventListener('DOMContentLoaded', () => {
             qsLogMedicalMicEvent('too_quiet', 'recording');
         };
 
+        const readLevel = () => {
+            const meter = window._medicalAwsTranscribeStream;
+            const ticks = meter && typeof meter.getMeterTicks === 'function' ? Number(meter.getMeterTicks()) : 0;
+            if (ticks > 0 && meter && typeof meter.getLastRms === 'function') {
+                const rms = Number(meter.getLastRms());
+                if (Number.isFinite(rms)) {
+                    const peak = (typeof meter.getLastPeak === 'function')
+                        ? Number(meter.getLastPeak())
+                        : 0;
+                    return {
+                        rms,
+                        peak: Number.isFinite(peak) ? peak : 0,
+                        ticks,
+                        valid: true,
+                    };
+                }
+            }
+            const reading = qsReadLiveMicRms();
+            return {
+                rms: Number(reading && reading.rms) || 0,
+                peak: Number(reading && reading.peak) || 0,
+                ticks,
+                valid: !!(reading && reading.valid),
+            };
+        };
+
         const timer = setInterval(() => {
             if (gen !== window._qsMedicalMicSilenceWatchGen) {
                 clearInterval(timer);
@@ -19687,53 +19738,46 @@ document.addEventListener('DOMContentLoaded', () => {
                 const held = Date.now() - pausedAt;
                 pausedAt = 0;
                 startedAt += held;
-                if (sampleStart) sampleStart += held;
                 if (zeroSince) zeroSince += held;
                 if (lowSince) lowSince += held;
+                if (mutedSince) mutedSince += held;
+                if (startupZeroSince) startupZeroSince += held;
                 if (lastTickChangeAt) lastTickChangeAt += held;
             }
             const muted = !!(track && (track.muted === true || track.readyState === 'ended' || track.enabled === false));
-            const meter = window._medicalAwsTranscribeStream;
-            const ticks = meter && typeof meter.getMeterTicks === 'function' ? Number(meter.getMeterTicks()) : 0;
-            let rms = 0;
-            if (ticks > 0 && meter && typeof meter.getLastRms === 'function') {
-                const raw = Number(meter.getLastRms());
-                if (Number.isFinite(raw)) rms = raw;
-            } else {
-                const reading = qsReadLiveMicRms();
-                rms = Number(reading && reading.rms) || 0;
-            }
+            const level = readLevel();
+            const ticks = level.ticks;
+            const rms = level.rms;
+            const peak = level.peak;
             if (phase === 'startup') {
-                if (muted && (Date.now() - startedAt) >= 300) {
-                    cutoffNotified = true;
-                    enterHealth();
-                    qsLogMedicalMicEvent('hw_mute', 'start');
-                    void qsOpenMedicalMicTestModal({ skipProbe: true, statusKey: qsMedicalMicStatusKey('hardware_mute') });
-                    return;
-                }
-                const meterReady = ticks > 0 || !!(window._medicalOfflineLevelMeter && window._medicalOfflineLevelMeter.analyser);
-                if (!sampling) {
-                    if (!meterReady) {
-                        if (Date.now() - startedAt > waitMeterMs) enterHealth();
-                        return;
+                if (muted) {
+                    if (!mutedSince) mutedSince = Date.now();
+                    if ((Date.now() - mutedSince) >= hwMuteMs) {
+                        cutoffNotified = true;
+                        enterHealth();
+                        qsLogMedicalMicEvent('hw_mute', 'start');
+                        void qsOpenMedicalMicTestModal({ skipProbe: true, statusKey: qsMedicalMicStatusKey('hardware_mute') });
                     }
-                    sampling = true;
-                    sampleStart = Date.now();
-                    maxPeak = 0;
+                    return;
                 }
-                let peak = 0;
-                if (ticks > 0 && meter && typeof meter.getLastPeak === 'function') {
-                    peak = Number(meter.getLastPeak()) || 0;
-                } else {
-                    const reading = qsReadLiveMicRms();
-                    peak = Number(reading && reading.peak) || 0;
+                mutedSince = 0;
+                if (!level.valid) {
+                    // Meter not producing samples yet — wait, do not treat as silence.
+                    if (Date.now() - startedAt > waitMeterMs) enterHealth();
+                    startupZeroSince = 0;
+                    startupZeroSamples = 0;
+                    return;
                 }
-                if (peak > maxPeak) maxPeak = peak;
-                if (maxPeak >= silenceLevel) {
+                if (Math.max(peak, rms) >= silenceLevel) {
                     enterHealth();
                     return;
                 }
-                if (Date.now() - sampleStart >= sampleMs) {
+                if (!startupZeroSince) startupZeroSince = Date.now();
+                startupZeroSamples += 1;
+                if (
+                    startupZeroSamples >= startupMinSamples
+                    && (Date.now() - startupZeroSince) >= startupZeroMs
+                ) {
                     cutoffNotified = true;
                     enterHealth();
                     qsForgetPreferredMicIfTrack(track);
@@ -19749,12 +19793,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 notifyCutoff('dead_device');
             }
             if (muted) {
-                notifyCutoff('hardware_mute');
+                if (!mutedSince) mutedSince = Date.now();
+                if ((Date.now() - mutedSince) >= hwMuteMs) notifyCutoff('hardware_mute');
+                return;
+            }
+            mutedSince = 0;
+            if (!level.valid) {
                 return;
             }
             if (rms >= speechRms) {
                 qsRememberWorkingMic(track);
                 zeroSince = 0;
+                zeroSamples = 0;
                 lowSince = 0;
                 cutoffNotified = false;
                 lowNotified = false;
@@ -19764,10 +19814,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 lowSince = 0;
                 lowNotified = false;
                 if (!zeroSince) zeroSince = Date.now();
-                if ((Date.now() - zeroSince) >= cutoffZeroMs) notifyCutoff('dead_device');
+                zeroSamples += 1;
+                if (zeroSamples >= cutoffMinSamples && (Date.now() - zeroSince) >= cutoffZeroMs) {
+                    notifyCutoff('dead_device');
+                }
                 return;
             }
             zeroSince = 0;
+            zeroSamples = 0;
             if (rms < quietRms) {
                 if (!lowSince) lowSince = Date.now();
                 if ((Date.now() - lowSince) >= lowMs) notifyLow();
