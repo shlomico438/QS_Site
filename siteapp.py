@@ -13093,6 +13093,48 @@ def _format_transcript_cleanup_openai(
     return {"clean_transcript": clean}
 
 
+def _medical_prior_formatted_prompt_block(prior_formatted):
+    """Build continue-visit instructions from a prior medical summary snapshot."""
+    if not isinstance(prior_formatted, dict):
+        return ""
+    chief = str(
+        prior_formatted.get("medical_chief_complaint")
+        or prior_formatted.get("chief_complaint")
+        or ""
+    ).strip()
+    exam = str(
+        prior_formatted.get("medical_examination_transcript")
+        or prior_formatted.get("examination_transcript")
+        or ""
+    ).strip()
+    rec = str(
+        prior_formatted.get("medical_patient_recommendations")
+        or prior_formatted.get("patient_recommendations")
+        or ""
+    ).strip()
+    if not (chief or exam or rec):
+        return ""
+    return (
+        "CONTINUATION OF SAME VISIT — the doctor is continuing the same clinic visit after a pause "
+        "(for example the patient returned with test / imaging / lab results). "
+        "Revise and update the existing visit summary below using the FULL transcript "
+        "(prior dialogue plus any CONTINUATION / new recording section).\n"
+        "CRITICAL continuation rules:\n"
+        "1. Keep earlier findings unless the new transcript contradicts them.\n"
+        "2. Every NEW clinical finding in the continuation MUST appear in the summary body "
+        "(chief_complaint / examination_transcript / impression / assessment sections of the template) — "
+        "not only as a treatment line in patient_recommendations. "
+        "Examples: inflammation/דלקת, infection, fracture confirmation, imaging results, lab results, "
+        "revised diagnosis — write them into the clinical note, then list related treatments.\n"
+        "3. Do not invent a blank new visit and do not discard prior content without cause.\n"
+        "4. If the transcript marks a CONTINUATION section, treat that text as new visit material that "
+        "must update impression/assessment and recommendations.\n\n"
+        f"Prior chief_complaint:\n{chief or '(empty)'}\n\n"
+        f"Prior examination_transcript:\n{exam or '(empty)'}\n\n"
+        f"Prior patient_recommendations:\n{rec or '(empty)'}\n\n"
+    )
+
+
 def _format_unified_transcript_openai(
     transcript_text,
     target_lang='he',
@@ -13103,6 +13145,7 @@ def _format_unified_transcript_openai(
     gpt_model=None,
     timeout_sec=None,
     read_retries=None,
+    prior_formatted=None,
 ):
     """One OpenAI call: Task 1 (clean transcript) + Task 2 (summary) in the same prompt."""
     transcript_text = str(transcript_text or "").strip()
@@ -13290,6 +13333,7 @@ def _format_unified_transcript_openai(
         )
         json_tail = "Return as JSON fields only (clean_transcript, overview, key_points, action_items).\n"
     task1_clean = _gpt_task1_clean_transcript_prompt(is_medical=is_medical, is_music=is_music)
+    prior_block = _medical_prior_formatted_prompt_block(prior_formatted) if is_medical else ""
     user_prompt = (
         "You are editing a transcript.\n\n"
         f"{task1_clean}"
@@ -13299,17 +13343,19 @@ def _format_unified_transcript_openai(
         "clean_transcript LANGUAGE LOCK: do not translate. Keep every passage in the language it was spoken. "
         "English stays English. Hebrew stays Hebrew.\n\n"
         f"Language hint: {lang_hint}\n\n"
+        f"{prior_block}"
         "Transcript:\n\n"
         f"{transcript_text}"
     )
     if is_medical:
         logging.info(
-            "medical unified format start chars=%s short=%s timeout=%ss retries=%s reasoning=%s user=%s",
+            "medical unified format start chars=%s short=%s timeout=%ss retries=%s reasoning=%s continue=%s user=%s",
             transcript_chars,
             short_medical,
             timeout_sec,
             read_retries,
             medical_reasoning_effort or 'default',
+            bool(prior_block),
             (str(user_id or '')[:12] or 'anon'),
         )
     parsed = _openai_chat_json_completion(
@@ -13384,7 +13430,7 @@ def _format_unified_transcript_openai(
     }
 
 
-def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, read_retries=0, is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None, prior_formatted=None):
     """Unified clean + summary in one GPT call (legacy name for API mode=summary_only)."""
     return _format_unified_transcript_openai(
         transcript_excerpt,
@@ -13396,10 +13442,11 @@ def _format_summary_only_openai(transcript_excerpt, target_lang, timeout_sec, re
         gpt_model=gpt_model,
         timeout_sec=timeout_sec,
         read_retries=read_retries,
+        prior_formatted=prior_formatted,
     )
 
 
-def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he', is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None, prior_formatted=None):
     """One OpenAI call: clean transcript + summary."""
     return _format_unified_transcript_openai(
         transcript_text,
@@ -13409,10 +13456,11 @@ def _format_transcript_and_summary_single_shot(transcript_text, target_lang='he'
         user_id=user_id,
         medical_task2_prompt_override=medical_task2_prompt_override,
         gpt_model=gpt_model,
+        prior_formatted=prior_formatted,
     )
 
 
-def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None):
+def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he', is_medical=False, is_music=False, user_id=None, medical_task2_prompt_override=None, gpt_model=None, prior_formatted=None):
     """Generate clean transcript + summary in a single GPT request (truncates very long input)."""
     transcript_text = str(transcript_text or "").strip()
     if not transcript_text:
@@ -13432,6 +13480,7 @@ def _format_transcript_and_summary_via_openai(transcript_text, target_lang='he',
         user_id=user_id,
         medical_task2_prompt_override=medical_task2_prompt_override,
         gpt_model=gpt_model,
+        prior_formatted=prior_formatted,
     )
 
 
@@ -14227,11 +14276,31 @@ def api_format_transcript_summary():
             "changed": cleaned != raw,
         }), 200
 
+    prior_formatted = data.get('prior_formatted') or data.get('priorFormatted')
+    if prior_formatted is not None and not isinstance(prior_formatted, dict):
+        prior_formatted = None
+    if bool(data.get('continue_visit') or data.get('continueVisit')) and prior_formatted:
+        logging.info(
+            "format_transcript_summary continue_visit prior_fields=%s",
+            sum(
+                1
+                for k in (
+                    'medical_chief_complaint',
+                    'medical_examination_transcript',
+                    'medical_patient_recommendations',
+                    'chief_complaint',
+                    'examination_transcript',
+                    'patient_recommendations',
+                )
+                if str((prior_formatted or {}).get(k) or '').strip()
+            ),
+        )
+
     if mode in ('summary', 'summary_only'):
         raw = str(data.get('text') or '').strip()
         if not raw:
             return jsonify({"error": "No transcript text provided"}), 400
-        if is_medical and _should_bypass_medical_gpt_format(raw):
+        if is_medical and _should_bypass_medical_gpt_format(raw) and not prior_formatted:
             elapsed = time.time() - t0
             _apply_summary_timing(elapsed)
             base = _medical_minimal_format_payload(raw, target_lang=target_lang, user_id=req_user_id)
@@ -14263,6 +14332,7 @@ def api_format_transcript_summary():
                     is_medical=True,
                     is_music=is_music_format,
                     user_id=req_user_id,
+                    prior_formatted=prior_formatted,
                 )
             else:
                 segments = data.get('segments') or []
@@ -14317,7 +14387,7 @@ def api_format_transcript_summary():
     if not raw_text:
         return jsonify({"error": "No transcript text provided"}), 400
     try:
-        if is_medical and _should_bypass_medical_gpt_format(raw_text):
+        if is_medical and _should_bypass_medical_gpt_format(raw_text) and not prior_formatted:
             elapsed = time.time() - t0
             _apply_format_timing(elapsed)
             out = _medical_minimal_format_payload(raw_text, target_lang=target_lang, user_id=req_user_id)
@@ -14331,6 +14401,7 @@ def api_format_transcript_summary():
                 is_medical=is_medical,
                 is_music=is_music_format,
                 user_id=req_user_id,
+                prior_formatted=prior_formatted if is_medical else None,
             )
         else:
             t_summary = time.time()

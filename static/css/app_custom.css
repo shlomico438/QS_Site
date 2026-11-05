@@ -8110,6 +8110,29 @@ html[dir="rtl"] .upload-status {
   opacity: 0.7;
   cursor: default;
 }
+.personal-recording-action.personal-recording-continue {
+  flex: 0 1 auto;
+  background: #fff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+}
+.personal-recording-action.personal-recording-continue:hover {
+  background: #eef2ff;
+}
+.medical-continue-visit-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #312e81;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
 .personal-more-wrap {
   position: relative;
 }
