@@ -5715,10 +5715,12 @@ _supabase_http_sema_lock = threading.Lock()
 
 
 def _supabase_http_max_concurrent():
+    # Default 16: a single medical tab can fire account/credits/signature/template
+    # in parallel; 8 was too easy to saturate and turned into false 401s.
     try:
-        return max(2, min(32, int(os.environ.get('SUPABASE_HTTP_MAX_CONCURRENT', '8') or 8)))
+        return max(2, min(48, int(os.environ.get('SUPABASE_HTTP_MAX_CONCURRENT', '16') or 16)))
     except (TypeError, ValueError):
-        return 8
+        return 16
 
 
 def _supabase_http_sema_get():
@@ -5888,7 +5890,11 @@ def _supabase_bearer_token_from_request():
 
 
 def _supabase_auth_user_from_request():
-    """Return authenticated Supabase auth user payload from Bearer token, or None."""
+    """Return authenticated Supabase auth user payload from Bearer token, or None.
+
+    Auth must out-wait brief supabase_busy windows. Returning None becomes HTTP 401
+    and medical recording/init falsely looks logged-out while the JWT is still valid.
+    """
     token = _supabase_bearer_token_from_request()
     if not token:
         return None
@@ -5897,22 +5903,43 @@ def _supabase_auth_user_from_request():
     if not supabase_url or not service_key:
         return None
     try:
-        r_user = _supabase_http_request(
-            'GET',
-            f"{supabase_url}/auth/v1/user",
-            headers={"Authorization": f"Bearer {token}", "apikey": service_key},
-            retries=1,
-        )
-    except Exception as e:
-        logging.warning("_supabase_auth_user_from_request failed: %s", e)
-        return None
-    if r_user.status_code != 200:
-        return None
+        auth_acquire = float(os.environ.get('SUPABASE_AUTH_ACQUIRE_TIMEOUT_SEC', '2.5') or 2.5)
+    except (TypeError, ValueError):
+        auth_acquire = 2.5
+    auth_acquire = max(0.5, min(8.0, auth_acquire))
     try:
-        user_data = r_user.json()
-        return user_data if isinstance(user_data, dict) else None
-    except Exception:
-        return None
+        auth_attempts = int(os.environ.get('SUPABASE_AUTH_BUSY_RETRIES', '4') or 4)
+    except (TypeError, ValueError):
+        auth_attempts = 4
+    auth_attempts = max(1, min(8, auth_attempts))
+    last_err = None
+    for attempt in range(auth_attempts):
+        try:
+            r_user = _supabase_http_request(
+                'GET',
+                f"{supabase_url}/auth/v1/user",
+                headers={"Authorization": f"Bearer {token}", "apikey": service_key},
+                retries=1,
+                acquire_timeout_sec=auth_acquire,
+            )
+        except Exception as e:
+            last_err = e
+            msg = str(e or '')
+            if 'supabase_busy' in msg and attempt + 1 < auth_attempts:
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            logging.warning("_supabase_auth_user_from_request failed: %s", e)
+            return None
+        if r_user.status_code != 200:
+            return None
+        try:
+            user_data = r_user.json()
+            return user_data if isinstance(user_data, dict) else None
+        except Exception:
+            return None
+    if last_err:
+        logging.warning("_supabase_auth_user_from_request failed: %s", last_err)
+    return None
 
 
 def _supabase_user_id_from_request():
@@ -16630,10 +16657,17 @@ def sign_s3():
     import time
     from threading import Thread
 
+    t_sign0 = time.time()
     data = request.json or {}
     transcription_options = _site_transcription_options_from_payload(data)
     is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
     if medical_error:
+        logging.warning(
+            "sign_s3 entitlement rejected is_medical=%s filename=%s elapsed_ms=%.0f",
+            bool(is_medical),
+            str(data.get('filename') or '')[:80],
+            (time.time() - t_sign0) * 1000,
+        )
         return medical_error
     user_id = (
         authenticated_medical_user
@@ -16705,14 +16739,38 @@ def sign_s3():
         if _s3_upload_accelerate_enabled_for_bucket(bucket):
             logging.info("sign_s3 upload presign via S3 Transfer Acceleration")
         logging.info(
-            "sign_s3 presign bucket=%s use_r2=%s region=%s is_medical=%s",
-            bucket, _bucket_uses_r2(bucket), _s3_region_for_bucket(bucket), is_medical,
+            "sign_s3 generate_presigned start job_id=%s user=%s bucket=%s use_r2=%s region=%s is_medical=%s key=%s",
+            job_id,
+            str(user_id or '')[:12],
+            bucket,
+            _bucket_uses_r2(bucket),
+            _s3_region_for_bucket(bucket),
+            is_medical,
+            s3_key[-120:],
         )
 
-        presigned_url = s3_client.generate_presigned_url(
-            'put_object',
-            Params=params,
-            ExpiresIn=3600
+        t_presign = time.time()
+        try:
+            presigned_url = s3_client.generate_presigned_url(
+                'put_object',
+                Params=params,
+                ExpiresIn=3600
+            )
+        except Exception:
+            logging.exception(
+                "sign_s3 generate_presigned failed job_id=%s user=%s bucket=%s key=%s elapsed_ms=%.0f",
+                job_id,
+                str(user_id or '')[:12],
+                bucket,
+                s3_key[-120:],
+                (time.time() - t_presign) * 1000,
+            )
+            raise
+        logging.info(
+            "sign_s3 generate_presigned ok job_id=%s user=%s elapsed_ms=%.0f",
+            job_id,
+            str(user_id or '')[:12],
+            (time.time() - t_presign) * 1000,
         )
 
         early_opts, defer_final = _early_transcription_options_for_upload_sign(
@@ -16733,6 +16791,13 @@ def sign_s3():
             request_data=data,
         )
 
+        logging.info(
+            "sign_s3 response ready job_id=%s user=%s is_medical=%s total_ms=%.0f",
+            job_id,
+            str(user_id or '')[:12],
+            is_medical,
+            (time.time() - t_sign0) * 1000,
+        )
         return jsonify({
             'data': {
                 'url': presigned_url,
@@ -17379,6 +17444,10 @@ def api_medical_complete_stream_transcription():
     data = request.json or {}
     _is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(data)
     if medical_error:
+        logging.warning(
+            "medical complete_stream_transcription entitlement rejected elapsed_ms=%.0f",
+            (time.time() - t0) * 1000,
+        )
         return medical_error
     job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
     s3_key = str(data.get('s3Key') or data.get('input_s3_key') or '').strip()
@@ -17386,6 +17455,13 @@ def api_medical_complete_stream_transcription():
     transcript = str(data.get('transcript') or '').strip()
     duration_sec = data.get('duration_sec') or data.get('durationSec') or 0
     bucket = str(data.get('bucket') or '').strip() or None
+    logging.info(
+        "medical complete_stream_transcription start job_id=%s user=%s chars=%s key=%s",
+        job_id,
+        user_id[:12],
+        len(transcript),
+        s3_key[-120:],
+    )
 
     if not job_id or not s3_key:
         return jsonify({'error': 'jobId and s3Key required'}), 400
@@ -17466,10 +17542,12 @@ def api_medical_complete_stream_transcription():
     )
 
     logging.info(
-        'medical stream transcription complete job_id=%s segments=%s chars=%s',
+        'medical stream transcription complete job_id=%s user=%s segments=%s chars=%s elapsed_ms=%.0f',
         job_id,
+        user_id[:12],
         len(segments),
         len(transcript),
+        (time.time() - t0) * 1000,
     )
     return jsonify({
         'status': 'completed',
@@ -17483,17 +17561,29 @@ def api_medical_complete_stream_transcription():
 @app.route('/api/medical/archive_recording', methods=['POST'])
 def api_medical_archive_recording():
     """Store the MediaRecorder blob via the app when the browser S3 PUT fails (CORS / pause blobs)."""
+    t_arch0 = time.time()
     job_id = str(request.form.get('jobId') or request.form.get('job_id') or '').strip()
     s3_key = str(request.form.get('s3Key') or request.form.get('s3_key') or '').strip()
     payload = {'jobId': job_id, 's3Key': s3_key, 'isMedical': True}
+    logging.info(
+        'medical archive_recording request job_id=%s key=%s',
+        job_id,
+        s3_key[-120:],
+    )
     _is_medical, authenticated_medical_user, medical_error = _enforce_medical_request_entitlement(payload, s3_key=s3_key)
     if medical_error:
+        logging.warning(
+            'medical archive_recording entitlement rejected job_id=%s elapsed_ms=%.0f',
+            job_id,
+            (time.time() - t_arch0) * 1000,
+        )
         return medical_error
     user_id = str(authenticated_medical_user or '').strip()
     if not job_id or not s3_key:
         return jsonify({'error': 'jobId and s3Key required'}), 400
     upload = request.files.get('file')
     if upload is None:
+        logging.warning('medical archive_recording missing file job_id=%s user=%s', job_id, user_id[:12])
         return jsonify({'error': 'file required'}), 400
     body = upload.read()
     if not body:
@@ -17504,6 +17594,13 @@ def api_medical_archive_recording():
             getattr(upload, 'mimetype', ''),
         )
         return jsonify({'error': 'empty_file'}), 400
+    logging.info(
+        'medical archive_recording put start job_id=%s user=%s bytes=%s key=%s',
+        job_id,
+        user_id[:12],
+        len(body),
+        s3_key[-120:],
+    )
     try:
         _assert_multipart_key_for_user(s3_key, user_id, True)
     except ValueError as e:
@@ -17555,7 +17652,14 @@ def api_medical_archive_recording():
             'bucket': bucket,
             'region': region,
         }), 502
-    logging.info('medical archive_recording ok job_id=%s bytes=%s content_type=%s', job_id, len(body), content_type)
+    logging.info(
+        'medical archive_recording ok job_id=%s user=%s bytes=%s content_type=%s elapsed_ms=%.0f',
+        job_id,
+        user_id[:12],
+        len(body),
+        content_type,
+        (time.time() - t_arch0) * 1000,
+    )
     return jsonify({'ok': True, 'jobId': job_id, 's3Key': s3_key, 'bytes': len(body)}), 200
 
 

@@ -2242,68 +2242,87 @@ async function qsMedicalCompletePendingOnboardingAfterAuth(user) {
     return true;
 }
 
-async function qsInitializeMedicalSaasFlow() {
+async function qsInitializeMedicalSaasFlow(options) {
     if (!isMedicalModeEnabled()) return;
-    try {
-        // Show recording immediately for registered doctors while account API is in flight.
-        if (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess()) {
-            document.body.classList.remove('medical-onboarding-pending');
-            const onboardingEl = document.getElementById('medical-onboarding-screen');
-            if (onboardingEl) onboardingEl.hidden = true;
-            try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
-        }
-
-        let user = null;
-        try {
-            const { data: { session } } = await supabase.auth.getSession();
-            user = session?.user || null;
-        } catch (_) {}
-        if (!user) {
-            try {
-                const { data: { user: u } } = await supabase.auth.getUser();
-                user = u || null;
-            } catch (_) {}
-        }
-
-        const nameInput = document.getElementById('auth-name');
-        const emailInput = document.getElementById('auth-email');
-        const specialtyInput = document.getElementById('auth-medical-specialty');
-        const pending = qsMedicalPendingOnboardingRead();
-        if (nameInput && !nameInput.value) {
-            nameInput.value = String(
-                pending?.fullName
-                || user?.user_metadata?.full_name
-                || user?.user_metadata?.name
-                || ''
-            );
-        }
-        if (emailInput) {
-            emailInput.value = String(user?.email || pending?.email || emailInput.value || '');
-            emailInput.readOnly = !!user;
-        }
-        if (specialtyInput && pending?.professionalSpecialty) {
-            specialtyInput.value = String(pending.professionalSpecialty);
-        }
-        if (!user) {
-            window.__QS_MEDICAL_EXISTING_AUTH_USER = false;
-            qsMedicalApplyAccessState(null);
-            return;
-        }
-        window.__QS_MEDICAL_EXISTING_AUTH_USER = true;
-        if (await qsConfirmMedicalCardcomReturn()) return;
-        if (await qsMedicalCompletePendingOnboardingAfterAuth(user)) return;
-        const account = await qsMedicalAccountFetch();
-        qsMedicalApplyAccessState(account);
-    } catch (err) {
-        console.error('[medical-saas] initialize failed', err);
-        // Keep optimistic recording UI if we already know this doctor was allowed.
-        if (!(typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess())) {
-            qsMedicalApplyAccessState(null);
-            qsMedicalSetOnboardingMessage('לא ניתן לבדוק את החשבון כעת. נסו שוב בעוד רגע.', true);
-        } else {
-            qsMedicalSetOnboardingMessage('בודקים את החשבון ברקע…', false);
-        }
+    const opts = options && typeof options === 'object' ? options : {};
+    const force = !!opts.force;
+    // Open medical tabs re-fire this on every auth recover/refresh — single-flight + cooldown
+    // prevents account/signature/credits stampedes that saturate supabase_busy.
+    if (!force && window._qsMedicalSaasInitInFlight) {
+        return window._qsMedicalSaasInitInFlight;
     }
+    const lastOkAt = Number(window._qsMedicalSaasInitOkAt || 0);
+    if (!force && lastOkAt && (Date.now() - lastOkAt) < 60000 && window.__QS_MEDICAL_ACCOUNT) {
+        return window.__QS_MEDICAL_ACCOUNT;
+    }
+    window._qsMedicalSaasInitInFlight = (async () => {
+        try {
+            // Show recording immediately for registered doctors while account API is in flight.
+            if (typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess()) {
+                document.body.classList.remove('medical-onboarding-pending');
+                const onboardingEl = document.getElementById('medical-onboarding-screen');
+                if (onboardingEl) onboardingEl.hidden = true;
+                try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
+            }
+
+            let user = null;
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                user = session?.user || null;
+            } catch (_) {}
+            if (!user) {
+                try {
+                    const { data: { user: u } } = await supabase.auth.getUser();
+                    user = u || null;
+                } catch (_) {}
+            }
+
+            const nameInput = document.getElementById('auth-name');
+            const emailInput = document.getElementById('auth-email');
+            const specialtyInput = document.getElementById('auth-medical-specialty');
+            const pending = qsMedicalPendingOnboardingRead();
+            if (nameInput && !nameInput.value) {
+                nameInput.value = String(
+                    pending?.fullName
+                    || user?.user_metadata?.full_name
+                    || user?.user_metadata?.name
+                    || ''
+                );
+            }
+            if (emailInput) {
+                emailInput.value = String(user?.email || pending?.email || emailInput.value || '');
+                emailInput.readOnly = !!user;
+            }
+            if (specialtyInput && pending?.professionalSpecialty) {
+                specialtyInput.value = String(pending.professionalSpecialty);
+            }
+            if (!user) {
+                window.__QS_MEDICAL_EXISTING_AUTH_USER = false;
+                qsMedicalApplyAccessState(null);
+                return null;
+            }
+            window.__QS_MEDICAL_EXISTING_AUTH_USER = true;
+            if (await qsConfirmMedicalCardcomReturn()) return window.__QS_MEDICAL_ACCOUNT || null;
+            if (await qsMedicalCompletePendingOnboardingAfterAuth(user)) return window.__QS_MEDICAL_ACCOUNT || null;
+            const account = await qsMedicalAccountFetch();
+            qsMedicalApplyAccessState(account);
+            window._qsMedicalSaasInitOkAt = Date.now();
+            return account;
+        } catch (err) {
+            console.error('[medical-saas] initialize failed', err);
+            // Keep optimistic recording UI if we already know this doctor was allowed.
+            if (!(typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess())) {
+                qsMedicalApplyAccessState(null);
+                qsMedicalSetOnboardingMessage('לא ניתן לבדוק את החשבון כעת. נסו שוב בעוד רגע.', true);
+            } else {
+                qsMedicalSetOnboardingMessage('בודקים את החשבון ברקע…', false);
+            }
+            return null;
+        } finally {
+            window._qsMedicalSaasInitInFlight = null;
+        }
+    })();
+    return window._qsMedicalSaasInitInFlight;
 }
 window.qsInitializeMedicalSaasFlow = qsInitializeMedicalSaasFlow;
 
@@ -4512,7 +4531,11 @@ function setMedicalMode(enabled, opts) {
     } catch (_) {}
     try { if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi(); } catch (_) {}
     if (on) {
-        try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
+        // Hidden/background medical tabs must not keep re-initing on auth recover.
+        const tabVisible = !(typeof document !== 'undefined' && document.visibilityState === 'hidden');
+        if (tabVisible) {
+            try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
+        }
         if (!(typeof qsMedicalUseAwsTranscribeStream === 'function' && qsMedicalUseAwsTranscribeStream())) {
             try { void window.qsRefreshMedicalEndpointStatus(); } catch (_) {}
         } else {
@@ -5806,14 +5829,24 @@ async function qsClaimAnonymousJobIfNeeded(options = {}) {
 window.qsClaimAnonymousJobIfNeeded = qsClaimAnonymousJobIfNeeded;
 
 /** Single post-sign-in claim wave so SIGNED_IN + navbar auth do not stampede the API. */
-async function qsRunPostSignInAnonymousClaims() {
+async function qsRunPostSignInAnonymousClaims(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const ensureWelcome = opts.ensureWelcome !== false && !window.__QS_WELCOME_CREDITS_DONE;
     if (window._qsPostSignInClaimWave) {
         return window._qsPostSignInClaimWave;
+    }
+    // Open medical tabs recover auth often; skip full claim wave if we already did one recently.
+    const lastAt = Number(window._qsPostSignInClaimWaveAt || 0);
+    if (!opts.force && lastAt && (Date.now() - lastAt) < 120000) {
+        if (typeof qsRefreshUserCredits === 'function' && window.__QS_USER_CREDIT_MINUTES == null) {
+            try { await qsRefreshUserCredits({ ensureWelcome: false, silent: true }); } catch (_) {}
+        }
+        return null;
     }
     window._qsPostSignInClaimWave = (async () => {
         try {
             if (typeof qsRefreshUserCredits === 'function') {
-                await qsRefreshUserCredits({ ensureWelcome: true });
+                await qsRefreshUserCredits({ ensureWelcome });
             }
             if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
                 await qsClaimAnonymousJobIfNeeded({ force: true });
@@ -5821,6 +5854,7 @@ async function qsRunPostSignInAnonymousClaims() {
             if (typeof qsClaimAnonymousJobsOwnedByUser === 'function') {
                 await qsClaimAnonymousJobsOwnedByUser();
             }
+            window._qsPostSignInClaimWaveAt = Date.now();
         } catch (e) {
             console.warn('[qs-claim] post-sign-in claim wave failed', e);
         }
@@ -7853,6 +7887,7 @@ async function qsEnsureWelcomeCredits() {
             console.warn('qsEnsureWelcomeCredits:', data.error || res.status);
             return null;
         }
+        try { window.__QS_WELCOME_CREDITS_DONE = true; } catch (_) {}
         const minutes = Number(data.credit_minutes);
         if (Number.isFinite(minutes)) {
             try { window.__QS_USER_CREDIT_MINUTES = minutes; } catch (_) {}
@@ -8564,10 +8599,11 @@ async function setupNavbarAuth(userOverride) {
                     && localStorage.getItem('pendingOpenGenerateMenu') === '1') {
                     await qsRestorePendingGuestSessionAfterAuth();
                 } else if (typeof qsRunPostSignInAnonymousClaims === 'function') {
-                    await qsRunPostSignInAnonymousClaims();
+                    // Navbar refresh on open medical tabs must not re-run ensure-welcome stampede.
+                    await qsRunPostSignInAnonymousClaims({ ensureWelcome: !window.__QS_WELCOME_CREDITS_DONE });
                 } else {
                     if (typeof qsRefreshUserCredits === 'function') {
-                        await qsRefreshUserCredits({ ensureWelcome: true });
+                        await qsRefreshUserCredits({ ensureWelcome: !window.__QS_WELCOME_CREDITS_DONE });
                     }
                     if (typeof qsClaimAnonymousJobIfNeeded === 'function') {
                         await qsClaimAnonymousJobIfNeeded();
@@ -20864,21 +20900,44 @@ document.addEventListener('DOMContentLoaded', () => {
             ? `medical_continuation_${Date.now()}.${ext}`
             : `medical_recording_${Date.now()}.${ext}`;
         qsUploadTrace('medical_upload_session_start', { filename, mime, continueVisit: !!continueVisit });
-        const res = await fetch('/api/sign-s3', {
-            method: 'POST',
-            headers: await qsMedicalJsonHeaders(),
-            body: JSON.stringify({
-                filename,
-                filetype: mime,
-                isMedical: true,
-                userId,
-                language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
-            })
-        });
+        const signT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        let res;
+        try {
+            res = await fetch('/api/sign-s3', {
+                method: 'POST',
+                headers: await qsMedicalJsonHeaders(),
+                body: JSON.stringify({
+                    filename,
+                    filetype: mime,
+                    isMedical: true,
+                    userId,
+                    language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
+                })
+            });
+        } catch (signFetchErr) {
+            qsUploadTraceErr('medical_sign_s3_fetch_failed', {
+                elapsedMs: Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - signT0),
+                err: String((signFetchErr && signFetchErr.message) || signFetchErr || ''),
+            });
+            throw signFetchErr;
+        }
+        const signElapsedMs = Math.round(
+            ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - signT0
+        );
         const out = await res.json().catch(() => ({}));
         if (!res.ok || !out.data || !out.data.url || !out.data.s3Key || !out.data.jobId) {
+            qsUploadTraceErr('medical_sign_s3_rejected', {
+                status: res.status,
+                elapsedMs: signElapsedMs,
+                err: out.message || out.error || null,
+            });
             throw new Error(out.message || out.error || `Upload session failed: HTTP ${res.status}`);
         }
+        qsUploadTraceErr('medical_sign_s3_ok', {
+            jobId: out.data.jobId,
+            elapsedMs: signElapsedMs,
+            continueVisit: !!continueVisit,
+        });
         const session = {
             url: out.data.url,
             s3Key: out.data.s3Key,
@@ -20938,12 +20997,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const patientIdNumber = typeof qsReadMedicalPatientIdNumber === 'function' ? qsReadMedicalPatientIdNumber() : '';
             if (patientName) window.originalFileName = patientName;
             if (typeof createJobOnUpload === 'function') {
+                const jobT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
                 await createJobOnUpload({
                     jobId: session.jobId,
                     s3Key: session.s3Key,
                     displayName: patientName || undefined,
                     patientName: patientName || undefined,
                     patientIdNumber: patientIdNumber || undefined,
+                });
+                const dbId = localStorage.getItem('lastJobDbId') || null;
+                qsUploadTraceErr(dbId ? 'medical_create_job_done' : 'medical_create_job_missing_db_id', {
+                    jobId: session.jobId,
+                    elapsedMs: Math.round(
+                        ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - jobT0
+                    ),
+                    dbId,
                 });
             }
         }
@@ -22079,25 +22147,57 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try { await qsSyncMedicalPatientNameToCurrentJob(); } catch (_) {}
 
-        const completeRes = await fetch('/api/medical/complete_stream_transcription', {
-            method: 'POST',
-            headers: await qsMedicalJsonHeaders(),
-            body: JSON.stringify({
-                jobId: session.jobId,
-                s3Key: session.s3Key,
-                bucket: session.bucket,
-                userId: warmUserId || undefined,
-                transcript,
-                duration_sec: Math.max(0, Number(durationMs || 0) / 1000),
-                isMedical: true,
-            }),
+        qsUploadTraceErr('medical_complete_stream_start', {
+            jobId: session.jobId,
+            chars: String(transcript || '').length,
+            bytes: file && file.size,
         });
+        const completeT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        let completeRes;
+        try {
+            completeRes = await fetch('/api/medical/complete_stream_transcription', {
+                method: 'POST',
+                headers: await qsMedicalJsonHeaders(),
+                body: JSON.stringify({
+                    jobId: session.jobId,
+                    s3Key: session.s3Key,
+                    bucket: session.bucket,
+                    userId: warmUserId || undefined,
+                    transcript,
+                    duration_sec: Math.max(0, Number(durationMs || 0) / 1000),
+                    isMedical: true,
+                }),
+            });
+        } catch (completeFetchErr) {
+            qsUploadTraceErr('medical_complete_stream_fetch_failed', {
+                jobId: session.jobId,
+                elapsedMs: Math.round(
+                    ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - completeT0
+                ),
+                err: String((completeFetchErr && completeFetchErr.message) || completeFetchErr || ''),
+            });
+            throw completeFetchErr;
+        }
         const completeData = await completeRes.json().catch(() => ({}));
         if (!completeRes.ok) {
             const msg = qsCreditsTriggerErrorMessage(completeData)
                 || completeData.message || completeData.error || `HTTP ${completeRes.status}`;
+            qsUploadTraceErr('medical_complete_stream_rejected', {
+                jobId: session.jobId,
+                status: completeRes.status,
+                elapsedMs: Math.round(
+                    ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - completeT0
+                ),
+                err: msg,
+            });
             throw new Error(msg);
         }
+        qsUploadTraceErr('medical_complete_stream_ok', {
+            jobId: session.jobId,
+            elapsedMs: Math.round(
+                ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - completeT0
+            ),
+        });
         qsApplyTriggerCreditFields(completeData);
         if (!silentUpload) qsSetProgressBarPct(70);
 
@@ -22209,9 +22309,17 @@ document.addEventListener('DOMContentLoaded', () => {
     async function qsUploadPendingMedicalRecordingAfterSummary() {
         const pending = window._medicalPendingUpload;
         if (!pending || !pending.file) {
+            qsUploadTraceErr('medical_post_summary_upload_skip', {
+                hasPending: !!pending,
+                hasFile: !!(pending && pending.file),
+            });
             window._medicalPendingUpload = null;
             return;
         }
+        qsUploadTraceErr('medical_post_summary_upload_start', {
+            bytes: pending.file && pending.file.size,
+            hasSession: !!pending.session,
+        });
         window._medicalSaveSilent = true;
         hideProgressBar();
         const summaryStable = !!(
@@ -22240,7 +22348,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     await qsPersistFormattedDocToS3();
                 }
             }
+            qsUploadTraceErr('medical_post_summary_upload_done', {
+                bytes: pending.file && pending.file.size,
+                jobId: localStorage.getItem('lastJobId') || null,
+            });
         } catch (e) {
+            qsUploadTraceErr('medical_post_summary_upload_failed', {
+                err: String((e && e.message) || e || ''),
+                bytes: pending.file && pending.file.size,
+            });
             console.warn('[medical] recording upload failed after summary', e);
             if (typeof showStatus === 'function') {
                 const T = typeof window.t === 'function' ? window.t : (k) => k;
@@ -28828,46 +28944,59 @@ function qsRestoreMedicalPersonalTemplateMetaFromStorage() {
 async function qsHydrateMedicalPersonalTemplateProfile(options) {
     const force = !!(options && options.force);
     if (!force && window._medicalPersonalTemplateHydrated) return window._medicalPersonalTemplateActive;
-    const epoch = Number(window._qsMedicalTrainingEpoch) || 0;
-    try {
-        if (typeof medicalTrainingApi !== 'function') {
-            qsRestoreMedicalPersonalTemplateMetaFromStorage();
-            return !!window._medicalPersonalTemplateActive;
-        }
-        const data = await medicalTrainingApi('/api/medical_training/profile', {});
-        if ((Number(window._qsMedicalTrainingEpoch) || 0) !== epoch) return false;
-        qsApplyMedicalPersonalTemplateMeta({
-            resolved_task2_source: data.resolved_task2_source,
-            profile_status: data.profile && data.profile.status,
-            section_labels: data.section_labels,
-            template_headings: data.template_headings,
-            template_bullets: data.template_bullets,
-            active_prompt_chars: data.profile && data.profile.active_prompt_chars,
-            production_prompt_chars: data.production_prompt_chars,
-        });
-        if (
-            String(window.medicalActiveTab || '') === 'summary'
-            && window.currentFormattedDoc
-            && typeof renderTranscriptFromCues === 'function'
-        ) {
-            try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
-        }
-        window._medicalPersonalTemplateHydrated = true;
-        if (data.resolved_task2_source === 'doctor_profile') {
-            qsSetMedicalStyleConfigured(true);
-            qsSyncMedicalStyleTrainingBadge();
-        }
-        console.info('[medical training] hydrated personal template meta', {
-            source: data.resolved_task2_source || null,
-            active: !!window._medicalPersonalTemplateActive,
-            labels: window._medicalPersonalSectionLabels || null,
-        });
-        return !!window._medicalPersonalTemplateActive;
-    } catch (e) {
-        console.warn('[medical training] hydrate personal template failed', e);
+    if (!force && window._qsMedicalTemplateHydrateRetryAt && Date.now() < window._qsMedicalTemplateHydrateRetryAt) {
         qsRestoreMedicalPersonalTemplateMetaFromStorage();
         return !!window._medicalPersonalTemplateActive;
     }
+    if (!force && window._qsMedicalTemplateHydrateInFlight) return window._qsMedicalTemplateHydrateInFlight;
+    const epoch = Number(window._qsMedicalTrainingEpoch) || 0;
+    window._qsMedicalTemplateHydrateInFlight = (async () => {
+        try {
+            if (typeof medicalTrainingApi !== 'function') {
+                qsRestoreMedicalPersonalTemplateMetaFromStorage();
+                return !!window._medicalPersonalTemplateActive;
+            }
+            const data = await medicalTrainingApi('/api/medical_training/profile', {});
+            if ((Number(window._qsMedicalTrainingEpoch) || 0) !== epoch) return false;
+            qsApplyMedicalPersonalTemplateMeta({
+                resolved_task2_source: data.resolved_task2_source,
+                profile_status: data.profile && data.profile.status,
+                section_labels: data.section_labels,
+                template_headings: data.template_headings,
+                template_bullets: data.template_bullets,
+                active_prompt_chars: data.profile && data.profile.active_prompt_chars,
+                production_prompt_chars: data.production_prompt_chars,
+            });
+            if (
+                String(window.medicalActiveTab || '') === 'summary'
+                && window.currentFormattedDoc
+                && typeof renderTranscriptFromCues === 'function'
+            ) {
+                try { renderTranscriptFromCues(window.currentSegments || []); } catch (_) {}
+            }
+            window._medicalPersonalTemplateHydrated = true;
+            window._qsMedicalTemplateHydrateRetryAt = 0;
+            if (data.resolved_task2_source === 'doctor_profile') {
+                qsSetMedicalStyleConfigured(true);
+                qsSyncMedicalStyleTrainingBadge();
+            }
+            console.info('[medical training] hydrated personal template meta', {
+                source: data.resolved_task2_source || null,
+                active: !!window._medicalPersonalTemplateActive,
+                labels: window._medicalPersonalSectionLabels || null,
+            });
+            return !!window._medicalPersonalTemplateActive;
+        } catch (e) {
+            console.warn('[medical training] hydrate personal template failed', e);
+            // Avoid open-tab retries hammering a slow/504 endpoint (holds supabase slots).
+            window._qsMedicalTemplateHydrateRetryAt = Date.now() + 60000;
+            qsRestoreMedicalPersonalTemplateMetaFromStorage();
+            return !!window._medicalPersonalTemplateActive;
+        } finally {
+            window._qsMedicalTemplateHydrateInFlight = null;
+        }
+    })();
+    return window._qsMedicalTemplateHydrateInFlight;
 }
 window.qsHydrateMedicalPersonalTemplateProfile = qsHydrateMedicalPersonalTemplateProfile;
 
