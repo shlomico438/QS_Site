@@ -2246,14 +2246,32 @@ async function qsInitializeMedicalSaasFlow(options) {
     if (!isMedicalModeEnabled()) return;
     const opts = options && typeof options === 'object' ? options : {};
     const force = !!opts.force;
-    // Open medical tabs re-fire this on every auth recover/refresh — single-flight + cooldown
-    // prevents account/signature/credits stampedes that saturate supabase_busy.
+    // Open medical tabs re-fire this on every auth recover/refresh — single-flight +
+    // "already loaded" short-circuit prevents account stampedes / false 401s.
     if (!force && window._qsMedicalSaasInitInFlight) {
         return window._qsMedicalSaasInitInFlight;
     }
-    const lastOkAt = Number(window._qsMedicalSaasInitOkAt || 0);
-    if (!force && lastOkAt && (Date.now() - lastOkAt) < 60000 && window.__QS_MEDICAL_ACCOUNT) {
-        return window.__QS_MEDICAL_ACCOUNT;
+    if (!force) {
+        // Checkout return + pending onboarding must still run even when account is cached.
+        try {
+            if (await qsConfirmMedicalCardcomReturn()) {
+                window._qsMedicalSaasInitOkAt = Date.now();
+                return window.__QS_MEDICAL_ACCOUNT || null;
+            }
+        } catch (cardcomErr) {
+            console.warn('[medical-saas] cardcom return confirm failed', cardcomErr);
+        }
+        const pendingEarly = typeof qsMedicalPendingOnboardingRead === 'function'
+            ? qsMedicalPendingOnboardingRead()
+            : null;
+        const pendingOnboarding = !!(pendingEarly && pendingEarly.professionalSpecialty);
+        if (
+            !pendingOnboarding
+            && window.__QS_MEDICAL_ACCOUNT
+            && window.__QS_MEDICAL_EXISTING_AUTH_USER
+        ) {
+            return window.__QS_MEDICAL_ACCOUNT;
+        }
     }
     window._qsMedicalSaasInitInFlight = (async () => {
         try {
@@ -2309,9 +2327,22 @@ async function qsInitializeMedicalSaasFlow(options) {
             window._qsMedicalSaasInitOkAt = Date.now();
             return account;
         } catch (err) {
+            const errMsg = String((err && err.message) || err || '');
+            const hadAccount = !!window.__QS_MEDICAL_ACCOUNT;
+            const optimistic = typeof qsMedicalOptimisticRecordingAccess === 'function'
+                && qsMedicalOptimisticRecordingAccess();
+            // Auth recover often re-inits while the Bearer token is rotating → transient 401.
+            // Keep the working in-memory account; do not look logged-out.
+            if (/medical_account_http_401/.test(errMsg) && (hadAccount || optimistic)) {
+                console.warn(
+                    '[medical-saas] account fetch 401 during auth refresh; keeping existing session',
+                    errMsg
+                );
+                return window.__QS_MEDICAL_ACCOUNT || null;
+            }
             console.error('[medical-saas] initialize failed', err);
             // Keep optimistic recording UI if we already know this doctor was allowed.
-            if (!(typeof qsMedicalOptimisticRecordingAccess === 'function' && qsMedicalOptimisticRecordingAccess())) {
+            if (!optimistic) {
                 qsMedicalApplyAccessState(null);
                 qsMedicalSetOnboardingMessage('לא ניתן לבדוק את החשבון כעת. נסו שוב בעוד רגע.', true);
             } else {
@@ -4976,7 +5007,32 @@ supabase.auth.onAuthStateChange((event, session) => {
         try { void maybeShowIOSOpenInSafariHintAfterSignIn(); } catch (_) {}
         try { qsCleanOAuthUrlFromHistory(); } catch (_) {}
         try { restoreMedicalAuthSnapshotAfterSignIn(); } catch (_) {}
-        try { void qsInitializeMedicalSaasFlow(); } catch (_) {}
+        // Supabase _recoverAndRefresh often re-emits SIGNED_IN. Skip full medical re-init when
+        // the account is already loaded (avoids /api/medical/account 401 noise mid-visit).
+        try {
+            const pending = typeof qsMedicalPendingOnboardingRead === 'function'
+                ? qsMedicalPendingOnboardingRead()
+                : null;
+            let cardcomPending = false;
+            try {
+                const params = new URLSearchParams(window.location.search || '');
+                cardcomPending = params.get('medical_cardcom_success') === '1'
+                    && !!String(params.get('medical_order_id') || '').trim();
+            } catch (_) {}
+            const alreadyReady = !!(
+                window.__QS_MEDICAL_ACCOUNT
+                && window.__QS_MEDICAL_EXISTING_AUTH_USER
+                && !(pending && pending.professionalSpecialty)
+                && !cardcomPending
+            );
+            if (alreadyReady) {
+                console.info('[medical-saas] skip SIGNED_IN init (account already loaded)');
+            } else {
+                void qsInitializeMedicalSaasFlow();
+            }
+        } catch (_) {
+            try { void qsInitializeMedicalSaasFlow(); } catch (__) {}
+        }
         try {
             const signForCopy = String(sessionStorage.getItem('qs_medical_sign_in_for_copy') || '').trim() === '1';
             if (signForCopy) {
@@ -13884,10 +13940,11 @@ async function ensureFormattedViaApiForExport(options) {
         });
         return true;
     }
-    if (typeof showStatus === 'function') {
-        const msg = medFmt
-            ? 'מייצר סיכום…'
-            : (needClean && needSummary ? 'מייצר סיכום ומעצב תמלול…' : (needClean ? 'מעצב תמלול לייצוא…' : 'מייצר סיכום…'));
+    // Medical Summary already has an in-pane loading state — skip the redundant toast.
+    if (!medFmt && typeof showStatus === 'function') {
+        const msg = needClean && needSummary
+            ? 'מייצר סיכום ומעצב תמלול…'
+            : (needClean ? 'מעצב תמלול לייצוא…' : 'מייצר סיכום…');
         showStatus(msg, false, { duration: 720000 });
     }
     try {
@@ -24034,15 +24091,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateMedicalTabUi();
             const jobId = localStorage.getItem('lastJobId') || jobIdEarly;
             if (needsSummary && typeof window.qsRegenerateMedicalSummaryFromTranscript === 'function') {
-                const T = typeof window.t === 'function' ? window.t : (k) => k;
                 if (mainBtn) mainBtn.disabled = true;
-                if (typeof showStatus === 'function') {
-                    showStatus(T('medical_generating_summary') || 'Generating medical summary…', false, {
-                        duration: 12000,
-                        toastPosition: 'above',
-                        toastAnchorId: 'medical-result-tabs',
-                    });
-                }
                 console.info('[medical] Summary tab requested deferred GPT', {
                     jobId,
                     awaiting: window._qsMedicalStreamAwaitingSummary,
