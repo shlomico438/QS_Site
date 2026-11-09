@@ -10,6 +10,9 @@
     <loc>https://www.getquickscribe.com/free</loc>
   </url>
   <url>
+    <loc>https://www.getquickscribe.com/en/free</loc>
+  </url>
+  <url>
     <loc>https://www.getquickscribe.com/pricing</loc>
   </url>
   <url>
@@ -17,6 +20,9 @@
   </url>
   <url>
     <loc>https://www.getquickscribe.com/about</loc>
+  </url>
+  <url>
+    <loc>https://www.getquickscribe.com/en/about</loc>
   </url>
   <url>
     <loc>https://www.getquickscribe.com/reviews</loc>
@@ -34,7 +40,13 @@
     <loc>https://www.getquickscribe.com/blog</loc>
   </url>
   <url>
+    <loc>https://www.getquickscribe.com/en/blog</loc>
+  </url>
+  <url>
     <loc>https://www.getquickscribe.com/accuracy</loc>
+  </url>
+  <url>
+    <loc>https://www.getquickscribe.com/en/accuracy</loc>
   </url>
   <url>
     <loc>https://www.getquickscribe.com/resources</loc>
@@ -68,6 +80,12 @@
     <loc>https://www.getquickscribe.com/contact</loc>
   </url>
   <url>
+    <loc>https://www.getquickscribe.com/en/contact</loc>
+  </url>
+  <url>
     <loc>https://www.getquickscribe.com/legal</loc>
+  </url>
+  <url>
+    <loc>https://www.getquickscribe.com/en/legal</loc>
   </url>
 </urlset>

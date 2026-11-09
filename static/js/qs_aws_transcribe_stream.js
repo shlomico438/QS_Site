@@ -1682,6 +1682,10 @@ export class MedicalAwsTranscribeStream {
         this._clearStarvationWatch();
         this._clearPreReadyBuffer();
         this._clearPollingBatch();
+        // Unblock connectAndAwaitReady immediately — otherwise a superseded start
+        // waits for the 45s not_ready timer and paints "recording continues offline"
+        // during summary after the session already ended.
+        try { this._rejectStart(new Error('transcribe_stream_aborted')); } catch (_) {}
         try {
             // When immediately starting a new session, skip stop — start cleans up the
             // server bridge. Emitting stop+start races on polling and can kill the new bridge.

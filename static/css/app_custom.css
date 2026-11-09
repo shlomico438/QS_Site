@@ -4846,6 +4846,13 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
   border-color: #2dd4bf;
 }
 
+#medical-session-header .medical-patient-id-input.is-warn,
+#medical-session-header .medical-patient-id-input.is-warn:focus {
+  border-color: #f59e0b;
+  outline-color: #f59e0b;
+  background: #fffbeb;
+}
+
 .medical-warmup-banner {
   display: none;
   align-items: center;

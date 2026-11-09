@@ -319,7 +319,7 @@
                     {# Account balance / profile omitted from guest SSR; injected by qs_account_chrome.js after auth. #}
                     <span id="nav-credit-balance-host"></span>
                     <span id="nav-guest-free-tier" class="nav-guest-free-tier">30 דקות תמלול חינם בכל חודש</span>
-                    <a href="/legal" class="nav-utility-link nav-legal-link" data-i18n="footer_legal">{% if qs_is_en %}Terms &amp; Policy{% else %}תנאים ומדיניות{% endif %}</a>
+                    <a href="{% if qs_is_en %}/en/legal{% else %}/legal{% endif %}" class="nav-utility-link nav-legal-link" data-i18n="footer_legal">{% if qs_is_en %}Terms &amp; Policy{% else %}תנאים ומדיניות{% endif %}</a>
                 </div>
                 <div class="navbar-utility-end" id="nav-utility-session">
                     <span id="nav-utility-signed-in-host"></span>
@@ -334,14 +334,18 @@
                 {% set _nav_on_medical_path = request.path.startswith('/medical') or request.path.startswith('/en/medical') %}
                 {% if qs_is_en %}
                     {% set nav_pricing_href = '/en/medical/pricing' if (medical_entry | default(false) or _nav_on_medical_path) else '/en/pricing' %}
-                    {% set nav_blog_href = '/en/medical/blog' if (medical_entry | default(false) or _nav_on_medical_path) else '/blog' %}
-                    {% set nav_about_href = '/en/medical/about' if (medical_entry | default(false) or _nav_on_medical_path) else '/about' %}
-                    {% set nav_contact_href = '/en/medical/contact' if (medical_entry | default(false) or _nav_on_medical_path) else '/contact' %}
+                    {% set nav_blog_href = '/en/medical/blog' if (medical_entry | default(false) or _nav_on_medical_path) else '/en/blog' %}
+                    {% set nav_about_href = '/en/medical/about' if (medical_entry | default(false) or _nav_on_medical_path) else '/en/about' %}
+                    {% set nav_contact_href = '/en/medical/contact' if (medical_entry | default(false) or _nav_on_medical_path) else '/en/contact' %}
+                    {% set nav_accuracy_href = '/en/accuracy' %}
+                    {% set nav_free_href = '/en/free' %}
                 {% else %}
                     {% set nav_pricing_href = '/medical/pricing' if (medical_entry | default(false) or _nav_on_medical_path) else '/pricing' %}
                     {% set nav_blog_href = '/medical/blog' if (medical_entry | default(false) or _nav_on_medical_path) else '/blog' %}
                     {% set nav_about_href = '/medical/about' if (medical_entry | default(false) or _nav_on_medical_path) else '/about' %}
                     {% set nav_contact_href = '/medical/contact' if (medical_entry | default(false) or _nav_on_medical_path) else '/contact' %}
+                    {% set nav_accuracy_href = '/accuracy' %}
+                    {% set nav_free_href = '/free' %}
                 {% endif %}
                 <a href="{% if medical_entry | default(false) %}{% if qs_is_en %}/en/medical{% else %}/medical{% endif %}{% else %}{% if qs_is_en %}/en{% else %}/{% endif %}{% endif %}" class="nav-logo" id="nav-logo-link">
                     <img src="{{ url_for('static', filename='images/logo.png') }}" alt="QuickScribe" class="nav-logo-image" width="48" height="48">
@@ -351,8 +355,8 @@
                     <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">{% if qs_is_en %}Pricing{% else %}מחירים{% endif %}</a>
                     {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                     <a href="/resources" class="nav-item nav-resources-link" data-i18n="nav_resources">{% if qs_is_en %}Resources{% else %}משאבים{% endif %}</a>
-                    <a href="/free" class="nav-item nav-free-link" data-i18n="nav_free">{% if qs_is_en %}Try free{% else %}נסו בחינם{% endif %}</a>
-                    <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">{% if qs_is_en %}Accuracy{% else %}דיוק{% endif %}</a>
+                    <a href="{{ nav_free_href }}" class="nav-item nav-free-link" data-i18n="nav_free">{% if qs_is_en %}Try free{% else %}נסו בחינם{% endif %}</a>
+                    <a href="{{ nav_accuracy_href }}" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">{% if qs_is_en %}Accuracy{% else %}דיוק{% endif %}</a>
                     {% endif %}
                     <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">{% if qs_is_en %}About Us{% else %}אודות{% endif %}</a>
                     <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">{% if qs_is_en %}Blog{% else %}בלוג{% endif %}</a>
@@ -374,8 +378,8 @@
                 <a href="{{ nav_pricing_href }}" class="nav-item nav-pricing-link" data-i18n="nav_pricing">{% if qs_is_en %}Pricing{% else %}מחירים{% endif %}</a>
                 {% if not (medical_entry | default(false) or _nav_on_medical_path) %}
                 <a href="/resources" class="nav-item nav-resources-link" data-i18n="nav_resources">{% if qs_is_en %}Resources{% else %}משאבים{% endif %}</a>
-                <a href="/free" class="nav-item nav-free-link" data-i18n="nav_free">{% if qs_is_en %}Try free{% else %}נסו בחינם{% endif %}</a>
-                <a href="/accuracy" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">{% if qs_is_en %}Accuracy{% else %}דיוק{% endif %}</a>
+                <a href="{{ nav_free_href }}" class="nav-item nav-free-link" data-i18n="nav_free">{% if qs_is_en %}Try free{% else %}נסו בחינם{% endif %}</a>
+                <a href="{{ nav_accuracy_href }}" class="nav-item nav-accuracy-link" data-i18n="nav_accuracy">{% if qs_is_en %}Accuracy{% else %}דיוק{% endif %}</a>
                 {% endif %}
                 <a href="{{ nav_about_href }}" class="nav-item nav-about-link" data-i18n="nav_about">{% if qs_is_en %}About Us{% else %}אודות{% endif %}</a>
                 <a href="{{ nav_blog_href }}" class="nav-item nav-blog-link" data-i18n="nav_blog">{% if qs_is_en %}Blog{% else %}בלוג{% endif %}</a>
@@ -426,7 +430,7 @@
                 <a href="{{ '/en/reviews' if qs_is_en else '/reviews' }}" data-i18n="nav_reviews">{% if qs_is_en %}Reviews{% else %}ביקורות{% endif %}</a>
                 {% endif %}
                 <a href="{{ '/en/medical/contact' if qs_is_en and (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else ('/medical/contact' if (medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical')) else '/contact') }}" data-i18n="nav_contact">{% if qs_is_en %}Contact{% else %}צור קשר{% endif %}</a>
-                <a href="/legal" data-i18n="footer_legal">{% if qs_is_en %}Terms &amp; Policy{% else %}תנאים ומדיניות{% endif %}</a>
+                <a href="{% if qs_is_en %}/en/legal{% else %}/legal{% endif %}" data-i18n="footer_legal">{% if qs_is_en %}Terms &amp; Policy{% else %}תנאים ומדיניות{% endif %}</a>
                 <a href="{% if medical_entry | default(false) or request.path.startswith('/medical') or request.path.startswith('/en/medical') %}{{ '/en/medical/accessibility' if qs_is_en else '/medical/accessibility' }}{% else %}{{ '/en/accessibility' if qs_is_en else '/accessibility' }}{% endif %}" data-i18n="footer_accessibility">{% if qs_is_en %}Accessibility statement{% else %}הצהרת נגישות{% endif %}</a>
             </nav>
             <nav class="site-footer-social" aria-label="{% if qs_is_en %}Social and reviews{% else %}רשתות וביקורות{% endif %}">

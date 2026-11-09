@@ -10629,7 +10629,18 @@ def reviews_en():
 
 
 @app.route('/about')
+@app.route('/about/')
 def about():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/about', code=301)
+    return render_template('about.html')
+
+
+@app.route('/en/about')
+@app.route('/en/about/')
+def about_en():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/en/about', code=301)
     return render_template('about.html')
 
 
@@ -10657,6 +10668,14 @@ def free_landing():
     """Standalone conversion landing for organic/social traffic."""
     if request.path.endswith('/') and request.path != '/':
         return redirect('/free', code=301)
+    return render_template('free.html')
+
+
+@app.route('/en/free')
+@app.route('/en/free/')
+def free_landing_en():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/en/free', code=301)
     return render_template('free.html')
 
 
@@ -10711,7 +10730,18 @@ def products_en_slash():
     return redirect(target, code=301)
 
 @app.route('/blog')
+@app.route('/blog/')
 def blog():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/blog', code=301)
+    return render_template('blog.html')
+
+
+@app.route('/en/blog')
+@app.route('/en/blog/')
+def blog_en():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/en/blog', code=301)
     return render_template('blog.html')
 
 
@@ -10742,7 +10772,18 @@ def medical_blog_he():
 
 
 @app.route('/accuracy')
+@app.route('/accuracy/')
 def accuracy():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/accuracy', code=301)
+    return render_template('accuracy.html')
+
+
+@app.route('/en/accuracy')
+@app.route('/en/accuracy/')
+def accuracy_en():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/en/accuracy', code=301)
     return render_template('accuracy.html')
 
 
@@ -10797,7 +10838,18 @@ def medical_resources_pillar_en_slash():
 
 
 @app.route('/contact')
+@app.route('/contact/')
 def contact():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/contact', code=301)
+    return render_template('contact.html')
+
+
+@app.route('/en/contact')
+@app.route('/en/contact/')
+def contact_en():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/en/contact', code=301)
     return render_template('contact.html')
 
 
@@ -10830,7 +10882,19 @@ def personal():
 
 
 @app.route('/legal')
+@app.route('/legal/')
 def legal():
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/legal', code=301)
+    return render_template('legal.html')
+
+
+@app.route('/en/legal')
+@app.route('/en/legal/')
+def legal_en():
+    # /legal emits hreflang en → /en/legal; without this route GSC gets 404.
+    if request.path.endswith('/') and request.path != '/':
+        return redirect('/en/legal', code=301)
     return render_template('legal.html')
 
 
@@ -12658,6 +12722,132 @@ def _match_doctor_heading_line(probe, headings):
     return None
 
 
+def _lift_inline_section_markers(text, headings):
+    """Promote mid-paragraph ``ברקע: …`` onto its own heading line.
+
+    GPT often appends background as a trailing clause inside הנדון/HPI
+    (``…אחרים. ברקע: יתר לחץ דם…``). Without a line break, bucketing leaves
+    that text above an empty **ברקע** heading.
+
+    Only ``ברקע`` / ``רקע`` are lifted. Peeling ``לסיכום`` / ``תרופות`` /
+    ``בבדיקה`` mid-letter scrambled later sections (exam landed under meds).
+    """
+    allowed = {
+        _normalize_template_heading(h)
+        for h in (headings or [])
+        if _normalize_template_heading(h) in ("ברקע", "רקע")
+    }
+    titles = sorted(
+        [
+            str(h).strip()
+            for h in (headings or [])
+            if str(h).strip() and _normalize_template_heading(h) in allowed
+        ],
+        key=len,
+        reverse=True,
+    )
+    if not titles:
+        return str(text or "")
+    out_lines = []
+    for raw in str(text or "").splitlines():
+        line = str(raw or "")
+        # Peel one trailing inline ברקע marker at a time.
+        while True:
+            lifted = None
+            for title in titles:
+                esc = re.escape(title)
+                m = re.search(
+                    rf"(?P<pre>.+?)(?<![A-Za-z\u0590-\u05FF*])(?P<title>{esc})\s*[:：]\s*(?P<body>\S.*)\s*$",
+                    line,
+                )
+                if not m:
+                    continue
+                pre = m.group("pre").rstrip(" \t*-–—")
+                body = m.group("body").strip()
+                if not pre or not body:
+                    continue
+                out_lines.append(pre.rstrip())
+                out_lines.append(title)
+                line = body
+                lifted = True
+                break
+            if not lifted:
+                break
+        if str(line or "").strip():
+            out_lines.append(line.rstrip())
+    return "\n".join(out_lines)
+
+
+_EXAM_FINDING_LINE_RE = re.compile(
+    r"(?i)("
+    r"דיבור\s*תקין|טונוס|ריגידיות|שדות\s*ראייה|תחושה|"
+    r"החזרים|פלנטרים|מוחון|רומברג|כוח\s*גס|"
+    r"\bCN\b|cranial|reflex|babinski|neurolog|"
+    r"בדיקה\s*נוירולוגית|"
+    r"כח\s*[-–—:]|כח\s*לא"
+    r")"
+)
+
+
+def _line_looks_like_exam_finding(line):
+    """True for classic neuro/physical-exam finding lines (not meds/HPI)."""
+    text = re.sub(r"\s+", " ", str(line or "").replace("*", " ")).strip()
+    if not text or len(text) > 220:
+        return False
+    return bool(_EXAM_FINDING_LINE_RE.search(text))
+
+
+def _title_for_norm(titles, *norms):
+    want = {str(n or "").strip() for n in norms if str(n or "").strip()}
+    for title in titles or []:
+        if _normalize_template_heading(title) in want:
+            return title
+    return None
+
+
+def _repair_exam_lines_leaked_into_meds(buckets, titles):
+    """Move neuro/exam findings that GPT left under תרופות into בבדיקה.
+
+    Personal templates often have תרופות then בבדיקה. When the model skips the
+    בבדיקה heading, lines like ``דיבור תקין`` / ``טונוס`` stay under meds.
+    """
+    if not isinstance(buckets, dict):
+        return
+    meds_title = _title_for_norm(titles, "תרופות")
+    exam_title = _title_for_norm(titles, "בבדיקה", "בדיקה")
+    if not meds_title or not exam_title:
+        return
+    meds = list(buckets.get(meds_title) or [])
+    exam = list(buckets.get(exam_title) or [])
+    split_at = None
+    for i, line in enumerate(meds):
+        if _line_looks_like_exam_finding(line):
+            split_at = i
+            break
+    if split_at is None:
+        return
+    leaked = meds[split_at:]
+    keep = meds[:split_at]
+    if not leaked:
+        return
+    exam_body = "\n".join(str(x or "").strip() for x in exam if str(x or "").strip()).strip()
+    exam_placeholder = exam_body.lower() in (
+        "",
+        "לא צוין",
+        "לא צוין.",
+        "not specified",
+        "not specified.",
+    )
+    exam_already_has_findings = any(_line_looks_like_exam_finding(x) for x in exam)
+    if exam_already_has_findings and len(exam_body) > 80:
+        return
+    buckets[meds_title] = keep
+    if exam_placeholder:
+        buckets[exam_title] = leaked
+    else:
+        buckets[exam_title] = leaked + exam
+
+
 def _enforce_doctor_template_headings(chief, exam, rec, headings, bullets=None):
     """Rebuild the note so its section headings are exactly the training letter's, in that order."""
     titles = [str(h).strip() for h in (headings or []) if str(h).strip()]
@@ -12672,7 +12862,11 @@ def _enforce_doctor_template_headings(chief, exam, rec, headings, bullets=None):
         for h in _STRAY_TEMPLATE_HEADINGS
         if _normalize_template_heading(h) not in norms
     }
-    for raw in "\n".join(str(part or "") for part in (chief, exam, rec)).splitlines():
+    merged = _lift_inline_section_markers(
+        "\n".join(str(part or "") for part in (chief, exam, rec)),
+        titles,
+    )
+    for raw in merged.splitlines():
         probe = raw.replace("*", "").strip()
         if not probe:
             continue
@@ -12691,6 +12885,7 @@ def _enforce_doctor_template_headings(chief, exam, rec, headings, bullets=None):
             preamble.append(raw.rstrip())
     if preamble:
         buckets[titles[0]] = preamble + buckets[titles[0]]
+    _repair_exam_lines_leaked_into_meds(buckets, titles)
     bullet_map = bullets if isinstance(bullets, dict) else {}
     blocks = []
     for title in titles:
@@ -13186,7 +13381,8 @@ def _format_unified_transcript_openai(
         if is_medical:
             # Medical UI cannot sit on stacked OpenAI reads (was 270s × 3 ≈ 13+ min).
             # Do NOT inherit GPT_FORMAT_TIMEOUT_SEC=270 from non-medical config.
-            default_med = 75 if short_medical else 120
+            # Default 90s matches the client medical_summary wall so UI abort and HTTP 500 align.
+            default_med = 75 if short_medical else 90
             raw_timeout = (
                 os.environ.get('MEDICAL_GPT_SHORT_TIMEOUT_SEC' if short_medical else 'MEDICAL_GPT_TIMEOUT_SEC')
                 or ''
