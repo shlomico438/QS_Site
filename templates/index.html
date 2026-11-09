@@ -250,18 +250,61 @@ try {
                 </button>
             </div>
             <div class="medical-patient-name-wrap">
+                <div class="medical-patient-roster-toolbar">
+                    <button
+                        type="button"
+                        id="medical-patient-roster-import"
+                        class="medical-patient-roster-btn"
+                        data-i18n="medical_patient_roster_import"
+                        data-i18n-title="medical_patient_roster_import_tooltip"
+                        title="{% if qs_is_en %}Import today’s patient list from the diary (CSV), then pick a patient instead of typing name and ID.{% else %}ייבוא רשימת מטופלי היום מהיומן (קובץ CSV) — ואז בחירה מהרשימה במקום להקליד שם ות.ז.{% endif %}"
+                    >
+                        {% if qs_is_en %}Import list{% else %}ייבוא רשימה{% endif %}
+                    </button>
+                    <input type="file" id="medical-patient-roster-file" accept=".csv,text/csv" hidden>
+                    <button
+                        type="button"
+                        id="medical-patient-roster-open"
+                        class="medical-patient-roster-btn medical-patient-roster-btn--ghost"
+                        hidden
+                        data-i18n="medical_patient_roster_open"
+                        data-i18n-title="medical_patient_roster_open_tooltip"
+                        title="{% if qs_is_en %}Show today’s patients already imported from the diary{% else %}הצגת מטופלי היום שכבר יובאו מהיומן{% endif %}"
+                    >
+                        {% if qs_is_en %}Show list{% else %}הצג רשימה{% endif %}
+                    </button>
+                    <button
+                        type="button"
+                        id="medical-patient-roster-clear"
+                        class="medical-patient-roster-btn medical-patient-roster-btn--ghost"
+                        hidden
+                        data-i18n="medical_patient_roster_clear"
+                        data-i18n-title="medical_patient_roster_clear_tooltip"
+                        title="{% if qs_is_en %}Remove the imported diary patient list from this device{% else %}מחיקת רשימת המטופלים המיובאת מהיומן במכשיר זה{% endif %}"
+                    >
+                        {% if qs_is_en %}Clear list{% else %}נקה רשימה{% endif %}
+                    </button>
+                    <span id="medical-patient-roster-status" class="medical-patient-roster-status" hidden></span>
+                </div>
                 <label for="medical-patient-name" class="medical-patient-name-label" data-i18n="medical_patient_name_label">Patient name</label>
-                <input
-                    type="text"
-                    id="medical-patient-name"
-                    class="medical-patient-name-input"
-                    name="medical-patient-name"
-                    autocomplete="off"
-                    maxlength="120"
-                    dir="auto"
-                    data-i18n-placeholder="medical_patient_name_placeholder"
-                    placeholder="{% if qs_is_en %}Optional — helps find this visit later{% else %}אופציונלי — כדי למצוא את הביקור אחר כך{% endif %}"
-                >
+                <div class="medical-patient-picker-field">
+                    <input
+                        type="text"
+                        id="medical-patient-name"
+                        class="medical-patient-name-input"
+                        name="medical-patient-name"
+                        autocomplete="off"
+                        maxlength="120"
+                        dir="auto"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded="false"
+                        aria-controls="medical-patient-picker-list"
+                        data-i18n-placeholder="medical_patient_name_placeholder"
+                        placeholder="{% if qs_is_en %}Optional — helps find this visit later{% else %}אופציונלי — כדי למצוא את הביקור אחר כך{% endif %}"
+                    >
+                    <div id="medical-patient-picker-list" class="medical-patient-picker-list" role="listbox" hidden></div>
+                </div>
                 <label for="medical-patient-id" class="medical-patient-id-label" data-i18n="medical_patient_id_label">ID</label>
                 <input
                     type="text"

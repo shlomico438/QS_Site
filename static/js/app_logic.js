@@ -1205,6 +1205,8 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     // One-shot in-memory → survive sign-in round-trip; feedback session flags (Storage patch applies to sessionStorage too).
     if (k === 'qs_medical_auth_snapshot' || k === 'qs_medical_session_draft') return true;
     if (k === 'qs_medical_resume_draft' || k === 'qs_medical_skip_draft_save') return true;
+    // Clinic-day patient roster from doctor-imported CSV (client-only PHI for the tab).
+    if (k === 'qs_medical_patient_roster') return true;
     if (k === QS_MEDICAL_PENDING_ONBOARDING_KEY) return true;
     if (k === 'qs_medical_sign_in_for_copy' || k === 'qs_medical_show_feedback_on_next_copy') return true;
     if (k === 'qs_pefb_copy' || k === 'qs_pefb_export' || k.startsWith('qs_pefb_')) return true;
@@ -11062,6 +11064,471 @@ function qsMedicalPatientIdInput() {
     return document.getElementById('medical-patient-id');
 }
 
+const QS_MEDICAL_PATIENT_ROSTER_KEY = 'qs_medical_patient_roster';
+
+/** Decode trivial HTML entities that clinic exports sometimes embed in names. */
+function qsDecodeMedicalCsvEntities(raw) {
+    return String(raw || '')
+        .replace(/&#039;/g, "'")
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+}
+
+/** Minimal RFC4180-ish CSV row splitter (handles quotes and commas). */
+function qsSplitCsvLine(line) {
+    const out = [];
+    let cur = '';
+    let inQuotes = false;
+    const s = String(line || '');
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (inQuotes) {
+            if (ch === '"') {
+                if (s[i + 1] === '"') {
+                    cur += '"';
+                    i += 1;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                cur += ch;
+            }
+            continue;
+        }
+        if (ch === '"') {
+            inQuotes = true;
+            continue;
+        }
+        if (ch === ',') {
+            out.push(cur);
+            cur = '';
+            continue;
+        }
+        cur += ch;
+    }
+    out.push(cur);
+    return out;
+}
+
+function qsNormalizeMedicalCsvHeader(raw) {
+    return String(raw || '')
+        .replace(/^\uFEFF/, '')
+        .trim()
+        .toLowerCase()
+        .replace(/"/g, '')
+        .replace(/\s+/g, ' ');
+}
+
+function qsMedicalCsvHeaderIndexMap(headers) {
+    const norm = headers.map(qsNormalizeMedicalCsvHeader);
+    const find = (...aliases) => {
+        for (let i = 0; i < norm.length; i++) {
+            const h = norm[i];
+            if (aliases.some((a) => h === a || h.includes(a))) return i;
+        }
+        return -1;
+    };
+    // Prefer exact header matches before includes(), so "שם" wins over "שם יומן".
+    const findExact = (...aliases) => {
+        for (let i = 0; i < norm.length; i++) {
+            if (aliases.includes(norm[i])) return i;
+        }
+        return -1;
+    };
+    const nameExact = findExact('שם', 'name', 'patient name', 'full name');
+    const idExact = findExact('ת.ז', 'ת.ז.', 'תז', 'id', 'national id', 'patient id');
+    return {
+        name: nameExact >= 0 ? nameExact : find('שם', 'name', 'patient name', 'full name'),
+        id: idExact >= 0 ? idExact : find('ת.ז', 'תז', 'id', 'national id', 'patient id'),
+        phone: findExact('טלפון', 'phone', 'mobile') >= 0
+            ? findExact('טלפון', 'phone', 'mobile')
+            : find('טלפון', 'phone', 'mobile'),
+        phone2: find('טלפון 2', 'phone 2'),
+        apptDate: find('תאריך התור', 'appointment date'),
+        apptTime: find('שעת התור', 'appointment time'),
+        // Clinic exports put פעיל/בוטל under "קיים"; "מצב" is נכנס/לא הגיע/etc.
+        existence: findExact('קיים') >= 0 ? findExact('קיים') : find('קיים', 'active'),
+        status: findExact('מצב', 'status', 'state') >= 0
+            ? findExact('מצב', 'status', 'state')
+            : find('מצב', 'status', 'state'),
+    };
+}
+
+/**
+ * Parse clinic-day CSV (Hebrew Maccabi-style exports) into roster rows.
+ * @returns {{ rows: Array<object>, apptDate: string }}
+ */
+function qsParseMedicalPatientCsv(text) {
+    const raw = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = raw.split('\n').filter((ln) => String(ln || '').trim());
+    if (lines.length < 2) {
+        return { rows: [], apptDate: '' };
+    }
+    const headers = qsSplitCsvLine(lines[0]);
+    const idx = qsMedicalCsvHeaderIndexMap(headers);
+    if (idx.name < 0) {
+        return { rows: [], apptDate: '' };
+    }
+    const rows = [];
+    let apptDate = '';
+    for (let li = 1; li < lines.length; li++) {
+        const cols = qsSplitCsvLine(lines[li]);
+        const name = qsDecodeMedicalCsvEntities(cols[idx.name] || '').trim().replace(/\s+/g, ' ');
+        if (!name) continue;
+        if (name === '*חסום*' || /^blocked/i.test(name)) continue;
+        const idNumber = qsNormalizeMedicalPatientIdNumber(idx.id >= 0 ? cols[idx.id] : '');
+        const phone = String(idx.phone >= 0 ? cols[idx.phone] : '').trim();
+        const phone2 = String(idx.phone2 >= 0 ? cols[idx.phone2] : '').trim();
+        const status = String(idx.status >= 0 ? cols[idx.status] : '').trim();
+        const existence = String(idx.existence >= 0 ? cols[idx.existence] : '').trim();
+        const time = String(idx.apptTime >= 0 ? cols[idx.apptTime] : '').trim();
+        const date = String(idx.apptDate >= 0 ? cols[idx.apptDate] : '').trim();
+        if (date && !apptDate) apptDate = date;
+        // Default list hides cancelled appointments ("בוטל" lives under קיים in clinic exports).
+        if (
+            existence === 'בוטל'
+            || status === 'בוטל'
+            || /^cancel/i.test(existence)
+            || /^cancel/i.test(status)
+        ) {
+            continue;
+        }
+        rows.push({
+            name: name.slice(0, 120),
+            idNumber,
+            phone,
+            phone2,
+            status: status || existence,
+            time,
+            date,
+        });
+    }
+    rows.sort((a, b) => {
+        const ta = String(a.time || '');
+        const tb = String(b.time || '');
+        if (ta && tb && ta !== tb) return ta.localeCompare(tb, 'he', { numeric: true });
+        return String(a.name || '').localeCompare(String(b.name || ''), 'he');
+    });
+    return { rows, apptDate };
+}
+window.qsParseMedicalPatientCsv = qsParseMedicalPatientCsv;
+
+function qsGetMedicalPatientRoster() {
+    try {
+        const raw = sessionStorage.getItem(QS_MEDICAL_PATIENT_ROSTER_KEY) || '';
+        if (!raw) return { rows: [], apptDate: '', importedAt: 0 };
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return { rows: [], apptDate: '', importedAt: 0 };
+        const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+        return {
+            rows,
+            apptDate: String(parsed.apptDate || ''),
+            importedAt: Number(parsed.importedAt || 0) || 0,
+        };
+    } catch (_) {
+        return { rows: [], apptDate: '', importedAt: 0 };
+    }
+}
+window.qsGetMedicalPatientRoster = qsGetMedicalPatientRoster;
+
+function qsSetMedicalPatientRoster(rows, apptDate) {
+    const list = Array.isArray(rows) ? rows : [];
+    const payload = {
+        v: 1,
+        rows: list,
+        apptDate: String(apptDate || ''),
+        importedAt: Date.now(),
+    };
+    try {
+        sessionStorage.setItem(QS_MEDICAL_PATIENT_ROSTER_KEY, JSON.stringify(payload));
+    } catch (e) {
+        console.warn('[medical] patient roster save failed', e);
+        return false;
+    }
+    try { qsSyncMedicalPatientRosterUi(); } catch (_) {}
+    return true;
+}
+window.qsSetMedicalPatientRoster = qsSetMedicalPatientRoster;
+
+function qsClearMedicalPatientRoster() {
+    try { sessionStorage.removeItem(QS_MEDICAL_PATIENT_ROSTER_KEY); } catch (_) {}
+    try { qsSyncMedicalPatientRosterUi(); } catch (_) {}
+    try { qsHideMedicalPatientPicker(); } catch (_) {}
+}
+window.qsClearMedicalPatientRoster = qsClearMedicalPatientRoster;
+
+function qsFilterMedicalPatientRoster(query) {
+    const roster = qsGetMedicalPatientRoster();
+    const q = String(query || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const rows = roster.rows || [];
+    if (!q) return rows.slice(0, 40);
+    const digits = q.replace(/[^\d]/g, '');
+    return rows.filter((row) => {
+        const name = String(row.name || '').toLowerCase();
+        const id = String(row.idNumber || '');
+        const phone = String(row.phone || '') + String(row.phone2 || '');
+        const time = String(row.time || '');
+        if (name.includes(q)) return true;
+        if (digits && id.includes(digits)) return true;
+        if (digits && phone.replace(/[^\d]/g, '').includes(digits)) return true;
+        if (time.includes(q)) return true;
+        return false;
+    }).slice(0, 40);
+}
+
+function qsHideMedicalPatientPicker() {
+    const list = document.getElementById('medical-patient-picker-list');
+    if (!list) return;
+    list.hidden = true;
+    list.innerHTML = '';
+    const nameInput = qsMedicalPatientNameInput();
+    if (nameInput) {
+        try { nameInput.setAttribute('aria-expanded', 'false'); } catch (_) {}
+    }
+}
+
+function qsSyncMedicalPatientRosterUi() {
+    const statusEl = document.getElementById('medical-patient-roster-status');
+    const clearBtn = document.getElementById('medical-patient-roster-clear');
+    const openBtn = document.getElementById('medical-patient-roster-open');
+    const roster = qsGetMedicalPatientRoster();
+    const count = (roster.rows || []).length;
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (statusEl) {
+        if (count > 0) {
+            const datePart = roster.apptDate ? ` · ${roster.apptDate}` : '';
+            statusEl.textContent = (T('medical_patient_roster_status') || '{count} patients{date}')
+                .replace('{count}', String(count))
+                .replace('{date}', datePart);
+            statusEl.hidden = false;
+        } else {
+            statusEl.textContent = '';
+            statusEl.hidden = true;
+        }
+    }
+    if (clearBtn) clearBtn.hidden = count === 0;
+    if (openBtn) openBtn.hidden = count === 0;
+    const wrap = document.querySelector('.medical-patient-name-wrap');
+    if (wrap) wrap.classList.toggle('has-patient-roster', count > 0);
+}
+window.qsSyncMedicalPatientRosterUi = qsSyncMedicalPatientRosterUi;
+
+function qsRenderMedicalPatientPicker(query) {
+    const list = document.getElementById('medical-patient-picker-list');
+    const nameInput = qsMedicalPatientNameInput();
+    if (!list || !nameInput) return;
+    const roster = qsGetMedicalPatientRoster();
+    if (!(roster.rows || []).length) {
+        qsHideMedicalPatientPicker();
+        return;
+    }
+    const rows = qsFilterMedicalPatientRoster(query);
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const esc = (s) => String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    if (!rows.length) {
+        list.innerHTML = `<div class="medical-patient-picker-empty" role="option" aria-disabled="true">${esc(T('medical_patient_roster_no_matches') || 'No matches')}</div>`;
+        list.hidden = false;
+        try { nameInput.setAttribute('aria-expanded', 'true'); } catch (_) {}
+        return;
+    }
+    list.innerHTML = rows.map((row, i) => {
+        const meta = [row.time, row.idNumber, row.status].filter(Boolean).join(' · ');
+        return (
+            `<button type="button" class="medical-patient-picker-option" role="option" ` +
+            `data-roster-index="${i}" data-name="${esc(row.name)}" data-id="${esc(row.idNumber)}" ` +
+            `id="medical-patient-picker-opt-${i}">` +
+            `<span class="medical-patient-picker-name">${esc(row.name)}</span>` +
+            (meta ? `<span class="medical-patient-picker-meta">${esc(meta)}</span>` : '') +
+            `</button>`
+        );
+    }).join('');
+    list.hidden = false;
+    try { nameInput.setAttribute('aria-expanded', 'true'); } catch (_) {}
+}
+
+function qsSelectMedicalPatientFromRoster(name, idNumber) {
+    qsSetMedicalPatientNameInput(name, idNumber);
+    qsHideMedicalPatientPicker();
+    try { qsWarnMedicalPatientIdIfInvalid(qsMedicalPatientIdInput()); } catch (_) {}
+    try { void qsSyncMedicalPatientNameToCurrentJob(); } catch (_) {}
+}
+
+/** Clinic exports are often Windows-1255; browsers default file.text() to UTF-8 and garble headers. */
+function qsDecodeMedicalCsvBytes(buffer) {
+    const bytes = buffer instanceof ArrayBuffer
+        ? new Uint8Array(buffer)
+        : (buffer && buffer.buffer
+            ? new Uint8Array(buffer.buffer, buffer.byteOffset || 0, buffer.byteLength || 0)
+            : null);
+    if (!bytes || !bytes.length) return '';
+    const encodings = ['utf-8', 'windows-1255', 'iso-8859-8'];
+    let bestText = '';
+    let bestScore = -1;
+    encodings.forEach((enc) => {
+        let text = '';
+        try {
+            text = new TextDecoder(enc, { fatal: false }).decode(bytes);
+        } catch (_) {
+            return;
+        }
+        if (!text) return;
+        const parsed = qsParseMedicalPatientCsv(text);
+        const score = (parsed.rows && parsed.rows.length ? parsed.rows.length * 10 : 0)
+            + (/שם/.test(text.slice(0, 400)) ? 5 : 0)
+            + (text.includes('\uFFFD') ? -50 : 0);
+        if (score > bestScore) {
+            bestScore = score;
+            bestText = text;
+        }
+    });
+    return bestText || '';
+}
+
+async function qsImportMedicalPatientCsvFile(file) {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    if (!file) return false;
+    let text = '';
+    try {
+        const buf = await file.arrayBuffer();
+        text = qsDecodeMedicalCsvBytes(buf);
+        if (!text) text = await file.text();
+    } catch (e) {
+        if (typeof showStatus === 'function') {
+            showStatus(T('medical_patient_roster_invalid') || 'Could not read CSV.', true);
+        }
+        return false;
+    }
+    const parsed = qsParseMedicalPatientCsv(text);
+    if (!parsed.rows.length) {
+        if (typeof showStatus === 'function') {
+            showStatus(T('medical_patient_roster_invalid') || 'Could not find patients in this CSV.', true);
+        }
+        return false;
+    }
+    qsSetMedicalPatientRoster(parsed.rows, parsed.apptDate);
+    if (typeof showStatus === 'function') {
+        showStatus(
+            (T('medical_patient_roster_imported') || 'Imported {count} patients.')
+                .replace('{count}', String(parsed.rows.length)),
+            false,
+            { duration: 3500 },
+        );
+    }
+    return true;
+}
+window.qsImportMedicalPatientCsvFile = qsImportMedicalPatientCsvFile;
+
+function qsWireMedicalPatientRosterUi() {
+    if (window._qsMedicalPatientRosterWired) return;
+    const importBtn = document.getElementById('medical-patient-roster-import');
+    const fileInput = document.getElementById('medical-patient-roster-file');
+    const clearBtn = document.getElementById('medical-patient-roster-clear');
+    const openBtn = document.getElementById('medical-patient-roster-open');
+    const list = document.getElementById('medical-patient-picker-list');
+    const nameInput = qsMedicalPatientNameInput();
+    if (!importBtn && !nameInput) return;
+    window._qsMedicalPatientRosterWired = true;
+
+    if (importBtn && fileInput) {
+        importBtn.addEventListener('click', () => {
+            try { fileInput.value = ''; } catch (_) {}
+            fileInput.click();
+        });
+        fileInput.addEventListener('change', async () => {
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) return;
+            await qsImportMedicalPatientCsvFile(file);
+            try { fileInput.value = ''; } catch (_) {}
+        });
+    }
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            qsClearMedicalPatientRoster();
+            const T = typeof window.t === 'function' ? window.t : (k) => k;
+            if (typeof showStatus === 'function') {
+                showStatus(T('medical_patient_roster_cleared') || 'Patient list cleared.', false, { duration: 2500 });
+            }
+        });
+    }
+    if (openBtn && nameInput) {
+        openBtn.addEventListener('click', () => {
+            nameInput.focus();
+            qsRenderMedicalPatientPicker(nameInput.value || '');
+        });
+    }
+    if (nameInput) {
+        nameInput.setAttribute('role', 'combobox');
+        nameInput.setAttribute('aria-autocomplete', 'list');
+        nameInput.setAttribute('aria-expanded', 'false');
+        nameInput.setAttribute('aria-controls', 'medical-patient-picker-list');
+        nameInput.addEventListener('input', () => {
+            const roster = qsGetMedicalPatientRoster();
+            if (!(roster.rows || []).length) {
+                qsHideMedicalPatientPicker();
+                return;
+            }
+            qsRenderMedicalPatientPicker(nameInput.value || '');
+        });
+        nameInput.addEventListener('focus', () => {
+            const roster = qsGetMedicalPatientRoster();
+            if ((roster.rows || []).length) {
+                qsRenderMedicalPatientPicker(nameInput.value || '');
+            }
+        });
+        nameInput.addEventListener('keydown', (e) => {
+            if (!list || list.hidden) return;
+            const opts = Array.from(list.querySelectorAll('.medical-patient-picker-option'));
+            if (!opts.length) return;
+            const activeId = nameInput.getAttribute('aria-activedescendant');
+            let idx = opts.findIndex((el) => el.id === activeId);
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                idx = Math.min(opts.length - 1, Math.max(0, idx + 1));
+                opts[idx].focus();
+                nameInput.setAttribute('aria-activedescendant', opts[idx].id);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                idx = Math.max(0, idx <= 0 ? 0 : idx - 1);
+                opts[idx].focus();
+                nameInput.setAttribute('aria-activedescendant', opts[idx].id);
+            } else if (e.key === 'Escape') {
+                qsHideMedicalPatientPicker();
+            } else if (e.key === 'Enter' && idx >= 0) {
+                e.preventDefault();
+                opts[idx].click();
+            }
+        });
+    }
+    if (list) {
+        list.addEventListener('mousedown', (e) => {
+            // Keep focus on name input while clicking an option.
+            const opt = e.target && e.target.closest ? e.target.closest('.medical-patient-picker-option') : null;
+            if (opt) e.preventDefault();
+        });
+        list.addEventListener('click', (e) => {
+            const opt = e.target && e.target.closest ? e.target.closest('.medical-patient-picker-option') : null;
+            if (!opt) return;
+            const name = opt.getAttribute('data-name') || '';
+            const id = opt.getAttribute('data-id') || '';
+            qsSelectMedicalPatientFromRoster(name, id);
+        });
+    }
+    document.addEventListener('click', (e) => {
+        const wrap = document.querySelector('.medical-patient-name-wrap');
+        if (!wrap) return;
+        if (e.target && wrap.contains(e.target)) return;
+        qsHideMedicalPatientPicker();
+    });
+    qsSyncMedicalPatientRosterUi();
+}
+
 function qsNormalizeMedicalPatientIdNumber(raw) {
     return String(raw || '').replace(/[^\d]/g, '').slice(0, 20);
 }
@@ -19233,6 +19700,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     setTimeout(() => { void qsWarmMedicalMicIfPermitted(); }, 0);
                 }
             } catch (_) {}
+            try { qsWireMedicalPatientRosterUi(); } catch (_) {}
+            try { qsSyncMedicalPatientRosterUi(); } catch (_) {}
             // Returning from About/Pricing/etc. via logo — restore the draft encounter.
             try {
                 if (!window._qsMedicalDraftRestoreAttempted) {
@@ -24632,7 +25101,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 qsWarnMedicalPatientIdIfInvalid(medicalPatientIdInput);
             });
         }
+        try { qsWireMedicalPatientRosterUi(); } catch (e) {
+            console.warn('[medical] patient roster UI wire failed', e);
+        }
     }
+    try { qsWireMedicalPatientRosterUi(); } catch (_) {}
     const medicalUploadNewSessionBtn = document.getElementById('medical-upload-new-session-btn');
     const medicalToolbarNewSessionBtn = document.getElementById('medical-toolbar-new-session-btn');
     const startMedicalNewSessionFromUi = (e) => {
