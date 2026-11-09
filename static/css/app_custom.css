@@ -8829,20 +8829,43 @@ html[dir="rtl"] .upload-status {
 }
 
 /* Private-template subheads inside a summary pane (רגישות / תרופות / לסיכום) */
+.medical-summary-subsection {
+  margin: 0;
+}
+.medical-summary-subhead-row {
+  margin: 14px 0 6px;
+}
+.medical-summary-subhead-row.is-first,
+.medical-summary-subsection:first-child .medical-summary-subhead-row {
+  margin-top: 0;
+}
 .medical-summary-subhead {
   font-weight: 700;
   margin: 14px 0 6px;
   line-height: 1.4;
   color: inherit;
+  flex: 1;
+  text-align: right;
+  direction: rtl;
+}
+.medical-summary-subhead-row .medical-summary-subhead {
+  margin: 0;
 }
 .medical-summary-subhead.is-first {
   margin-top: 0;
 }
-#medical-summary-exam .medical-summary-subhead.is-first {
+#medical-summary-exam .medical-summary-subhead-row.is-first,
+#medical-summary-exam .medical-summary-subsection:first-child .medical-summary-subhead-row {
   margin-top: 2px;
 }
 #medical-summary-exam.medical-summary-exam-has-subheads {
   margin-top: 10px;
+}
+#transcript-window[dir="ltr"] .medical-summary-subhead,
+#medical-summary-content[style*="direction:ltr"] .medical-summary-subhead,
+#medical-summary-content[style*="direction: ltr"] .medical-summary-subhead {
+  text-align: left;
+  direction: ltr;
 }
 .medical-summary-body-text {
   white-space: pre-wrap;

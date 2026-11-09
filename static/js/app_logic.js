@@ -495,6 +495,10 @@ window.qsMedicalHomePath = qsMedicalHomePath;
 function qsOpenJobInAppUrl(jobId, s3KeyHint) {
     const id = String(jobId || '').trim();
     const medicalHome = (typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical');
+    // Opening a saved encounter replaces any leave→return draft.
+    try {
+        if (id && typeof qsClearMedicalSessionDraft === 'function') qsClearMedicalSessionDraft();
+    } catch (_) {}
     if (!id) {
         return qsShouldPreferMedicalAppShell() ? medicalHome : '/';
     }
@@ -1199,7 +1203,7 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     if (k.startsWith('sb-')) return true;
     if (k === 'supabase.auth.token') return true;
     // One-shot in-memory → survive sign-in round-trip; feedback session flags (Storage patch applies to sessionStorage too).
-    if (k === 'qs_medical_auth_snapshot') return true;
+    if (k === 'qs_medical_auth_snapshot' || k === 'qs_medical_session_draft') return true;
     if (k === QS_MEDICAL_PENDING_ONBOARDING_KEY) return true;
     if (k === 'qs_medical_sign_in_for_copy' || k === 'qs_medical_show_feedback_on_next_copy') return true;
     if (k === 'qs_pefb_copy' || k === 'qs_pefb_export' || k.startsWith('qs_pefb_')) return true;
@@ -1216,9 +1220,15 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
 }
 
 const QS_MEDICAL_AUTH_SNAPSHOT_KEY = 'qs_medical_auth_snapshot';
+const QS_MEDICAL_SESSION_DRAFT_KEY = 'qs_medical_session_draft';
 
 /** True if medical UI has transcript/summary data worth persisting across sign-in (incl. clinical-only fields). */
 function medicalSnapshotSourceHasContent() {
+    if (Array.isArray(window._medicalUnsavedBoxes)
+        && window._medicalUnsavedBoxes.some((t) => String(t || '').trim())) {
+        return true;
+    }
+    if (String(window._medicalLiveStreamText || '').trim()) return true;
     if (Array.isArray(window.currentSegments) && window.currentSegments.length > 0) return true;
     if (Array.isArray(window.currentWords) && window.currentWords.length > 0) return true;
     const doc = window.currentFormattedDoc;
@@ -1232,25 +1242,45 @@ function medicalSnapshotSourceHasContent() {
         ) {
             return true;
         }
+        if (String(doc.patient_name || '').trim() || String(doc.patient_id_number || '').trim()) return true;
     }
     if (window._medicalHasResult === true) return true;
+    if (String(window._medicalPatientNameFromJob || '').trim()) return true;
+    if (String(window._medicalPatientIdFromJob || '').trim()) return true;
     return false;
 }
 
-/** Serialize transcript UI so a Supabase sign-in (OAuth / magic link) can reload without losing the session. */
-function saveMedicalAuthSnapshotForPendingSignIn() {
-    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
-    if (!medicalSnapshotSourceHasContent()) return;
+/** Build a serializable medical encounter snapshot (auth round-trip or leave→return). */
+function qsBuildMedicalSessionSnapshot(version) {
+    try {
+        if (typeof qsSnapshotMedicalTranscriptBoxesFromDom === 'function') {
+            qsSnapshotMedicalTranscriptBoxesFromDom({ force: true });
+        }
+    } catch (_) {}
+    try {
+        if (typeof qsPersistMedicalTranscriptBoxesFromDom === 'function') {
+            qsPersistMedicalTranscriptBoxesFromDom();
+        }
+    } catch (_) {}
     const doc = window.currentFormattedDoc;
+    const boxes = Array.isArray(window._medicalUnsavedBoxes)
+        ? window._medicalUnsavedBoxes.map((t) => String(t || ''))
+        : [];
     const snap = {
-        v: 2,
+        v: version || 3,
+        savedAt: Date.now(),
         segments: window.currentSegments || [],
         words: window.currentWords || null,
         captions: window.currentCaptions || null,
         currentFormattedDoc: doc && typeof doc === 'object' ? doc : null,
         medicalActiveTab: String(window.medicalActiveTab || 'transcript'),
         _medicalHasResult: window._medicalHasResult === true,
-        _qsInputS3KeyForGpt: String(typeof window._qsInputS3KeyForGpt === 'string' ? window._qsInputS3KeyForGpt : (window._qsInputS3KeyForGpt || '') || '').trim() || null
+        _medicalUnsavedBoxes: boxes,
+        _medicalLiveStreamText: String(window._medicalLiveStreamText || ''),
+        _medicalPatientNameFromJob: String(window._medicalPatientNameFromJob || ''),
+        _medicalPatientIdFromJob: String(window._medicalPatientIdFromJob || ''),
+        _qsInputS3KeyForGpt: String(typeof window._qsInputS3KeyForGpt === 'string' ? window._qsInputS3KeyForGpt : (window._qsInputS3KeyForGpt || '') || '').trim() || null,
+        _medicalSessionPersisted: window._medicalSessionPersisted === true,
     };
     try {
         const ljid = (typeof localStorage !== 'undefined' && localStorage.getItem('lastJobDbId')) || '';
@@ -1261,17 +1291,64 @@ function saveMedicalAuthSnapshotForPendingSignIn() {
             snap.jobPointers = { lastJobDbId: ljid, lastS3Key: ls, lastJobId: ljidRun, activeJobId: act };
         }
     } catch (_) {}
+    return snap;
+}
+
+function qsWriteMedicalSnapshotToStorage(storageKey, snap, options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    // Leave→return drafts stay tab-scoped (sessionStorage). Auth OAuth snaps prefer localStorage
+    // so a redirect round-trip still finds them if the tab storage was cleared.
+    const preferSession = opts.preferSession === true || storageKey === QS_MEDICAL_SESSION_DRAFT_KEY;
     try {
         const s = JSON.stringify(snap);
-        if (s.length > 4_500_000) return;
+        if (s.length > 4_500_000) return false;
+        const primary = preferSession ? sessionStorage : localStorage;
+        const fallback = preferSession ? localStorage : sessionStorage;
         try {
-            localStorage.setItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY, s);
-        } catch (e) {
-            try { sessionStorage.setItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY, s); } catch (_) {}
+            primary.setItem(storageKey, s);
+            try { fallback.removeItem(storageKey); } catch (_) {}
+            return true;
+        } catch (_) {
+            try {
+                fallback.setItem(storageKey, s);
+                return true;
+            } catch (__) {
+                return false;
+            }
         }
     } catch (e) {
-        console.warn('[medical] auth snapshot', e);
+        console.warn('[medical] snapshot write failed', storageKey, e);
+        return false;
     }
+}
+
+function qsReadMedicalSnapshotFromStorage(storageKey) {
+    let raw = '';
+    try {
+        // Prefer sessionStorage for drafts; auth snap may live in either.
+        if (storageKey === QS_MEDICAL_SESSION_DRAFT_KEY) {
+            raw = sessionStorage.getItem(storageKey) || localStorage.getItem(storageKey) || '';
+        } else {
+            raw = localStorage.getItem(storageKey) || sessionStorage.getItem(storageKey) || '';
+        }
+    } catch (_) {
+        return null;
+    }
+    if (!raw) return null;
+    try {
+        const snap = JSON.parse(raw);
+        if (!snap || typeof snap !== 'object') return null;
+        return snap;
+    } catch (_) {
+        return null;
+    }
+}
+
+/** Serialize transcript UI so a Supabase sign-in (OAuth / magic link) can reload without losing the session. */
+function saveMedicalAuthSnapshotForPendingSignIn() {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+    if (!medicalSnapshotSourceHasContent()) return;
+    qsWriteMedicalSnapshotToStorage(QS_MEDICAL_AUTH_SNAPSHOT_KEY, qsBuildMedicalSessionSnapshot(3));
 }
 
 function clearMedicalAuthSnapshot() {
@@ -1279,26 +1356,58 @@ function clearMedicalAuthSnapshot() {
     try { sessionStorage.removeItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY); } catch (_) {}
 }
 
-function restoreMedicalAuthSnapshotAfterSignIn() {
-    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
-    let raw = '';
+/** Persist in-progress medical transcript/summary before navigating to About/Pricing/etc. */
+function qsSaveMedicalSessionDraft(reason) {
     try {
-        raw = localStorage.getItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY) || sessionStorage.getItem(QS_MEDICAL_AUTH_SNAPSHOT_KEY) || '';
+        if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return false;
     } catch (_) {
-        return;
+        return false;
     }
-    if (!raw) return;
-    let snap;
-    try {
-        snap = JSON.parse(raw);
-    } catch (_) {
-        clearMedicalAuthSnapshot();
-        return;
+    if (!medicalSnapshotSourceHasContent()) return false;
+    const snap = qsBuildMedicalSessionSnapshot(3);
+    snap.reason = String(reason || 'navigate');
+    const ok = qsWriteMedicalSnapshotToStorage(QS_MEDICAL_SESSION_DRAFT_KEY, snap);
+    if (ok) {
+        try { qsSyncMedicalReturnToTranscriptCta(); } catch (_) {}
     }
-    if (!snap || (snap.v !== 1 && snap.v !== 2)) {
-        clearMedicalAuthSnapshot();
-        return;
+    return ok;
+}
+window.qsSaveMedicalSessionDraft = qsSaveMedicalSessionDraft;
+
+function qsClearMedicalSessionDraft() {
+    try { localStorage.removeItem(QS_MEDICAL_SESSION_DRAFT_KEY); } catch (_) {}
+    try { sessionStorage.removeItem(QS_MEDICAL_SESSION_DRAFT_KEY); } catch (_) {}
+    try { qsSyncMedicalReturnToTranscriptCta(); } catch (_) {}
+}
+window.qsClearMedicalSessionDraft = qsClearMedicalSessionDraft;
+
+function qsMedicalSessionDraftHasContent() {
+    const snap = qsReadMedicalSnapshotFromStorage(QS_MEDICAL_SESSION_DRAFT_KEY);
+    if (!snap) return false;
+    if (Array.isArray(snap._medicalUnsavedBoxes)
+        && snap._medicalUnsavedBoxes.some((t) => String(t || '').trim())) {
+        return true;
     }
+    if (String(snap._medicalLiveStreamText || '').trim()) return true;
+    if (Array.isArray(snap.segments) && snap.segments.length) return true;
+    const doc = snap.currentFormattedDoc;
+    if (doc && typeof doc === 'object') {
+        if (String(doc.clean_transcript || '').trim() || String(doc.overview || '').trim()) return true;
+        if (
+            String(doc.medical_chief_complaint || '').trim()
+            || String(doc.medical_examination_transcript || '').trim()
+            || String(doc.medical_patient_recommendations || '').trim()
+        ) {
+            return true;
+        }
+    }
+    return snap._medicalHasResult === true;
+}
+window.qsMedicalSessionDraftHasContent = qsMedicalSessionDraftHasContent;
+
+function qsApplyMedicalSessionSnapshot(snap, options) {
+    if (!snap || typeof snap !== 'object') return false;
+    const opts = options && typeof options === 'object' ? options : {};
     try {
         const jp = snap.jobPointers;
         if (jp && typeof jp === 'object') {
@@ -1325,25 +1434,166 @@ function restoreMedicalAuthSnapshotAfterSignIn() {
     window.currentFormattedDoc = snap.currentFormattedDoc || null;
     window.medicalActiveTab = (snap.medicalActiveTab === 'summary' ? 'summary' : 'transcript');
     window._medicalHasResult = snap._medicalHasResult === true;
+    if (snap._medicalSessionPersisted === true) window._medicalSessionPersisted = true;
+    if (Array.isArray(snap._medicalUnsavedBoxes)) {
+        window._medicalUnsavedBoxes = snap._medicalUnsavedBoxes.map((t) => String(t || ''));
+    }
+    if (snap._medicalLiveStreamText != null) {
+        window._medicalLiveStreamText = String(snap._medicalLiveStreamText || '');
+    }
+    if (snap._medicalPatientNameFromJob != null) {
+        window._medicalPatientNameFromJob = String(snap._medicalPatientNameFromJob || '');
+    }
+    if (snap._medicalPatientIdFromJob != null) {
+        window._medicalPatientIdFromJob = String(snap._medicalPatientIdFromJob || '');
+    }
     if (snap._qsInputS3KeyForGpt) {
         try { window._qsInputS3KeyForGpt = String(snap._qsInputS3KeyForGpt); } catch (_) {}
     }
-    clearMedicalAuthSnapshot();
+    try {
+        const nameInput = document.getElementById('medical-patient-name');
+        if (nameInput && window._medicalPatientNameFromJob) {
+            nameInput.value = window._medicalPatientNameFromJob;
+        }
+        const idInput = document.getElementById('medical-patient-id');
+        if (idInput && window._medicalPatientIdFromJob) {
+            idInput.value = window._medicalPatientIdFromJob;
+        }
+    } catch (_) {}
     try {
         if (String(window.medicalActiveTab) === 'summary') {
             if (typeof renderTranscriptFromCues === 'function') {
                 renderTranscriptFromCues(window.currentSegments || []);
             }
+        } else if (
+            Array.isArray(window._medicalUnsavedBoxes)
+            && window._medicalUnsavedBoxes.length
+            && typeof qsRenderMedicalEditableTranscriptBoxes === 'function'
+        ) {
+            qsRenderMedicalEditableTranscriptBoxes(window._medicalUnsavedBoxes);
         } else if (typeof renderMedicalTranscriptMainView === 'function') {
             renderMedicalTranscriptMainView();
         } else if (typeof renderTranscriptFromCues === 'function') {
             renderTranscriptFromCues(window.currentSegments || []);
         }
     } catch (e) {
-        console.warn('[medical] restore render', e);
+        console.warn('[medical] snapshot restore render', e);
     }
     try { if (typeof updateMedicalTabUi === 'function') updateMedicalTabUi(); } catch (_) {}
     try { if (typeof window.refreshMedicalTabs === 'function') window.refreshMedicalTabs(); } catch (_) {}
+    try { if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi(); } catch (_) {}
+    try { if (typeof setTranscriptActionButtonsVisible === 'function') setTranscriptActionButtonsVisible(true); } catch (_) {}
+    if (!opts.keepStored) {
+        // Caller decides which storage key to clear.
+    }
+    return true;
+}
+
+/** Restore leave→return draft when doctor lands back on medical home. */
+function qsRestoreMedicalSessionDraftIfAny() {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return false;
+    try {
+        if (!qsIsMedicalAppPath(window.location && window.location.pathname)) return false;
+    } catch (_) {
+        return false;
+    }
+    // Opening a saved job from Personal Area wins over a stale draft.
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        if (String(params.get('open') || '').trim()) {
+            try { qsClearMedicalSessionDraft(); } catch (_) {}
+            return false;
+        }
+    } catch (_) {}
+    // Don't clobber an already-visible live session.
+    if (medicalSnapshotSourceHasContent()) return false;
+    const snap = qsReadMedicalSnapshotFromStorage(QS_MEDICAL_SESSION_DRAFT_KEY);
+    if (!snap || (snap.v !== 2 && snap.v !== 3)) return false;
+    const ok = qsApplyMedicalSessionSnapshot(snap, { keepStored: true });
+    if (ok) {
+        console.info('[medical] restored session draft after navigation');
+        try { qsSyncMedicalReturnToTranscriptCta(); } catch (_) {}
+    }
+    return ok;
+}
+window.qsRestoreMedicalSessionDraftIfAny = qsRestoreMedicalSessionDraftIfAny;
+
+function qsSyncMedicalReturnToTranscriptCta() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    const hasDraft = qsMedicalSessionDraftHasContent();
+    let onApp = false;
+    let onMedicalContext = false;
+    try {
+        onApp = qsIsMedicalAppPath(window.location && window.location.pathname);
+        onMedicalContext = typeof qsIsMedicalContextPath === 'function'
+            ? qsIsMedicalContextPath()
+            : onApp;
+    } catch (_) {}
+    const show = !!(hasDraft && onMedicalContext && !onApp);
+    const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
+    const label = T('medical_back_to_transcript') || 'Back to transcript';
+    ['nav-dashboard-cta', 'nav-new-session-btn'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (!show) return;
+        el.style.display = '';
+        el.hidden = false;
+        el.href = medicalHome;
+        el.setAttribute('data-i18n', 'medical_back_to_transcript');
+        el.textContent = label;
+        el.dataset.qsMedicalReturnDraft = '1';
+    });
+}
+window.qsSyncMedicalReturnToTranscriptCta = qsSyncMedicalReturnToTranscriptCta;
+
+function qsWireMedicalSessionDraftPersistence() {
+    if (window._qsMedicalSessionDraftWired) return;
+    window._qsMedicalSessionDraftWired = true;
+    const maybeSave = (reason) => {
+        try {
+            if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+            if (!qsIsMedicalAppPath(window.location && window.location.pathname)) return;
+            qsSaveMedicalSessionDraft(reason);
+        } catch (_) {}
+    };
+    document.addEventListener('click', (e) => {
+        try {
+            const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+            if (!a) return;
+            if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+            if (!qsIsMedicalAppPath(window.location && window.location.pathname)) return;
+            if (!medicalSnapshotSourceHasContent()) return;
+            const href = a.getAttribute('href') || '';
+            if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+            let url;
+            try { url = new URL(href, window.location.origin); } catch (_) { return; }
+            if (url.origin !== window.location.origin) {
+                maybeSave('external_link');
+                return;
+            }
+            if (qsIsMedicalAppPath(url.pathname)) return;
+            maybeSave('nav_link');
+        } catch (_) {}
+    }, true);
+    window.addEventListener('pagehide', () => maybeSave('pagehide'));
+    window.addEventListener('beforeunload', () => maybeSave('beforeunload'));
+    try { qsSyncMedicalReturnToTranscriptCta(); } catch (_) {}
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', qsWireMedicalSessionDraftPersistence, { once: true });
+} else {
+    qsWireMedicalSessionDraftPersistence();
+}
+
+function restoreMedicalAuthSnapshotAfterSignIn() {
+    if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return;
+    const snap = qsReadMedicalSnapshotFromStorage(QS_MEDICAL_AUTH_SNAPSHOT_KEY);
+    if (!snap || (snap.v !== 1 && snap.v !== 2 && snap.v !== 3)) {
+        clearMedicalAuthSnapshot();
+        return;
+    }
+    qsApplyMedicalSessionSnapshot(snap, { keepStored: true });
+    clearMedicalAuthSnapshot();
 }
 
 function isMedicalModeEnabled() {
@@ -4653,6 +4903,17 @@ function qsWireNavLogoMedicalRouting() {
     qsSyncNavLogoHref();
     try { if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi(); } catch (_) {}
     logoLink.addEventListener('click', (event) => {
+        try {
+            if (
+                typeof isMedicalModeEnabled === 'function'
+                && isMedicalModeEnabled()
+                && typeof qsIsMedicalAppPath === 'function'
+                && qsIsMedicalAppPath(window.location && window.location.pathname)
+                && typeof qsSaveMedicalSessionDraft === 'function'
+            ) {
+                qsSaveMedicalSessionDraft('logo_nav');
+            }
+        } catch (_) {}
         const target = qsNavLogoTargetPath();
         logoLink.setAttribute('href', target);
         if (window.location && window.location.pathname !== target) {
@@ -8458,8 +8719,25 @@ function qsSyncNavWorkspaceCta(isSignedIn) {
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     const desktop = document.getElementById('nav-dashboard-cta');
     const mobile = document.getElementById('nav-new-session-btn');
+    let showDraftReturn = false;
+    try {
+        const onApp = typeof qsIsMedicalAppPath === 'function'
+            && qsIsMedicalAppPath(window.location && window.location.pathname);
+        const onMedical = typeof qsIsMedicalContextPath === 'function' && qsIsMedicalContextPath();
+        showDraftReturn = !!(
+            typeof qsMedicalSessionDraftHasContent === 'function'
+            && qsMedicalSessionDraftHasContent()
+            && onMedical
+            && !onApp
+        );
+    } catch (_) {}
+    if (showDraftReturn) {
+        try { qsSyncMedicalReturnToTranscriptCta(); } catch (_) {}
+        return;
+    }
     [desktop, mobile].forEach((el) => {
         if (!el) return;
+        try { delete el.dataset.qsMedicalReturnDraft; } catch (_) {}
         if (isSignedIn) {
             el.style.display = '';
             el.hidden = false;
@@ -17635,6 +17913,7 @@ function resetScreenToInitial() {
     window.isTriggering = false;
     qsStopFakeProgress('reset_screen_to_initial');
     try { if (typeof qsMedicalClearTypoFixUndo === 'function') qsMedicalClearTypoFixUndo(); } catch (_) {}
+    try { if (typeof qsClearMedicalSessionDraft === 'function') qsClearMedicalSessionDraft(); } catch (_) {}
     window.currentSegments = [];
     window.currentWords = null;
     window.currentCaptions = null;
@@ -18335,13 +18614,50 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptWindow = document.getElementById('transcript-window');
     if (transcriptWindow && transcriptWindow.dataset.qsCopyGuardBound !== '1') {
         transcriptWindow.dataset.qsCopyGuardBound = '1';
+        const qsTranscriptHasCopyableSelection = (win) => {
+            if (!win) return false;
+            try {
+                const active = document.activeElement;
+                if (active && win.contains(active)) {
+                    const tag = String(active.tagName || '').toUpperCase();
+                    if (tag === 'TEXTAREA' || tag === 'INPUT') {
+                        const start = active.selectionStart;
+                        const end = active.selectionEnd;
+                        if (typeof start === 'number' && typeof end === 'number' && end > start) {
+                            return true;
+                        }
+                    }
+                    if (active.isContentEditable) {
+                        const selInside = window.getSelection && window.getSelection();
+                        if (selInside && !selInside.isCollapsed && selInside.rangeCount) return true;
+                    }
+                }
+            } catch (_) {}
+            try {
+                const sel = window.getSelection && window.getSelection();
+                if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+                const anchor = sel.anchorNode;
+                const el = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+                return !!(el && win.contains(el) && String(sel.toString() || '').trim());
+            } catch (_) {
+                return false;
+            }
+        };
         const blockNativeTranscriptCopy = (e) => {
             const win = document.getElementById('transcript-window');
             if (!win) return;
+            const signedIn = document.body.classList.contains('qs-user-signed-in');
             const editing = win.classList.contains('transcript-editing') || win.classList.contains('transcript-sync-mode');
-            if (editing && document.body.classList.contains('qs-user-signed-in')) return;
+            const medicalBoxes = win.classList.contains('qs-medical-boxes-editable');
+            const medicalMode = typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled();
+            // Medical full transcript uses editable boxes (not transcript-editing). Allow
+            // mouse-selected copy / cut when signed in; unsigned users still get the sign-in gate.
+            if (signedIn && (editing || medicalBoxes || medicalMode) && qsTranscriptHasCopyableSelection(win)) {
+                return;
+            }
+            if (signedIn && editing) return;
             e.preventDefault();
-            if (!document.body.classList.contains('qs-user-signed-in')) {
+            if (!signedIn) {
                 void requireUserForCopyOrDownload();
             }
         };
@@ -18831,6 +19147,16 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 if (typeof qsWarmMedicalMicIfPermitted === 'function') {
                     setTimeout(() => { void qsWarmMedicalMicIfPermitted(); }, 0);
+                }
+            } catch (_) {}
+            // Returning from About/Pricing/etc. via logo — restore the draft encounter.
+            try {
+                if (!window._qsMedicalDraftRestoreAttempted) {
+                    window._qsMedicalDraftRestoreAttempted = true;
+                    setTimeout(() => {
+                        try { qsRestoreMedicalSessionDraftIfAny(); } catch (_) {}
+                        try { qsSyncMedicalReturnToTranscriptCta(); } catch (_) {}
+                    }, 0);
                 }
             } catch (_) {}
         } else {
@@ -24248,6 +24574,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Full session wipe after trash (מחק): all transcript boxes + live ASR state.
         try { if (typeof qsMedicalClearTypoFixUndo === 'function') qsMedicalClearTypoFixUndo(); } catch (_) {}
         try { if (typeof qsClearMedicalPatientName === 'function') qsClearMedicalPatientName(); } catch (_) {}
+        try { if (typeof qsClearMedicalSessionDraft === 'function') qsClearMedicalSessionDraft(); } catch (_) {}
         window._medicalLiveStreamText = '';
         window._medicalUnsavedBoxes = [];
         window._medicalLiveLastBoxDirty = false;
@@ -24921,6 +25248,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try { await qsMaybeSaveDefaultSignatureFromExport(qsMedicalTranscriptTextForSignature()); } catch (_) {}
         try { if (typeof qsClearMedicalPatientName === 'function') qsClearMedicalPatientName(); } catch (_) {}
         try { qsClearMedicalContinueVisit(); } catch (_) {}
+        try { qsClearMedicalSessionDraft(); } catch (_) {}
         openFilePickerAfterDisclaimer();
     }
     window.confirmAndStartMedicalNewSession = confirmAndStartMedicalNewSession;
@@ -25000,7 +25328,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const onNavWorkspaceCta = (e) => {
         const target = e.currentTarget;
         const href = target && target.getAttribute ? String(target.getAttribute('href') || '') : '';
-        if (href === '/personal') {
+        // Personal Area, or "Back to transcript" draft return — navigate normally.
+        const isDraftReturn = !!(target && target.dataset && target.dataset.qsMedicalReturnDraft === '1');
+        let isMedicalHomeHref = false;
+        try {
+            const url = new URL(href, window.location.origin);
+            isMedicalHomeHref = typeof qsIsMedicalAppPath === 'function' && qsIsMedicalAppPath(url.pathname);
+        } catch (_) {}
+        if (href === '/personal' || isDraftReturn || isMedicalHomeHref) {
             closeMobileNav();
             return;
         }
@@ -29484,7 +29819,8 @@ function qsInferPersonalTemplateFromSummaryDoc(fmt) {
 function _medicalSummarySectionHeadHtml(title, sectionKey, esc) {
     const t = esc(title);
     const key = esc(sectionKey);
-    const label = esc(_medicalSummarySectionLabel(sectionKey) || title);
+    const resolved = String(_medicalSummarySectionLabel(sectionKey) || '').trim();
+    const label = esc((resolved && resolved !== sectionKey) ? resolved : title);
     const copyLabel = esc(_medicalText('medical_copy', 'Copy'));
     return (
         `<div class="medical-summary-section-head" contenteditable="false">` +
@@ -29529,6 +29865,19 @@ function _medicalSummaryLineLooksLikeSubheading(line) {
     return QS_MEDICAL_SUMMARY_SUBHEADINGS.some((h) => h.toLowerCase() === normalized);
 }
 
+function _medicalSummarySubheadCopyHtml(title, esc, isFirst) {
+    const t = esc(title);
+    const copyLabel = esc(_medicalText('medical_copy', 'Copy'));
+    return (
+        `<div class="medical-summary-subsection" data-medical-subsection>` +
+        `<div class="medical-summary-section-head medical-summary-subhead-row${isFirst ? ' is-first' : ''}" contenteditable="false">` +
+        `<span class="medical-summary-subhead${isFirst ? ' is-first' : ''}" contenteditable="false">${t}</span>` +
+        `<button type="button" class="medical-summary-section-copy" data-medical-copy-subsection ` +
+        `aria-label="${copyLabel} ${t}" title="${copyLabel}">` +
+        `<span class="medical-copy-icon" aria-hidden="true"></span></button></div>`
+    );
+}
+
 /** Escape body text and bold known private-template subsection headings (רגישות / תרופות / לסיכום…). */
 function _formatMedicalSummaryBodyHtml(text, esc, emptyFallback, opts) {
     const options = opts && typeof opts === 'object' ? opts : {};
@@ -29539,6 +29888,12 @@ function _formatMedicalSummaryBodyHtml(text, esc, emptyFallback, opts) {
     const parts = [];
     let buffer = [];
     let sawContent = false;
+    let subsectionOpen = false;
+    const closeSubsection = () => {
+        if (!subsectionOpen) return;
+        parts.push('</div>');
+        subsectionOpen = false;
+    };
     const flushBuffer = () => {
         if (!buffer.length) return;
         const chunk = buffer.join('\n');
@@ -29546,7 +29901,7 @@ function _formatMedicalSummaryBodyHtml(text, esc, emptyFallback, opts) {
         parts.push(`<div class="medical-summary-body-text">${esc(chunk)}</div>`);
         sawContent = true;
     };
-    lines.forEach((line, idx) => {
+    lines.forEach((line) => {
         if (_medicalSummaryLineLooksLikeSubheading(line)) {
             flushBuffer();
             const title = String(line || '').trim().replace(/[:：.\s]+$/u, '').trim();
@@ -29555,20 +29910,60 @@ function _formatMedicalSummaryBodyHtml(text, esc, emptyFallback, opts) {
             if (!sawContent && skipFirstIfMatches && titleNorm === skipFirstIfMatches) {
                 return;
             }
-            parts.push(
-                `<div class="medical-summary-subhead${parts.length === 0 ? ' is-first' : ''}" contenteditable="false">${esc(title)}</div>`
-            );
+            closeSubsection();
+            parts.push(_medicalSummarySubheadCopyHtml(title, esc, !sawContent));
+            subsectionOpen = true;
             sawContent = true;
             return;
         }
         buffer.push(line);
     });
     flushBuffer();
+    closeSubsection();
     return parts.length ? parts.join('') : esc(emptyFallback || '');
 }
 
+async function _qsCopyMedicalSummaryText(text, label) {
+    const skip = new Set([
+        'לא צוין.',
+        'אין סיכום רפואי זמין עדיין.',
+        'Not specified.',
+        'No medical summary is available yet.'
+    ]);
+    const body = String(text || '').trim();
+    const title = String(label || '').trim();
+    if (!body || skip.has(body)) {
+        if (typeof showStatus === 'function') {
+            showStatus(
+                `${_medicalText('medical_no_text_to_copy', 'No text to copy')}${title ? `: ${title}` : ''}.`,
+                true,
+            );
+        }
+        return;
+    }
+    try {
+        const html = typeof _qsMedicalTrainingPlainToHtml === 'function'
+            ? _qsMedicalTrainingPlainToHtml(body)
+            : '';
+        const ok = html
+            ? await _qsWriteClipboardRich(body, html)
+            : (await navigator.clipboard.writeText(body), true);
+        if (!ok) throw new Error('clipboard_failed');
+        const copiedMsg = _medicalText('medical_section_copied', '{label} copied.')
+            .replace('{label}', title || _medicalText('medical_copy', 'Copy'));
+        if (typeof showStatus === 'function') showStatus(copiedMsg, false, { duration: 2500 });
+        try {
+            if (typeof ensureJobRecordOnExport === 'function') await ensureJobRecordOnExport();
+        } catch (_) {}
+    } catch (_) {
+        if (typeof showStatus === 'function') {
+            showStatus(_medicalText('medical_copy_failed', 'Copy failed.'), true);
+        }
+    }
+}
+
 async function _copyMedicalSummarySection(sectionKey) {
-    const label = _medicalSummarySectionLabel(sectionKey) || sectionKey;
+    let label = _medicalSummarySectionLabel(sectionKey) || sectionKey;
     if (typeof requireUserForCopyOrDownload === 'function') {
         const ok = await requireUserForCopyOrDownload();
         if (!ok) return;
@@ -29577,20 +29972,25 @@ async function _copyMedicalSummarySection(sectionKey) {
     const selMap = {
         chief: '[data-medical-section="chief"], #medical-summary-chief',
         exam: '[data-medical-section="exam"], #medical-summary-exam',
-        rec: '[data-medical-section="rec"], #medical-summary-rec'
+        rec: '[data-medical-section="rec"], #medical-summary-rec',
+        overview: '[data-medical-section="overview"], #medical-summary-overview',
+        points: '[data-medical-section="points"], #medical-summary-points-wrap, #medical-summary-points',
     };
     let text = '';
     if (win && selMap[sectionKey]) {
         const el = win.querySelector(selMap[sectionKey]);
-        if (el) text = String(el.innerText || el.textContent || '').trim();
+        if (el) {
+            // Pane copy should include the outer title above the body when present.
+            const head = el.previousElementSibling;
+            const headTitle = (head && head.classList && head.classList.contains('medical-summary-section-head'))
+                ? String((head.querySelector('.medical-summary-section-title') || {}).textContent || '').trim()
+                : '';
+            if (headTitle && (!label || label === sectionKey)) label = headTitle;
+            const body = String(el.innerText || el.textContent || '').trim();
+            text = headTitle ? `${headTitle}\n${body}`.trim() : body;
+        }
     }
-    const skip = new Set([
-        'לא צוין.',
-        'אין סיכום רפואי זמין עדיין.',
-        'Not specified.',
-        'No medical summary is available yet.'
-    ]);
-    if (!text || skip.has(text)) {
+    if (!text) {
         const fmt = (window.currentFormattedDoc && typeof window.currentFormattedDoc === 'object')
             ? window.currentFormattedDoc : {};
         const fieldMap = {
@@ -29599,29 +29999,25 @@ async function _copyMedicalSummarySection(sectionKey) {
             rec: 'medical_patient_recommendations'
         };
         const fk = fieldMap[sectionKey];
-        if (fk) text = String(fmt[fk] || '').trim();
-    }
-    if (!text || skip.has(text)) {
-        if (typeof showStatus === 'function') {
-            showStatus(`${_medicalText('medical_no_text_to_copy', 'No text to copy')}: ${label}.`, true);
+        if (fk) {
+            const body = String(fmt[fk] || '').trim();
+            text = body ? `${label}:\n${body}` : '';
         }
-        return;
     }
-    try {
-        const html = typeof _qsMedicalTrainingPlainToHtml === 'function'
-            ? _qsMedicalTrainingPlainToHtml(text)
-            : '';
-        const ok = html
-            ? await _qsWriteClipboardRich(text, html)
-            : (await navigator.clipboard.writeText(text), true);
-        if (!ok) throw new Error('clipboard_failed');
-        if (typeof showStatus === 'function') showStatus(`${label} הועתק.`, false, { duration: 2500 });
-        try {
-            if (typeof ensureJobRecordOnExport === 'function') await ensureJobRecordOnExport();
-        } catch (_) {}
-    } catch (_) {
-        if (typeof showStatus === 'function') showStatus('העתקה נכשלה.', true);
+    await _qsCopyMedicalSummaryText(text, label);
+}
+
+async function _copyMedicalSummarySubsection(btn) {
+    if (typeof requireUserForCopyOrDownload === 'function') {
+        const ok = await requireUserForCopyOrDownload();
+        if (!ok) return;
     }
+    const block = btn && btn.closest ? btn.closest('[data-medical-subsection]') : null;
+    if (!block) return;
+    const titleEl = block.querySelector('.medical-summary-subhead');
+    const label = String((titleEl && titleEl.textContent) || '').trim();
+    const text = String(block.innerText || block.textContent || '').trim();
+    await _qsCopyMedicalSummaryText(text, label);
 }
 
 function _wireMedicalSummarySectionCopyButtonsOnce() {
@@ -29629,6 +30025,15 @@ function _wireMedicalSummarySectionCopyButtonsOnce() {
     if (!container || container._qsMedicalSectionCopyWired) return;
     container._qsMedicalSectionCopyWired = true;
     container.addEventListener('click', (e) => {
+        const subBtn = e.target && e.target.closest
+            ? e.target.closest('[data-medical-copy-subsection]')
+            : null;
+        if (subBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            void _copyMedicalSummarySubsection(subBtn);
+            return;
+        }
         const btn = e.target && e.target.closest ? e.target.closest('[data-medical-copy-section]') : null;
         if (!btn) return;
         e.preventDefault();
@@ -30369,13 +30774,15 @@ function renderTranscriptFromCues(cues) {
             const pointsHtml = points.length
                 ? `<ul id="medical-summary-points" style="margin:8px 0 0; padding-inline-start:20px;" contenteditable="false">${points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
                 : `<div id="medical-summary-empty" style="color:#6b7280;" contenteditable="false">${esc(emptyMsg)}</div>`;
+            const overviewLabel = _medicalText('medical_summary_overview', 'Overview');
+            const keyPointsLabel = _medicalText('medical_summary_key_points', 'Key points');
             container.innerHTML = `
             <div id="medical-summary-content" style="direction:${summaryDirection}; text-align:${summaryAlign}; line-height:1.72;" contenteditable="false">
                 ${patientHeadHtml}
-                <div style="font-weight:700; margin-bottom:6px;" contenteditable="false">${esc(_medicalText('medical_summary_overview', 'Overview'))}</div>
-                <div id="medical-summary-overview">${esc(overview || emptyMsg)}</div>
-                <div style="font-weight:700; margin:14px 0 6px;" contenteditable="false">${esc(_medicalText('medical_summary_key_points', 'Key points'))}</div>
-                ${pointsHtml}
+                ${_medicalSummarySectionHeadHtml(overviewLabel, 'overview', esc)}
+                <div id="medical-summary-overview" data-medical-section="overview">${esc(overview || emptyMsg)}</div>
+                ${_medicalSummarySectionHeadHtml(keyPointsLabel, 'points', esc)}
+                <div id="medical-summary-points-wrap" data-medical-section="points">${pointsHtml}</div>
             </div>
         `;
         }
