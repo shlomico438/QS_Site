@@ -1204,6 +1204,7 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
     if (k === 'supabase.auth.token') return true;
     // One-shot in-memory → survive sign-in round-trip; feedback session flags (Storage patch applies to sessionStorage too).
     if (k === 'qs_medical_auth_snapshot' || k === 'qs_medical_session_draft') return true;
+    if (k === 'qs_medical_resume_draft' || k === 'qs_medical_skip_draft_save') return true;
     if (k === QS_MEDICAL_PENDING_ONBOARDING_KEY) return true;
     if (k === 'qs_medical_sign_in_for_copy' || k === 'qs_medical_show_feedback_on_next_copy') return true;
     if (k === 'qs_pefb_copy' || k === 'qs_pefb_export' || k.startsWith('qs_pefb_')) return true;
@@ -1221,6 +1222,52 @@ function _qsStorageKeyAllowedDuringMedicalLockdown(key) {
 
 const QS_MEDICAL_AUTH_SNAPSHOT_KEY = 'qs_medical_auth_snapshot';
 const QS_MEDICAL_SESSION_DRAFT_KEY = 'qs_medical_session_draft';
+const QS_MEDICAL_RESUME_DRAFT_KEY = 'qs_medical_resume_draft';
+const QS_MEDICAL_SKIP_DRAFT_SAVE_KEY = 'qs_medical_skip_draft_save';
+
+/** New session / logo: don't re-save draft on pagehide after an intentional wipe. */
+function qsArmMedicalSkipDraftSave() {
+    window._qsMedicalSkipDraftSave = true;
+    try { sessionStorage.setItem(QS_MEDICAL_SKIP_DRAFT_SAVE_KEY, '1'); } catch (_) {}
+}
+
+function qsShouldSkipMedicalDraftSave() {
+    if (window._qsMedicalSkipDraftSave === true) return true;
+    try {
+        return String(sessionStorage.getItem(QS_MEDICAL_SKIP_DRAFT_SAVE_KEY) || '').trim() === '1';
+    } catch (_) {
+        return false;
+    }
+}
+
+function qsClearMedicalSkipDraftSave() {
+    window._qsMedicalSkipDraftSave = false;
+    try { sessionStorage.removeItem(QS_MEDICAL_SKIP_DRAFT_SAVE_KEY); } catch (_) {}
+}
+
+/** Only "Back to transcript" should restore a leave→return draft. */
+function qsArmMedicalDraftResume() {
+    try { sessionStorage.setItem(QS_MEDICAL_RESUME_DRAFT_KEY, '1'); } catch (_) {}
+}
+
+function qsConsumeMedicalDraftResume() {
+    let armed = false;
+    try {
+        armed = String(sessionStorage.getItem(QS_MEDICAL_RESUME_DRAFT_KEY) || '').trim() === '1';
+        sessionStorage.removeItem(QS_MEDICAL_RESUME_DRAFT_KEY);
+    } catch (_) {}
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        if (params.get('resume_draft') === '1') {
+            armed = true;
+            params.delete('resume_draft');
+            const qs = params.toString();
+            const next = `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash || ''}`;
+            try { window.history.replaceState({}, '', next); } catch (_) {}
+        }
+    } catch (_) {}
+    return armed;
+}
 
 /** True if medical UI has transcript/summary data worth persisting across sign-in (incl. clinical-only fields). */
 function medicalSnapshotSourceHasContent() {
@@ -1363,6 +1410,7 @@ function qsSaveMedicalSessionDraft(reason) {
     } catch (_) {
         return false;
     }
+    if (qsShouldSkipMedicalDraftSave()) return false;
     if (!medicalSnapshotSourceHasContent()) return false;
     const snap = qsBuildMedicalSessionSnapshot(3);
     snap.reason = String(reason || 'navigate');
@@ -1375,6 +1423,7 @@ function qsSaveMedicalSessionDraft(reason) {
 window.qsSaveMedicalSessionDraft = qsSaveMedicalSessionDraft;
 
 function qsClearMedicalSessionDraft() {
+    qsArmMedicalSkipDraftSave();
     try { localStorage.removeItem(QS_MEDICAL_SESSION_DRAFT_KEY); } catch (_) {}
     try { sessionStorage.removeItem(QS_MEDICAL_SESSION_DRAFT_KEY); } catch (_) {}
     try { qsSyncMedicalReturnToTranscriptCta(); } catch (_) {}
@@ -1489,7 +1538,7 @@ function qsApplyMedicalSessionSnapshot(snap, options) {
     return true;
 }
 
-/** Restore leave→return draft when doctor lands back on medical home. */
+/** Restore leave→return draft only when "Back to transcript" armed resume. */
 function qsRestoreMedicalSessionDraftIfAny() {
     if (typeof isMedicalModeEnabled !== 'function' || !isMedicalModeEnabled()) return false;
     try {
@@ -1502,9 +1551,13 @@ function qsRestoreMedicalSessionDraftIfAny() {
         const params = new URLSearchParams(window.location.search || '');
         if (String(params.get('open') || '').trim()) {
             try { qsClearMedicalSessionDraft(); } catch (_) {}
+            qsClearMedicalSkipDraftSave();
             return false;
         }
     } catch (_) {}
+    const wantsResume = qsConsumeMedicalDraftResume();
+    qsClearMedicalSkipDraftSave();
+    if (!wantsResume) return false;
     // Don't clobber an already-visible live session.
     if (medicalSnapshotSourceHasContent()) return false;
     const snap = qsReadMedicalSnapshotFromStorage(QS_MEDICAL_SESSION_DRAFT_KEY);
@@ -1531,6 +1584,7 @@ function qsSyncMedicalReturnToTranscriptCta() {
     } catch (_) {}
     const show = !!(hasDraft && onMedicalContext && !onApp);
     const medicalHome = typeof qsMedicalHomePath === 'function' ? qsMedicalHomePath() : '/medical';
+    const resumeHref = `${medicalHome}?resume_draft=1`;
     const label = T('medical_back_to_transcript') || 'Back to transcript';
     ['nav-dashboard-cta', 'nav-new-session-btn'].forEach((id) => {
         const el = document.getElementById(id);
@@ -1538,7 +1592,7 @@ function qsSyncMedicalReturnToTranscriptCta() {
         if (!show) return;
         el.style.display = '';
         el.hidden = false;
-        el.href = medicalHome;
+        el.href = resumeHref;
         el.setAttribute('data-i18n', 'medical_back_to_transcript');
         el.textContent = label;
         el.dataset.qsMedicalReturnDraft = '1';
@@ -3406,6 +3460,9 @@ function qsMedicalHardResetToEntry() {
     window._medicalWarmupPromise = null;
     window._medicalWarmupToken = Number(window._medicalWarmupToken || 0) + 1;
     try { qsClearMedicalContinueVisit(); } catch (_) {}
+    // Prevent pagehide from re-saving the session we're intentionally wiping.
+    try { qsClearMedicalSessionDraft(); } catch (_) {}
+    try { qsArmMedicalSkipDraftSave(); } catch (_) {}
     if (typeof window.qsDismissActiveJob === 'function') {
         window.qsDismissActiveJob();
     }
@@ -4903,22 +4960,49 @@ function qsWireNavLogoMedicalRouting() {
     qsSyncNavLogoHref();
     try { if (typeof qsSyncMedicalAccountMenuUi === 'function') qsSyncMedicalAccountMenuUi(); } catch (_) {}
     logoLink.addEventListener('click', (event) => {
-        try {
-            if (
-                typeof isMedicalModeEnabled === 'function'
-                && isMedicalModeEnabled()
-                && typeof qsIsMedicalAppPath === 'function'
-                && qsIsMedicalAppPath(window.location && window.location.pathname)
-                && typeof qsSaveMedicalSessionDraft === 'function'
-            ) {
-                qsSaveMedicalSessionDraft('logo_nav');
-            }
-        } catch (_) {}
         const target = qsNavLogoTargetPath();
         logoLink.setAttribute('href', target);
-        if (window.location && window.location.pathname !== target) {
+        let goingToMedicalHome = false;
+        try {
+            goingToMedicalHome = typeof qsIsMedicalAppPath === 'function' && qsIsMedicalAppPath(target);
+        } catch (_) {}
+        // Logo = fresh medical home. Keep draft for "Back to transcript", but do not auto-resume.
+        if (goingToMedicalHome) {
+            try {
+                if (
+                    typeof isMedicalModeEnabled === 'function'
+                    && isMedicalModeEnabled()
+                    && typeof qsIsMedicalAppPath === 'function'
+                    && qsIsMedicalAppPath(window.location && window.location.pathname)
+                    && medicalSnapshotSourceHasContent()
+                    && typeof qsSaveMedicalSessionDraft === 'function'
+                ) {
+                    // Save once so About→Back-to-transcript still works, then skip pagehide re-save noise.
+                    qsClearMedicalSkipDraftSave();
+                    qsSaveMedicalSessionDraft('logo_nav');
+                }
+            } catch (_) {}
+            try { qsArmMedicalSkipDraftSave(); } catch (_) {}
+            try { sessionStorage.removeItem(QS_MEDICAL_RESUME_DRAFT_KEY); } catch (_) {}
+        }
+        const here = qsNormalizePathname(window.location && window.location.pathname);
+        const there = qsNormalizePathname(target);
+        if (here !== there) {
             event.preventDefault();
             window.location.assign(target);
+            return;
+        }
+        // Already on medical home with a live session: logo means hard reset to empty entry.
+        if (
+            goingToMedicalHome
+            && typeof isMedicalModeEnabled === 'function'
+            && isMedicalModeEnabled()
+            && medicalSnapshotSourceHasContent()
+        ) {
+            event.preventDefault();
+            try { qsMedicalHardResetToEntry(); } catch (_) {
+                window.location.assign(target);
+            }
         }
     });
 }
@@ -25249,6 +25333,8 @@ document.addEventListener('DOMContentLoaded', () => {
         try { if (typeof qsClearMedicalPatientName === 'function') qsClearMedicalPatientName(); } catch (_) {}
         try { qsClearMedicalContinueVisit(); } catch (_) {}
         try { qsClearMedicalSessionDraft(); } catch (_) {}
+        try { qsArmMedicalSkipDraftSave(); } catch (_) {}
+        try { sessionStorage.removeItem(QS_MEDICAL_RESUME_DRAFT_KEY); } catch (_) {}
         openFilePickerAfterDisclaimer();
     }
     window.confirmAndStartMedicalNewSession = confirmAndStartMedicalNewSession;
@@ -25331,11 +25417,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Personal Area, or "Back to transcript" draft return — navigate normally.
         const isDraftReturn = !!(target && target.dataset && target.dataset.qsMedicalReturnDraft === '1');
         let isMedicalHomeHref = false;
+        let wantsResumeDraft = false;
         try {
             const url = new URL(href, window.location.origin);
             isMedicalHomeHref = typeof qsIsMedicalAppPath === 'function' && qsIsMedicalAppPath(url.pathname);
+            wantsResumeDraft = url.searchParams.get('resume_draft') === '1';
         } catch (_) {}
         if (href === '/personal' || isDraftReturn || isMedicalHomeHref) {
+            if (isDraftReturn || wantsResumeDraft) {
+                try { qsClearMedicalSkipDraftSave(); } catch (_) {}
+                try { qsArmMedicalDraftResume(); } catch (_) {}
+            }
             closeMobileNav();
             return;
         }
