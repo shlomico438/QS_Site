@@ -5443,8 +5443,21 @@ body.has-transcript-actions:not(.medical-mode) #transcript-window {
     border: 1px solid #e2e8f0 !important;
     border-radius: 10px !important;
     background: #ffffff !important;
-    overflow: hidden;
+    overflow: visible;
     pointer-events: auto;
+    height: auto !important;
+    max-height: none !important;
+}
+/* One section (no Shift+Enter): seamless pane — no nested card/scroll inside #transcript-window. */
+.main-app-container.medical-mode #transcript-window.qs-medical-boxes-editable:not(.qs-medical-multi-box) .qs-medical-edit-box {
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+}
+.main-app-container.medical-mode #transcript-window.qs-medical-boxes-editable:not(.qs-medical-multi-box) .qs-medical-edit-box-toolbar {
+    /* Global Copy-all already covers a single section. */
+    display: none !important;
 }
 .main-app-container.medical-mode #transcript-window .qs-medical-edit-box-toolbar {
     display: flex;
@@ -5463,6 +5476,8 @@ html[dir="rtl"] .main-app-container.medical-mode #transcript-window .qs-medical-
     margin: 0 !important;
     padding: 8px 14px 12px !important;
     min-height: 2.4em;
+    height: auto !important;
+    max-height: none !important;
     line-height: 1.72 !important;
     white-space: pre-wrap;
     outline: none;
@@ -5473,9 +5488,17 @@ html[dir="rtl"] .main-app-container.medical-mode #transcript-window .qs-medical-
     background: transparent !important;
     color: inherit;
     font: inherit;
+    /* Only #transcript-window should scroll — never a nested textarea scrollbar. */
+    overflow: hidden !important;
+    overflow-y: hidden !important;
+    overflow-x: hidden !important;
     field-sizing: content;
     -webkit-user-select: text !important;
     user-select: text !important;
+}
+.main-app-container.medical-mode #transcript-window.qs-medical-boxes-editable:not(.qs-medical-multi-box) .qs-medical-edit-box-body,
+.main-app-container.medical-mode #transcript-window.qs-medical-boxes-editable:not(.qs-medical-multi-box) textarea.qs-medical-edit-box-body {
+    padding: 0 !important;
 }
 .main-app-container.medical-mode #transcript-window .qs-medical-edit-box-body:focus,
 .main-app-container.medical-mode #transcript-window textarea.qs-medical-edit-box-body:focus {
@@ -8914,6 +8937,12 @@ html[dir="rtl"] .upload-status {
   color: #0f766e;
   font-size: 0.88rem;
   font-weight: 600;
+}
+.personal-recording-mic {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 500;
 }
 .medical-summary-section-copy {
   width: 32px;

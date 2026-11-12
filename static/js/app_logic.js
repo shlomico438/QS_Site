@@ -9892,11 +9892,13 @@ async function initPersonalPage() {
             const patientIdNumber = qsNormalizeMedicalPatientIdNumber(
                 md.patient_id_number || md.patientIdNumber || md.national_id || ''
             );
+            const micLabel = String(md.mic_label || md.mic_type || '').trim();
             const fileName = isMedicalJob ? qsMedicalPersonalListTitle(rawName) : rawName;
             return {
                 file_id: job.id,
                 file_name: fileName,
                 patient_id_number: patientIdNumber,
+                mic_label: micLabel,
                 created_at: job.created_at,
                 duration_seconds: extractDurationSeconds(job),
                 transcript_exists: transcriptExists,
@@ -10100,6 +10102,10 @@ async function initPersonalPage() {
             const patientIdText = file.patient_id_number
                 ? `${idLabel}: ${file.patient_id_number}`
                 : '';
+            const micLabelText = (file._is_medical && file.mic_label)
+                ? ((typeof window.t === 'function' ? window.t('personal_recording_mic') : '') || 'מיקרופון: {name}')
+                    .replace('{name}', file.mic_label)
+                : '';
             const isRenaming = renamingId === file.file_id;
             item.innerHTML = `
                 <div class="personal-recording-row">
@@ -10116,6 +10122,7 @@ async function initPersonalPage() {
                             : `<div class="personal-recording-name">🎬 ${escapeHtml(file.file_name)}</div>`
                         }
                         ${patientIdText ? `<div class="personal-recording-patient-id">${escapeHtml(patientIdText)}</div>` : ''}
+                        ${micLabelText ? `<div class="personal-recording-mic">${escapeHtml(micLabelText)}</div>` : ''}
                         <div class="personal-recording-date">${escapeHtml(metaText)}</div>
                     </div>
                 </div>
@@ -11743,6 +11750,55 @@ function qsMedicalPersonalListTitle(name) {
     return (typeof T === 'function' ? T('personal_medical_recording_fallback') : '') || 'Recording';
 }
 
+/** Snapshot of the mic used for the current medical visit (label + deviceId). */
+function qsRememberMedicalMicForJob(pref) {
+    try {
+        const deviceId = String((pref && (pref.deviceId || pref.mic_device_id)) || '').trim();
+        const label = String((pref && (pref.label || pref.mic_label || pref.mic_type)) || '').trim();
+        if (!deviceId && !label) return;
+        window._qsMedicalMicForJob = {
+            mic_device_id: deviceId,
+            mic_label: label,
+            mic_type: label,
+        };
+    } catch (_) {}
+}
+
+function qsReadMedicalMicInfoForJob() {
+    const out = { mic_label: '', mic_device_id: '', mic_type: '' };
+    try {
+        const snap = window._qsMedicalMicForJob;
+        if (snap && typeof snap === 'object') {
+            out.mic_device_id = String(snap.mic_device_id || '').trim();
+            out.mic_label = String(snap.mic_label || snap.mic_type || '').trim();
+        }
+    } catch (_) {}
+    try {
+        const raw = String(localStorage.getItem(QS_MEDICAL_MIC_PREF_KEY) || '').trim();
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                if (!out.mic_device_id) out.mic_device_id = String(parsed.deviceId || '').trim();
+                if (!out.mic_label) out.mic_label = String(parsed.label || '').trim();
+            }
+        }
+    } catch (_) {}
+    if (!out.mic_device_id) {
+        try { out.mic_device_id = String(localStorage.getItem(QS_MEDICAL_MIC_DEVICE_KEY) || '').trim(); } catch (_) {}
+    }
+    if (!out.mic_label && out.mic_device_id) {
+        try {
+            const sel = document.getElementById('medical-mic-device-select');
+            if (sel && sel.value === out.mic_device_id) {
+                const opt = sel.options && sel.options[sel.selectedIndex];
+                out.mic_label = String((opt && opt.textContent) || '').trim();
+            }
+        } catch (_) {}
+    }
+    out.mic_type = out.mic_label;
+    return out;
+}
+
 async function qsSyncMedicalPatientNameToCurrentJob(nameOverride, idOverride) {
     if (typeof isMedicalModeEnabled === 'function' && !isMedicalModeEnabled()) return;
     const name = String(nameOverride != null ? nameOverride : qsReadMedicalPatientName()).trim();
@@ -11807,6 +11863,16 @@ async function createJobOnUpload({ jobId, s3Key, displayName, patientName, patie
         || Number(window.__QS_UPLOAD_MEDIA_DURATION_SEC)
         || 0
     );
+    const isMedicalJob = !!(
+        (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+        || patient
+        || patientId
+    );
+    const micInfo = isMedicalJob && typeof qsReadMedicalMicInfoForJob === 'function'
+        ? qsReadMedicalMicInfoForJob()
+        : { mic_label: '', mic_device_id: '', mic_type: '' };
+    const micLabel = String((micInfo && (micInfo.mic_label || micInfo.mic_type)) || '').trim();
+    const micDeviceId = String((micInfo && micInfo.mic_device_id) || '').trim();
 
     const row = {
         user_id: user.id,
@@ -11821,6 +11887,8 @@ async function createJobOnUpload({ jobId, s3Key, displayName, patientName, patie
             ...(niceName ? { display_name: niceName, original_filename: niceName } : {}),
             ...(patient ? { patient_name: patient } : {}),
             ...(patientId ? { patient_id_number: patientId } : {}),
+            ...(micLabel ? { mic_label: micLabel, mic_type: micLabel } : {}),
+            ...(micDeviceId ? { mic_device_id: micDeviceId } : {}),
             ...(Number.isFinite(durationSec) && durationSec > 0
                 ? { file_duration_sec: durationSec, credit_file_duration_sec: durationSec }
                 : {}),
@@ -20453,10 +20521,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!deviceId) {
                 localStorage.removeItem(QS_MEDICAL_MIC_DEVICE_KEY);
                 localStorage.removeItem(QS_MEDICAL_MIC_PREF_KEY);
+                try { window._qsMedicalMicForJob = null; } catch (_) {}
                 return;
             }
             localStorage.setItem(QS_MEDICAL_MIC_DEVICE_KEY, deviceId);
             localStorage.setItem(QS_MEDICAL_MIC_PREF_KEY, JSON.stringify({ deviceId, label, groupId }));
+            if (typeof qsRememberMedicalMicForJob === 'function') {
+                qsRememberMedicalMicForJob({ deviceId, label });
+            }
         } catch (_) {}
         qsSyncMedicalMicDefaultHint();
     }
@@ -20637,11 +20709,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const settings = track.getSettings() || {};
             const id = String(settings.deviceId || qsOpenedMedicalMicDeviceId(stream) || '').trim();
             if (!id) return '';
+            const label = String(track.label || '').trim();
             qsSetPreferredMedicalMicPref({
                 deviceId: id,
-                label: String(track.label || '').trim(),
+                label,
                 groupId: String(settings.groupId || '').trim(),
             });
+            if (typeof qsRememberMedicalMicForJob === 'function') {
+                qsRememberMedicalMicForJob({ deviceId: id, label });
+            }
             const select = document.getElementById('medical-mic-device-select');
             if (select) {
                 const hasOpt = Array.from(select.options || []).some((opt) => opt.value === id);
@@ -22162,6 +22238,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (session.s3Key && !keys.includes(session.s3Key)) keys.push(session.s3Key);
                     md.continuation_audio_keys = keys;
                     md.continued_at = new Date().toISOString();
+                    try {
+                        const micInfo = typeof qsReadMedicalMicInfoForJob === 'function'
+                            ? qsReadMedicalMicInfoForJob()
+                            : null;
+                        const micLabel = String((micInfo && (micInfo.mic_label || micInfo.mic_type)) || '').trim();
+                        const micDeviceId = String((micInfo && micInfo.mic_device_id) || '').trim();
+                        if (micLabel) {
+                            md.mic_label = micLabel;
+                            md.mic_type = micLabel;
+                        }
+                        if (micDeviceId) md.mic_device_id = micDeviceId;
+                    } catch (_) {}
                     await supabase
                         .from('jobs')
                         .update({ metadata: md, updated_at: new Date().toISOString() })
@@ -30856,9 +30944,19 @@ function qsPersistMedicalTranscriptBoxesFromDom() {
 function qsAutosizeMedicalEditTextarea(el) {
     if (!el || el.tagName !== 'TEXTAREA') return;
     try {
-        el.style.height = 'auto';
+        // Grow with content; never keep an inner scrollbar (parent #transcript-window scrolls).
+        el.style.overflow = 'hidden';
+        el.style.maxHeight = 'none';
+        el.style.height = '0px';
         el.style.height = `${Math.max(el.scrollHeight, 40)}px`;
     } catch (_) {}
+}
+
+function qsSyncMedicalTranscriptMultiBoxClass(root) {
+    const win = root || document.getElementById('transcript-window');
+    if (!win) return;
+    const n = win.querySelectorAll('[data-medical-edit-box]').length;
+    win.classList.toggle('qs-medical-multi-box', n > 1);
 }
 
 function qsCreateMedicalTranscriptEditBox(text, layout) {
@@ -30959,9 +31057,15 @@ function qsRenderMedicalEditableTranscriptBoxes(paragraphs) {
     if (String(window.medicalActiveTab || 'transcript') === 'summary') return;
     const layout = qsMedicalTranscriptLocaleLayout();
     const list = Array.isArray(paragraphs) ? paragraphs.map((p) => String(p == null ? '' : p)) : [];
+    // Trailing empty box only belongs after an explicit Shift+Enter (or continue-visit arming).
+    // Drop accidental '' tails so a single visit stays one pane.
+    while (list.length > 1 && !String(list[list.length - 1] || '').trim()) {
+        list.pop();
+    }
     const blocks = list.length ? list : [''];
     transcriptWindow.classList.remove('medical-wave-active');
     transcriptWindow.classList.add('qs-medical-boxes-editable');
+    transcriptWindow.classList.toggle('qs-medical-multi-box', blocks.length > 1);
     transcriptWindow.innerHTML = '';
     transcriptWindow.contentEditable = 'false';
     transcriptWindow.removeAttribute('readonly');
@@ -30975,12 +31079,16 @@ function qsRenderMedicalEditableTranscriptBoxes(paragraphs) {
     transcriptWindow.appendChild(frag);
     try { qsSyncMedicalDefaultSignatureUi(); } catch (_) {}
     qsWireMedicalTranscriptEditorOnce();
-    transcriptWindow.querySelectorAll('textarea.qs-medical-edit-box-body').forEach((el) => {
-        el.readOnly = false;
-        el.disabled = false;
-        el.style.pointerEvents = 'auto';
-        qsAutosizeMedicalEditTextarea(el);
-    });
+    const autosizeAll = () => {
+        transcriptWindow.querySelectorAll('textarea.qs-medical-edit-box-body').forEach((el) => {
+            el.readOnly = false;
+            el.disabled = false;
+            el.style.pointerEvents = 'auto';
+            qsAutosizeMedicalEditTextarea(el);
+        });
+    };
+    autosizeAll();
+    try { requestAnimationFrame(autosizeAll); } catch (_) {}
 }
 
 function qsCaretOffsetWithin(el) {
@@ -31072,6 +31180,7 @@ function qsSplitMedicalTranscriptBoxAtCaret(bodyEl) {
     // After Shift+Enter split during live ASR, new last box resumes stream sync.
     window._medicalLiveLastBoxDirty = false;
     qsSetCaretInElement(nextBody, 0);
+    try { qsSyncMedicalTranscriptMultiBoxClass(wrap.parentNode); } catch (_) {}
     qsPersistMedicalTranscriptBoxesFromDom();
     try {
         const liveRec = window._medicalRecorder;
@@ -31095,8 +31204,10 @@ function qsMergeMedicalTranscriptBoxWithPrevious(bodyEl) {
     const merged = (left + right).replace(/\s{2,}/g, ' ');
     if (prevBody.tagName === 'TEXTAREA') prevBody.value = merged;
     else prevBody.textContent = merged;
+    const parent = wrap.parentNode;
     wrap.remove();
     qsSetCaretInElement(prevBody, joinAt);
+    try { qsSyncMedicalTranscriptMultiBoxClass(parent); } catch (_) {}
     qsPersistMedicalTranscriptBoxesFromDom();
     return true;
 }

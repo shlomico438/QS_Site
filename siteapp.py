@@ -9309,7 +9309,10 @@ def _doctor_prompt_current_base(user_id, candidate_prompt=None):
 def _doctor_summary_looks_like_hebrew_clinic_template(text):
     t = str(text or "")
     hits = 0
-    for marker in ("ברקע", "בבדיקה", "המלצות", "רגישות", "תרופות", "לסיכום"):
+    for marker in (
+        "ברקע", "בבדיקה", "המלצות", "רגישות", "תרופות", "לסיכום",
+        "תלונה", "ממצאים", "המלצות למטופל",
+    ):
         if marker in t:
             hits += 1
     return hits >= 2
@@ -9325,14 +9328,20 @@ def _extract_personal_section_labels(doctor_summary, learned_labels=None):
                 labels[k] = val[:80]
     text = str(doctor_summary or "")
     if not any(labels.values()) and _doctor_summary_looks_like_hebrew_clinic_template(text):
-        if "ברקע" in text:
-            labels["chief"] = "ברקע"
-        if "בבדיקה" in text:
-            labels["exam"] = "בבדיקה"
-        elif "תרופות" in text:
-            labels["exam"] = "תרופות ובדיקה"
-        if "המלצות" in text:
-            labels["rec"] = "המלצות"
+        # Prefer the doctor's exact clinical triad when present (telephone / outpatient style).
+        if "תלונה" in text and "ממצאים" in text and ("המלצות למטופל" in text or "המלצות" in text):
+            labels["chief"] = "תלונה"
+            labels["exam"] = "ממצאים"
+            labels["rec"] = "המלצות למטופל" if "המלצות למטופל" in text else "המלצות"
+        else:
+            if "ברקע" in text:
+                labels["chief"] = "ברקע"
+            if "בבדיקה" in text:
+                labels["exam"] = "בבדיקה"
+            elif "תרופות" in text:
+                labels["exam"] = "תרופות ובדיקה"
+            if "המלצות" in text:
+                labels["rec"] = "המלצות"
     return {k: v for k, v in labels.items() if v}
 
 
@@ -12580,11 +12589,66 @@ _STRAY_TEMPLATE_HEADINGS = _FOREIGN_PERSONAL_TEMPLATE_HEADINGS + (
 )
 
 
+# Administrative header lines in some personal letters (name / ID / consult type).
+# These are NOT clinical section headings and must not drive template bucketing.
+_ADMIN_TEMPLATE_HEADING_NORMS = frozenset({
+    "שם",
+    "ת ז",
+    "ת.ז",
+    "ת״ז",
+    "יעוץ טלפוני",
+    "יעוץ פרונטלי",
+    "יעוץ",
+    "תאריך",
+    "date",
+    "name",
+    "id",
+})
+
+
+def _is_admin_template_heading(label):
+    norm = _normalize_template_heading(label)
+    if not norm:
+        return False
+    if norm in _ADMIN_TEMPLATE_HEADING_NORMS:
+        return True
+    # ``ת.ז.`` / ``ת ז`` variants after punctuation stripping.
+    compact = re.sub(r"[\s.\"״׳']+", "", norm)
+    return compact in {"תז", "שם", "יעוץטלפוני", "יעוץפרונטלי"}
+
+
+def _template_heading_pane_role(title):
+    """Map a clinical template heading to chief / exam / rec, or None if multi-section."""
+    if _is_admin_template_heading(title):
+        return "admin"
+    norm = _normalize_template_heading(title)
+    if norm in ("תלונה", "ברקע", "הנדון", "אנמנזה", "סיבת הפנייה", "chief complaint", "hpi"):
+        return "chief"
+    if norm in (
+        "ממצאים", "בבדיקה", "בדיקה", "בדיקה אורתופדית", "בדיקה נוירולוגית",
+        "examination", "findings",
+    ):
+        return "exam"
+    if norm in ("המלצות למטופל", "המלצות", "המלצות והמשך", "plan", "assessment", "הערכה ותוכנית"):
+        return "rec"
+    return None
+
+
+def _template_titles_are_three_pane_map(titles):
+    """True when the letter is exactly the three UI panes (plus optional admin lines)."""
+    clinical = [t for t in (titles or []) if _template_heading_pane_role(t) != "admin"]
+    if len(clinical) != 3:
+        return False
+    roles = [_template_heading_pane_role(t) for t in clinical]
+    return roles == ["chief", "exam", "rec"]
+
+
 def _extract_doctor_template_headings(text):
     """Ordered section labels the doctor marked in the training letter.
 
     A heading is a bold line whose label is a short Hebrew phrase. The label is
     the text before a colon or dash, so ``רגישות- לא ידוע`` yields ``רגישות``.
+    Administrative lines (``שם:``, ``יעוץ טלפוני:``) are ignored.
     """
     headings = []
     seen = set()
@@ -12605,6 +12669,8 @@ def _extract_doctor_template_headings(text):
             continue
         label = re.sub(r"\s+", " ", match.group(1)).strip(" :-–—")
         if not label or len(label) > 24 or len(label.split()) > 3 or re.search(r"\d", label):
+            continue
+        if _is_admin_template_heading(label):
             continue
         norm = _normalize_template_heading(label)
         if not norm or norm in seen:
@@ -12714,12 +12780,85 @@ def _match_doctor_heading_line(probe, headings):
         match = re.match(re.escape(title) + r"\s*[-–—:：]\s*(.*)$", text)
         if match:
             return title, match.group(1).strip()
+        # GPT often continues on the same line: ``בבדיקה נמצאה אצבע…`` (no colon).
+        if text.startswith(title) and len(text) > len(title):
+            sep = text[len(title)]
+            if sep.isspace() or sep in "-–—:：":
+                rest = text[len(title):].strip(" :-–—")
+                if rest:
+                    return title, rest
         prefixed = "ב" + title
         if text == prefixed:
             return title, ""
         if text.startswith(prefixed) and re.match(r"^[\s\-–—:：]", text[len(prefixed):]):
             return title, text[len(prefixed):].strip(" :-–—")
     return None
+
+
+_REC_LEAK_LINE_RE = re.compile(
+    r"(?i)^(?:"
+    r"הומלץ|מומלץ|המלצה|"
+    r"יש לה|יש לעקוב|יש להגיע|יש להחליף|יש להמשיך|"
+    r"הטקסט חייב להיבדק|"
+    r"verify this content|the text must be verified"
+    r")"
+)
+
+
+def _line_looks_like_recommendation(line):
+    """True for patient-instruction lines that belong under המלצות even without that heading."""
+    text = re.sub(r"\s+", " ", str(line or "").replace("*", " ")).strip()
+    if not text or len(text) > 280:
+        return False
+    return bool(_REC_LEAK_LINE_RE.match(text))
+
+
+def _repair_recommendation_lines_leaked(buckets, titles):
+    """Move ``הומלץ`` / ``יש לה…`` lines left under earlier sections into המלצות.
+
+    Personal-template GPT often keeps writing after בבדיקה without emitting the
+    ``המלצות`` heading, so those instructions stay under הנדון/בבדיקה.
+    """
+    if not isinstance(buckets, dict):
+        return
+    rec_title = _title_for_norm(titles, "המלצות", "המלצות למטופל", "המלצות והמשך")
+    if not rec_title:
+        return
+    rec = list(buckets.get(rec_title) or [])
+    rec_body = "\n".join(str(x or "").strip() for x in rec if str(x or "").strip()).strip()
+    rec_placeholder = rec_body.lower() in (
+        "",
+        "לא צוין",
+        "לא צוין.",
+        "not specified",
+        "not specified.",
+    )
+    if not rec_placeholder and any(_line_looks_like_recommendation(x) for x in rec):
+        return
+    for title in titles or []:
+        if title == rec_title:
+            continue
+        lines = list(buckets.get(title) or [])
+        split_at = None
+        for i, line in enumerate(lines):
+            if _line_looks_like_recommendation(line):
+                split_at = i
+                break
+        if split_at is None:
+            continue
+        leaked = lines[split_at:]
+        keep = lines[:split_at]
+        if not leaked:
+            continue
+        buckets[title] = keep
+        if rec_placeholder:
+            buckets[rec_title] = leaked
+            rec_placeholder = False
+        else:
+            buckets[rec_title] = leaked + rec
+        rec = list(buckets.get(rec_title) or [])
+        # Only peel from the first earlier section that leaked recommendations.
+        break
 
 
 def _lift_inline_section_markers(text, headings):
@@ -12883,13 +13022,15 @@ def _enforce_doctor_template_headings(chief, exam, rec, headings, bullets=None):
             buckets[current].append(raw.rstrip())
         else:
             preamble.append(raw.rstrip())
-    if preamble:
+    three_pane = _template_titles_are_three_pane_map(titles)
+    if preamble and not three_pane:
         buckets[titles[0]] = preamble + buckets[titles[0]]
     _repair_exam_lines_leaked_into_meds(buckets, titles)
+    _repair_recommendation_lines_leaked(buckets, titles)
     bullet_map = bullets if isinstance(bullets, dict) else {}
-    blocks = []
-    for title in titles:
-        lines = buckets[title]
+
+    def _render_section(title):
+        lines = list(buckets.get(title) or [])
         marker = str(bullet_map.get(title) or "").strip()
         if marker:
             lines = _bulletize_section_lines(lines, marker)
@@ -12898,7 +13039,28 @@ def _enforce_doctor_template_headings(chief, exam, rec, headings, bullets=None):
             for line in lines:
                 split_lines.extend(_split_fact_lines(line))
             lines = split_lines
-        blocks.append(_heading_block(title, lines))
+        return _heading_block(title, lines)
+
+    # Telephone / outpatient triad (תלונה / ממצאים / המלצות למטופל): keep the three
+    # storage panes separate. Admin header lines stay as chief preamble.
+    if three_pane:
+        by_role = {}
+        for title in titles:
+            role = _template_heading_pane_role(title)
+            if role in ("chief", "exam", "rec"):
+                by_role[role] = title
+        chief_block = _render_section(by_role["chief"])
+        if preamble:
+            chief_block = "\n".join(
+                [line for line in preamble if str(line).strip()] + [chief_block]
+            ).strip()
+        return (
+            chief_block,
+            _render_section(by_role["exam"]),
+            _render_section(by_role["rec"]),
+        )
+
+    blocks = [_render_section(title) for title in titles]
     letter = "\n\n".join(blocks).strip()
     return letter, "", ""
 
