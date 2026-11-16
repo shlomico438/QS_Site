@@ -16299,6 +16299,15 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                 if (payload.mc || payload.me || payload.mr) {
                     const painted = _qsVisibleMedicalSummaryExport();
                     if (painted && painted.text) return painted.text;
+                    const patientHeading = qsMedicalSummaryPatientHeadingText(window.currentFormattedDoc);
+                    const withPatient = (body) => {
+                        const text = String(body || '').trim();
+                        if (!patientHeading) return text;
+                        if (text.includes(patientHeading) || text.startsWith(patientHeading.split('\n')[0])) {
+                            return text;
+                        }
+                        return `${patientHeading}\n\n${text}`.trim();
+                    };
                     if (window._medicalPersonalTemplateActive) {
                         const headings = Array.isArray(window._medicalTemplateHeadings) ? window._medicalTemplateHeadings : [];
                         const note = _qsApplyDoctorTemplateHeadings(
@@ -16308,7 +16317,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                             }).join('\n\n'),
                             headings
                         );
-                        return note;
+                        return withPatient(note);
                     }
                     const lines = [];
                     lines.push(`${_medicalSummarySectionLabel('chief')}:`);
@@ -16319,7 +16328,7 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
                     lines.push('');
                     lines.push(`${_medicalSummarySectionLabel('rec')}:`);
                     lines.push(payload.mr || 'לא צוין.');
-                    return lines.join('\n').trim();
+                    return withPatient(lines.join('\n').trim());
                 }
                 const lines = [];
                 lines.push('סקירה:');
@@ -16380,6 +16389,12 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             };
             for (const k of ['medical_chief_complaint', 'medical_examination_transcript', 'medical_patient_recommendations']) {
                 if (baseFmt[k] != null) formattedForServer[k] = String(baseFmt[k] || '');
+            }
+            if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+                const patientName = qsMedicalSummaryPatientDisplayName(baseFmt);
+                const patientId = qsMedicalSummaryPatientDisplayId(baseFmt);
+                if (patientName) formattedForServer.patient_name = patientName;
+                if (patientId) formattedForServer.patient_id_number = patientId;
             }
             const t0 = performance.now();
             const res = await fetch('/api/export_docx', {
@@ -30212,6 +30227,29 @@ function qsMedicalSectionLabelsAreKnownStock(labels) {
 }
 
 /** The summary currently painted on screen, so Word and TXT match that view. */
+function _qsMedicalSummaryPatientExportLines(fmt) {
+    const lines = [];
+    const nameEl = document.querySelector('#medical-summary-patient-name .medical-summary-patient-name-value');
+    const idEl = document.querySelector('#medical-summary-patient-name .medical-summary-patient-id-value');
+    const nameFromDom = String((nameEl && nameEl.textContent) || '').trim();
+    const idFromDom = String((idEl && idEl.textContent) || '').trim();
+    const name = nameFromDom || qsMedicalSummaryPatientDisplayName(fmt || window.currentFormattedDoc);
+    const idNumber = idFromDom || qsMedicalSummaryPatientDisplayId(fmt || window.currentFormattedDoc);
+    if (name) {
+        lines.push({
+            text: `${qsMedicalSummaryPatientHeadingLabel()}: ${name}`,
+            bold: true,
+        });
+    }
+    if (idNumber) {
+        lines.push({
+            text: `${qsMedicalSummaryPatientIdHeadingLabel()}: ${idNumber}`,
+            bold: true,
+        });
+    }
+    return lines;
+}
+
 function _qsVisibleMedicalSummaryExport() {
     const root = document.getElementById('medical-summary-content');
     if (!root) return null;
@@ -30235,9 +30273,18 @@ function _qsVisibleMedicalSummaryExport() {
     });
     while (lines.length && !lines[lines.length - 1].text) lines.pop();
     if (!lines.some((line) => String(line.text || '').trim())) return null;
+    const patientLines = _qsMedicalSummaryPatientExportLines();
+    const bodyText = lines.map((line) => line.text).join('\n');
+    const alreadyHasPatient = patientLines.some((pl) => {
+        const needle = String(pl.text || '').trim();
+        return needle && bodyText.includes(needle);
+    });
+    const outLines = (!alreadyHasPatient && patientLines.length)
+        ? patientLines.concat([{ text: '', bold: false }], lines)
+        : lines;
     return {
-        text: lines.map((line) => line.text).join('\n').trim(),
-        lines
+        text: outLines.map((line) => line.text).join('\n').trim(),
+        lines: outLines
     };
 }
 

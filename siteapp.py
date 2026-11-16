@@ -15700,7 +15700,48 @@ def _medical_summary_screen_lines(screen_lines):
     return parts, mask
 
 
-def _medical_summary_docx_lines(chief, exam, rec, specialty, personal=False, headings=None):
+def _medical_summary_patient_docx_lines(patient_name=None, patient_id_number=None):
+    """Bold שם / ת.ז. lines for the top of a medical summary Word export."""
+    name = str(patient_name or '').strip()
+    id_number = re.sub(r'\D+', '', str(patient_id_number or ''))[:20]
+    parts = []
+    mask = []
+    if name:
+        parts.append(f"שם: {name}")
+        mask.append(True)
+    if id_number:
+        parts.append(f"ת.ז.: {id_number}")
+        mask.append(True)
+    return parts, mask
+
+
+def _medical_summary_prepend_patient_lines(parts, mask, patient_name=None, patient_id_number=None):
+    patient_parts, patient_mask = _medical_summary_patient_docx_lines(patient_name, patient_id_number)
+    if not patient_parts:
+        return parts, mask
+    blob = "\n".join(str(p or '') for p in (parts or []))
+    if any(line and line in blob for line in patient_parts):
+        return parts, mask
+    out_parts = list(patient_parts)
+    out_mask = list(patient_mask)
+    if parts:
+        out_parts.append('')
+        out_mask.append(False)
+        out_parts.extend(parts)
+        out_mask.extend(mask)
+    return out_parts, out_mask
+
+
+def _medical_summary_docx_lines(
+    chief,
+    exam,
+    rec,
+    specialty,
+    personal=False,
+    headings=None,
+    patient_name=None,
+    patient_id_number=None,
+):
     """One Word paragraph per screen line. A personal letter is not wrapped in specialty titles."""
     heading_norms = {
         _normalize_template_heading(h)
@@ -15736,7 +15777,9 @@ def _medical_summary_docx_lines(chief, exam, rec, specialty, personal=False, hea
                 mask.append(False)
             parts.extend(lines)
             mask.extend(flags)
-        return parts, mask
+        return _medical_summary_prepend_patient_lines(
+            parts, mask, patient_name=patient_name, patient_id_number=patient_id_number
+        )
 
     labels = _medical_summary_section_labels(specialty)
     parts = []
@@ -15750,7 +15793,9 @@ def _medical_summary_docx_lines(chief, exam, rec, specialty, personal=False, hea
         lines, flags = split_field(chunk or 'לא צוין.')
         parts.extend(lines)
         mask.extend(flags)
-    return parts, mask
+    return _medical_summary_prepend_patient_lines(
+        parts, mask, patient_name=patient_name, patient_id_number=patient_id_number
+    )
 
 
 @app.route('/api/export_docx', methods=['POST'])
@@ -15811,14 +15856,29 @@ def api_export_docx():
                 raw_headings = data.get('templateHeadings') or data.get('template_headings') or []
                 headings = raw_headings if isinstance(raw_headings, list) else []
                 screen_lines = data.get('screenLines') or data.get('screen_lines') or []
+                patient_name = str(fmt.get('patient_name') or data.get('patient_name') or data.get('patientName') or '').strip()
+                patient_id_number = str(
+                    fmt.get('patient_id_number')
+                    or fmt.get('patientIdNumber')
+                    or data.get('patient_id_number')
+                    or data.get('patientIdNumber')
+                    or ''
+                ).strip()
                 if isinstance(screen_lines, list) and any(
                     str((item or {}).get('text') if isinstance(item, dict) else item or '').strip()
                     for item in screen_lines
                 ):
                     lines, bold_mask = _medical_summary_screen_lines(screen_lines)
+                    lines, bold_mask = _medical_summary_prepend_patient_lines(
+                        lines, bold_mask,
+                        patient_name=patient_name,
+                        patient_id_number=patient_id_number,
+                    )
                 else:
                     lines, bold_mask = _medical_summary_docx_lines(
                         mc, me, mr, specialty, personal=personal, headings=headings,
+                        patient_name=patient_name,
+                        patient_id_number=patient_id_number,
                     )
             else:
                 overview   = str(fmt.get('overview') or '').strip()
