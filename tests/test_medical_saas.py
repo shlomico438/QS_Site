@@ -125,6 +125,39 @@ def test_cardcom_token_parses_masked_card_number():
     assert token["last_four"] == "4242"
 
 
+def test_cardcom_token_parses_current_get_lp_result_fields():
+    token = _cardcom_token_info(
+        {
+            "TokenInfo": {
+                "Token": "token-id",
+                "TokenExDate": "20290401",
+            },
+            "TranzactionInfo": {
+                "CardMonth": 4,
+                "CardYear": 2029,
+                "Last4CardDigitsString": "0123",
+            },
+        }
+    )
+    assert token == {
+        "token": "token-id",
+        "validity_mmyy": "0429",
+        "last_four": "0123",
+    }
+
+
+def test_cardcom_token_pads_integer_last_four():
+    token = _cardcom_token_info(
+        {
+            "Token": "token-id",
+            "CardMonth": 4,
+            "CardYear": 2029,
+            "Last4CardDigits": 123,
+        }
+    )
+    assert token["last_four"] == "0123"
+
+
 def test_cardcom_token_prefers_tokef_over_card_validity_and_token_ex():
     token = _cardcom_token_info(
         {

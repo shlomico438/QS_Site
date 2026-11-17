@@ -917,8 +917,18 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
         return ""
 
     token = first("Token", "token", "CardToken")
-    month_raw = first("CardValidityMonth", "ValidityMonth", "card_validity_month")
-    year_raw = first("CardValidityYear", "ValidityYear", "card_validity_year")
+    month_raw = first(
+        "CardValidityMonth",
+        "ValidityMonth",
+        "CardMonth",
+        "card_validity_month",
+    )
+    year_raw = first(
+        "CardValidityYear",
+        "ValidityYear",
+        "CardYear",
+        "card_validity_year",
+    )
     tokef = "".join(
         ch for ch in first("Tokef30", "Tokef_30", "tokef30", "Tokef") if ch.isdigit()
     )
@@ -963,6 +973,10 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
         source = "none"
 
     card_number = first(
+        # Current Cardcom JSON GetLpResult fields.
+        "Last4CardDigitsString",
+        "Last4CardDigits",
+        # Legacy / alternate response fields.
         "CardNumber5",
         "CardNumber",
         "Last4Digits",
@@ -971,7 +985,9 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
         "CardNum",
         "card_last_four",
     )
-    last_four = "".join(ch for ch in card_number if ch.isdigit())[-4:]
+    card_digits = "".join(ch for ch in card_number if ch.isdigit())
+    # Integer Last4CardDigits loses leading zeroes; restore four-character form.
+    last_four = card_digits.zfill(4)[-4:] if card_digits else ""
     if len(last_four) != 4:
         last_four = ""
     if not token or len(validity) != 4:
