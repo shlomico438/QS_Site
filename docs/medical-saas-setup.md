@@ -84,6 +84,8 @@ Apply `migrations/add_medical_payment_failure_reason.sql` so failed renewals sto
 
 Apply `migrations/add_medical_payment_card_last_four.sql` so each payment can store the card last-4 digits.
 
+Apply `migrations/add_medical_payment_kind_card_update.sql` so doctors can replace the saved card (`payment_kind = card_update`) without changing plan. UI: profile menu → **Update card** → `POST /api/medical/cardcom/update-card` (Cardcom `CreateTokenOnly`). Confirm uses the existing `confirm-subscription` path; if the account was `past_due`, verification also retries the monthly renewal.
+
 Apply `migrations/fix_medical_renewal_unique_allow_failed_retry.sql` so a failed renewal does not block the next cron retry for the same billing cycle.
 
 Apply `migrations/fix_medical_renewal_unique_cycle_end.sql` so renewals are idempotent per closed cycle end (not start).

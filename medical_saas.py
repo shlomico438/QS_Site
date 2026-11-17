@@ -289,6 +289,16 @@ def medical_account_public(account: dict) -> dict:
                 raw_failure[:300],
             )
         last_failure_public = _medical_billing_failure_public(raw_failure)
+    card_last_four = ""
+    try:
+        billing = _medical_billing_method_get(str(account.get("user_id") or ""))
+        card_last_four = "".join(
+            ch for ch in str((billing or {}).get("card_last_four") or "") if ch.isdigit()
+        )[-4:]
+        if len(card_last_four) != 4:
+            card_last_four = ""
+    except Exception:
+        card_last_four = ""
     return {
         **entitlement,
         "isMedicalUser": True,
@@ -312,6 +322,8 @@ def medical_account_public(account: dict) -> dict:
         "overageAmountIls": round(overage_seconds / 3600.0 * OVERAGE_ILS_PER_HOUR, 2),
         "seatLimit": int(account.get("seat_limit") or 1),
         "lastBillingFailure": last_failure_public,
+        "cardLastFour": card_last_four or None,
+        "canUpdateCard": plan in MEDICAL_PLANS and plan != "trial",
     }
 
 
@@ -713,9 +725,10 @@ def _medical_notify_renewal_failed(account: dict, payment: dict, reason: str) ->
             f"שלום {name},\n\n"
             f"ניסינו לחייב את אמצעי התשלום השמור{card_line} עבור חידוש המנוי ל-QuickScribe Medical, "
             "והחיוב לא עבר.\n\n"
-            "כדי להמשיך לתמלל ולהחליף כרטיס אשראי, היכנסו ל-\n"
+            "כדי להחליף כרטיס אשראי, היכנסו ל-\n"
             "https://www.getquickscribe.com/medical\n"
-            "ובחרו שוב את המסלול שלכם. בתשלום תוכלו להזין כרטיס חדש.\n\n"
+            "פתחו את תפריט הפרופיל ולחצו על «עדכון כרטיס».\n"
+            "ניתן להחליף כרטיס גם כשהמנוי פעיל.\n\n"
             "אם הבעיה נמשכת, צרו קשר עם התמיכה.\n\n"
             "QuickScribe Medical\n"
         )
@@ -949,7 +962,8 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
             amount = float(payment.get("amount_ils") or 0)
         except (TypeError, ValueError):
             amount = 0.0
-        return {
+        paid_kind = str(payment.get("payment_kind") or "initial").strip().lower()
+        out = {
             "ok": True,
             "alreadyActivated": True,
             "order_id": order_id,
@@ -958,6 +972,9 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
             "plan": str(payment.get("plan") or ""),
             **medical_account_public(account or {}),
         }
+        if paid_kind == "card_update":
+            out["cardUpdated"] = True
+        return out
 
     if _simulation_mode():
         token_info = {
@@ -984,38 +1001,45 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
 
     user_id = str(payment.get("user_id") or "")
     plan = str(payment.get("plan") or "")
+    payment_kind = str(payment.get("payment_kind") or "initial").strip().lower()
+    is_card_update = payment_kind == "card_update"
     _medical_billing_method_upsert(user_id, token_info)
-    account = _medical_activate_paid_plan(user_id, plan)
+    account = _medical_account_get(user_id) or {}
+    if not is_card_update:
+        account = _medical_activate_paid_plan(user_id, plan)
     transaction_id = (
         result.get("TranzactionId")
         or (result.get("TranzactionInfo") or {}).get("TranzactionId")
         or ""
     )
-    invoice_info = _cardcom_extract_document_info(result) if isinstance(result, dict) else {}
-    if invoice_info.get("invoice_error"):
-        logging.warning(
-            "medical invoice not issued order=%s: %s",
-            order_id,
-            invoice_info.get("invoice_error"),
-        )
-    invoice_patch = {
-        k: v
-        for k, v in {
-            "invoice_number": invoice_info.get("invoice_number"),
-            "invoice_type": invoice_info.get("invoice_type"),
-            "invoice_url": invoice_info.get("invoice_url"),
-        }.items()
-        if v
-    }
+    invoice_patch = {}
+    if not is_card_update:
+        invoice_info = _cardcom_extract_document_info(result) if isinstance(result, dict) else {}
+        if invoice_info.get("invoice_error"):
+            logging.warning(
+                "medical invoice not issued order=%s: %s",
+                order_id,
+                invoice_info.get("invoice_error"),
+            )
+        invoice_patch = {
+            k: v
+            for k, v in {
+                "invoice_number": invoice_info.get("invoice_number"),
+                "invoice_type": invoice_info.get("invoice_type"),
+                "invoice_url": invoice_info.get("invoice_url"),
+            }.items()
+            if v
+        }
     last_four = "".join(ch for ch in str((token_info or {}).get("last_four") or "") if ch.isdigit())[-4:]
     payment_patch = {
         "status": "paid",
         "cardcom_transaction_id": str(transaction_id or ""),
         "paid_at": datetime.now(timezone.utc).isoformat(),
-        "billing_cycle_started_at": account.get("billing_cycle_started_at"),
-        "billing_cycle_ends_at": account.get("billing_cycle_ends_at"),
         **invoice_patch,
     }
+    if not is_card_update:
+        payment_patch["billing_cycle_started_at"] = account.get("billing_cycle_started_at")
+        payment_patch["billing_cycle_ends_at"] = account.get("billing_cycle_ends_at")
     if len(last_four) == 4:
         payment_patch["card_last_four"] = last_four
     _medical_payment_update(order_id, payment_patch)
@@ -1023,6 +1047,38 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         amount = float(payment.get("amount_ils") or 0)
     except (TypeError, ValueError):
         amount = 0.0
+
+    renewal_result = None
+    if is_card_update:
+        # New token is saved. If the account was past_due, try the monthly charge now.
+        status_now = str((account or {}).get("subscription_status") or "").strip().lower()
+        if status_now == "past_due":
+            try:
+                renewal_result = _charge_medical_renewal(account)
+                account = _medical_account_get(user_id) or account
+            except Exception as renew_exc:
+                logging.warning(
+                    "medical card_update saved but renewal still failed user=%s: %s",
+                    user_id[:8],
+                    str(renew_exc)[:200],
+                )
+                account = _medical_account_get(user_id) or account
+                renewal_result = {
+                    "ok": False,
+                    "error": str(renew_exc)[:300],
+                }
+        return {
+            "ok": True,
+            "cardUpdated": True,
+            "alreadyActivated": False,
+            "order_id": order_id,
+            "amount_ils": amount,
+            "currency": "ILS",
+            "plan": plan,
+            "renewal": renewal_result,
+            **medical_account_public(account),
+        }
+
     sa = _sa()
     sa._schedule_meta_capi_purchase(
         user_id=user_id,
@@ -1764,6 +1820,97 @@ def register_medical_saas_routes(app) -> None:
         except Exception as exc:
             _medical_payment_update(order_id, {"status": "failed"})
             logging.exception("medical Cardcom subscription checkout failed")
+            return jsonify({"error": str(exc)}), 502
+
+    @app.route("/api/medical/cardcom/update-card", methods=["POST"])
+    def api_medical_cardcom_update_card():
+        """Replace the saved Cardcom token without changing plan or cycle."""
+        from cardcom_payments import (
+            _cardcom_api_post,
+            _cardcom_auth_fields,
+            _cardcom_enabled,
+            _simulation_mode,
+        )
+
+        sa = _sa()
+        auth_user = sa._supabase_auth_user_from_request()
+        user_id = str((auth_user or {}).get("id") or "").strip()
+        if not user_id:
+            return jsonify({"error": "Authorization required"}), 401
+        simulation = _simulation_mode()
+        if not simulation and not _cardcom_enabled():
+            return jsonify({"error": "Cardcom payments are not configured"}), 503
+
+        account = _medical_account_get(user_id)
+        if not account:
+            return jsonify({"error": "Medical account not found"}), 404
+        plan = str(account.get("subscription_plan") or "").strip().lower()
+        if plan not in MEDICAL_PLANS or plan == "trial":
+            return jsonify({"error": "Choose a paid plan before updating the card"}), 400
+
+        order_id = f"qs_med_card_{uuid.uuid4().hex}"
+        low_profile_id = str(uuid.uuid4())
+        # Nominal amount for the payment row / Cardcom CreateTokenOnly payload.
+        # CreateTokenOnly does not charge the card; it only captures a new token.
+        amount_ils = 1.0
+        base = request.url_root.rstrip("/")
+        _medical_payment_insert(
+            {
+                "user_id": user_id,
+                "order_id": order_id,
+                "low_profile_id": low_profile_id,
+                "plan": plan,
+                "amount_ils": amount_ils,
+                "payment_kind": "card_update",
+                "status": "pending",
+            }
+        )
+        if simulation:
+            return jsonify(
+                {
+                    "url": (
+                        f"{base}/medical?medical_cardcom_success=1"
+                        f"&medical_order_id={quote(order_id, safe='')}"
+                    ),
+                    "orderId": order_id,
+                    "simulation": True,
+                }
+            ), 200
+
+        payload = {
+            **_cardcom_auth_fields(),
+            "Operation": "CreateTokenOnly",
+            "ReturnValue": order_id,
+            "Amount": amount_ils,
+            "ISOCoinId": 1,
+            "Language": "he",
+            "ProductName": "QuickScribe Medical card update"[:50],
+            "WebHookUrl": f"{base}/api/cardcom/webhook",
+            "SuccessRedirectUrl": (
+                f"{base}/medical?medical_cardcom_success=1"
+                f"&medical_order_id={quote(order_id, safe='')}"
+            ),
+            "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
+        }
+        try:
+            result = _cardcom_api_post("LowProfile/Create", payload)
+            actual_lp = str(result.get("LowProfileId") or low_profile_id).strip()
+            url = str(result.get("Url") or "").strip()
+            if not url:
+                raise RuntimeError("Cardcom did not return a payment URL")
+            if actual_lp != low_profile_id:
+                _medical_payment_update(order_id, {"low_profile_id": actual_lp})
+            return jsonify(
+                {
+                    "url": url,
+                    "orderId": order_id,
+                    "lowProfileId": actual_lp,
+                    "simulation": False,
+                }
+            ), 200
+        except Exception as exc:
+            _medical_payment_update(order_id, {"status": "failed"})
+            logging.exception("medical Cardcom update-card checkout failed")
             return jsonify({"error": str(exc)}), 502
 
     @app.route("/api/medical/cardcom/issue-invoice", methods=["POST"])

@@ -2212,10 +2212,42 @@ function qsMedicalRefreshPricingButtonLabels(account) {
     const label = qsMedicalPricingButtonLabel(account?.subscriptionPlan);
     const pricingButton = document.getElementById('medical-open-pricing-btn');
     const billingButton = document.getElementById('user-menu-medical-billing');
+    const updateCardButton = document.getElementById('user-menu-medical-update-card');
     if (pricingButton) pricingButton.textContent = label;
     if (billingButton) billingButton.textContent = T('medical_plan_billing', 'Plan & billing');
+    if (updateCardButton) updateCardButton.textContent = T('medical_update_card', 'Update card');
 }
 window.qsMedicalRefreshPricingButtonLabels = qsMedicalRefreshPricingButtonLabels;
+
+function qsMedicalCanUpdateCard(account) {
+    if (!account) return false;
+    if (account.canUpdateCard === true) return true;
+    const plan = String(account.subscriptionPlan || '').toLowerCase();
+    return ['starter', 'professional', 'clinic'].includes(plan);
+}
+
+function qsMedicalSyncUpdateCardUi(account) {
+    const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
+    const updateCardButton = document.getElementById('user-menu-medical-update-card');
+    const cardHint = document.getElementById('user-menu-medical-card-hint');
+    const show = qsMedicalCanUpdateCard(account);
+    if (updateCardButton) updateCardButton.hidden = !show;
+    if (!cardHint) return;
+    if (!show) {
+        cardHint.hidden = true;
+        cardHint.textContent = '';
+        return;
+    }
+    const last4 = String(account.cardLastFour || '').replace(/\D/g, '').slice(-4);
+    if (last4.length === 4) {
+        const tpl = T('medical_update_card_hint', 'Saved card ends in {last4}');
+        cardHint.textContent = String(tpl).replace('{last4}', last4);
+    } else {
+        cardHint.textContent = T('medical_update_card_hint_none', 'You can replace the saved card at any time.');
+    }
+    cardHint.hidden = false;
+}
+window.qsMedicalSyncUpdateCardUi = qsMedicalSyncUpdateCardUi;
 
 function qsMedicalApplyAccessState(account) {
     window.__QS_MEDICAL_ACCOUNT = account || null;
@@ -2240,6 +2272,7 @@ function qsMedicalApplyAccessState(account) {
     }
     qsMedicalRefreshPricingButtonLabels(account);
     if (billingButton) billingButton.hidden = !account || account.onboardingRequired === true;
+    qsMedicalSyncUpdateCardUi(account);
     if (!pending) {
         qsMedicalRenderUsage(account);
         qsMedicalSetOnboardingMessage('');
@@ -2257,8 +2290,7 @@ function qsMedicalApplyAccessState(account) {
             msg = 'תקופת המנוי הסתיימה. אם החיוב האוטומטי לא עבר, בחרו מסלול כדי לחדש.';
         } else if (reason === 'subscription_past_due') {
             // Never append raw Cardcom/Shva failure text (EMV, brand agreements, codes) — ops-only.
-            // Card update = choose a plan again (Cardcom ChargeAndCreateToken); no separate card settings page.
-            msg = 'החיוב החודשי נכשל. בחרו שוב מסלול בתמחור והזינו כרטיס אשראי חדש כדי להמשיך. אם הבעיה נמשכת, צרו קשר עם התמיכה.';
+            msg = 'החיוב החודשי נכשל. פתחו את תפריט הפרופיל ולחצו על «עדכון כרטיס», או בחרו שוב מסלול בתמחור. אם הבעיה נמשכת, צרו קשר עם התמיכה.';
         } else if (reason.indexOf('subscription_') === 0) {
             msg = 'המנוי אינו פעיל כרגע. בחרו מסלול כדי להמשיך לתמלל.';
         }
@@ -2467,7 +2499,40 @@ async function qsStartMedicalPlanCheckout(plan) {
 }
 window.qsStartMedicalPlanCheckout = qsStartMedicalPlanCheckout;
 
+async function qsStartMedicalCardUpdate() {
+    const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
+    try {
+        const account = window.__QS_MEDICAL_ACCOUNT || await qsMedicalAccountFetch();
+        if (!qsMedicalCanUpdateCard(account)) {
+            if (typeof showStatus === 'function') {
+                showStatus(T('medical_pricing_activate_trial_first', 'Start your trial period first.'), true, { duration: 4000 });
+            }
+            return;
+        }
+        if (typeof showStatus === 'function') {
+            showStatus(T('medical_update_card_redirect', 'Opening a secure page to update your card…'), false, { duration: 4000 });
+        }
+        qsMedicalSetOnboardingMessage(T('medical_update_card_redirect', 'Opening a secure page to update your card…'));
+        const res = await fetch('/api/medical/cardcom/update-card', {
+            method: 'POST',
+            headers: await qsMedicalJsonHeaders(),
+            body: JSON.stringify({}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.url) throw new Error(data.error || 'לא ניתן לפתוח את עמוד עדכון הכרטיס.');
+        window.location.assign(data.url);
+    } catch (err) {
+        const message = String(err?.message || err || 'עדכון הכרטיס לא זמין כעת.');
+        qsMedicalSetOnboardingMessage(message, true);
+        if (typeof showStatus === 'function') {
+            showStatus(message, true, { duration: 5000 });
+        }
+    }
+}
+window.qsStartMedicalCardUpdate = qsStartMedicalCardUpdate;
+
 async function qsConfirmMedicalCardcomReturn() {
+    const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
     const params = new URLSearchParams(window.location.search || '');
     if (params.get('medical_cardcom_cancelled') === '1') {
         qsMedicalSetOnboardingMessage('התשלום בוטל. לא בוצע חיוב.', true);
@@ -2476,7 +2541,12 @@ async function qsConfirmMedicalCardcomReturn() {
     if (params.get('medical_cardcom_success') !== '1') return false;
     const orderId = String(params.get('medical_order_id') || '').trim();
     if (!orderId) return false;
-    qsMedicalSetOnboardingMessage('מאמתים את התשלום ומפעילים את המסלול…');
+    const isCardUpdate = orderId.indexOf('qs_med_card_') === 0;
+    qsMedicalSetOnboardingMessage(
+        isCardUpdate
+            ? T('medical_update_card_redirect', 'Opening a secure page to update your card…')
+            : 'מאמתים את התשלום ומפעילים את המסלול…'
+    );
     const res = await fetch('/api/medical/cardcom/confirm-subscription', {
         method: 'POST',
         headers: await qsMedicalJsonHeaders(),
@@ -2492,6 +2562,20 @@ async function qsConfirmMedicalCardcomReturn() {
         window.history.replaceState({}, '', clean.pathname + clean.search + clean.hash);
     } catch (_) {}
     qsMedicalApplyAccessState(data);
+    if (data.cardUpdated || isCardUpdate) {
+        let msg = T('medical_update_card_success', 'Card updated successfully.');
+        const renewal = data.renewal;
+        if (renewal && renewal.ok === true) {
+            msg = T('medical_update_card_success_renewed', 'Card updated and the monthly charge went through.');
+        } else if (renewal && renewal.ok === false) {
+            msg = T('medical_update_card_success_renew_failed', 'Card updated, but the monthly charge still failed. Try again or contact support.');
+        }
+        qsMedicalSetOnboardingMessage(msg, renewal && renewal.ok === false);
+        if (typeof showStatus === 'function') {
+            showStatus(msg, !!(renewal && renewal.ok === false), { duration: 6000 });
+        }
+        return true;
+    }
     try {
         if (typeof qsTrackGa4Purchase === 'function') {
             await qsTrackGa4Purchase({
@@ -2684,6 +2768,14 @@ function qsWireMedicalPricingUi() {
         billingButton.addEventListener('click', () => {
             if (typeof closeUserMenu === 'function') closeUserMenu();
             qsOpenMedicalPricingModal();
+        });
+    }
+    const updateCardButton = document.getElementById('user-menu-medical-update-card');
+    if (updateCardButton && updateCardButton.dataset.qsUpdateCardWired !== '1') {
+        updateCardButton.dataset.qsUpdateCardWired = '1';
+        updateCardButton.addEventListener('click', () => {
+            if (typeof closeUserMenu === 'function') closeUserMenu();
+            void qsStartMedicalCardUpdate();
         });
     }
     const modal = document.getElementById('medical-pricing-modal');

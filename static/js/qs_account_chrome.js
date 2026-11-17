@@ -52,6 +52,10 @@
                 <button type="button" id="user-menu-medical-billing" class="user-menu-medical-billing-btn" hidden data-i18n="medical_plan_billing">
                     ${T('medical_plan_billing', 'Plan & billing')}
                 </button>
+                <button type="button" id="user-menu-medical-update-card" class="user-menu-medical-billing-btn user-menu-medical-update-card-btn" hidden data-i18n="medical_update_card">
+                    ${T('medical_update_card', 'Update card')}
+                </button>
+                <p id="user-menu-medical-card-hint" class="user-menu-medical-card-hint" hidden></p>
             </div>
             <div class="user-menu-profile-medical-training" style="display:none; margin-bottom:12px; padding:10px; border:1px solid #d1fae5; border-radius:10px; background:#f0fdfa;">
                 <div style="font-weight:600; color:#0f766e; margin-bottom:6px;" data-i18n="medical_training_style_title">${T('medical_training_style_title', 'Summary style adaptation')}</div>

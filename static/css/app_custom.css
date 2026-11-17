@@ -2332,6 +2332,16 @@ html[dir="rtl"] .seo-credit-bundle-item {
     width: 100%;
     margin: 10px 0 0;
 }
+.user-menu-medical-update-card-btn {
+    border-color: #64748b;
+    color: #334155;
+}
+.user-menu-medical-card-hint {
+    margin: 6px 0 0;
+    font-size: 0.8rem;
+    color: #64748b;
+    line-height: 1.35;
+}
 .medical-pricing-modal {
     position: fixed;
     inset: 0;

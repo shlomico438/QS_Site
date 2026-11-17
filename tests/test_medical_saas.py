@@ -182,6 +182,22 @@ def test_expired_trial_still_flags_medical_user():
     assert public["onboardingRequired"] is False
 
 
+def test_paid_account_public_exposes_update_card_flag():
+    public = medical_account_public(
+        _account(
+            user_id="00000000-0000-0000-0000-000000000001",
+            subscription_plan="starter",
+            subscription_status="active",
+            included_seconds=30 * 3600,
+        )
+    )
+    assert public["canUpdateCard"] is True
+    assert public.get("cardLastFour") in (None, "")
+
+    trial = medical_account_public(_account())
+    assert trial["canUpdateCard"] is False
+
+
 def test_normalize_default_signature_preserves_line_breaks():
     assert normalize_default_signature("  ד\"ר כהן  ") == "ד\"ר כהן"
     assert normalize_default_signature("בברכה,\r\nד\"ר כהן") == "בברכה,\nד\"ר כהן"
