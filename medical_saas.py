@@ -834,13 +834,18 @@ def _medical_issue_invoice_for_payment(order_id: str, billing: dict, email_overr
     return {"ok": True, "alreadyIssued": False, "order_id": order_id, **invoice_patch}
 
 
-def _medical_billing_method_upsert(user_id: str, token_info: dict) -> None:
+def _medical_billing_method_upsert(
+    user_id: str,
+    token_info: dict,
+    *,
+    preserve_last_four: bool = True,
+) -> None:
     sa = _sa()
     supabase_url, _, headers = sa._supabase_rest_config()
     h = dict(headers)
     h["Prefer"] = "resolution=merge-duplicates,return=minimal"
     last_four = "".join(ch for ch in str((token_info or {}).get("last_four") or "") if ch.isdigit())[-4:]
-    if len(last_four) != 4:
+    if len(last_four) != 4 and preserve_last_four:
         # Keep a previously stored last-four when Cardcom omits it on a later token refresh.
         try:
             existing = _medical_billing_method_get(user_id)
@@ -853,10 +858,10 @@ def _medical_billing_method_upsert(user_id: str, token_info: dict) -> None:
         "user_id": user_id,
         "cardcom_token": token_info["token"],
         "card_validity_mmyy": token_info["validity_mmyy"],
+        # On an explicit replacement, null is safer than displaying the old card.
+        "card_last_four": last_four or None,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    if last_four:
-        row["card_last_four"] = last_four
     r = sa._supabase_http_request(
         "POST",
         f"{supabase_url}/rest/v1/medical_billing_methods?on_conflict=user_id",
@@ -982,7 +987,12 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
     return {"token": token, "validity_mmyy": validity, "last_four": last_four or None}
 
 
-def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str] = None) -> dict:
+def _verify_medical_cardcom_payment(
+    order_id: str,
+    low_profile_id: Optional[str] = None,
+    *,
+    retry_past_due: bool = False,
+) -> dict:
     from cardcom_payments import (
         _cardcom_extract_document_info,
         _cardcom_get_lp_result,
@@ -1011,6 +1021,25 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         }
         if is_card_update:
             out["cardUpdated"] = True
+            status_now = str((account or {}).get("subscription_status") or "").strip().lower()
+            if retry_past_due and status_now == "past_due":
+                try:
+                    out["renewal"] = _charge_medical_renewal(
+                        account or {},
+                        resume_pending=False,
+                    )
+                except Exception as renew_exc:
+                    logging.warning(
+                        "medical paid card_update renewal failed user=%s: %s",
+                        str(payment.get("user_id") or "")[:8],
+                        str(renew_exc)[:200],
+                    )
+                    out["renewal"] = {
+                        "ok": False,
+                        "error": str(renew_exc)[:300],
+                    }
+                refreshed = _medical_account_get(str(payment.get("user_id") or "")) or account or {}
+                out.update(medical_account_public(refreshed))
         return out
 
     if _simulation_mode():
@@ -1042,7 +1071,11 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
     # Prefer payment_kind; also accept qs_med_card_* orders if the DB CHECK
     # constraint does not yet allow payment_kind='card_update'.
     is_card_update = payment_kind == "card_update" or str(order_id).startswith("qs_med_card_")
-    _medical_billing_method_upsert(user_id, token_info)
+    _medical_billing_method_upsert(
+        user_id,
+        token_info,
+        preserve_last_four=not is_card_update,
+    )
     account = _medical_account_get(user_id) or {}
     if not is_card_update:
         account = _medical_activate_paid_plan(user_id, plan)
@@ -1089,11 +1122,15 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
 
     renewal_result = None
     if is_card_update:
-        # New token is saved. If the account was past_due, try the monthly charge now.
+        # Webhooks only save the token. The authenticated browser confirmation
+        # performs the one immediate renewal retry, avoiding webhook/browser races.
         status_now = str((account or {}).get("subscription_status") or "").strip().lower()
-        if status_now == "past_due":
+        if retry_past_due and status_now == "past_due":
             try:
-                renewal_result = _charge_medical_renewal(account)
+                renewal_result = _charge_medical_renewal(
+                    account,
+                    resume_pending=False,
+                )
                 account = _medical_account_get(user_id) or account
             except Exception as renew_exc:
                 logging.warning(
@@ -1228,7 +1265,7 @@ def _medical_timestamps_equal(a, b) -> bool:
         return False
 
 
-def _charge_medical_renewal(account: dict) -> dict:
+def _charge_medical_renewal(account: dict, *, resume_pending: bool = True) -> dict:
     from cardcom_payments import _cardcom_api_post, _cardcom_auth_fields, _simulation_mode
 
     user_id = str(account.get("user_id") or "").strip()
@@ -1304,6 +1341,13 @@ def _charge_medical_renewal(account: dict) -> dict:
             order_id = f"qs_med_renew_{uuid.uuid4().hex}"
             _insert_pending(order_id)
         elif existing_status == "pending":
+            if not resume_pending:
+                return {
+                    "ok": True,
+                    "skipped": "renewal_in_progress",
+                    "userId": user_id,
+                    "order_id": existing.get("order_id"),
+                }
             order_id = str(existing.get("order_id") or "").strip()
             if not order_id:
                 return {"ok": True, "skipped": "renewal_already_created", "userId": user_id}
@@ -2012,7 +2056,12 @@ def register_medical_saas_routes(app) -> None:
         if str(payment.get("user_id") or "") != user_id:
             return jsonify({"error": "Order does not belong to this user"}), 403
         try:
-            return jsonify(_verify_medical_cardcom_payment(order_id)), 200
+            return jsonify(
+                _verify_medical_cardcom_payment(
+                    order_id,
+                    retry_past_due=str(order_id).startswith("qs_med_card_"),
+                )
+            ), 200
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except Exception as exc:

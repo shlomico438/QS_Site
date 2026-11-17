@@ -2542,19 +2542,36 @@ async function qsConfirmMedicalCardcomReturn() {
     if (params.get('medical_cardcom_success') !== '1') return false;
     const orderId = String(params.get('medical_order_id') || '').trim();
     if (!orderId) return false;
+    // Auth/bootstrap can initialize twice on the return page. Only one request may
+    // trigger the immediate past-due renewal retry.
+    if (window.__QS_MEDICAL_CARDCOM_CONFIRMING_ORDER === orderId) return true;
+    window.__QS_MEDICAL_CARDCOM_CONFIRMING_ORDER = orderId;
     const isCardUpdate = orderId.indexOf('qs_med_card_') === 0;
     qsMedicalSetOnboardingMessage(
         isCardUpdate
             ? T('medical_update_card_redirect', 'Opening a secure page to update your card…')
             : 'מאמתים את התשלום ומפעילים את המסלול…'
     );
-    const res = await fetch('/api/medical/cardcom/confirm-subscription', {
-        method: 'POST',
-        headers: await qsMedicalJsonHeaders(),
-        body: JSON.stringify({ orderId }),
-    });
+    let res;
+    try {
+        res = await fetch('/api/medical/cardcom/confirm-subscription', {
+            method: 'POST',
+            headers: await qsMedicalJsonHeaders(),
+            body: JSON.stringify({ orderId }),
+        });
+    } catch (err) {
+        if (window.__QS_MEDICAL_CARDCOM_CONFIRMING_ORDER === orderId) {
+            window.__QS_MEDICAL_CARDCOM_CONFIRMING_ORDER = '';
+        }
+        throw err;
+    }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'אימות התשלום נכשל.');
+    if (!res.ok) {
+        if (window.__QS_MEDICAL_CARDCOM_CONFIRMING_ORDER === orderId) {
+            window.__QS_MEDICAL_CARDCOM_CONFIRMING_ORDER = '';
+        }
+        throw new Error(data.error || 'אימות התשלום נכשל.');
+    }
     try {
         const clean = new URL(window.location.href);
         clean.searchParams.delete('medical_cardcom_success');
@@ -2566,14 +2583,15 @@ async function qsConfirmMedicalCardcomReturn() {
     if (data.cardUpdated || isCardUpdate) {
         let msg = T('medical_update_card_success', 'Card updated successfully.');
         const renewal = data.renewal;
-        if (renewal && renewal.ok === true) {
+        const stillPastDue = String(data.subscriptionStatus || '').toLowerCase() === 'past_due';
+        if (renewal && renewal.ok === true && !stillPastDue) {
             msg = T('medical_update_card_success_renewed', 'Card updated and the monthly charge went through.');
-        } else if (renewal && renewal.ok === false) {
+        } else if ((renewal && renewal.ok === false) || stillPastDue) {
             msg = T('medical_update_card_success_renew_failed', 'Card updated, but the monthly charge still failed. Try again or contact support.');
         }
-        qsMedicalSetOnboardingMessage(msg, renewal && renewal.ok === false);
+        qsMedicalSetOnboardingMessage(msg, stillPastDue || !!(renewal && renewal.ok === false));
         if (typeof showStatus === 'function') {
-            showStatus(msg, !!(renewal && renewal.ok === false), { duration: 6000 });
+            showStatus(msg, stillPastDue || !!(renewal && renewal.ok === false), { duration: 6000 });
         }
         return true;
     }
