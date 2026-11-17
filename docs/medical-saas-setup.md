@@ -65,7 +65,7 @@ For every due account, the endpoint:
 3. Starts the next billing cycle and resets current usage only after a successful charge.
 4. Marks the subscription `past_due` after a failed charge.
 
-The partial unique index on user, payment kind, and billing-cycle start prevents duplicate renewal charges when the cron request is retried.
+The partial unique index on user, payment kind, and billing-cycle **end** prevents duplicate renewal charges for the same closed period when the cron request is retried. Apply `migrations/fix_medical_renewal_unique_cycle_end.sql`.
 
 ## 4. Production checks
 

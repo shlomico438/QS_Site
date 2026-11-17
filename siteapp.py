@@ -6338,6 +6338,63 @@ def _schedule_admin_payment_notify(**kwargs):
         logging.warning('schedule payment notify failed: %s', e)
 
 
+def _send_admin_medical_renewal_failure_email(payload):
+    recipients = _admin_ops_notification_recipients()
+    if not recipients or not isinstance(payload, dict):
+        return False
+    user_id = str(payload.get('user_id') or '').strip()
+    email = str(payload.get('email') or '').strip()
+    name = str(payload.get('user_name') or '').strip() or '(not provided)'
+    plan = str(payload.get('plan') or '').strip() or '(unknown)'
+    order_ref = str(payload.get('order_ref') or '').strip() or '(unknown)'
+    reason = str(payload.get('failure_reason') or '').strip() or '(none)'
+    amount_line = ''
+    amount = payload.get('amount')
+    if amount is not None and str(amount).strip() != '':
+        try:
+            amount_line = f"Amount attempted: {float(amount):.2f} ILS\n"
+        except (TypeError, ValueError):
+            amount_line = f"Amount attempted: {amount}\n"
+    subject = f"QuickScribe — Medical renewal FAILED ({email or user_id[:8] or 'user'})"
+    body = (
+        "A QuickScribe Medical automatic renewal failed.\n\n"
+        f"User id: {user_id or '(unknown)'}\n"
+        f"Email: {email or '(none)'}\n"
+        f"Name: {name}\n"
+        f"Plan: {plan}\n"
+        f"{amount_line}"
+        f"Order: {order_ref}\n"
+        f"Failure reason: {reason}\n"
+        "Subscription was marked past_due. The doctor was emailed to update payment.\n"
+    )
+    return _send_email_via_zoho(recipients, subject, body, reply_to=email or None)
+
+
+def _schedule_admin_medical_renewal_failure_notify(**kwargs):
+    """Fire-and-forget ops email after a failed medical token renewal."""
+    try:
+        payload = dict(kwargs or {})
+        user_id = str(payload.get('user_id') or '').strip()
+        if not user_id:
+            return
+        if not payload.get('email') or not payload.get('user_name'):
+            auth_user = _supabase_admin_get_user(user_id)
+            if isinstance(auth_user, dict):
+                if not payload.get('email'):
+                    payload['email'] = str(auth_user.get('email') or '').strip()
+                if not payload.get('user_name'):
+                    payload['user_name'] = _user_display_name_from_auth_payload(auth_user) or ''
+        if not _env_truthy('PAYMENT_NOTIFICATIONS', True):
+            return
+        threading.Thread(
+            target=_send_admin_medical_renewal_failure_email,
+            args=(payload,),
+            daemon=True,
+        ).start()
+    except Exception as e:
+        logging.warning('schedule medical renewal failure notify failed: %s', e)
+
+
 def _ga4_measurement_id():
     return (os.environ.get('GA4_MEASUREMENT_ID') or 'G-QDEKS23DSF').strip()
 

@@ -634,6 +634,80 @@ def _medical_notify_paid(payment: dict, extra: Optional[dict] = None) -> None:
     )
 
 
+def _medical_renewal_for_cycle_end(user_id: str, cycle_end: str) -> Optional[dict]:
+    """Latest pending/paid renewal row for this closed billing-cycle end."""
+    uid = str(user_id or "").strip()
+    end = str(cycle_end or "").strip()
+    if not uid or not end:
+        return None
+    sa = _sa()
+    supabase_url, _, headers = sa._supabase_rest_config()
+    r = sa._supabase_http_request(
+        "GET",
+        f"{supabase_url}/rest/v1/medical_subscription_payments"
+        f"?user_id=eq.{quote(uid, safe='')}"
+        f"&payment_kind=eq.renewal"
+        f"&status=in.(pending,paid)"
+        f"&billing_cycle_ends_at=eq.{quote(end, safe='')}"
+        f"&select=*&order=created_at.desc&limit=1",
+        headers=headers,
+        timeout=8,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(r.text or f"medical renewal cycle lookup HTTP {r.status_code}")
+    rows = r.json() if r.text else []
+    return rows[0] if isinstance(rows, list) and rows else None
+
+
+def _medical_notify_renewal_failed(account: dict, payment: dict, reason: str) -> None:
+    """Ops + doctor email when a token renewal fails (e.g. canceled card)."""
+    sa = _sa()
+    user_id = str((account or {}).get("user_id") or (payment or {}).get("user_id") or "").strip()
+    plan = str((payment or {}).get("plan") or (account or {}).get("subscription_plan") or "")
+    amount = (payment or {}).get("amount_ils")
+    order_id = str((payment or {}).get("order_id") or "").strip()
+    safe_reason = str(reason or "").strip()[:500] or "medical renewal failed"
+    # Ops inbox (same channel as successful medical payments).
+    try:
+        if hasattr(sa, "_schedule_admin_payment_notify"):
+            # Reuse the scheduler thread; subject/body for failures go through a dedicated path.
+            if hasattr(sa, "_schedule_admin_medical_renewal_failure_notify"):
+                sa._schedule_admin_medical_renewal_failure_notify(
+                    user_id=user_id,
+                    plan=plan,
+                    amount=amount,
+                    order_ref=order_id,
+                    failure_reason=safe_reason,
+                )
+            else:
+                logging.warning(
+                    "medical renewal failure notify helper missing; logging only user=%s reason=%s",
+                    user_id[:8],
+                    safe_reason[:200],
+                )
+    except Exception:
+        logging.exception("medical renewal failure ops notify failed user=%s", user_id[:8])
+    # Doctor-facing email (no raw Cardcom jargon).
+    try:
+        contact = _medical_invoice_contact(user_id, account)
+        email = str(contact.get("email") or "").strip()
+        if not email or not hasattr(sa, "_send_email_via_zoho"):
+            return
+        name = str(contact.get("name") or "").strip() or "רופא/ה יקר/ה"
+        subject = "QuickScribe Medical — החיוב החודשי נכשל"
+        body = (
+            f"שלום {name},\n\n"
+            "ניסינו לחייב את אמצעי התשלום השמור עבור חידוש המנוי ל-QuickScribe Medical, "
+            "והחיוב לא עבר.\n\n"
+            "כדי להמשיך לתמלל, היכנסו ל-/medical, עדכנו אמצעי תשלום או בחרו מסלול מחדש.\n"
+            "אם הבעיה נמשכת, צרו קשר עם התמיכה.\n\n"
+            "QuickScribe Medical\n"
+        )
+        sa._send_email_via_zoho([email], subject, body, reply_to=None)
+    except Exception:
+        logging.exception("medical renewal failure doctor email failed user=%s", user_id[:8])
+
+
 def _medical_issue_invoice_for_payment(order_id: str, billing: dict, email_override: str = "") -> dict:
     from cardcom_payments import (
         _cardcom_issue_standalone_invoice,
@@ -1002,6 +1076,24 @@ def _medical_account_set_status(user_id: str, status: str) -> None:
         raise RuntimeError(r.text or f"medical account status update HTTP {r.status_code}")
 
 
+def _medical_timestamps_equal(a, b) -> bool:
+    """Compare timestamptz strings loosely (trim / Z vs +00:00)."""
+    def _norm(value):
+        s = str(value or "").strip()
+        if not s:
+            return ""
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return s.replace(" ", "T")
+    left, right = _norm(a), _norm(b)
+    if left == right:
+        return True
+    try:
+        return _parse_timestamp(left) == _parse_timestamp(right)
+    except Exception:
+        return False
+
+
 def _charge_medical_renewal(account: dict) -> dict:
     from cardcom_payments import _cardcom_api_post, _cardcom_auth_fields, _simulation_mode
 
@@ -1015,14 +1107,17 @@ def _charge_medical_renewal(account: dict) -> dict:
         _medical_account_set_status(user_id, "past_due")
         raise ValueError("No Cardcom billing token")
 
+    # Idempotency is keyed on the period being closed (cycle end), not the new cycle start.
     cycle_start = str(account.get("billing_cycle_started_at") or "")
     cycle_end = str(account.get("billing_cycle_ends_at") or "")
+    if not cycle_end:
+        raise ValueError("Missing billing_cycle_ends_at")
     base_amount = float(config["monthly_price_ils"])
     overage_seconds = max(0, int(account.get("overage_seconds") or 0))
     overage_amount = round(overage_seconds / 3600.0 * OVERAGE_ILS_PER_HOUR, 2)
     amount_ils = round(base_amount + overage_amount, 2)
-    order_id = f"qs_med_renew_{uuid.uuid4().hex}"
-    try:
+
+    def _insert_pending(order_id: str) -> None:
         _medical_payment_insert(
             {
                 "user_id": user_id,
@@ -1035,11 +1130,49 @@ def _charge_medical_renewal(account: dict) -> dict:
                 "billing_cycle_ends_at": cycle_end,
             }
         )
+
+    order_id = f"qs_med_renew_{uuid.uuid4().hex}"
+    try:
+        _insert_pending(order_id)
     except RuntimeError as exc:
-        # The partial unique index makes a billing cycle idempotent across cron retries.
-        if "duplicate" in str(exc).lower() or "23505" in str(exc):
+        # Partial unique index: one pending/paid renewal per closed cycle end.
+        if "duplicate" not in str(exc).lower() and "23505" not in str(exc):
+            raise
+        existing = _medical_renewal_for_cycle_end(user_id, cycle_end)
+        if not existing:
             return {"ok": True, "skipped": "renewal_already_created", "userId": user_id}
-        raise
+        existing_status = str(existing.get("status") or "").strip().lower()
+        # A paid "renewal" that merely describes the *current open* cycle (same start+end
+        # as the account) is the previous activation mis-keyed — it must not block the
+        # charge that closes this period. Relabel to initial and retry once.
+        same_open_cycle = (
+            existing_status == "paid"
+            and _medical_timestamps_equal(existing.get("billing_cycle_started_at"), cycle_start)
+            and _medical_timestamps_equal(existing.get("billing_cycle_ends_at"), cycle_end)
+        )
+        if same_open_cycle:
+            logging.warning(
+                "medical renewal: relabeling cycle-opening payment to initial user=%s order=%s",
+                user_id[:8],
+                str(existing.get("order_id") or "")[:24],
+            )
+            _medical_payment_update(
+                str(existing.get("order_id") or ""),
+                {"payment_kind": "initial"},
+            )
+            order_id = f"qs_med_renew_{uuid.uuid4().hex}"
+            _insert_pending(order_id)
+        elif existing_status == "pending":
+            order_id = str(existing.get("order_id") or "").strip()
+            if not order_id:
+                return {"ok": True, "skipped": "renewal_already_created", "userId": user_id}
+            logging.info(
+                "medical renewal: resuming pending order user=%s order=%s",
+                user_id[:8],
+                order_id[:24],
+            )
+        else:
+            return {"ok": True, "skipped": "renewal_already_created", "userId": user_id}
 
     payload = {
         **_cardcom_auth_fields(),
@@ -1062,7 +1195,7 @@ def _charge_medical_renewal(account: dict) -> dict:
     if _medical_invoices_enabled():
         try:
             resolved_billing = _cardcom_resolve_invoice_billing(user_id, {})
-            contact = _medical_invoice_contact(user_id)
+            contact = _medical_invoice_contact(user_id, account)
             contact["external_id"] = order_id
             payload["Document"] = _cardcom_build_invoice_document(
                 product_id=f"qs-med-{plan}",
@@ -1074,8 +1207,8 @@ def _charge_medical_renewal(account: dict) -> dict:
                 billing=resolved_billing,
                 schema="transaction",
             )
-        except Exception as exc:
-            logging.warning("medical renewal invoice skipped user=%s: %s", user_id[:8], exc)
+        except Exception as inv_exc:
+            logging.warning("medical renewal invoice skipped user=%s: %s", user_id[:8], inv_exc)
     try:
         result = (
             {"ResponseCode": 0, "TranzactionId": "simulation-renewal"}
@@ -1103,14 +1236,14 @@ def _charge_medical_renewal(account: dict) -> dict:
             }.items()
             if v
         }
+        # Keep billing_cycle_* as the period that was closed (idempotency key).
+        # Do not rewrite them to the new cycle — that blocked the next month.
         _medical_payment_update(
             order_id,
             {
                 "status": "paid",
                 "cardcom_transaction_id": str(transaction_id),
                 "paid_at": datetime.now(timezone.utc).isoformat(),
-                "billing_cycle_started_at": account_after.get("billing_cycle_started_at"),
-                "billing_cycle_ends_at": account_after.get("billing_cycle_ends_at"),
                 "failure_reason": None,
                 **invoice_patch,
             },
@@ -1142,6 +1275,7 @@ def _charge_medical_renewal(account: dict) -> dict:
             "plan": plan,
             "amountIls": amount_ils,
             "overageAmountIls": overage_amount,
+            "billingCycleEndsAt": account_after.get("billing_cycle_ends_at"),
             **invoice_patch,
         }
     except Exception as exc:
@@ -1159,6 +1293,19 @@ def _charge_medical_renewal(account: dict) -> dict:
             {"status": "failed", "failure_reason": reason},
         )
         _medical_account_set_status(user_id, "past_due")
+        try:
+            _medical_notify_renewal_failed(
+                account,
+                {
+                    "user_id": user_id,
+                    "order_id": order_id,
+                    "plan": plan,
+                    "amount_ils": amount_ils,
+                },
+                reason,
+            )
+        except Exception:
+            logging.exception("medical renewal failure notify raised user=%s", user_id[:8])
         raise
 
 

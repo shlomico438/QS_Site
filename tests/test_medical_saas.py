@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from medical_saas import (
     _cardcom_token_info,
+    _medical_timestamps_equal,
     medical_account_public,
     medical_entitlement,
     normalize_default_signature,
@@ -183,3 +184,14 @@ def test_medical_invoice_description_is_hebrew():
     assert "Starter" in text
     assert "30" in text
     assert "QuickScribe Medical" in text
+
+
+def test_medical_timestamps_equal_tolerates_format():
+    assert _medical_timestamps_equal(
+        "2026-11-12 11:42:25.850066+00",
+        "2026-11-12T11:42:25.850066+00:00",
+    )
+    assert not _medical_timestamps_equal(
+        "2026-11-12 11:42:25.850066+00",
+        "2026-11-13 11:42:25.850066+00",
+    )
