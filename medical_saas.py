@@ -987,6 +987,24 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
     return {"token": token, "validity_mmyy": validity, "last_four": last_four or None}
 
 
+def _medical_card_update_is_catchup_charge(payment: Optional[dict]) -> bool:
+    """True when Update card charged the monthly plan (past_due catch-up)."""
+    if not isinstance(payment, dict):
+        return False
+    order_id = str(payment.get("order_id") or "")
+    if not order_id.startswith("qs_med_card_"):
+        return False
+    plan = str(payment.get("plan") or "").strip().lower()
+    monthly = float((MEDICAL_PLANS.get(plan) or {}).get("monthly_price_ils") or 0)
+    if monthly <= 0:
+        return False
+    try:
+        amount = float(payment.get("amount_ils") or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    return amount + 0.001 >= monthly
+
+
 def _verify_medical_cardcom_payment(
     order_id: str,
     low_profile_id: Optional[str] = None,
@@ -1022,7 +1040,34 @@ def _verify_medical_cardcom_payment(
         if is_card_update:
             out["cardUpdated"] = True
             status_now = str((account or {}).get("subscription_status") or "").strip().lower()
-            if retry_past_due and status_now == "past_due":
+            catchup = _medical_card_update_is_catchup_charge(payment)
+            if catchup and status_now == "past_due":
+                # Catch-up ChargeAndCreateToken already collected the month;
+                # activate instead of a second Recurring token charge.
+                # Safe from webhook or browser confirm (idempotent activate RPC).
+                try:
+                    plan_paid = str(payment.get("plan") or "")
+                    refreshed = _medical_activate_paid_plan(
+                        str(payment.get("user_id") or ""),
+                        plan_paid,
+                    )
+                    out["renewal"] = {
+                        "ok": True,
+                        "catchup": True,
+                        "amountIls": amount,
+                    }
+                    out.update(medical_account_public(refreshed))
+                except Exception as activate_exc:
+                    logging.warning(
+                        "medical paid card_update catch-up activate failed user=%s: %s",
+                        str(payment.get("user_id") or "")[:8],
+                        str(activate_exc)[:200],
+                    )
+                    out["renewal"] = {
+                        "ok": False,
+                        "error": str(activate_exc)[:300],
+                    }
+            elif retry_past_due and status_now == "past_due":
                 try:
                     out["renewal"] = _charge_medical_renewal(
                         account or {},
@@ -1085,7 +1130,8 @@ def _verify_medical_cardcom_payment(
         or ""
     )
     invoice_patch = {}
-    if not is_card_update:
+    catchup_charge = is_card_update and _medical_card_update_is_catchup_charge(payment)
+    if (not is_card_update) or catchup_charge:
         invoice_info = _cardcom_extract_document_info(result) if isinstance(result, dict) else {}
         if invoice_info.get("invoice_error"):
             logging.warning(
@@ -1122,10 +1168,50 @@ def _verify_medical_cardcom_payment(
 
     renewal_result = None
     if is_card_update:
-        # Webhooks only save the token. The authenticated browser confirmation
-        # performs the one immediate renewal retry, avoiding webhook/browser races.
         status_now = str((account or {}).get("subscription_status") or "").strip().lower()
-        if retry_past_due and status_now == "past_due":
+        catchup = _medical_card_update_is_catchup_charge(payment)
+        if catchup:
+            # Month was charged on the hosted page with the new card + CVV.
+            account = _medical_activate_paid_plan(user_id, plan)
+            payment_patch_cycle = {
+                "billing_cycle_started_at": account.get("billing_cycle_started_at"),
+                "billing_cycle_ends_at": account.get("billing_cycle_ends_at"),
+            }
+            try:
+                _medical_payment_update(order_id, payment_patch_cycle)
+            except Exception:
+                logging.warning(
+                    "medical card_update catch-up cycle stamp failed order=%s",
+                    order_id[:24],
+                )
+            renewal_result = {"ok": True, "catchup": True, "amountIls": amount}
+            try:
+                sa = _sa()
+                sa._schedule_meta_capi_purchase(
+                    user_id=user_id,
+                    provider="cardcom",
+                    amount=amount,
+                    currency="ILS",
+                    plan=plan,
+                    order_ref=order_id,
+                    event_source_url="https://quickscribe.co.il/medical",
+                )
+                _medical_notify_paid(
+                    payment,
+                    {
+                        "plan": plan,
+                        "amount": amount,
+                        "cardcom_transaction_id": str(transaction_id or ""),
+                        "payment_kind": "renewal",
+                    },
+                )
+            except Exception:
+                logging.exception(
+                    "medical card_update catch-up notify failed order=%s",
+                    order_id[:24],
+                )
+        elif retry_past_due and status_now == "past_due":
+            # Legacy CreateTokenOnly path — Recurring may fail with 60000004.
             try:
                 renewal_result = _charge_medical_renewal(
                     account,
@@ -1949,44 +2035,75 @@ def register_medical_saas_routes(app) -> None:
 
             order_id = f"qs_med_card_{uuid.uuid4().hex}"
             low_profile_id = str(uuid.uuid4())
-            # The existing payments schema requires amount_ils > 0, so keep a
-            # non-billed bookkeeping value in our pending row. Cardcom receives
-            # Amount=0 with J2 validation below and does not charge/reserve ₪1.
-            # payment_kind stays 'initial' so no DB CHECK migration is required;
-            # qs_med_card_* order ids mark card updates in verify/confirm.
-            amount_ils = 1.0
+            config = MEDICAL_PLANS.get(plan) or {}
+            status_now = str(account.get("subscription_status") or "").strip().lower()
+            # past_due: charge the monthly plan on the Cardcom page while creating
+            # the token. CreateTokenOnly + later Recurring fails on this terminal
+            # with Cardcom 60000004 (token charge without cardholder/CVV).
+            # active: token-only J2 validation (no charge) for card replacement.
+            past_due_catchup = status_now == "past_due"
+            if past_due_catchup:
+                overage_seconds = max(0, int(account.get("overage_seconds") or 0))
+                overage_amount = round(overage_seconds / 3600.0 * OVERAGE_ILS_PER_HOUR, 2)
+                amount_ils = round(float(config.get("monthly_price_ils") or 0) + overage_amount, 2)
+                if amount_ils <= 0:
+                    return jsonify({"error": "Invalid catch-up amount"}), 400
+            else:
+                # Schema requires amount_ils > 0; Cardcom CreateTokenOnly uses Amount=0.
+                amount_ils = 1.0
             base = request.url_root.rstrip("/")
-            _medical_payment_insert(
-                {
-                    "user_id": user_id,
-                    "order_id": order_id,
-                    "low_profile_id": low_profile_id,
-                    "plan": plan,
-                    "amount_ils": amount_ils,
-                    "payment_kind": "initial",
-                    "status": "pending",
-                }
-            )
-
-            payload = {
-                **_cardcom_auth_fields(),
-                "Operation": "CreateTokenOnly",
-                "ReturnValue": order_id,
-                "Amount": 0,
-                "ISOCoinId": 1,
-                "Language": "he",
-                "ProductName": "עדכון אמצעי תשלום QuickScribe Medical"[:50],
-                "AdvancedDefinition": {
-                    # J2 validates the card without an authorization hold.
-                    "JValidateType": 2,
-                },
-                "WebHookUrl": f"{base}/api/cardcom/webhook",
-                "SuccessRedirectUrl": (
-                    f"{base}/medical?medical_cardcom_success=1"
-                    f"&medical_order_id={quote(order_id, safe='')}"
-                ),
-                "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
+            payment_row = {
+                "user_id": user_id,
+                "order_id": order_id,
+                "low_profile_id": low_profile_id,
+                "plan": plan,
+                "amount_ils": amount_ils,
+                # Keep 'initial' so no payment_kind migration is required.
+                # qs_med_card_* marks card updates; catch-up also carries cycle dates.
+                "payment_kind": "initial",
+                "status": "pending",
             }
+            if past_due_catchup:
+                payment_row["billing_cycle_started_at"] = account.get("billing_cycle_started_at")
+                payment_row["billing_cycle_ends_at"] = account.get("billing_cycle_ends_at")
+            _medical_payment_insert(payment_row)
+
+            if past_due_catchup:
+                payload = {
+                    **_cardcom_auth_fields(),
+                    "Operation": "ChargeAndCreateToken",
+                    "ReturnValue": order_id,
+                    "Amount": amount_ils,
+                    "ISOCoinId": 1,
+                    "Language": "he",
+                    "ProductName": f"QuickScribe Medical {config.get('name') or plan}"[:50],
+                    "WebHookUrl": f"{base}/api/cardcom/webhook",
+                    "SuccessRedirectUrl": (
+                        f"{base}/medical?medical_cardcom_success=1"
+                        f"&medical_order_id={quote(order_id, safe='')}"
+                    ),
+                    "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
+                }
+            else:
+                payload = {
+                    **_cardcom_auth_fields(),
+                    "Operation": "CreateTokenOnly",
+                    "ReturnValue": order_id,
+                    "Amount": 0,
+                    "ISOCoinId": 1,
+                    "Language": "he",
+                    "ProductName": "עדכון אמצעי תשלום QuickScribe Medical"[:50],
+                    "AdvancedDefinition": {
+                        # J2 validates the card without an authorization hold.
+                        "JValidateType": 2,
+                    },
+                    "WebHookUrl": f"{base}/api/cardcom/webhook",
+                    "SuccessRedirectUrl": (
+                        f"{base}/medical?medical_cardcom_success=1"
+                        f"&medical_order_id={quote(order_id, safe='')}"
+                    ),
+                    "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
+                }
             result = _cardcom_api_post("LowProfile/Create", payload)
             actual_lp = str(result.get("LowProfileId") or low_profile_id).strip()
             url = str(result.get("Url") or "").strip()

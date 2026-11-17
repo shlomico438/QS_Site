@@ -2510,10 +2510,17 @@ async function qsStartMedicalCardUpdate() {
             }
             return;
         }
+        const pastDue = String(account?.subscriptionStatus || '').toLowerCase() === 'past_due';
+        const redirectMsg = pastDue
+            ? T(
+                'medical_update_card_past_due_hint',
+                'Your subscription is past due — Cardcom will charge this month’s renewal on the new card.'
+            )
+            : T('medical_update_card_redirect', 'Opening a secure page to update your card…');
         if (typeof showStatus === 'function') {
-            showStatus(T('medical_update_card_redirect', 'Opening a secure page to update your card…'), false, { duration: 4000 });
+            showStatus(redirectMsg, false, { duration: 5000 });
         }
-        qsMedicalSetOnboardingMessage(T('medical_update_card_redirect', 'Opening a secure page to update your card…'));
+        qsMedicalSetOnboardingMessage(redirectMsg);
         const res = await fetch('/api/medical/cardcom/update-card', {
             method: 'POST',
             headers: await qsMedicalJsonHeaders(),
