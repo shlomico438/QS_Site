@@ -713,7 +713,9 @@ def _medical_notify_renewal_failed(account: dict, payment: dict, reason: str) ->
             f"שלום {name},\n\n"
             f"ניסינו לחייב את אמצעי התשלום השמור{card_line} עבור חידוש המנוי ל-QuickScribe Medical, "
             "והחיוב לא עבר.\n\n"
-            "כדי להמשיך לתמלל, היכנסו ל-/medical, עדכנו אמצעי תשלום או בחרו מסלול מחדש.\n"
+            "כדי להמשיך לתמלל ולהחליף כרטיס אשראי, היכנסו ל-\n"
+            "https://www.getquickscribe.com/medical\n"
+            "ובחרו שוב את המסלול שלכם. בתשלום תוכלו להזין כרטיס חדש.\n\n"
             "אם הבעיה נמשכת, צרו קשר עם התמיכה.\n\n"
             "QuickScribe Medical\n"
         )

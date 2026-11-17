@@ -2257,7 +2257,8 @@ function qsMedicalApplyAccessState(account) {
             msg = 'תקופת המנוי הסתיימה. אם החיוב האוטומטי לא עבר, בחרו מסלול כדי לחדש.';
         } else if (reason === 'subscription_past_due') {
             // Never append raw Cardcom/Shva failure text (EMV, brand agreements, codes) — ops-only.
-            msg = 'החיוב החודשי נכשל. עדכנו אמצעי תשלום או בחרו מסלול מחדש כדי להמשיך. אם הבעיה נמשכת, צרו קשר עם התמיכה.';
+            // Card update = choose a plan again (Cardcom ChargeAndCreateToken); no separate card settings page.
+            msg = 'החיוב החודשי נכשל. בחרו שוב מסלול בתמחור והזינו כרטיס אשראי חדש כדי להמשיך. אם הבעיה נמשכת, צרו קשר עם התמיכה.';
         } else if (reason.indexOf('subscription_') === 0) {
             msg = 'המנוי אינו פעיל כרגע. בחרו מסלול כדי להמשיך לתמלל.';
         }
