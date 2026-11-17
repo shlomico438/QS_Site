@@ -182,6 +182,10 @@
         try {
             if (typeof global.applyTranslations === 'function') global.applyTranslations();
         } catch (_) {}
+        try {
+            // Menu buttons are injected here after auth; wire Plan/billing + Update card now.
+            if (typeof global.qsWireMedicalPricingUi === 'function') global.qsWireMedicalPricingUi();
+        } catch (_) {}
         return true;
     }
 

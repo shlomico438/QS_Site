@@ -552,22 +552,59 @@ def _medical_payment_get(order_id: str) -> Optional[dict]:
     return rows[0] if isinstance(rows, list) and rows else None
 
 
+_MEDICAL_PAYMENT_OPTIONAL_COLUMNS = frozenset(
+    {
+        "invoice_number",
+        "invoice_type",
+        "invoice_url",
+        "failure_reason",
+        "card_last_four",
+    }
+)
+
+
 def _medical_payment_insert(row: dict) -> dict:
     sa = _sa()
     supabase_url, _, headers = sa._supabase_rest_config()
     h = dict(headers)
     h["Prefer"] = "return=representation"
+    payload = dict(row or {})
     r = sa._supabase_http_request(
         "POST",
         f"{supabase_url}/rest/v1/medical_subscription_payments",
         headers=h,
-        json=row,
+        json=payload,
         timeout=10,
     )
     if r.status_code not in (200, 201):
-        raise RuntimeError(r.text or f"medical payment insert HTTP {r.status_code}")
+        # Older DBs may lack optional columns (e.g. card_last_four). Retry without them
+        # so renewals / card-update follow-ups work without a migration.
+        missing_optional = _MEDICAL_PAYMENT_OPTIONAL_COLUMNS.intersection(payload.keys())
+        body = r.text or ""
+        if missing_optional and (
+            r.status_code == 400
+            or "PGRST204" in body
+            or "card_last_four" in body
+            or "schema cache" in body.lower()
+        ):
+            slim = {k: v for k, v in payload.items() if k not in _MEDICAL_PAYMENT_OPTIONAL_COLUMNS}
+            r2 = sa._supabase_http_request(
+                "POST",
+                f"{supabase_url}/rest/v1/medical_subscription_payments",
+                headers=h,
+                json=slim,
+                timeout=10,
+            )
+            if r2.status_code in (200, 201):
+                logging.warning(
+                    "medical payment optional columns missing; inserted without %s",
+                    sorted(missing_optional),
+                )
+                rows = r2.json() if r2.text else []
+                return rows[0] if isinstance(rows, list) and rows else slim
+        raise RuntimeError(body or f"medical payment insert HTTP {r.status_code}")
     rows = r.json() if r.text else []
-    return rows[0] if isinstance(rows, list) and rows else row
+    return rows[0] if isinstance(rows, list) and rows else payload
 
 
 def _medical_payment_update(order_id: str, patch: dict) -> None:
@@ -582,15 +619,14 @@ def _medical_payment_update(order_id: str, patch: dict) -> None:
         timeout=10,
     )
     if r.status_code not in (200, 204):
-        optional_keys = {
-            "invoice_number",
-            "invoice_type",
-            "invoice_url",
-            "failure_reason",
-            "card_last_four",
-        }
-        if optional_keys.intersection((patch or {}).keys()) and r.status_code == 400:
-            slim = {k: v for k, v in (patch or {}).items() if k not in optional_keys}
+        missing_optional = _MEDICAL_PAYMENT_OPTIONAL_COLUMNS.intersection((patch or {}).keys())
+        body = r.text or ""
+        if missing_optional and (
+            r.status_code == 400
+            or "PGRST204" in body
+            or "schema cache" in body.lower()
+        ):
+            slim = {k: v for k, v in (patch or {}).items() if k not in _MEDICAL_PAYMENT_OPTIONAL_COLUMNS}
             if slim:
                 r2 = sa._supabase_http_request(
                     "PATCH",
@@ -603,10 +639,10 @@ def _medical_payment_update(order_id: str, patch: dict) -> None:
                 if r2.status_code in (200, 204):
                     logging.warning(
                         "medical payment optional columns missing; applied status patch without %s",
-                        sorted(optional_keys.intersection((patch or {}).keys())),
+                        sorted(missing_optional),
                     )
                     return
-        raise RuntimeError(r.text or f"medical payment update HTTP {r.status_code}")
+        raise RuntimeError(body or f"medical payment update HTTP {r.status_code}")
 
 
 def _medical_invoice_contact(user_id: str, account: Optional[dict] = None) -> dict:
@@ -963,6 +999,7 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         except (TypeError, ValueError):
             amount = 0.0
         paid_kind = str(payment.get("payment_kind") or "initial").strip().lower()
+        is_card_update = paid_kind == "card_update" or str(order_id).startswith("qs_med_card_")
         out = {
             "ok": True,
             "alreadyActivated": True,
@@ -972,7 +1009,7 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
             "plan": str(payment.get("plan") or ""),
             **medical_account_public(account or {}),
         }
-        if paid_kind == "card_update":
+        if is_card_update:
             out["cardUpdated"] = True
         return out
 
@@ -1002,7 +1039,9 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
     user_id = str(payment.get("user_id") or "")
     plan = str(payment.get("plan") or "")
     payment_kind = str(payment.get("payment_kind") or "initial").strip().lower()
-    is_card_update = payment_kind == "card_update"
+    # Prefer payment_kind; also accept qs_med_card_* orders if the DB CHECK
+    # constraint does not yet allow payment_kind='card_update'.
+    is_card_update = payment_kind == "card_update" or str(order_id).startswith("qs_med_card_")
     _medical_billing_method_upsert(user_id, token_info)
     account = _medical_account_get(user_id) or {}
     if not is_card_update:
@@ -1832,72 +1871,98 @@ def register_medical_saas_routes(app) -> None:
             _simulation_mode,
         )
 
-        sa = _sa()
-        auth_user = sa._supabase_auth_user_from_request()
-        user_id = str((auth_user or {}).get("id") or "").strip()
-        if not user_id:
-            return jsonify({"error": "Authorization required"}), 401
-        simulation = _simulation_mode()
-        if not simulation and not _cardcom_enabled():
-            return jsonify({"error": "Cardcom payments are not configured"}), 503
-
-        account = _medical_account_get(user_id)
-        if not account:
-            return jsonify({"error": "Medical account not found"}), 404
-        plan = str(account.get("subscription_plan") or "").strip().lower()
-        if plan not in MEDICAL_PLANS or plan == "trial":
-            return jsonify({"error": "Choose a paid plan before updating the card"}), 400
-
-        order_id = f"qs_med_card_{uuid.uuid4().hex}"
-        low_profile_id = str(uuid.uuid4())
-        # Nominal amount for the payment row / Cardcom CreateTokenOnly payload.
-        # CreateTokenOnly does not charge the card; it only captures a new token.
-        amount_ils = 1.0
-        base = request.url_root.rstrip("/")
-        _medical_payment_insert(
-            {
-                "user_id": user_id,
-                "order_id": order_id,
-                "low_profile_id": low_profile_id,
-                "plan": plan,
-                "amount_ils": amount_ils,
-                "payment_kind": "card_update",
-                "status": "pending",
-            }
-        )
-        if simulation:
-            return jsonify(
-                {
-                    "url": (
-                        f"{base}/medical?medical_cardcom_success=1"
-                        f"&medical_order_id={quote(order_id, safe='')}"
-                    ),
-                    "orderId": order_id,
-                    "simulation": True,
-                }
-            ), 200
-
-        payload = {
-            **_cardcom_auth_fields(),
-            "Operation": "CreateTokenOnly",
-            "ReturnValue": order_id,
-            "Amount": amount_ils,
-            "ISOCoinId": 1,
-            "Language": "he",
-            "ProductName": "QuickScribe Medical card update"[:50],
-            "WebHookUrl": f"{base}/api/cardcom/webhook",
-            "SuccessRedirectUrl": (
-                f"{base}/medical?medical_cardcom_success=1"
-                f"&medical_order_id={quote(order_id, safe='')}"
-            ),
-            "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
-        }
+        order_id = ""
         try:
-            result = _cardcom_api_post("LowProfile/Create", payload)
+            sa = _sa()
+            auth_user = sa._supabase_auth_user_from_request()
+            user_id = str((auth_user or {}).get("id") or "").strip()
+            if not user_id:
+                return jsonify({"error": "Authorization required"}), 401
+            simulation = _simulation_mode()
+            if not simulation and not _cardcom_enabled():
+                return jsonify({"error": "Cardcom payments are not configured"}), 503
+
+            account = _medical_account_get(user_id)
+            if not account:
+                return jsonify({"error": "Medical account not found"}), 404
+            plan = str(account.get("subscription_plan") or "").strip().lower()
+            if plan not in MEDICAL_PLANS or plan == "trial":
+                return jsonify({"error": "Choose a paid plan before updating the card"}), 400
+            if simulation:
+                # A simulated token is not a card update. Requiring Cardcom here
+                # prevents the UI from claiming that a card was replaced when the
+                # user was never shown a hosted card-entry form.
+                return jsonify(
+                    {
+                        "error": (
+                            "Card update requires the Cardcom checkout. "
+                            "Set SIMULATION_MODE=false (or CARDCOM_FORCE_LIVE=true) "
+                            "and use the configured Cardcom sandbox/live terminal."
+                        ),
+                        "simulation": True,
+                    }
+                ), 409
+
+            order_id = f"qs_med_card_{uuid.uuid4().hex}"
+            low_profile_id = str(uuid.uuid4())
+            # Nominal amount for Cardcom LowProfile. CreateTokenOnly should not charge;
+            # ChargeAndCreateToken fallback may authorize ₪1 on some terminals.
+            # payment_kind stays 'initial' so no DB CHECK migration is required;
+            # qs_med_card_* order ids mark card updates in verify/confirm.
+            amount_ils = 1.0
+            base = request.url_root.rstrip("/")
+            _medical_payment_insert(
+                {
+                    "user_id": user_id,
+                    "order_id": order_id,
+                    "low_profile_id": low_profile_id,
+                    "plan": plan,
+                    "amount_ils": amount_ils,
+                    "payment_kind": "initial",
+                    "status": "pending",
+                }
+            )
+
+            payload = {
+                **_cardcom_auth_fields(),
+                "Operation": "CreateTokenOnly",
+                "ReturnValue": order_id,
+                "Amount": amount_ils,
+                "ISOCoinId": 1,
+                "Language": "he",
+                "ProductName": "QuickScribe Medical card update"[:50],
+                "WebHookUrl": f"{base}/api/cardcom/webhook",
+                "SuccessRedirectUrl": (
+                    f"{base}/medical?medical_cardcom_success=1"
+                    f"&medical_order_id={quote(order_id, safe='')}"
+                ),
+                "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
+            }
+            try:
+                result = _cardcom_api_post("LowProfile/Create", payload)
+            except Exception as create_exc:
+                logging.warning(
+                    "medical CreateTokenOnly failed; retrying ChargeAndCreateToken: %s",
+                    str(create_exc)[:200],
+                )
+                payload["Operation"] = "ChargeAndCreateToken"
+                result = _cardcom_api_post("LowProfile/Create", payload)
             actual_lp = str(result.get("LowProfileId") or low_profile_id).strip()
             url = str(result.get("Url") or "").strip()
             if not url:
-                raise RuntimeError("Cardcom did not return a payment URL")
+                # Some terminals reject CreateTokenOnly with ResponseCode != 0 and empty Url.
+                desc = str(result.get("Description") or result.get("ResponseCode") or "").strip()
+                if payload.get("Operation") == "CreateTokenOnly":
+                    logging.warning(
+                        "medical CreateTokenOnly returned no URL (%s); retrying ChargeAndCreateToken",
+                        desc[:160],
+                    )
+                    payload["Operation"] = "ChargeAndCreateToken"
+                    result = _cardcom_api_post("LowProfile/Create", payload)
+                    actual_lp = str(result.get("LowProfileId") or low_profile_id).strip()
+                    url = str(result.get("Url") or "").strip()
+                if not url:
+                    raise RuntimeError(desc or "Cardcom did not return a payment URL")
             if actual_lp != low_profile_id:
                 _medical_payment_update(order_id, {"low_profile_id": actual_lp})
             return jsonify(
@@ -1909,7 +1974,11 @@ def register_medical_saas_routes(app) -> None:
                 }
             ), 200
         except Exception as exc:
-            _medical_payment_update(order_id, {"status": "failed"})
+            if order_id:
+                try:
+                    _medical_payment_update(order_id, {"status": "failed"})
+                except Exception:
+                    pass
             logging.exception("medical Cardcom update-card checkout failed")
             return jsonify({"error": str(exc)}), 502
 

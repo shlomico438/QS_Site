@@ -2227,6 +2227,7 @@ function qsMedicalCanUpdateCard(account) {
 }
 
 function qsMedicalSyncUpdateCardUi(account) {
+    try { if (typeof qsWireMedicalPricingUi === 'function') qsWireMedicalPricingUi(); } catch (_) {}
     const T = typeof window.t === 'function' ? window.t : (k, fb) => fb || k;
     const updateCardButton = document.getElementById('user-menu-medical-update-card');
     const cardHint = document.getElementById('user-menu-medical-card-hint');
@@ -2749,13 +2750,15 @@ async function qsInitializeMedicalSaasFlow(options) {
 window.qsInitializeMedicalSaasFlow = qsInitializeMedicalSaasFlow;
 
 function qsWireMedicalPricingUi() {
-    if (window.__QS_MEDICAL_PRICING_UI_WIRED) return;
+    // Re-entrant: account chrome (user menu buttons) is injected after auth,
+    // often after the first medical pricing wire pass.
     const hasPricingSection = !!document.getElementById('medical-pricing-section');
     const hasPricingModal = !!document.getElementById('medical-pricing-modal');
-    if (!hasPricingSection && !hasPricingModal) return;
-    window.__QS_MEDICAL_PRICING_UI_WIRED = true;
 
-    if (hasPricingSection) qsMedicalWirePlanButtons(document);
+    if (hasPricingSection && window.__QS_MEDICAL_PLAN_BUTTONS_WIRED !== true) {
+        qsMedicalWirePlanButtons(document);
+        window.__QS_MEDICAL_PLAN_BUTTONS_WIRED = true;
+    }
 
     const openPricingButton = document.getElementById('medical-open-pricing-btn');
     if (openPricingButton && openPricingButton.dataset.qsPricingWired !== '1') {
@@ -2773,7 +2776,9 @@ function qsWireMedicalPricingUi() {
     const updateCardButton = document.getElementById('user-menu-medical-update-card');
     if (updateCardButton && updateCardButton.dataset.qsUpdateCardWired !== '1') {
         updateCardButton.dataset.qsUpdateCardWired = '1';
-        updateCardButton.addEventListener('click', () => {
+        updateCardButton.addEventListener('click', (event) => {
+            try { event.preventDefault(); } catch (_) {}
+            try { event.stopPropagation(); } catch (_) {}
             if (typeof closeUserMenu === 'function') closeUserMenu();
             void qsStartMedicalCardUpdate();
         });
@@ -2790,7 +2795,9 @@ function qsWireMedicalPricingUi() {
             if (event.key === 'Escape' && !modal.hidden) qsCloseMedicalPricingModal();
         });
     }
-    if (typeof qsSyncMedicalNavPricingLinks === 'function') qsSyncMedicalNavPricingLinks();
+    if (hasPricingSection || hasPricingModal) {
+        if (typeof qsSyncMedicalNavPricingLinks === 'function') qsSyncMedicalNavPricingLinks();
+    }
 }
 window.qsWireMedicalPricingUi = qsWireMedicalPricingUi;
 
@@ -9068,6 +9075,12 @@ async function setupNavbarAuth(userOverride) {
         try {
             if (typeof window.qsEnsureSignedInAccountChrome === 'function') {
                 window.qsEnsureSignedInAccountChrome();
+            }
+        } catch (_) {}
+        try { if (typeof qsWireMedicalPricingUi === 'function') qsWireMedicalPricingUi(); } catch (_) {}
+        try {
+            if (typeof qsMedicalSyncUpdateCardUi === 'function') {
+                qsMedicalSyncUpdateCardUi(window.__QS_MEDICAL_ACCOUNT || null);
             }
         } catch (_) {}
     } else {
