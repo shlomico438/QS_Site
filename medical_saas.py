@@ -1905,8 +1905,9 @@ def register_medical_saas_routes(app) -> None:
 
             order_id = f"qs_med_card_{uuid.uuid4().hex}"
             low_profile_id = str(uuid.uuid4())
-            # Nominal amount for Cardcom LowProfile. CreateTokenOnly should not charge;
-            # ChargeAndCreateToken fallback may authorize ₪1 on some terminals.
+            # The existing payments schema requires amount_ils > 0, so keep a
+            # non-billed bookkeeping value in our pending row. Cardcom receives
+            # Amount=0 with J2 validation below and does not charge/reserve ₪1.
             # payment_kind stays 'initial' so no DB CHECK migration is required;
             # qs_med_card_* order ids mark card updates in verify/confirm.
             amount_ils = 1.0
@@ -1927,10 +1928,14 @@ def register_medical_saas_routes(app) -> None:
                 **_cardcom_auth_fields(),
                 "Operation": "CreateTokenOnly",
                 "ReturnValue": order_id,
-                "Amount": amount_ils,
+                "Amount": 0,
                 "ISOCoinId": 1,
                 "Language": "he",
-                "ProductName": "QuickScribe Medical card update"[:50],
+                "ProductName": "עדכון אמצעי תשלום QuickScribe Medical"[:50],
+                "AdvancedDefinition": {
+                    # J2 validates the card without an authorization hold.
+                    "JValidateType": 2,
+                },
                 "WebHookUrl": f"{base}/api/cardcom/webhook",
                 "SuccessRedirectUrl": (
                     f"{base}/medical?medical_cardcom_success=1"
@@ -1938,31 +1943,12 @@ def register_medical_saas_routes(app) -> None:
                 ),
                 "FailedRedirectUrl": f"{base}/medical?medical_cardcom_cancelled=1",
             }
-            try:
-                result = _cardcom_api_post("LowProfile/Create", payload)
-            except Exception as create_exc:
-                logging.warning(
-                    "medical CreateTokenOnly failed; retrying ChargeAndCreateToken: %s",
-                    str(create_exc)[:200],
-                )
-                payload["Operation"] = "ChargeAndCreateToken"
-                result = _cardcom_api_post("LowProfile/Create", payload)
+            result = _cardcom_api_post("LowProfile/Create", payload)
             actual_lp = str(result.get("LowProfileId") or low_profile_id).strip()
             url = str(result.get("Url") or "").strip()
             if not url:
-                # Some terminals reject CreateTokenOnly with ResponseCode != 0 and empty Url.
                 desc = str(result.get("Description") or result.get("ResponseCode") or "").strip()
-                if payload.get("Operation") == "CreateTokenOnly":
-                    logging.warning(
-                        "medical CreateTokenOnly returned no URL (%s); retrying ChargeAndCreateToken",
-                        desc[:160],
-                    )
-                    payload["Operation"] = "ChargeAndCreateToken"
-                    result = _cardcom_api_post("LowProfile/Create", payload)
-                    actual_lp = str(result.get("LowProfileId") or low_profile_id).strip()
-                    url = str(result.get("Url") or "").strip()
-                if not url:
-                    raise RuntimeError(desc or "Cardcom did not return a payment URL")
+                raise RuntimeError(desc or "Cardcom did not return a token-update URL")
             if actual_lp != low_profile_id:
                 _medical_payment_update(order_id, {"low_profile_id": actual_lp})
             return jsonify(
