@@ -6355,6 +6355,8 @@ def _send_admin_medical_renewal_failure_email(payload):
             amount_line = f"Amount attempted: {float(amount):.2f} ILS\n"
         except (TypeError, ValueError):
             amount_line = f"Amount attempted: {amount}\n"
+    last_four = "".join(ch for ch in str(payload.get('card_last_four') or '') if ch.isdigit())[-4:]
+    card_line = f"Card last 4: {last_four}\n" if len(last_four) == 4 else ''
     subject = f"QuickScribe — Medical renewal FAILED ({email or user_id[:8] or 'user'})"
     body = (
         "A QuickScribe Medical automatic renewal failed.\n\n"
@@ -6362,6 +6364,7 @@ def _send_admin_medical_renewal_failure_email(payload):
         f"Email: {email or '(none)'}\n"
         f"Name: {name}\n"
         f"Plan: {plan}\n"
+        f"{card_line}"
         f"{amount_line}"
         f"Order: {order_ref}\n"
         f"Failure reason: {reason}\n"

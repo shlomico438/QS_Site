@@ -575,6 +575,7 @@ def _medical_payment_update(order_id: str, patch: dict) -> None:
             "invoice_type",
             "invoice_url",
             "failure_reason",
+            "card_last_four",
         }
         if optional_keys.intersection((patch or {}).keys()) and r.status_code == 400:
             slim = {k: v for k, v in (patch or {}).items() if k not in optional_keys}
@@ -666,25 +667,37 @@ def _medical_notify_renewal_failed(account: dict, payment: dict, reason: str) ->
     plan = str((payment or {}).get("plan") or (account or {}).get("subscription_plan") or "")
     amount = (payment or {}).get("amount_ils")
     order_id = str((payment or {}).get("order_id") or "").strip()
+    last_four = "".join(
+        ch for ch in str((payment or {}).get("card_last_four") or "") if ch.isdigit()
+    )[-4:]
+    if len(last_four) != 4:
+        try:
+            billing = _medical_billing_method_get(user_id)
+            last_four = "".join(
+                ch for ch in str((billing or {}).get("card_last_four") or "") if ch.isdigit()
+            )[-4:]
+        except Exception:
+            last_four = ""
+    if len(last_four) != 4:
+        last_four = ""
     safe_reason = str(reason or "").strip()[:500] or "medical renewal failed"
     # Ops inbox (same channel as successful medical payments).
     try:
-        if hasattr(sa, "_schedule_admin_payment_notify"):
-            # Reuse the scheduler thread; subject/body for failures go through a dedicated path.
-            if hasattr(sa, "_schedule_admin_medical_renewal_failure_notify"):
-                sa._schedule_admin_medical_renewal_failure_notify(
-                    user_id=user_id,
-                    plan=plan,
-                    amount=amount,
-                    order_ref=order_id,
-                    failure_reason=safe_reason,
-                )
-            else:
-                logging.warning(
-                    "medical renewal failure notify helper missing; logging only user=%s reason=%s",
-                    user_id[:8],
-                    safe_reason[:200],
-                )
+        if hasattr(sa, "_schedule_admin_medical_renewal_failure_notify"):
+            sa._schedule_admin_medical_renewal_failure_notify(
+                user_id=user_id,
+                plan=plan,
+                amount=amount,
+                order_ref=order_id,
+                failure_reason=safe_reason,
+                card_last_four=last_four or None,
+            )
+        else:
+            logging.warning(
+                "medical renewal failure notify helper missing; logging only user=%s reason=%s",
+                user_id[:8],
+                safe_reason[:200],
+            )
     except Exception:
         logging.exception("medical renewal failure ops notify failed user=%s", user_id[:8])
     # Doctor-facing email (no raw Cardcom jargon).
@@ -694,10 +707,11 @@ def _medical_notify_renewal_failed(account: dict, payment: dict, reason: str) ->
         if not email or not hasattr(sa, "_send_email_via_zoho"):
             return
         name = str(contact.get("name") or "").strip() or "רופא/ה יקר/ה"
+        card_line = f" (כרטיס המסתיים ב-{last_four})" if last_four else ""
         subject = "QuickScribe Medical — החיוב החודשי נכשל"
         body = (
             f"שלום {name},\n\n"
-            "ניסינו לחייב את אמצעי התשלום השמור עבור חידוש המנוי ל-QuickScribe Medical, "
+            f"ניסינו לחייב את אמצעי התשלום השמור{card_line} עבור חידוש המנוי ל-QuickScribe Medical, "
             "והחיוב לא עבר.\n\n"
             "כדי להמשיך לתמלל, היכנסו ל-/medical, עדכנו אמצעי תשלום או בחרו מסלול מחדש.\n"
             "אם הבעיה נמשכת, צרו קשר עם התמיכה.\n\n"
@@ -774,17 +788,29 @@ def _medical_billing_method_upsert(user_id: str, token_info: dict) -> None:
     supabase_url, _, headers = sa._supabase_rest_config()
     h = dict(headers)
     h["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    last_four = "".join(ch for ch in str((token_info or {}).get("last_four") or "") if ch.isdigit())[-4:]
+    if len(last_four) != 4:
+        # Keep a previously stored last-four when Cardcom omits it on a later token refresh.
+        try:
+            existing = _medical_billing_method_get(user_id)
+            prev = "".join(ch for ch in str((existing or {}).get("card_last_four") or "") if ch.isdigit())[-4:]
+            if len(prev) == 4:
+                last_four = prev
+        except Exception:
+            pass
+    row = {
+        "user_id": user_id,
+        "cardcom_token": token_info["token"],
+        "card_validity_mmyy": token_info["validity_mmyy"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if last_four:
+        row["card_last_four"] = last_four
     r = sa._supabase_http_request(
         "POST",
         f"{supabase_url}/rest/v1/medical_billing_methods?on_conflict=user_id",
         headers=h,
-        json={
-            "user_id": user_id,
-            "cardcom_token": token_info["token"],
-            "card_validity_mmyy": token_info["validity_mmyy"],
-            "card_last_four": token_info.get("last_four"),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        },
+        json=row,
         timeout=10,
     )
     if r.status_code not in (200, 201, 204):
@@ -880,8 +906,18 @@ def _cardcom_token_info(result: dict) -> Optional[dict]:
         validity = ""
         source = "none"
 
-    card_number = first("CardNumber5", "Last4", "CardNumEnd", "card_last_four")
+    card_number = first(
+        "CardNumber5",
+        "CardNumber",
+        "Last4Digits",
+        "Last4",
+        "CardNumEnd",
+        "CardNum",
+        "card_last_four",
+    )
     last_four = "".join(ch for ch in card_number if ch.isdigit())[-4:]
+    if len(last_four) != 4:
+        last_four = ""
     if not token or len(validity) != 4:
         return None
     logging.info(
@@ -969,17 +1005,18 @@ def _verify_medical_cardcom_payment(order_id: str, low_profile_id: Optional[str]
         }.items()
         if v
     }
-    _medical_payment_update(
-        order_id,
-        {
-            "status": "paid",
-            "cardcom_transaction_id": str(transaction_id or ""),
-            "paid_at": datetime.now(timezone.utc).isoformat(),
-            "billing_cycle_started_at": account.get("billing_cycle_started_at"),
-            "billing_cycle_ends_at": account.get("billing_cycle_ends_at"),
-            **invoice_patch,
-        },
-    )
+    last_four = "".join(ch for ch in str((token_info or {}).get("last_four") or "") if ch.isdigit())[-4:]
+    payment_patch = {
+        "status": "paid",
+        "cardcom_transaction_id": str(transaction_id or ""),
+        "paid_at": datetime.now(timezone.utc).isoformat(),
+        "billing_cycle_started_at": account.get("billing_cycle_started_at"),
+        "billing_cycle_ends_at": account.get("billing_cycle_ends_at"),
+        **invoice_patch,
+    }
+    if len(last_four) == 4:
+        payment_patch["card_last_four"] = last_four
+    _medical_payment_update(order_id, payment_patch)
     try:
         amount = float(payment.get("amount_ils") or 0)
     except (TypeError, ValueError):
@@ -1117,19 +1154,26 @@ def _charge_medical_renewal(account: dict) -> dict:
     overage_amount = round(overage_seconds / 3600.0 * OVERAGE_ILS_PER_HOUR, 2)
     amount_ils = round(base_amount + overage_amount, 2)
 
+    card_last_four = "".join(
+        ch for ch in str((billing or {}).get("card_last_four") or "") if ch.isdigit()
+    )[-4:]
+    if len(card_last_four) != 4:
+        card_last_four = ""
+
     def _insert_pending(order_id: str) -> None:
-        _medical_payment_insert(
-            {
-                "user_id": user_id,
-                "order_id": order_id,
-                "plan": plan,
-                "amount_ils": amount_ils,
-                "payment_kind": "renewal",
-                "status": "pending",
-                "billing_cycle_started_at": cycle_start,
-                "billing_cycle_ends_at": cycle_end,
-            }
-        )
+        row = {
+            "user_id": user_id,
+            "order_id": order_id,
+            "plan": plan,
+            "amount_ils": amount_ils,
+            "payment_kind": "renewal",
+            "status": "pending",
+            "billing_cycle_started_at": cycle_start,
+            "billing_cycle_ends_at": cycle_end,
+        }
+        if card_last_four:
+            row["card_last_four"] = card_last_four
+        _medical_payment_insert(row)
 
     order_id = f"qs_med_renew_{uuid.uuid4().hex}"
     try:
@@ -1301,6 +1345,7 @@ def _charge_medical_renewal(account: dict) -> dict:
                     "order_id": order_id,
                     "plan": plan,
                     "amount_ils": amount_ils,
+                    "card_last_four": card_last_four or None,
                 },
                 reason,
             )

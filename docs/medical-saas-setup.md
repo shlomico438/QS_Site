@@ -82,7 +82,11 @@ Apply `migrations/add_medical_invoice_columns.sql` so `invoice_number` / `invoic
 
 Apply `migrations/add_medical_payment_failure_reason.sql` so failed renewals store Cardcom `ResponseCode` + Description on `failure_reason`.
 
+Apply `migrations/add_medical_payment_card_last_four.sql` so each payment can store the card last-4 digits.
+
 Apply `migrations/fix_medical_renewal_unique_allow_failed_retry.sql` so a failed renewal does not block the next cron retry for the same billing cycle.
+
+Apply `migrations/fix_medical_renewal_unique_cycle_end.sql` so renewals are idempotent per closed cycle end (not start).
 
 Ops also get the same “payment received” email as regular Cardcom purchases.
 

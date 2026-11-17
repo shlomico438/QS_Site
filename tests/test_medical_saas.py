@@ -113,6 +113,18 @@ def test_cardcom_token_fields_are_normalized():
     }
 
 
+def test_cardcom_token_parses_masked_card_number():
+    token = _cardcom_token_info(
+        {
+            "Token": "token-id",
+            "CardValidityMonth": "02",
+            "CardValidityYear": "2029",
+            "CardNumber": "4580********4242",
+        }
+    )
+    assert token["last_four"] == "4242"
+
+
 def test_cardcom_token_prefers_tokef_over_card_validity_and_token_ex():
     token = _cardcom_token_info(
         {
