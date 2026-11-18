@@ -318,6 +318,14 @@ try {
                     data-i18n-placeholder="medical_patient_id_placeholder"
                     placeholder="{% if qs_is_en %}Optional ID{% else %}ת.ז. אופציונלי{% endif %}"
                 >
+                <label for="medical-visit-date" class="medical-visit-date-label" data-i18n="medical_visit_date_label">Date</label>
+                <input
+                    type="date"
+                    id="medical-visit-date"
+                    class="medical-visit-date-input"
+                    name="medical-visit-date"
+                    autocomplete="off"
+                >
             </div>
         </section>
         <div id="medical-warmup-banner" class="medical-warmup-banner" style="display:none;" role="status" aria-live="polite" dir="rtl">

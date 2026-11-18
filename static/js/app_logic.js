@@ -551,6 +551,7 @@ function qsBuildMedicalPriorFormattedSnapshot(fmt) {
         medical_patient_recommendations: String(src.medical_patient_recommendations || '').trim(),
         patient_name: String(src.patient_name || '').trim(),
         patient_id_number: String(src.patient_id_number || '').trim(),
+        visit_date: String(src.visit_date || src.patient_visit_date || '').trim(),
         clean_transcript: String(src.clean_transcript || '').trim(),
     };
 }
@@ -1296,6 +1297,7 @@ function medicalSnapshotSourceHasContent() {
     if (window._medicalHasResult === true) return true;
     if (String(window._medicalPatientNameFromJob || '').trim()) return true;
     if (String(window._medicalPatientIdFromJob || '').trim()) return true;
+    if (String(window._medicalVisitDateFromJob || '').trim()) return true;
     return false;
 }
 
@@ -1328,6 +1330,7 @@ function qsBuildMedicalSessionSnapshot(version) {
         _medicalLiveStreamText: String(window._medicalLiveStreamText || ''),
         _medicalPatientNameFromJob: String(window._medicalPatientNameFromJob || ''),
         _medicalPatientIdFromJob: String(window._medicalPatientIdFromJob || ''),
+        _medicalVisitDateFromJob: String(window._medicalVisitDateFromJob || ''),
         _qsInputS3KeyForGpt: String(typeof window._qsInputS3KeyForGpt === 'string' ? window._qsInputS3KeyForGpt : (window._qsInputS3KeyForGpt || '') || '').trim() || null,
         _medicalSessionPersisted: window._medicalSessionPersisted === true,
     };
@@ -1498,6 +1501,9 @@ function qsApplyMedicalSessionSnapshot(snap, options) {
     if (snap._medicalPatientIdFromJob != null) {
         window._medicalPatientIdFromJob = String(snap._medicalPatientIdFromJob || '');
     }
+    if (snap._medicalVisitDateFromJob != null) {
+        window._medicalVisitDateFromJob = String(snap._medicalVisitDateFromJob || '');
+    }
     if (snap._qsInputS3KeyForGpt) {
         try { window._qsInputS3KeyForGpt = String(snap._qsInputS3KeyForGpt); } catch (_) {}
     }
@@ -1509,6 +1515,13 @@ function qsApplyMedicalSessionSnapshot(snap, options) {
         const idInput = document.getElementById('medical-patient-id');
         if (idInput && window._medicalPatientIdFromJob) {
             idInput.value = window._medicalPatientIdFromJob;
+        }
+        const dateInput = document.getElementById('medical-visit-date');
+        if (dateInput) {
+            const restoredDate = qsNormalizeMedicalVisitDate(
+                window._medicalVisitDateFromJob || dateInput.value || qsTodayMedicalVisitDateIso()
+            );
+            if (restoredDate) dateInput.value = restoredDate;
         }
     } catch (_) {}
     try {
@@ -10693,12 +10706,17 @@ async function initOpenInAppImpl(jobIdStr) {
             const patientIdOpen = qsNormalizeMedicalPatientIdNumber(
                 mdOpen.patient_id_number || mdOpen.patientIdNumber || ''
             );
-            if ((patientOpen && !qsIsAutoMedicalRecordingLabel(patientOpen)) || patientIdOpen) {
+            const visitDateOpen = qsNormalizeMedicalVisitDate(
+                mdOpen.visit_date || mdOpen.patient_visit_date || ''
+            );
+            if ((patientOpen && !qsIsAutoMedicalRecordingLabel(patientOpen)) || patientIdOpen || visitDateOpen) {
                 qsSetMedicalPatientNameInput(
                     (patientOpen && !qsIsAutoMedicalRecordingLabel(patientOpen)) ? patientOpen : '',
-                    patientIdOpen
+                    patientIdOpen,
+                    visitDateOpen || undefined
                 );
             }
+            if (!visitDateOpen) qsEnsureMedicalVisitDateDefault();
         } catch (_) {}
     }
     // Prefer transcript from S3 (result_s3_key); fallback to derived/legacy keys, then jobs.result
@@ -10803,6 +10821,12 @@ async function initOpenInAppImpl(jobIdStr) {
                 window.currentFormattedDoc = trFmt;
                 window._qsDocPreferSegmentsAfterEdit = false;
                 if (String(trFmt.clean_transcript || '').trim()) window._qsCleanupDone = true;
+                try {
+                    const fmtDate = qsNormalizeMedicalVisitDate(
+                        trFmt.visit_date || trFmt.patient_visit_date || ''
+                    );
+                    if (fmtDate) qsSetMedicalVisitDateInput(fmtDate);
+                } catch (_) {}
                 try { qsApplyPatientNameToCurrentFormattedDoc(); } catch (_) {}
             }
             const cleanLen = trFmt ? String(trFmt.clean_transcript || '').trim().length : 0;
@@ -11476,11 +11500,14 @@ function qsRenderMedicalPatientPicker(query) {
         try { nameInput.setAttribute('aria-expanded', 'true'); } catch (_) {}
         return;
     }
+    const rosterDate = String((qsGetMedicalPatientRoster() || {}).apptDate || '');
     list.innerHTML = rows.map((row, i) => {
         const meta = [row.time, row.idNumber, row.status].filter(Boolean).join(' · ');
+        const rowDate = String(row.date || rosterDate || '');
         return (
             `<button type="button" class="medical-patient-picker-option" role="option" ` +
             `data-roster-index="${i}" data-name="${esc(row.name)}" data-id="${esc(row.idNumber)}" ` +
+            `data-date="${esc(rowDate)}" ` +
             `id="medical-patient-picker-opt-${i}">` +
             `<span class="medical-patient-picker-name">${esc(row.name)}</span>` +
             (meta ? `<span class="medical-patient-picker-meta">${esc(meta)}</span>` : '') +
@@ -11491,8 +11518,9 @@ function qsRenderMedicalPatientPicker(query) {
     try { nameInput.setAttribute('aria-expanded', 'true'); } catch (_) {}
 }
 
-function qsSelectMedicalPatientFromRoster(name, idNumber) {
-    qsSetMedicalPatientNameInput(name, idNumber);
+function qsSelectMedicalPatientFromRoster(name, idNumber, visitDate) {
+    const rosterDate = String((qsGetMedicalPatientRoster() || {}).apptDate || '');
+    qsSetMedicalPatientNameInput(name, idNumber, visitDate || rosterDate || undefined);
     qsHideMedicalPatientPicker();
     try { qsWarnMedicalPatientIdIfInvalid(qsMedicalPatientIdInput()); } catch (_) {}
     try { void qsSyncMedicalPatientNameToCurrentJob(); } catch (_) {}
@@ -11655,7 +11683,8 @@ function qsWireMedicalPatientRosterUi() {
             if (!opt) return;
             const name = opt.getAttribute('data-name') || '';
             const id = opt.getAttribute('data-id') || '';
-            qsSelectMedicalPatientFromRoster(name, id);
+            const date = opt.getAttribute('data-date') || '';
+            qsSelectMedicalPatientFromRoster(name, id, date);
         });
     }
     document.addEventListener('click', (e) => {
@@ -11709,6 +11738,58 @@ function qsWarnMedicalPatientIdIfInvalid(inputEl) {
     return ok;
 }
 
+function qsMedicalVisitDateInput() {
+    return document.getElementById('medical-visit-date');
+}
+
+function qsTodayMedicalVisitDateIso() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+/** Normalize to YYYY-MM-DD for <input type="date">, or '' if unknown. */
+function qsNormalizeMedicalVisitDate(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (iso) {
+        return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
+    }
+    const dmy = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+    if (dmy) {
+        let year = dmy[3];
+        if (year.length === 2) year = `20${year}`;
+        return `${year}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+    }
+    return '';
+}
+
+function qsFormatMedicalVisitDateDisplay(raw) {
+    const iso = qsNormalizeMedicalVisitDate(raw);
+    if (!iso) return '';
+    const parts = iso.split('-');
+    if (parts.length !== 3) return iso;
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+function qsEnsureMedicalVisitDateDefault() {
+    const el = qsMedicalVisitDateInput();
+    if (!el) return;
+    const current = qsNormalizeMedicalVisitDate(el.value || window._medicalVisitDateFromJob || '');
+    if (current) {
+        el.value = current;
+        window._medicalVisitDateFromJob = current;
+        return current;
+    }
+    const today = qsTodayMedicalVisitDateIso();
+    el.value = today;
+    window._medicalVisitDateFromJob = today;
+    return today;
+}
+
 function qsReadMedicalPatientName() {
     const el = qsMedicalPatientNameInput();
     const fromInput = String((el && el.value) || '').trim().replace(/\s+/g, ' ').slice(0, 120);
@@ -11723,7 +11804,24 @@ function qsReadMedicalPatientIdNumber() {
     return qsNormalizeMedicalPatientIdNumber(window._medicalPatientIdFromJob);
 }
 
-function qsSetMedicalPatientNameInput(name, idNumber) {
+function qsReadMedicalVisitDate() {
+    const el = qsMedicalVisitDateInput();
+    const fromInput = qsNormalizeMedicalVisitDate(el && el.value);
+    if (fromInput) return fromInput;
+    const fromJob = qsNormalizeMedicalVisitDate(window._medicalVisitDateFromJob);
+    if (fromJob) return fromJob;
+    return qsTodayMedicalVisitDateIso();
+}
+
+function qsSetMedicalVisitDateInput(raw) {
+    const iso = qsNormalizeMedicalVisitDate(raw) || qsTodayMedicalVisitDateIso();
+    window._medicalVisitDateFromJob = iso;
+    const el = qsMedicalVisitDateInput();
+    if (el) el.value = iso;
+    return iso;
+}
+
+function qsSetMedicalPatientNameInput(name, idNumber, visitDate) {
     const n = String(name || '').trim().replace(/\s+/g, ' ').slice(0, 120);
     window._medicalPatientNameFromJob = n || '';
     const el = qsMedicalPatientNameInput();
@@ -11734,6 +11832,9 @@ function qsSetMedicalPatientNameInput(name, idNumber) {
         const idEl = qsMedicalPatientIdInput();
         if (idEl) idEl.value = idn;
     }
+    if (visitDate != null && String(visitDate || '').trim()) {
+        qsSetMedicalVisitDateInput(visitDate);
+    }
 }
 
 function qsClearMedicalPatientName() {
@@ -11743,6 +11844,7 @@ function qsClearMedicalPatientName() {
     const idEl = qsMedicalPatientIdInput();
     if (idEl) idEl.value = '';
     window._medicalPatientIdFromJob = '';
+    qsSetMedicalVisitDateInput(qsTodayMedicalVisitDateIso());
     // New visit: stop binding renames to the previous patient's job.
     try { qsClearMedicalSessionJobDbId(); } catch (_) {}
 }
@@ -11769,18 +11871,26 @@ function qsStripLeadingPatientNameLine(text, name) {
  * Keep patient name as a top-level summary field (rendered as "שם: …"),
  * and remove it from inside הנדון / chief so it is not buried there.
  */
-function qsPrependPatientNameToFormattedDoc(fmt, nameOverride, idOverride) {
+function qsPrependPatientNameToFormattedDoc(fmt, nameOverride, idOverride, visitDateOverride) {
     if (!fmt || typeof fmt !== 'object') return fmt;
     const name = String(nameOverride != null ? nameOverride : qsReadMedicalPatientName()).trim();
     const idNumber = qsNormalizeMedicalPatientIdNumber(
         idOverride != null ? idOverride : qsReadMedicalPatientIdNumber()
+    );
+    const visitDate = qsNormalizeMedicalVisitDate(
+        visitDateOverride != null ? visitDateOverride : qsReadMedicalVisitDate()
     );
     if (name) fmt.patient_name = name;
     if (idNumber) fmt.patient_id_number = idNumber;
     else if ('patient_id_number' in fmt && !idNumber) {
         // Keep previously saved ID unless explicitly cleared via empty input restore path.
     }
-    if (!String(fmt.patient_name || '').trim() && !String(fmt.patient_id_number || '').trim()) return fmt;
+    if (visitDate) fmt.visit_date = visitDate;
+    if (
+        !String(fmt.patient_name || '').trim()
+        && !String(fmt.patient_id_number || '').trim()
+        && !String(fmt.visit_date || '').trim()
+    ) return fmt;
     const resolved = String(fmt.patient_name || name || '').trim();
     if (resolved && fmt.medical_chief_complaint != null) {
         fmt.medical_chief_complaint = qsStripLeadingPatientNameLine(fmt.medical_chief_complaint, resolved);
@@ -11796,7 +11906,8 @@ function qsApplyPatientNameToCurrentFormattedDoc() {
     window.currentFormattedDoc = qsPrependPatientNameToFormattedDoc(
         { ...window.currentFormattedDoc },
         qsReadMedicalPatientName(),
-        qsReadMedicalPatientIdNumber()
+        qsReadMedicalPatientIdNumber(),
+        qsReadMedicalVisitDate()
     );
 }
 
@@ -11812,6 +11923,14 @@ function qsMedicalSummaryPatientDisplayId(fmt) {
     return qsReadMedicalPatientIdNumber();
 }
 
+function qsMedicalSummaryVisitDisplayDate(fmt) {
+    const fromFmt = qsNormalizeMedicalVisitDate(
+        (fmt && (fmt.visit_date || fmt.patient_visit_date)) || ''
+    );
+    if (fromFmt) return fromFmt;
+    return qsReadMedicalVisitDate();
+}
+
 function qsMedicalSummaryPatientHeadingLabel() {
     const T = typeof window.t === 'function' ? window.t : (k) => k;
     return T('medical_summary_patient_name_heading') || 'שם';
@@ -11822,12 +11941,26 @@ function qsMedicalSummaryPatientIdHeadingLabel() {
     return T('medical_summary_patient_id_heading') || 'ת.ז.';
 }
 
+function qsMedicalSummaryVisitDateHeadingLabel() {
+    const T = typeof window.t === 'function' ? window.t : (k) => k;
+    return T('medical_summary_visit_date_heading') || 'תאריך';
+}
+
 function qsMedicalSummaryPatientHeadingHtml(esc, fmt) {
     const name = qsMedicalSummaryPatientDisplayName(fmt);
     const idNumber = qsMedicalSummaryPatientDisplayId(fmt);
-    if (!name && !idNumber) return '';
+    const visitDate = qsMedicalSummaryVisitDisplayDate(fmt);
+    if (!name && !idNumber && !visitDate) return '';
     const label = qsMedicalSummaryPatientHeadingLabel();
     const idLabel = qsMedicalSummaryPatientIdHeadingLabel();
+    const dateLabel = qsMedicalSummaryVisitDateHeadingLabel();
+    const dateDisplay = qsFormatMedicalVisitDateDisplay(visitDate);
+    const dateLine = dateDisplay
+        ? `<div class="medical-summary-visit-date" contenteditable="false">` +
+          `<span class="medical-summary-visit-date-label">${esc(dateLabel)}:</span> ` +
+          `<span class="medical-summary-visit-date-value">${esc(dateDisplay)}</span>` +
+          `</div>`
+        : '';
     const idLine = idNumber
         ? `<div class="medical-summary-patient-id" contenteditable="false">` +
           `<span class="medical-summary-patient-id-label">${esc(idLabel)}:</span> ` +
@@ -11842,7 +11975,7 @@ function qsMedicalSummaryPatientHeadingHtml(esc, fmt) {
         : '';
     return (
         `<div id="medical-summary-patient-name" class="medical-summary-patient-name" contenteditable="false">` +
-        `${nameLine}${idLine}` +
+        `${dateLine}${nameLine}${idLine}` +
         `</div>`
     );
 }
@@ -11850,7 +11983,9 @@ function qsMedicalSummaryPatientHeadingHtml(esc, fmt) {
 function qsMedicalSummaryPatientHeadingText(fmt) {
     const name = qsMedicalSummaryPatientDisplayName(fmt);
     const idNumber = qsMedicalSummaryPatientDisplayId(fmt);
+    const visitDate = qsFormatMedicalVisitDateDisplay(qsMedicalSummaryVisitDisplayDate(fmt));
     const lines = [];
+    if (visitDate) lines.push(`${qsMedicalSummaryVisitDateHeadingLabel()}: ${visitDate}`);
     if (name) lines.push(`${qsMedicalSummaryPatientHeadingLabel()}: ${name}`);
     if (idNumber) lines.push(`${qsMedicalSummaryPatientIdHeadingLabel()}: ${idNumber}`);
     return lines.join('\n');
@@ -11930,13 +12065,16 @@ function qsReadMedicalMicInfoForJob() {
     return out;
 }
 
-async function qsSyncMedicalPatientNameToCurrentJob(nameOverride, idOverride) {
+async function qsSyncMedicalPatientNameToCurrentJob(nameOverride, idOverride, visitDateOverride) {
     if (typeof isMedicalModeEnabled === 'function' && !isMedicalModeEnabled()) return;
     const name = String(nameOverride != null ? nameOverride : qsReadMedicalPatientName()).trim();
     const idNumber = qsNormalizeMedicalPatientIdNumber(
         idOverride != null ? idOverride : qsReadMedicalPatientIdNumber()
     );
-    if (!name && !idNumber) return;
+    const visitDate = qsNormalizeMedicalVisitDate(
+        visitDateOverride != null ? visitDateOverride : qsReadMedicalVisitDate()
+    );
+    if (!name && !idNumber && !visitDate) return;
     // Bind only to this visit's job. Typing the next patient must not rename the previous recording.
     const dbId = String(window._medicalSessionJobDbId || '').trim();
     if (!dbId) return;
@@ -11946,6 +12084,7 @@ async function qsSyncMedicalPatientNameToCurrentJob(nameOverride, idOverride) {
         const body = {
             userId: user.id,
             patient_id_number: idNumber,
+            visit_date: visitDate,
         };
         if (name) {
             body.new_name = name;
@@ -11983,6 +12122,9 @@ async function createJobOnUpload({ jobId, s3Key, displayName, patientName, patie
                 ? qsReadMedicalPatientIdNumber()
                 : '')
     );
+    const visitDate = (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
+        ? qsNormalizeMedicalVisitDate(qsReadMedicalVisitDate())
+        : '';
     const niceName = String(
         displayName
         || patient
@@ -11998,6 +12140,7 @@ async function createJobOnUpload({ jobId, s3Key, displayName, patientName, patie
         (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled())
         || patient
         || patientId
+        || visitDate
     );
     const micInfo = isMedicalJob && typeof qsReadMedicalMicInfoForJob === 'function'
         ? qsReadMedicalMicInfoForJob()
@@ -12018,6 +12161,7 @@ async function createJobOnUpload({ jobId, s3Key, displayName, patientName, patie
             ...(niceName ? { display_name: niceName, original_filename: niceName } : {}),
             ...(patient ? { patient_name: patient } : {}),
             ...(patientId ? { patient_id_number: patientId } : {}),
+            ...(visitDate ? { visit_date: visitDate } : {}),
             ...(micLabel ? { mic_label: micLabel, mic_type: micLabel } : {}),
             ...(micDeviceId ? { mic_device_id: micDeviceId } : {}),
             ...(Number.isFinite(durationSec) && durationSec > 0
@@ -12719,6 +12863,8 @@ function normalizeFormattedFields(f) {
     if (patientName) out.patient_name = patientName;
     const patientIdNumber = qsNormalizeMedicalPatientIdNumber(f.patient_id_number || f.patientIdNumber);
     if (patientIdNumber) out.patient_id_number = patientIdNumber;
+    const visitDate = qsNormalizeMedicalVisitDate(f.visit_date || f.patient_visit_date);
+    if (visitDate) out.visit_date = visitDate;
     if (
         f.medical_chief_complaint != null ||
         f.medical_examination_transcript != null ||
@@ -15163,6 +15309,9 @@ async function ensureFormattedViaApiForExport(options) {
                         medical_patient_recommendations: priorKeep.medical_patient_recommendations,
                         patient_name: priorKeep.patient_name || (fmt && fmt.patient_name) || '',
                         patient_id_number: priorKeep.patient_id_number || (fmt && fmt.patient_id_number) || '',
+                        visit_date: priorKeep.visit_date
+                            || (fmt && (fmt.visit_date || fmt.patient_visit_date))
+                            || '',
                         clean_transcript: String(
                             (fmt && fmt.clean_transcript) || priorKeep.clean_transcript || fullText || ''
                         ).trim(),
@@ -16524,8 +16673,10 @@ window.downloadFile = async function(type, bypassUser = null, options = {}) {
             if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
                 const patientName = qsMedicalSummaryPatientDisplayName(baseFmt);
                 const patientId = qsMedicalSummaryPatientDisplayId(baseFmt);
+                const visitDate = qsMedicalSummaryVisitDisplayDate(baseFmt);
                 if (patientName) formattedForServer.patient_name = patientName;
                 if (patientId) formattedForServer.patient_id_number = patientId;
+                if (visitDate) formattedForServer.visit_date = visitDate;
             }
             const t0 = performance.now();
             const res = await fetch('/api/export_docx', {
@@ -19916,6 +20067,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (_) {}
             try { qsWireMedicalPatientRosterUi(); } catch (_) {}
             try { qsSyncMedicalPatientRosterUi(); } catch (_) {}
+            try { qsEnsureMedicalVisitDateDefault(); } catch (_) {}
             // Returning from About/Pricing/etc. via logo — restore the draft encounter.
             try {
                 if (!window._qsMedicalDraftRestoreAttempted) {
@@ -25291,8 +25443,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const medicalPatientNameInput = document.getElementById('medical-patient-name');
     const medicalPatientIdInput = document.getElementById('medical-patient-id');
-    if ((medicalPatientNameInput || medicalPatientIdInput) && !window._qsMedicalPatientFieldsWired) {
+    const medicalVisitDateInput = document.getElementById('medical-visit-date');
+    if ((medicalPatientNameInput || medicalPatientIdInput || medicalVisitDateInput) && !window._qsMedicalPatientFieldsWired) {
         window._qsMedicalPatientFieldsWired = true;
+        try { qsEnsureMedicalVisitDateDefault(); } catch (_) {}
         let patientNameSyncTimer = null;
         const schedulePatientNameSync = () => {
             clearTimeout(patientNameSyncTimer);
@@ -25306,7 +25460,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 try { qsClearMedicalSessionJobDbId(); } catch (_) {}
             }
         };
-        [medicalPatientNameInput, medicalPatientIdInput].filter(Boolean).forEach((el) => {
+        [medicalPatientNameInput, medicalPatientIdInput, medicalVisitDateInput].filter(Boolean).forEach((el) => {
             el.addEventListener('focus', onPatientFieldFocus);
             el.addEventListener('change', () => { void qsSyncMedicalPatientNameToCurrentJob(); });
             el.addEventListener('blur', () => { void qsSyncMedicalPatientNameToCurrentJob(); });
@@ -30362,14 +30516,26 @@ function _qsMedicalSummaryPatientExportLines(fmt) {
     const lines = [];
     const nameEl = document.querySelector('#medical-summary-patient-name .medical-summary-patient-name-value');
     const idEl = document.querySelector('#medical-summary-patient-name .medical-summary-patient-id-value');
+    const dateEl = document.querySelector('#medical-summary-patient-name .medical-summary-visit-date-value');
     const nameFromDom = String((nameEl && nameEl.textContent) || '').trim();
     const idFromDom = String((idEl && idEl.textContent) || '').trim();
+    const dateFromDom = String((dateEl && dateEl.textContent) || '').trim();
     const name = nameFromDom || qsMedicalSummaryPatientDisplayName(fmt || window.currentFormattedDoc);
     const idNumber = idFromDom || qsMedicalSummaryPatientDisplayId(fmt || window.currentFormattedDoc);
+    const visitDate = dateFromDom
+        || qsFormatMedicalVisitDateDisplay(
+            qsMedicalSummaryVisitDisplayDate(fmt || window.currentFormattedDoc)
+        );
+    if (visitDate) {
+        lines.push({
+            text: `${qsMedicalSummaryVisitDateHeadingLabel()}: ${visitDate}`,
+            bold: true,
+        });
+    }
     if (name) {
         lines.push({
             text: `${qsMedicalSummaryPatientHeadingLabel()}: ${name}`,
-            bold: true,
+            bold: false,
         });
     }
     if (idNumber) {

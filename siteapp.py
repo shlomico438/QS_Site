@@ -4519,32 +4519,91 @@ def _wrap_text_to_max_chars(text, max_chars=None):
     return '\n\n'.join(blocks_out).strip()
 
 
+def _docx_rtl_run_xml(text, bold=False):
+    """One Word run with David + RTL; optional bold."""
+    b_tags = '<w:b/><w:bCs/>' if bold else ''
+    rpr = (
+        f'<w:rPr>{b_tags}'
+        '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
+        '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+        '<w:rtl w:val="1"/>'
+        '<w:lang w:val="he-IL" w:bidi="he-IL"/></w:rPr>'
+    )
+    t = f'<w:t xml:space="preserve">{_xml_esc(str(text or ""))}</w:t>'
+    return f'<w:r>{rpr}{t}</w:r>'
+
+
+def _medical_patient_header_label_value_runs(line_s):
+    """
+    Split patient header lines into bold label + non-bold value runs.
+    e.g. 'תאריך: 18/11/2026' → [('תאריך:', True), (' 18/11/2026', False)]
+    """
+    text = str(line_s or '').strip()
+    if not text or ':' not in text:
+        return None
+    label, _, value = text.partition(':')
+    label = label.strip()
+    known = {
+        'תאריך', 'שם', 'ת.ז.', 'ת.ז',
+        'Date', 'Name', 'ID',
+    }
+    if label not in known:
+        return None
+    label_out = f'{label}:'
+    value_out = f' {value.strip()}' if str(value or '').strip() else ''
+    return [
+        {'text': label_out, 'bold': True},
+        {'text': value_out, 'bold': False},
+    ]
+
+
 def _build_rtl_docx(lines, bold_first=False, bold_mask=None):
     """
     Build a guaranteed-RTL DOCX completely from scratch as a ZIP with
     hand-crafted XML.  No python-docx template is loaded so every byte is
     under our control — namespace prefixes, element ordering, and RTL flags
     are exactly what Word expects.
+
+    Each line may be a string, or a list of run dicts:
+      [{'text': 'תאריך:', 'bold': True}, {'text': ' 18/11/2026', 'bold': False}]
+    Patient header strings (תאריך/שם/ת.ז.) are auto-split into bold label + plain value.
     """
     # ---- paragraph XML ----
     para_xmls = []
     for i, line in enumerate(lines):
-        line_s = str(line or '').strip()
-        bold = (bold_first and i == 0) or bool(bold_mask and i < len(bold_mask) and bold_mask[i])
         # Match empiric Word LTR->RTL diff: rsidP on paragraph + jc="left" within bidi paragraph.
         ppr = '<w:pPr><w:bidi w:val="1"/><w:jc w:val="left"/></w:pPr>'
         p_open = f'<w:p w:rsidP="{DOCX_RSID_P}">'
+        if isinstance(line, list):
+            runs = [r for r in line if isinstance(r, dict)]
+            run_xml = ''.join(
+                _docx_rtl_run_xml(r.get('text'), bool(r.get('bold')))
+                for r in runs
+                if str(r.get('text') or '') != ''
+            )
+            if not run_xml:
+                para_xmls.append(f'{p_open}{ppr}</w:p>')
+            else:
+                para_xmls.append(f'{p_open}{ppr}{run_xml}</w:p>')
+            continue
+
+        line_s = str(line or '').strip()
+        bold = (bold_first and i == 0) or bool(bold_mask and i < len(bold_mask) and bold_mask[i])
         if not line_s:
             para_xmls.append(f'{p_open}{ppr}</w:p>')
         else:
-            b_tags = '<w:b/><w:bCs/>' if bold else ''
-            rpr = (f'<w:rPr>{b_tags}'
-                   '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
-                   '<w:sz w:val="24"/><w:szCs w:val="24"/>'
-                   '<w:rtl w:val="1"/>'
-                   '<w:lang w:val="he-IL" w:bidi="he-IL"/></w:rPr>')
-            t   = f'<w:t xml:space="preserve">{_xml_esc(line_s)}</w:t>'
-            para_xmls.append(f'{p_open}{ppr}<w:r>{rpr}{t}</w:r></w:p>')
+            header_runs = _medical_patient_header_label_value_runs(line_s)
+            if header_runs:
+                run_xml = ''.join(
+                    _docx_rtl_run_xml(r.get('text'), bool(r.get('bold')))
+                    for r in header_runs
+                    if str(r.get('text') or '') != ''
+                )
+                para_xmls.append(f'{p_open}{ppr}{run_xml}</w:p>')
+            else:
+                para_xmls.append(
+                    f'{p_open}{ppr}{_docx_rtl_run_xml(line_s, bold)}</w:p>'
+                )
 
     body = '\n'.join(para_xmls)
 
@@ -5577,6 +5636,11 @@ def _normalize_formatted_dict_for_storage(formatted):
     patient_id_number = re.sub(r"\D+", "", str(formatted.get("patient_id_number") or formatted.get("patientIdNumber") or ""))
     if patient_id_number:
         out["patient_id_number"] = patient_id_number[:20]
+    visit_date = _normalize_medical_visit_date(
+        formatted.get("visit_date") or formatted.get("patient_visit_date") or ""
+    )
+    if visit_date:
+        out["visit_date"] = visit_date
     for mk in ("medical_chief_complaint", "medical_examination_transcript", "medical_patient_recommendations"):
         if mk in formatted:
             out[mk] = str(formatted.get(mk) or "").strip()
@@ -9667,8 +9731,11 @@ def recording_rename(file_id):
         has_patient_id_key = ('patient_id_number' in data) or ('patientIdNumber' in data)
         patient_id_raw = data.get('patient_id_number') if 'patient_id_number' in data else data.get('patientIdNumber')
         patient_id_number = re.sub(r'\D+', '', str(patient_id_raw or ''))[:20] if has_patient_id_key else None
-        if not new_name and patient_id_number is None:
-            return jsonify({"error": "new_name or patient_id_number required"}), 400
+        has_visit_date_key = ('visit_date' in data) or ('patient_visit_date' in data)
+        visit_date_raw = data.get('visit_date') if 'visit_date' in data else data.get('patient_visit_date')
+        visit_date = _normalize_medical_visit_date(visit_date_raw) if has_visit_date_key else None
+        if not new_name and patient_id_number is None and visit_date is None:
+            return jsonify({"error": "new_name, patient_id_number, or visit_date required"}), 400
         if new_name:
             metadata['display_name'] = new_name
             has_patient_meta = bool(str(metadata.get('patient_name') or '').strip())
@@ -9683,6 +9750,11 @@ def recording_rename(file_id):
                 metadata['patient_id_number'] = patient_id_number
             else:
                 metadata.pop('patient_id_number', None)
+        if visit_date is not None:
+            if visit_date:
+                metadata['visit_date'] = visit_date
+            else:
+                metadata.pop('visit_date', None)
         patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{file_id}&user_id=eq.{user_id}"
         payload = {"metadata": metadata, "updated_at": datetime.utcnow().isoformat() + "Z"}
         r_patch = requests.patch(patch_url, headers={**headers, "Prefer": "return=representation"}, json=payload, timeout=12)
@@ -9694,6 +9766,7 @@ def recording_rename(file_id):
             "file_id": file_id,
             "file_name": new_name or str(metadata.get('display_name') or metadata.get('patient_name') or ''),
             "patient_id_number": metadata.get('patient_id_number') or '',
+            "visit_date": metadata.get('visit_date') or '',
         }), 200
     except Exception as e:
         logging.exception("recording_rename failed")
@@ -15760,23 +15833,59 @@ def _medical_summary_screen_lines(screen_lines):
     return parts, mask
 
 
-def _medical_summary_patient_docx_lines(patient_name=None, patient_id_number=None):
-    """Bold שם / ת.ז. lines for the top of a medical summary Word export."""
+def _normalize_medical_visit_date(raw):
+    """Return YYYY-MM-DD or ''."""
+    s = str(raw or '').strip()
+    if not s:
+        return ''
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})$', s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = re.match(r'^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$', s)
+    if m:
+        year = m.group(3)
+        if len(year) == 2:
+            year = f"20{year}"
+        return f"{year}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    return ''
+
+
+def _format_medical_visit_date_display(raw):
+    iso = _normalize_medical_visit_date(raw)
+    if not iso:
+        return ''
+    y, m, d = iso.split('-')
+    return f"{d}/{m}/{y}"
+
+
+def _medical_summary_patient_docx_lines(patient_name=None, patient_id_number=None, visit_date=None):
+    """Header lines for medical summary Word export.
+
+    Labels (תאריך / שם / ת.ז.) are bold; values are plain — applied in _build_rtl_docx.
+    """
     name = str(patient_name or '').strip()
     id_number = re.sub(r'\D+', '', str(patient_id_number or ''))[:20]
+    date_display = _format_medical_visit_date_display(visit_date)
     parts = []
     mask = []
+    if date_display:
+        parts.append(f"תאריך: {date_display}")
+        mask.append(False)
     if name:
         parts.append(f"שם: {name}")
-        mask.append(True)
+        mask.append(False)
     if id_number:
         parts.append(f"ת.ז.: {id_number}")
-        mask.append(True)
+        mask.append(False)
     return parts, mask
 
 
-def _medical_summary_prepend_patient_lines(parts, mask, patient_name=None, patient_id_number=None):
-    patient_parts, patient_mask = _medical_summary_patient_docx_lines(patient_name, patient_id_number)
+def _medical_summary_prepend_patient_lines(
+    parts, mask, patient_name=None, patient_id_number=None, visit_date=None
+):
+    patient_parts, patient_mask = _medical_summary_patient_docx_lines(
+        patient_name, patient_id_number, visit_date=visit_date
+    )
     if not patient_parts:
         return parts, mask
     blob = "\n".join(str(p or '') for p in (parts or []))
@@ -15801,6 +15910,7 @@ def _medical_summary_docx_lines(
     headings=None,
     patient_name=None,
     patient_id_number=None,
+    visit_date=None,
 ):
     """One Word paragraph per screen line. A personal letter is not wrapped in specialty titles."""
     heading_norms = {
@@ -15838,7 +15948,11 @@ def _medical_summary_docx_lines(
             parts.extend(lines)
             mask.extend(flags)
         return _medical_summary_prepend_patient_lines(
-            parts, mask, patient_name=patient_name, patient_id_number=patient_id_number
+            parts,
+            mask,
+            patient_name=patient_name,
+            patient_id_number=patient_id_number,
+            visit_date=visit_date,
         )
 
     labels = _medical_summary_section_labels(specialty)
@@ -15854,7 +15968,11 @@ def _medical_summary_docx_lines(
         parts.extend(lines)
         mask.extend(flags)
     return _medical_summary_prepend_patient_lines(
-        parts, mask, patient_name=patient_name, patient_id_number=patient_id_number
+        parts,
+        mask,
+        patient_name=patient_name,
+        patient_id_number=patient_id_number,
+        visit_date=visit_date,
     )
 
 
@@ -15924,6 +16042,13 @@ def api_export_docx():
                     or data.get('patientIdNumber')
                     or ''
                 ).strip()
+                visit_date = _normalize_medical_visit_date(
+                    fmt.get('visit_date')
+                    or fmt.get('patient_visit_date')
+                    or data.get('visit_date')
+                    or data.get('patient_visit_date')
+                    or ''
+                )
                 if isinstance(screen_lines, list) and any(
                     str((item or {}).get('text') if isinstance(item, dict) else item or '').strip()
                     for item in screen_lines
@@ -15933,12 +16058,14 @@ def api_export_docx():
                         lines, bold_mask,
                         patient_name=patient_name,
                         patient_id_number=patient_id_number,
+                        visit_date=visit_date,
                     )
                 else:
                     lines, bold_mask = _medical_summary_docx_lines(
                         mc, me, mr, specialty, personal=personal, headings=headings,
                         patient_name=patient_name,
                         patient_id_number=patient_id_number,
+                        visit_date=visit_date,
                     )
             else:
                 overview   = str(fmt.get('overview') or '').strip()
