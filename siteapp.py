@@ -397,6 +397,109 @@ _GPT_MEDICAL_TYPO_FIX_SYSTEM_PROMPT = (
     "It marks doctor-created sections — do not add or remove those markers."
 )
 
+# Deterministic medical ASR / GPT spelling fixes (bad → good). Longer phrases first at apply-time.
+# Prefer high-confidence pairs only — this is not a full medical dictionary.
+# Extend via MEDICAL_TERM_GLOSSARY env JSON object: {"קיפוף אצבעות": "כיפוף אצבעות", ...}
+_MEDICAL_TERM_GLOSSARY_SEED = (
+    # Orthopedics / physio ROM: כ/ק and ת/ט confusions
+    ("קיפוף אצבעות", "כיפוף אצבעות"),
+    ("קיפוף האצבעות", "כיפוף האצבעות"),
+    ("קיפוף אצבע", "כיפוף אצבע"),
+    ("קיפוף כף", "כיפוף כף"),
+    ("קיפוף ברך", "כיפוף ברך"),
+    ("קיפוף הברך", "כיפוף הברך"),
+    ("קיפוף מרפק", "כיפוף מרפק"),
+    ("קיפוף המרפק", "כיפוף המרפק"),
+    ("קיפוף פרק", "כיפוף פרק"),
+    ("קיפוף שורש", "כיפוף שורש"),
+    ("אורטופדיה", "אורתופדיה"),
+    ("אורטופדי", "אורתופדי"),
+    ("אורטופד", "אורתופד"),
+    ("פיזיוטרפיה", "פיזיותרפיה"),
+    ("פיזיוטרפיסט", "פיזיותרפיסט"),
+    ("פיזיוטרפיסטית", "פיזיותרפיסטית"),
+)
+
+_HEBREW_LETTER_CLASS = r'[\u0590-\u05FF]'
+# Common single-letter Hebrew proclitics (ב/כ/ל/מ/ו/ש/ה) so לאורטופדיה still matches.
+_HEBREW_PROCLITIC_CLASS = r'[ובכלמשה]'
+
+
+def _medical_term_glossary_pairs():
+    """Seed pairs plus optional MEDICAL_TERM_GLOSSARY env JSON overrides/extensions."""
+    pairs = list(_MEDICAL_TERM_GLOSSARY_SEED)
+    raw = (os.environ.get('MEDICAL_TERM_GLOSSARY') or '').strip()
+    if raw:
+        try:
+            extra = json.loads(raw)
+        except Exception:
+            logging.warning("MEDICAL_TERM_GLOSSARY env is not valid JSON; ignoring")
+            extra = None
+        if isinstance(extra, dict):
+            for bad, good in extra.items():
+                b = str(bad or '').strip()
+                g = str(good or '').strip()
+                if b and g and b != g:
+                    pairs.append((b, g))
+        elif isinstance(extra, list):
+            for item in extra:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    b = str(item[0] or '').strip()
+                    g = str(item[1] or '').strip()
+                    if b and g and b != g:
+                        pairs.append((b, g))
+    # Deduplicate by bad-form (last wins so env can override seed).
+    by_bad = {}
+    for bad, good in pairs:
+        by_bad[bad] = good
+    ordered = sorted(by_bad.items(), key=lambda p: len(p[0]), reverse=True)
+    return ordered
+
+
+def _apply_medical_term_glossary(text):
+    """Replace known medical ASR/GPT misspellings with canonical Hebrew forms."""
+    raw = str(text or '')
+    if not raw:
+        return raw
+    pairs = _medical_term_glossary_pairs()
+    if not pairs:
+        return raw
+    out = raw
+    for bad, good in pairs:
+        if bad not in out:
+            continue
+        # Keep optional Hebrew proclitics (לאורטופדיה → לאורתופדיה).
+        # Bound the term itself so we do not rewrite inside longer words
+        # (e.g. leave קיפוזיס alone when fixing קיפוף).
+        pattern = re.compile(
+            rf'(?<!{_HEBREW_LETTER_CLASS})'
+            rf'((?:{_HEBREW_PROCLITIC_CLASS}){{0,3}})'
+            rf'{re.escape(bad)}'
+            rf'(?!{_HEBREW_LETTER_CLASS})'
+        )
+        out = pattern.sub(lambda m, g=good: m.group(1) + g, out)
+    return out
+
+
+def _apply_medical_term_glossary_format_dict(out):
+    """Apply glossary to medical format / cleanup payload string fields."""
+    if not isinstance(out, dict):
+        return out
+    for key in (
+        "clean_transcript",
+        "overview",
+        "medical_chief_complaint",
+        "medical_examination_transcript",
+        "medical_patient_recommendations",
+    ):
+        if key in out and out.get(key) is not None:
+            out[key] = _apply_medical_term_glossary(out.get(key))
+    kps = out.get("key_points")
+    if isinstance(kps, list):
+        out["key_points"] = [_apply_medical_term_glossary(p) for p in kps]
+    return out
+
+
 _GPT_MUSIC_CLEAN_TRANSCRIPT_PROMPT = (
     "You are an expert Hebrew linguistic editor and cultural archivist. Your task is to correct garbled "
     "Automatic Speech Recognition (ASR) outputs while strictly preserving the original timestamps.\n\n"
@@ -13317,6 +13420,10 @@ def _medical_summary_from_parsed(parsed, want_hebrew, keep_personal_headings=Fal
     rec_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(rec_t))
     exam_t = _strip_leading_exam_trace_legacy_prefix(exam_t)
     exam_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(exam_t))
+    # Deterministic ASR/GPT spelling fixes (e.g. קיפוף → כיפוף) after chart-voice polish.
+    chief_t = _apply_medical_term_glossary(chief_t)
+    exam_t = _apply_medical_term_glossary(exam_t)
+    rec_t = _apply_medical_term_glossary(rec_t)
     kp_out = [x for x in (exam_t, rec_t) if x]
     return {
         "overview": chief_t,
@@ -13492,7 +13599,8 @@ def _finalize_medical_typo_fix_text(text):
         parts = [re.sub(r'\n{2,}', '\n', p).strip() for p in parts]
         return ('\n\n' + mark + '\n\n').join(parts).strip()
     # No markers: collapse extra blank lines so the UI does not create a box per sentence.
-    return re.sub(r'\n{2,}', '\n', clean).strip()
+    clean = re.sub(r'\n{2,}', '\n', clean).strip()
+    return _apply_medical_term_glossary(clean)
 
 
 _HEBREW_LETTERS = re.compile(r'[\u0590-\u05FF]')
@@ -13688,6 +13796,8 @@ def _format_transcript_cleanup_openai(
         clean = _finalize_medical_typo_fix_text(clean)
     else:
         clean = _wrap_text_to_max_chars(clean)
+        if is_medical:
+            clean = _apply_medical_term_glossary(clean)
     return {"clean_transcript": clean}
 
 
@@ -14008,6 +14118,7 @@ def _format_unified_transcript_openai(
             target_lang=target_lang,
             user_id=user_id,
         )
+        out = _apply_medical_term_glossary_format_dict(out)
         if isinstance(out, dict) and task2_source:
             out["medical_task2_prompt_source"] = task2_source
             out["medical_task2_prompt_chars"] = len(task2 or "")
@@ -16017,9 +16128,15 @@ def _medical_summary_docx_lines(
             bold.pop()
         return out, bold
 
-    chief = _strip_leading_medical_patient_identity_header(chief)
-    exam = _strip_leading_medical_patient_identity_header(exam)
-    rec = _strip_leading_medical_patient_identity_header(rec)
+    chief = _apply_medical_term_glossary(
+        _strip_leading_medical_patient_identity_header(chief)
+    )
+    exam = _apply_medical_term_glossary(
+        _strip_leading_medical_patient_identity_header(exam)
+    )
+    rec = _apply_medical_term_glossary(
+        _strip_leading_medical_patient_identity_header(rec)
+    )
 
     if personal:
         parts = []
