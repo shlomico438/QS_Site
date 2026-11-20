@@ -11849,9 +11849,51 @@ function qsClearMedicalPatientName() {
     try { qsClearMedicalSessionJobDbId(); } catch (_) {}
 }
 
+/** True for leading letterhead rows: תאריך / שם / ת.ז. (incl. bold + לא צוין). */
+function qsIsMedicalPatientIdentityHeaderLine(line) {
+    const raw = String(line || '').trim();
+    if (!raw) return false;
+    const probe = raw.replace(/\*{1,2}/g, '').trim();
+    return (
+        /^(תאריך|שם|ת\.?\s*ז\.?|ת״ז|ת'ז)\s*:?\s*/u.test(probe)
+        || /^(date|name|id|patient\s*id|national\s*id)\s*:?\s*/i.test(probe)
+    );
+}
+
+/**
+ * Strip trained letterhead identity rows from model text.
+ * UI/Word already own תאריך/שם/ת.ז. from patient metadata.
+ */
+function qsStripLeadingPatientIdentityHeader(text) {
+    const body = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '');
+    if (!body.trim()) return '';
+    const lines = body.split('\n');
+    let i = 0;
+    let sawIdentity = false;
+    while (i < lines.length) {
+        const line = String(lines[i] || '').trim();
+        if (!line) {
+            if (sawIdentity) {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+        if (qsIsMedicalPatientIdentityHeaderLine(line)) {
+            sawIdentity = true;
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    if (!sawIdentity) return body.trim();
+    return lines.slice(i).join('\n').trim();
+}
+
 /** Strip a bare patient-name / "שם: X" line that was mistakenly put inside הנדון. */
 function qsStripLeadingPatientNameLine(text, name) {
-    const body = String(text || '').replace(/^\uFEFF/, '').trim();
+    const strippedIdentity = qsStripLeadingPatientIdentityHeader(text);
+    const body = String(strippedIdentity || '').replace(/^\uFEFF/, '').trim();
     if (!body) return '';
     const n = String(name || '').trim();
     const lines = body.split(/\r?\n/);
@@ -11892,11 +11934,17 @@ function qsPrependPatientNameToFormattedDoc(fmt, nameOverride, idOverride, visit
         && !String(fmt.visit_date || '').trim()
     ) return fmt;
     const resolved = String(fmt.patient_name || name || '').trim();
-    if (resolved && fmt.medical_chief_complaint != null) {
+    if (fmt.medical_chief_complaint != null) {
         fmt.medical_chief_complaint = qsStripLeadingPatientNameLine(fmt.medical_chief_complaint, resolved);
     }
-    if (resolved && fmt.overview != null) {
+    if (fmt.overview != null) {
         fmt.overview = qsStripLeadingPatientNameLine(fmt.overview, resolved);
+    }
+    if (fmt.medical_examination_transcript != null) {
+        fmt.medical_examination_transcript = qsStripLeadingPatientIdentityHeader(fmt.medical_examination_transcript);
+    }
+    if (fmt.medical_patient_recommendations != null) {
+        fmt.medical_patient_recommendations = qsStripLeadingPatientIdentityHeader(fmt.medical_patient_recommendations);
     }
     return fmt;
 }
@@ -12789,6 +12837,8 @@ function _medicalSummaryFieldBody(text, sectionKey) {
     if (!window._medicalPersonalTemplateActive) {
         t = _stripLeadingMedicalSectionHeader(t);
     }
+    // Always drop trained letterhead; UI header owns תאריך/שם/ת.ז.
+    t = qsStripLeadingPatientIdentityHeader(t);
     if (sectionKey === 'exam') t = _stripLeadingMedicalExamLegacyPrefix(t);
     return t;
 }

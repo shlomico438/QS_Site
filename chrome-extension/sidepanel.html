@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QuickScribe Medical</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">QuickScribe</div>
+    <div class="sub">Medical · Clicks</div>
+  </header>
+
+  <section id="auth-view" class="card hidden">
+    <h1>התחברות</h1>
+    <p class="hint">בפעם הראשונה אפשר לייבא התחברות מטאב QuickScribe שכבר פתוח. אחר כך האתר לא חייב להיות פתוח.</p>
+    <button id="import-btn" class="secondary" type="button">ייבא מהאתר הפתוח</button>
+    <p id="import-status" class="muted"></p>
+    <div class="divider">או התחברות ידנית</div>
+    <label>אימייל
+      <input id="email" type="email" autocomplete="username" />
+    </label>
+    <label>סיסמה
+      <input id="password" type="password" autocomplete="current-password" />
+    </label>
+    <button id="login-btn" class="primary" type="button">התחבר</button>
+    <p id="auth-error" class="error" hidden></p>
+  </section>
+
+  <section id="app-view" class="hidden">
+    <div class="row between">
+      <div>
+        <div id="user-email" class="muted"></div>
+        <div id="status" class="status">מוכן</div>
+      </div>
+      <button id="logout-btn" class="ghost" type="button">יציאה</button>
+    </div>
+
+    <div class="controls">
+      <button id="start-btn" class="primary go" type="button">התחל</button>
+      <button id="stop-btn" class="danger" type="button" disabled>עצור</button>
+    </div>
+
+    <div class="meter" aria-hidden="true"><div id="level"></div></div>
+
+    <section class="card">
+      <h2>תמלול חי</h2>
+      <pre id="live-transcript" class="transcript" dir="rtl"></pre>
+    </section>
+
+    <section class="card">
+      <div class="row between">
+        <h2>סיכום ל-Clicks</h2>
+        <button id="fill-btn" class="secondary" type="button" disabled>מלא בשדות</button>
+      </div>
+      <div class="section-block">
+        <div class="label">תלונה / הנדון</div>
+        <textarea id="sec-chief" readonly></textarea>
+      </div>
+      <div class="section-block">
+        <div class="label">בדיקה</div>
+        <textarea id="sec-exam" readonly></textarea>
+      </div>
+      <div class="section-block">
+        <div class="label">המלצות</div>
+        <textarea id="sec-rec" readonly></textarea>
+      </div>
+      <p id="fill-status" class="muted"></p>
+    </section>
+
+    <details class="advanced">
+      <summary>הגדרות מתקדמות</summary>
+      <label>API base (origin בלבד — בלי /medical)
+        <input id="api-base" type="url" placeholder="http://127.0.0.1:8000" />
+      </label>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px">
+        <button id="save-api-btn" class="ghost" type="button">שמור</button>
+        <button id="use-local-api-btn" class="ghost" type="button">שרת מקומי</button>
+        <button id="use-prod-api-btn" class="ghost" type="button">פרודקשן</button>
+      </div>
+      <p class="hint">לסימולציה: <code>http://127.0.0.1:8000</code> — לא <code>.../medical</code>.</p>
+      <p class="hint">העתיקו את מזהה ההרחבה והגדירו בשרת <code>MEDICAL_EXTENSION_IDS</code>.</p>
+      <p id="ext-id" class="muted"></p>
+    </details>
+  </section>
+
+  <p id="global-error" class="error" hidden></p>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

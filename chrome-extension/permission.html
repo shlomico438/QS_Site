@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>QuickScribe Mic</title>
+  <style>
+    body {
+      font: 14px/1.4 "Segoe UI", Arial, sans-serif;
+      margin: 24px;
+      color: #12312e;
+      background: #f3f7f6;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 16px;
+      background: #0f766e;
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .err { color: #b42318; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <p>לחצו כדי לאשר גישה למיקרופון להרחבה.</p>
+  <button id="allow" type="button">אשר מיקרופון</button>
+  <p id="status" class="err"></p>
+  <script src="permission.js"></script>
+</body>
+</html>

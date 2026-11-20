@@ -4525,7 +4525,7 @@ def _docx_rtl_run_xml(text, bold=False):
     rpr = (
         f'<w:rPr>{b_tags}'
         '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
-        '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+        '<w:sz w:val="28"/><w:szCs w:val="28"/>'
         '<w:rtl w:val="1"/>'
         '<w:lang w:val="he-IL" w:bidi="he-IL"/></w:rPr>'
     )
@@ -4656,7 +4656,7 @@ def _build_rtl_docx(lines, bold_first=False, bold_mask=None):
         '<w:docDefaults>'
         '<w:rPrDefault><w:rPr>'
         '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
-        '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+        '<w:sz w:val="28"/><w:szCs w:val="28"/>'
         '<w:lang w:val="he-IL" w:bidi="he-IL"/>'
         '</w:rPr></w:rPrDefault>'
         '<w:pPrDefault><w:pPr>'
@@ -4668,7 +4668,7 @@ def _build_rtl_docx(lines, bold_first=False, bold_mask=None):
         '<w:pPr><w:bidi w:val="1"/><w:jc w:val="right"/></w:pPr>'
         '<w:rPr>'
         '<w:rFonts w:ascii="David" w:hAnsi="David" w:cs="David"/>'
-        '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+        '<w:sz w:val="28"/><w:szCs w:val="28"/>'
         '<w:rtl w:val="1"/>'
         '<w:lang w:val="he-IL" w:bidi="he-IL"/>'
         '</w:rPr>'
@@ -12750,6 +12750,83 @@ def _is_admin_template_heading(label):
     return compact in {"תז", "שם", "יעוץטלפוני", "יעוץפרונטלי"}
 
 
+# Leading identity rows some doctors train into chief_complaint. The product
+# already renders תאריך/שם/ת.ז. from UI metadata, so these must be stripped or
+# the letter shows a duplicate header (often with "לא צוין").
+_MEDICAL_PATIENT_IDENTITY_HEADER_RE = re.compile(
+    r'^\*{0,2}\s*('
+    r'תאריך|שם|ת\.?\s*ז\.?|ת״ז|ת\'ז|'
+    r'date|name|id|patient\s*id|national\s*id'
+    r')\*{0,2}\s*:?\s*.*$',
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _is_medical_patient_identity_header_line(line):
+    raw = str(line or '').strip()
+    if not raw:
+        return False
+    # Normalize odd bold forms like **שם: ערך** / **ת.ז.:** לא צוין
+    probe = re.sub(r'\*{1,2}', '', raw).strip()
+    return bool(_MEDICAL_PATIENT_IDENTITY_HEADER_RE.match(probe) or _MEDICAL_PATIENT_IDENTITY_HEADER_RE.match(raw))
+
+
+def _strip_leading_medical_patient_identity_header(text):
+    """Remove leading date/name/ID rows from model output before UI/Word header.
+
+    Handles markdown-bold labels and placeholder values such as לא צוין.
+    """
+    raw = str(text or '').replace('\r\n', '\n').replace('\r', '')
+    if not raw.strip():
+        return ''
+    lines = raw.split('\n')
+    i = 0
+    saw_identity = False
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            # Keep blank gaps only after we have started consuming identity rows.
+            if saw_identity:
+                i += 1
+                continue
+            break
+        if _is_medical_patient_identity_header_line(line):
+            saw_identity = True
+            i += 1
+            continue
+        break
+    if not saw_identity:
+        return str(text or '').strip()
+    return '\n'.join(lines[i:]).strip()
+
+
+def _strip_leading_medical_patient_identity_parts(parts, mask=None):
+    """Same strip for Word paragraph lists used by export."""
+    src_parts = list(parts or [])
+    src_mask = list(mask or ([False] * len(src_parts)))
+    if len(src_mask) < len(src_parts):
+        src_mask.extend([False] * (len(src_parts) - len(src_mask)))
+    i = 0
+    saw_identity = False
+    while i < len(src_parts):
+        line = str(src_parts[i] or '').strip()
+        if not line:
+            if saw_identity:
+                i += 1
+                continue
+            break
+        if _is_medical_patient_identity_header_line(line):
+            saw_identity = True
+            i += 1
+            continue
+        break
+    if not saw_identity:
+        return src_parts, src_mask[:len(src_parts)]
+    out_parts = src_parts[i:]
+    out_mask = src_mask[i:len(src_parts)]
+    return out_parts, out_mask
+
+
 def _template_heading_pane_role(title):
     """Map a clinical template heading to chief / exam / rec, or None if multi-section."""
     if _is_admin_template_heading(title):
@@ -13232,6 +13309,10 @@ def _medical_summary_from_parsed(parsed, want_hebrew, keep_personal_headings=Fal
         chief_t = _strip_leading_medical_section_header(chief_t, "chief")
         rec_t = _strip_leading_medical_section_header(rec_t, "rec")
         exam_t = _strip_leading_medical_section_header(exam_t, "exam")
+    # Always strip trained letterhead identity rows; UI/Word owns תאריך/שם/ת.ז.
+    chief_t = _strip_leading_medical_patient_identity_header(chief_t)
+    exam_t = _strip_leading_medical_patient_identity_header(exam_t)
+    rec_t = _strip_leading_medical_patient_identity_header(rec_t)
     chief_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(chief_t))
     rec_t = _apply_hebrew_clinical_chart_voice(_strip_spoken_hebrew_az_connector(rec_t))
     exam_t = _strip_leading_exam_trace_legacy_prefix(exam_t)
@@ -15883,6 +15964,7 @@ def _medical_summary_patient_docx_lines(patient_name=None, patient_id_number=Non
 def _medical_summary_prepend_patient_lines(
     parts, mask, patient_name=None, patient_id_number=None, visit_date=None
 ):
+    parts, mask = _strip_leading_medical_patient_identity_parts(parts, mask)
     patient_parts, patient_mask = _medical_summary_patient_docx_lines(
         patient_name, patient_id_number, visit_date=visit_date
     )
@@ -15934,6 +16016,10 @@ def _medical_summary_docx_lines(
             out.pop()
             bold.pop()
         return out, bold
+
+    chief = _strip_leading_medical_patient_identity_header(chief)
+    exam = _strip_leading_medical_patient_identity_header(exam)
+    rec = _strip_leading_medical_patient_identity_header(rec)
 
     if personal:
         parts = []

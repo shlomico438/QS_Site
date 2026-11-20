@@ -1,0 +1,74 @@
+{
+  "manifest_version": 3,
+  "name": "QuickScribe Medical",
+  "version": "1.0.9",
+  "description": "Record clinic visits, generate medical summary sections, and fill Clicks fields.",
+  "action": {
+    "default_title": "QuickScribe Medical",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "windows"
+  ],
+  "host_permissions": [
+    "https://www.getquickscribe.com/*",
+    "https://getquickscribe.com/*",
+    "https://quickscribe.co.il/*",
+    "https://www.quickscribe.co.il/*",
+    "https://*.supabase.co/*",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:5000/*",
+    "http://localhost:5000/*",
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/clicks.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://www.getquickscribe.com/*",
+        "https://getquickscribe.com/*",
+        "https://quickscribe.co.il/*",
+        "https://www.quickscribe.co.il/*",
+        "http://127.0.0.1:8000/*",
+        "http://localhost:8000/*",
+        "http://127.0.0.1:5000/*",
+        "http://localhost:5000/*"
+      ],
+      "js": ["content/site-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["vendor/socket.io.min.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
