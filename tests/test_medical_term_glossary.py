@@ -12,6 +12,15 @@ class MedicalTermGlossaryTests(unittest.TestCase):
         self.assertIn("כיפוף אצבעות", out)
         self.assertNotIn("קיפוף אצבעות", out)
 
+    def test_fixes_mekufafim_to_mekhofefim(self):
+        text = "גידים מקופפים של האצבעות."
+        out = siteapp._apply_medical_term_glossary(text)
+        self.assertEqual(out, "גידים מכופפים של האצבעות.")
+        self.assertEqual(
+            siteapp._apply_medical_term_glossary("גיד מקופף"),
+            "גיד מכופף",
+        )
+
     def test_does_not_rewrite_kyphosis(self):
         text = "קיפוזיס תורקלי קל."
         self.assertEqual(siteapp._apply_medical_term_glossary(text), text)
