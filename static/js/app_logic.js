@@ -10972,7 +10972,7 @@ async function initOpenInAppImpl(jobIdStr) {
             .map((s) => (typeof _speakerFromObj === 'function' ? _speakerFromObj(s) : (s && s.speaker)))
             .filter(Boolean)
     );
-    window.aiDiarizationRan = uniqueSpeakers.size > 1;
+    window.aiDiarizationRan = uniqueSpeakers.size > 0;
 
     const placeholderEl = document.getElementById('placeholder');
     if (placeholderEl) placeholderEl.style.display = 'none';
@@ -27652,11 +27652,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (sp) uniqueSpeakers.add(sp);
         });
 
-        // Only enable if there are 2 or more DIFFERENT speakers
-        window.aiDiarizationRan = uniqueSpeakers.size > 1;
-        // AUTO-ACTIVATE: If AI ran, we turn the 'Show Speakers' switch ON
+        window.aiDiarizationRan = uniqueSpeakers.size > 0;
         const speakerToggle = document.getElementById('toggle-speaker');
-        if (window.aiDiarizationRan && speakerToggle && !speakerToggle.dataset.qsUserToggled) {
+        if (speakerToggle && !speakerToggle.dataset.qsUserToggled) {
             speakerToggle.checked = true;
         }
 
@@ -27906,18 +27904,9 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
     function syncSpeakerControls() {
         const speakerToggle = document.getElementById('toggle-speaker');
         if (!speakerToggle) return;
-
-        // RULE: Only enable the 'Show' switch if AI actually ran for this specific job
-        if (window.aiDiarizationRan) {
-            speakerToggle.disabled = false;
-            if (speakerToggle.parentElement) speakerToggle.parentElement.style.opacity = "1";
-            // Auto-show labels when diarization data first arrives (user can still hide).
-            if (!speakerToggle.dataset.qsUserToggled) speakerToggle.checked = true;
-        } else {
-            speakerToggle.disabled = true;
-            speakerToggle.checked = false; // Force OFF if no data exists
-            if (speakerToggle.parentElement) speakerToggle.parentElement.style.opacity = "0.5";
-        }
+        speakerToggle.disabled = false;
+        if (speakerToggle.parentElement) speakerToggle.parentElement.style.opacity = "1";
+        if (!speakerToggle.dataset.qsUserToggled) speakerToggle.checked = true;
     }
 
     // 1. Fixed: Attached to window to solve "ReferenceError"
@@ -27958,8 +27947,8 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         transcriptWindow.classList.toggle('qs-rtl', !!layout.isRtl);
         transcriptWindow.style.direction = layout.textDirection;
         transcriptWindow.style.textAlign = layout.textAlign;
-        const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
-        const showSpeakerLabels = !!(isSpeakerVisible && window.aiDiarizationRan);
+        const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked !== false;
+        const showSpeakerLabels = !!isSpeakerVisible;
         // Flat clean_transcript has no speaker labels — when diarization is on, use
         // speaker-grouped segments instead so "זיהוי דוברים" is visible in the output.
         if (window.isDocumentMode && !showSpeakerLabels) {
@@ -27982,7 +27971,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             // 2. Fixed: Get state of both toggles
             const isTimeVisible = isTimeToggleVisible();
 
-            const showLabel = showSpeakerLabels;
+            const hasRealSpeaker = typeof _normalizeSpeakerId === 'function'
+                ? !!_normalizeSpeakerId(g.speaker)
+                : !!(g.speaker && g.speaker !== 'monologue' && g.speaker !== 'none');
+            const showLabel = showSpeakerLabels && hasRealSpeaker;
 
             const startNum = Number(g.start);
             const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
@@ -28008,23 +28000,12 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         transcriptWindow.contentEditable = 'false';
     };
     // --- 3. UI HELPERS ---
-    function updateSpeakerToggleUI(hasSpeakerData) {
-        const diarizationToggle = document.getElementById('diarization-toggle');
+    function updateSpeakerToggleUI() {
         const speakerToggle = document.getElementById('toggle-speaker');
-
-        if (!diarizationToggle || !speakerToggle) return;
-
-        // We only turn the 'Show' switch Blue  if the AI was active
-        // AND it actually found speaker data.
-        if (diarizationToggle.checked && hasSpeakerData) {
-            speakerToggle.disabled = false;
-            speakerToggle.checked = true; // This makes it Blue
-            speakerToggle.parentElement.style.opacity = "1";
-        } else {
-            speakerToggle.disabled = true;
-            speakerToggle.checked = false; // Stay Grey
-            speakerToggle.parentElement.style.opacity = "0.5";
-        }
+        if (!speakerToggle) return;
+        speakerToggle.disabled = false;
+        if (speakerToggle.parentElement) speakerToggle.parentElement.style.opacity = "1";
+        if (!speakerToggle.dataset.qsUserToggled) speakerToggle.checked = true;
     }
 
     // --- 4. RENDER LOGIC ---
@@ -29390,7 +29371,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         <span class="timestamp" style="display: ${isTimeVisible ? 'block' : 'none'};">
                             ${formatTime(newSeg.start)}
                         </span>
-                        <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
+                        <span style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
                             ${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
                         </span>
                     </div>
@@ -29435,7 +29416,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     <span class="timestamp" style="display: ${isTimeVisible ? 'block' : 'none'};">
                         ${formatTime(splitTime)}
                     </span>
-                    <span style="display: ${isSpeakerVisible && window.aiDiarizationRan ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
+                    <span style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
                         ${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
                     </span>
                 </div>
@@ -33563,9 +33544,7 @@ function renderWordCaptionEditor() {
         const tsLine = timingMode
             ? _qsCaptionTimeRangeHtml(start, endT)
             : formatTime(start);
-        const showSpeakerLabels = !!(
-            document.getElementById('toggle-speaker')?.checked && window.aiDiarizationRan
-        );
+        const showSpeakerLabels = document.getElementById('toggle-speaker')?.checked !== false;
         const capSpeaker = _majoritySpeakerInWordRange(words, cap.wordStartIndex, cap.wordEndIndex);
         const speakerMeta = (showSpeakerLabels && capSpeaker)
             ? `<span class="caption-speaker" style="display:block; font-weight:600; color:${getSpeakerColor(capSpeaker)};">${
