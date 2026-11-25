@@ -1,0 +1,9 @@
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\bin\Release\net8.0-windows\QuickScribe.Typing.deps.json
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\bin\Release\net8.0-windows\QuickScribe.Typing.dll
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\obj\Release\net8.0-windows\QuickScribe.Typing.GeneratedMSBuildEditorConfig.editorconfig
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\obj\Release\net8.0-windows\QuickScribe.Typing.AssemblyInfoInputs.cache
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\obj\Release\net8.0-windows\QuickScribe.Typing.AssemblyInfo.cs
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\obj\Release\net8.0-windows\QuickScribe.Typing.csproj.CoreCompileInputs.cache
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\obj\Release\net8.0-windows\QuickScribe.Typing.dll
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\obj\Release\net8.0-windows\refint\QuickScribe.Typing.dll
+C:\Work\QuickScribe\Site\windows-helper\QuickScribe.Typing\obj\Release\net8.0-windows\ref\QuickScribe.Typing.dll

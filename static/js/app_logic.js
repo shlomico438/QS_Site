@@ -30576,11 +30576,9 @@ function qsPersistDiarizationTogglePref(on) {
     } catch (_) {}
 }
 
-/** Snapshot for upload/trigger — defaults to true when the control is missing. */
+/** Speaker identification is always on. The transcript bar only shows or hides labels. */
 function qsReadDiarizationToggle() {
-    const el = document.getElementById('diarization-toggle');
-    if (!el) return true;
-    return !!el.checked;
+    return true;
 }
 
 function qsSyncRegularAsrLangUi() {

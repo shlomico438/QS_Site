@@ -3240,9 +3240,13 @@ body.has-transcript-actions .main-app-container.medical-mode .switches-top-bar.i
     font-size: 0.85rem;
 }
 
-/* Hide the "Speaker" toggle from the toolbar UI */
 #toggle-speaker-wrap {
-    display: none !important;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
 }
 
 .toggle-switch {

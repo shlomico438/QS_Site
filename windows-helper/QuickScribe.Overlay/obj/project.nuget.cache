@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "dgSpecHash": "8wCZxwln/hM=",
+  "success": true,
+  "projectFilePath": "C:\\Work\\QuickScribe\\Site\\windows-helper\\QuickScribe.Overlay\\QuickScribe.Overlay.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\microsoft.netcore.platforms\\3.1.0\\microsoft.netcore.platforms.3.1.0.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\microsoft.win32.registry\\4.7.0\\microsoft.win32.registry.4.7.0.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\naudio\\2.2.1\\naudio.2.2.1.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\naudio.asio\\2.2.1\\naudio.asio.2.2.1.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\naudio.core\\2.2.1\\naudio.core.2.2.1.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\naudio.midi\\2.2.1\\naudio.midi.2.2.1.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\naudio.wasapi\\2.2.1\\naudio.wasapi.2.2.1.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\naudio.winforms\\2.2.1\\naudio.winforms.2.2.1.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\naudio.winmm\\2.2.1\\naudio.winmm.2.2.1.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\socketio.core\\3.1.2\\socketio.core.3.1.2.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\socketio.serializer.core\\3.1.2\\socketio.serializer.core.3.1.2.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\socketio.serializer.systemtextjson\\3.1.2\\socketio.serializer.systemtextjson.3.1.2.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\socketioclient\\3.1.2\\socketioclient.3.1.2.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\system.security.accesscontrol\\4.7.0\\system.security.accesscontrol.4.7.0.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\system.security.principal.windows\\4.7.0\\system.security.principal.windows.4.7.0.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\system.text.encodings.web\\8.0.0\\system.text.encodings.web.8.0.0.nupkg.sha512",
+    "C:\\Users\\User\\AppData\\Local\\Temp\\cursor-sandbox-cache\\d0b71c9fed9e9574663f124c9a1d73f7\\nuget\\system.text.json\\8.0.4\\system.text.json.8.0.4.nupkg.sha512"
+  ],
+  "logs": []
+}
