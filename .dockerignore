@@ -41,3 +41,11 @@ migrations
 *.bak
 .DS_Store
 Thumbs.db
+
+windows-helper
+chrome-extension
+tmp_*
+*.wav
+*.mp3
+*.pcm
+*.pyc

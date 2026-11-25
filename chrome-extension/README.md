@@ -6,12 +6,10 @@ back for field fill.
 
 The website does **not** need to be open.
 
-**Note:** Site backend hooks for this client (`/api/medical/client/v1/*`,
-`MEDICAL_EXTENSION_IDS`, Socket.IO extension origin checks) were removed from
-the Site tree because Citrix environments often cannot install Chrome
-extensions. This folder is kept as a standalone project for environments that
-can use it; the matching server routes must be reintroduced before production
-use.
+**Note:** Backend contract is `/api/medical/client/v1/*` (shared with the Windows
+Citrix helper). See `docs/medical-extension-backend.md`. Set
+`MEDICAL_EXTENSION_IDS` for Chrome origins; desktop clients authenticate with
+Bearer only.
 
 ## Install (developer)
 

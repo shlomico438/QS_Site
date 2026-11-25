@@ -1609,6 +1609,7 @@ MEDICAL_MIC_EVENT_CAUSES = frozenset({
     "overconstrained",
 })
 MEDICAL_MIC_EVENT_PHASES = frozenset({"start", "recording"})
+MEDICAL_MIC_EVENT_CLIENT_SOURCES = frozenset({"web", "extension", "windows_helper"})
 MEDICAL_MIC_EVENT_BROWSERS = frozenset({"chrome", "edge", "firefox", "safari", "other"})
 MEDICAL_MIC_EVENT_OSES = frozenset({"windows", "mac", "linux", "ios", "android", "other"})
 MEDICAL_MIC_EVENT_HOURLY_LIMIT = 30

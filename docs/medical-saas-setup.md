@@ -67,14 +67,29 @@ For every due account, the endpoint:
 
 The partial unique index on user, payment kind, and billing-cycle **end** prevents duplicate renewal charges for the same closed period when the cron request is retried. Apply `migrations/fix_medical_renewal_unique_cycle_end.sql`.
 
-## 4. Production checks
+## 4. Medical client backend (extension / Windows helper)
+
+Standalone medical clients share `/api/medical/client/v1/*` with the website pipeline.
+See [medical-extension-backend.md](medical-extension-backend.md).
+
+Set approved Chrome extension IDs (comma-separated) for `chrome-extension://` origins
+and Socket.IO payloads with `"client": "extension"`:
+
+```text
+MEDICAL_EXTENSION_IDS=<extension-id-1>,<extension-id-2>
+```
+
+Desktop Windows helper requests omit Origin and authenticate with Bearer only; they do
+not need an entry in `MEDICAL_EXTENSION_IDS`.
+
+## 5. Production checks
 
 - Complete a hosted Cardcom sandbox checkout and confirm that `GetLpResult` returns a reusable token and expiry.
 - Run the renewal endpoint against a due sandbox account.
 - Verify that a signed-out `/medical` user cannot presign an upload, trigger processing, start live transcription, or warm the medical endpoint.
 - Verify that `/` and `/en` still allow the regular anonymous transcription flow.
 
-## 5. Invoices (tax invoice + receipt)
+## 6. Invoices (tax invoice + receipt)
 
 Medical checkout now attaches a Cardcom `Document` (`TaxInvoiceAndReceipt`) and emails it to the doctor (`CARDCOM_INVOICE_EMAIL`, default on). The doctor is asked for **ת.ז. / ח.פ.** and **ישוב** before Cardcom redirect — same modal as regular credit purchases.
 

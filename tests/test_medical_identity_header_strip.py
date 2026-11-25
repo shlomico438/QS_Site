@@ -38,6 +38,27 @@ class MedicalIdentityHeaderStripTests(unittest.TestCase):
             text,
         )
 
+    def test_strips_date_under_complaint_section_title(self):
+        """Injury date under תלונה is letterhead — narrative already has the day."""
+        text = (
+            "תלונה\n"
+            "תאריך: 17/11/2026 :\n"
+            "\n"
+            "צעיר בן 26, בריא, נפגע בתאונת קורקינט ביום 17/11/2026."
+        )
+        out = siteapp._strip_leading_medical_patient_identity_header(text)
+        self.assertIn("צעיר בן 26", out)
+        self.assertIn("ביום 17/11/2026", out)
+        self.assertNotIn("תאריך:", out)
+        self.assertTrue(out.startswith("תלונה") or out.startswith("צעיר"))
+
+    def test_leaves_compound_clinical_date_label(self):
+        text = "תאריך ניתוח: 01/02/2026\nהמשך מעקב."
+        self.assertEqual(
+            siteapp._strip_leading_medical_patient_identity_header(text),
+            text,
+        )
+
     def test_prepend_uses_ui_header_only_once(self):
         parts = [
             "**תאריך:** לא צוין",

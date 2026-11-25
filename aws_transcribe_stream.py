@@ -1937,6 +1937,60 @@ def cleanup_transcribe_socketio_bridge(sid: str) -> None:
         logger.debug('transcribe socketio cleanup finish failed', exc_info=True)
 
 
+def medical_extension_socket_origin_allowed(config, origin) -> bool:
+    """Apply the extension allowlist only to clients declaring extension mode.
+
+    Chrome extension Socket.IO often omits Origin on WebSocket; accept an explicit
+    extension_id in the start payload as a fallback, still gated by allowlist /
+    SIMULATION_MODE.
+    """
+    cfg = config if isinstance(config, dict) else {}
+    client = str(cfg.get("client") or cfg.get("client_type") or "").strip().lower()
+    if client != "extension":
+        return True
+
+    configured = {
+        item.strip()
+        for item in str(os.environ.get("MEDICAL_EXTENSION_IDS") or "").split(",")
+        if item.strip()
+    }
+    try:
+        from flask import current_app
+        simulation = bool(current_app.config.get("SIMULATION_MODE"))
+    except Exception:
+        simulation = str(os.environ.get("SIMULATION_MODE", "true")).lower() in ("1", "true", "yes")
+
+    raw_origin = str(origin or "").strip()
+    extension_id = ""
+    if raw_origin.startswith("chrome-extension://"):
+        extension_id = raw_origin[len("chrome-extension://"):].strip().strip("/")
+    if not extension_id:
+        extension_id = str(
+            cfg.get("extension_id") or cfg.get("extensionId") or cfg.get("client_id") or ""
+        ).strip()
+
+    if extension_id and extension_id in configured:
+        return True
+
+    # Local simulation: allow unpacked extensions when allowlist is unset.
+    # Also allow missing Origin (common for extension WebSocket) in simulation.
+    if simulation and not configured:
+        logger.warning(
+            "transcribe socketio allowing extension in SIMULATION_MODE "
+            "id=%s origin=%s",
+            (extension_id or "-")[:32],
+            (raw_origin or "-")[:64],
+        )
+        return True
+
+    if not raw_origin and not extension_id:
+        logger.warning("transcribe socketio extension rejected: missing origin and extension_id")
+        return False
+    if raw_origin and not raw_origin.startswith("chrome-extension://"):
+        return False
+    return False
+
+
 def register_transcribe_socketio_handlers(socketio) -> None:
     """Medical live transcribe via Socket.IO (works behind CDN/proxy; raw /ws/transcribe may not)."""
     from flask import request
@@ -1959,6 +2013,11 @@ def register_transcribe_socketio_handlers(socketio) -> None:
     def on_medical_transcribe_start(data):
         sid = request.sid
         cfg = data if isinstance(data, dict) else {}
+        if not medical_extension_socket_origin_allowed(cfg, request.headers.get('Origin')):
+            logger.warning('transcribe socketio rejected sid=%s reason=extension_origin_not_allowed', sid)
+            _emit_to_sid(sid, {'type': 'error', 'error': 'extension_origin_not_allowed'})
+            cleanup_transcribe_socketio_bridge(sid)
+            return
         token = str(cfg.get('access_token') or cfg.get('accessToken') or '').strip()
         guest_try = bool(cfg.get('guest_try') or cfg.get('guestTry'))
         _user_id = None
@@ -2002,6 +2061,10 @@ def register_transcribe_socketio_handlers(socketio) -> None:
         from flask_socketio import join_room
         sid = request.sid
         cfg = data if isinstance(data, dict) else {}
+        if not medical_extension_socket_origin_allowed(cfg, request.headers.get('Origin')):
+            logger.warning('transcribe watch rejected sid=%s reason=extension_origin_not_allowed', sid)
+            _emit_to_sid(sid, {'type': 'error', 'error': 'extension_origin_not_allowed'})
+            return
         token = str(cfg.get('access_token') or cfg.get('accessToken') or '').strip()
         try:
             from medical_saas import medical_entitlement_for_access_token

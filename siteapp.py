@@ -11638,6 +11638,129 @@ def _get_job_timings_from_db(runpod_job_id: str, user_id: str = None) -> dict:
     return {}
 
 
+def _jobs_ensure_medical_row(
+    user_id,
+    runpod_job_id,
+    input_s3_key,
+    *,
+    status='uploaded',
+    duration_sec=None,
+    user_email=None,
+    user_name=None,
+    patient_name=None,
+    patient_id_number=None,
+    visit_date=None,
+):
+    """Service-role safety net: ensure a public.jobs row exists for a medical stream visit.
+
+    Client createJobOnUpload can be skipped/raced (warmup dismiss). Stream complete still
+    meters usage — without this, Personal Area / admin queries show no medical jobs.
+    Returns jobs.id or None.
+    """
+    uid = str(user_id or '').strip()
+    jid = str(runpod_job_id or '').strip()
+    s3_key = str(input_s3_key or '').strip()
+    if not uid or uid == 'anonymous' or not jid or not s3_key:
+        return None
+    supabase_url = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
+    service_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    if not supabase_url or not service_key:
+        return None
+
+    rows = _get_job_rows_by_runpod_job_id(
+        jid,
+        select="id,user_id,input_s3_key,status,metadata",
+    )
+    owned = None
+    for row in rows or []:
+        owner = str((row or {}).get('user_id') or '').strip()
+        if owner and owner != uid:
+            continue
+        if row and row.get('id'):
+            owned = row
+            break
+
+    md = {}
+    if isinstance(owned, dict) and isinstance(owned.get('metadata'), dict):
+        md = dict(owned.get('metadata') or {})
+    md['job_id'] = jid
+    pn = str(patient_name or '').strip()
+    pid = str(patient_id_number or '').strip()
+    vd = str(visit_date or '').strip()
+    if pn:
+        md['patient_name'] = pn
+        md.setdefault('display_name', pn)
+        md.setdefault('original_filename', pn)
+    if pid:
+        md['patient_id_number'] = pid
+    if vd:
+        md['visit_date'] = vd
+
+    now = datetime.utcnow().isoformat() + 'Z'
+    patch = {
+        'user_id': uid,
+        'input_s3_key': s3_key,
+        'runpod_job_id': jid,
+        'metadata': md,
+        'updated_at': now,
+        'status': str(status or 'uploaded'),
+        'type': 'transcription',
+    }
+    if user_email:
+        patch['user_email'] = str(user_email).strip()
+    if user_name:
+        patch['user_name'] = str(user_name).strip()
+    try:
+        dur = float(duration_sec or 0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    if dur > 0:
+        patch['file_duration_sec'] = dur
+        md['file_duration_sec'] = dur
+        md['credit_file_duration_sec'] = dur
+        patch['metadata'] = md
+
+    headers = {**_supabase_service_headers(service_key), 'Prefer': 'return=representation'}
+    try:
+        if owned and owned.get('id'):
+            patch_url = f"{supabase_url}/rest/v1/jobs?id=eq.{owned['id']}"
+            r = _supabase_http_request('PATCH', patch_url, json=patch, headers=headers, timeout=12)
+            if r.status_code in (200, 204):
+                return str(owned.get('id'))
+            logging.warning(
+                "jobs ensure medical patch failed job=%s status=%s body=%s",
+                jid,
+                r.status_code,
+                (r.text or '')[:240],
+            )
+            return None
+
+        r = _supabase_http_request(
+            'POST',
+            f"{supabase_url}/rest/v1/jobs",
+            json=patch,
+            headers=headers,
+            timeout=12,
+        )
+        if r.status_code not in (200, 201):
+            logging.warning(
+                "jobs ensure medical insert failed job=%s status=%s body=%s",
+                jid,
+                r.status_code,
+                (r.text or '')[:240],
+            )
+            return None
+        inserted = r.json() if r.content else []
+        if isinstance(inserted, list) and inserted and isinstance(inserted[0], dict):
+            return str(inserted[0].get('id') or '') or None
+        if isinstance(inserted, dict) and inserted.get('id'):
+            return str(inserted.get('id'))
+        return None
+    except Exception:
+        logging.exception("jobs ensure medical row failed job=%s user=%s", jid, uid[:8])
+        return None
+
+
 def _jobs_patch_by_runpod_job_id(runpod_job_id, user_id, payload):
     """PATCH the jobs row for this RunPod id (same PostgREST strategies as timing updates). Returns True if a row updated."""
     if not payload:
@@ -14794,6 +14917,79 @@ def _format_request_is_music_context(data, job_id=None):
     return False
 
 
+MEDICAL_STRUCTURED_SECTION_KEYS = (
+    'medical_chief_complaint',
+    'medical_examination_transcript',
+    'medical_patient_recommendations',
+)
+
+
+def process_medical_transcript(
+    transcript,
+    *,
+    target_lang='he',
+    user_id=None,
+    prior_formatted=None,
+    summary_only=False,
+    timeout_sec=None,
+    read_retries=None,
+):
+    """Run the shared medical correction + structured-summary pipeline.
+
+    Transport-neutral so the website and authenticated medical clients
+    (Chrome extension / Windows helper) cannot drift into separate pipelines.
+    """
+    raw = str(transcript or '').strip()
+    if not raw:
+        raise ValueError('transcript_required')
+    if prior_formatted is not None and not isinstance(prior_formatted, dict):
+        prior_formatted = None
+    lang = str(target_lang or 'he').strip() or 'he'
+
+    if _should_bypass_medical_gpt_format(raw) and not prior_formatted:
+        out = _medical_minimal_format_payload(raw, target_lang=lang, user_id=user_id)
+        out['format_guardrail'] = 'medical_short_transcript_bypass'
+        return out
+
+    retries = (
+        max(0, int(os.environ.get('GPT_FORMAT_READ_RETRIES', '2') or 0))
+        if read_retries is None
+        else max(0, int(read_retries or 0))
+    )
+    if summary_only:
+        excerpt = _truncate_transcript_for_unified_gpt(raw)
+        resolved_timeout = int(
+            timeout_sec
+            or os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
+            or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270')
+            or 270
+        )
+        return _format_summary_only_openai(
+            excerpt,
+            lang,
+            resolved_timeout,
+            retries,
+            is_medical=True,
+            user_id=user_id,
+            prior_formatted=prior_formatted,
+        )
+    return _format_transcript_and_summary_via_openai(
+        raw,
+        target_lang=lang,
+        is_medical=True,
+        user_id=user_id,
+        prior_formatted=prior_formatted,
+    )
+
+
+def _medical_structured_sections(formatted):
+    src = formatted if isinstance(formatted, dict) else {}
+    return {
+        key: str(src.get(key) or '')
+        for key in MEDICAL_STRUCTURED_SECTION_KEYS
+    }
+
+
 @app.route('/api/format_transcript_summary', methods=['POST'])
 def api_format_transcript_summary():
     """Return clean transcript + summary fields for DOCX export.
@@ -15015,39 +15211,16 @@ def api_format_transcript_summary():
         raw = str(data.get('text') or '').strip()
         if not raw:
             return jsonify({"error": "No transcript text provided"}), 400
-        if is_medical and _should_bypass_medical_gpt_format(raw) and not prior_formatted:
-            elapsed = time.time() - t0
-            _apply_summary_timing(elapsed)
-            base = _medical_minimal_format_payload(raw, target_lang=target_lang, user_id=req_user_id)
-            return jsonify({
-                "clean_transcript": base.get("clean_transcript", ""),
-                "overview": base.get("overview", ""),
-                "key_points": base.get("key_points", []),
-                "medical_chief_complaint": base.get("medical_chief_complaint", ""),
-                "medical_examination_transcript": base.get("medical_examination_transcript", ""),
-                "medical_patient_recommendations": base.get("medical_patient_recommendations", ""),
-                "summary_generation_time": round(float(elapsed), 3),
-                "gpt_format_sec": round(float(elapsed), 3),
-                "format_guardrail": "medical_short_transcript_bypass",
-            }), 200
         try:
             t_summary = time.time()
             if is_medical:
-                summ_input = _truncate_transcript_for_unified_gpt(raw)
-                summary_timeout = int(
-                    os.environ.get('GPT_FORMAT_SUMMARY_TIMEOUT_SEC')
-                    or os.environ.get('GPT_FORMAT_TIMEOUT_SEC', '270')
-                    or 270
-                )
-                out = _format_summary_only_openai(
-                    summ_input,
-                    target_lang,
-                    summary_timeout,
-                    read_retries,
-                    is_medical=True,
-                    is_music=is_music_format,
+                out = process_medical_transcript(
+                    raw,
+                    target_lang=target_lang,
                     user_id=req_user_id,
                     prior_formatted=prior_formatted,
+                    summary_only=True,
+                    read_retries=read_retries,
                 )
             else:
                 segments = data.get('segments') or []
@@ -15102,21 +15275,21 @@ def api_format_transcript_summary():
     if not raw_text:
         return jsonify({"error": "No transcript text provided"}), 400
     try:
-        if is_medical and _should_bypass_medical_gpt_format(raw_text) and not prior_formatted:
-            elapsed = time.time() - t0
-            _apply_format_timing(elapsed)
-            out = _medical_minimal_format_payload(raw_text, target_lang=target_lang, user_id=req_user_id)
-            out['gpt_format_sec'] = round(float(elapsed), 3)
-            out['format_guardrail'] = 'medical_short_transcript_bypass'
-            return jsonify(out), 200
-        if is_medical or is_music_format:
+        if is_medical:
+            out = process_medical_transcript(
+                raw_text,
+                target_lang=target_lang,
+                user_id=req_user_id,
+                prior_formatted=prior_formatted,
+                read_retries=read_retries,
+            )
+        elif is_music_format:
             out = _format_transcript_and_summary_via_openai(
                 raw_text,
                 target_lang=target_lang,
-                is_medical=is_medical,
-                is_music=is_music_format,
+                is_medical=False,
+                is_music=True,
                 user_id=req_user_id,
-                prior_formatted=prior_formatted if is_medical else None,
             )
         else:
             t_summary = time.time()
@@ -15139,6 +15312,213 @@ def api_format_transcript_summary():
     except Exception as e:
         logging.warning("format_transcript_summary failed: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+def _medical_extension_origin_allowed(origin=None):
+    """Allow configured extension IDs without broad cross-origin access.
+
+    Empty Origin is allowed: Chrome MV3 service workers and the Windows helper
+    typically omit Origin; bearer auth + entitlement remain mandatory.
+    """
+    raw_origin = str(origin if origin is not None else request.headers.get('Origin') or '').strip()
+    if not raw_origin:
+        return True
+    if not raw_origin.startswith('chrome-extension://'):
+        return False
+    configured = {
+        item.strip()
+        for item in str(os.environ.get('MEDICAL_EXTENSION_IDS') or '').split(',')
+        if item.strip()
+    }
+    extension_id = raw_origin[len('chrome-extension://'):].strip().strip('/')
+    if extension_id and extension_id in configured:
+        return True
+    # Local simulation: unpacked extensions work without env allowlist.
+    if SIMULATION_MODE and not configured and extension_id:
+        logging.warning(
+            "medical client allowing extension id=%s in SIMULATION_MODE without MEDICAL_EXTENSION_IDS",
+            extension_id[:32],
+        )
+        return True
+    return False
+
+
+def _medical_client_require_access(data):
+    if not _medical_extension_origin_allowed():
+        return None, (jsonify({'error': 'extension_origin_not_allowed'}), 403)
+    supplied_user = str((data or {}).get('userId') or (data or {}).get('user_id') or '').strip()
+    _is_medical, user_id, medical_error = _enforce_medical_request_entitlement(
+        {**(data or {}), 'isMedical': True}
+    )
+    if medical_error:
+        return user_id, medical_error
+    if supplied_user and supplied_user != user_id:
+        return user_id, (jsonify({'error': 'user_mismatch'}), 403)
+    return user_id, None
+
+
+def _medical_client_pipeline_payload(formatted, *, job_id=None):
+    src = formatted if isinstance(formatted, dict) else {}
+    return {
+        'ok': True,
+        'jobId': str(job_id or '') or None,
+        'correctedTranscript': str(src.get('clean_transcript') or ''),
+        'sections': _medical_structured_sections(src),
+        'formatGuardrail': src.get('format_guardrail'),
+    }
+
+
+@app.route('/api/medical/client/v1/config', methods=['GET'])
+def api_medical_client_v1_config():
+    """Authenticated, secret-free capabilities for standalone medical clients."""
+    data = {'isMedical': True}
+    token_present = bool(_supabase_bearer_token_from_request())
+    user_id, error_response = _medical_client_require_access(data)
+    if error_response:
+        logging.warning(
+            "medical client config rejected origin=%s token_present=%s status=%s",
+            str(request.headers.get('Origin') or '')[:80],
+            token_present,
+            error_response[1] if isinstance(error_response, tuple) and len(error_response) > 1 else '?',
+        )
+        return error_response
+    from medical_saas import (
+        MEDICAL_MIC_EVENT_CAUSES,
+        MEDICAL_MIC_EVENT_CLIENT_SOURCES,
+        MEDICAL_MIC_EVENT_PHASES,
+    )
+
+    config_result = api_medical_transcription_config()
+    config_response = config_result[0] if isinstance(config_result, tuple) else config_result
+    stream_config = config_response.get_json(silent=True) or {}
+    return jsonify({
+        'apiVersion': 1,
+        'userId': user_id,
+        'stream': {
+            'transport': 'socketio',
+            'clientMode': 'extension',
+            'startEvent': 'medical_transcribe_start',
+            'audioEvent': 'medical_transcribe_audio',
+            'pauseEvent': 'medical_transcribe_pause',
+            'stopEvent': 'medical_transcribe_stop',
+            'resultEvent': 'medical_transcribe_event',
+            'sampleRateHz': stream_config.get('transcribe_stream_sample_rate_hz', 16000),
+            'enabled': bool(stream_config.get('use_aws_transcribe_stream')),
+        },
+        'fallback': {
+            'archivePath': '/api/medical/archive_recording',
+            'recoverPath': '/api/medical/transcribe_gaps',
+        },
+        'finalizePath': '/api/medical/client/v1/finalize',
+        'processPath': '/api/medical/client/v1/process',
+        'microphone': {
+            'eventPath': '/api/medical/mic-event',
+            'recoveryPathTemplate': '/api/medical/mic-event/{eventId}/recovered',
+            'causes': sorted(MEDICAL_MIC_EVENT_CAUSES),
+            'phases': sorted(MEDICAL_MIC_EVENT_PHASES),
+            'clientSources': sorted(MEDICAL_MIC_EVENT_CLIENT_SOURCES),
+        },
+    }), 200
+
+
+@app.route('/api/medical/client/v1/process', methods=['POST'])
+def api_medical_client_v1_process():
+    """Correct and summarize a transcript through the website's medical pipeline."""
+    data = request.get_json(silent=True) or {}
+    user_id, error_response = _medical_client_require_access(data)
+    if error_response:
+        return error_response
+    transcript = str(data.get('transcript') or data.get('text') or '').strip()
+    if not transcript:
+        return jsonify({'error': 'transcript_required'}), 400
+    prior = data.get('prior_formatted') or data.get('priorFormatted')
+    if prior is not None and not isinstance(prior, dict):
+        return jsonify({'error': 'invalid_prior_formatted'}), 400
+    started = time.time()
+    try:
+        formatted = process_medical_transcript(
+            transcript,
+            target_lang=data.get('targetLang') or data.get('target_lang') or 'he',
+            user_id=user_id,
+            prior_formatted=prior,
+            summary_only=bool(data.get('summaryOnly') or data.get('summary_only')),
+        )
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception:
+        logging.error(
+            'medical client processing failed job_id=%s error_type=pipeline_error',
+            str(data.get('jobId') or data.get('job_id') or '')[:64],
+        )
+        return jsonify({'error': 'medical_processing_failed'}), 502
+    payload = _medical_client_pipeline_payload(
+        formatted,
+        job_id=data.get('jobId') or data.get('job_id'),
+    )
+    payload['processingMs'] = int(round((time.time() - started) * 1000))
+    return jsonify(payload), 200
+
+
+@app.route('/api/medical/client/v1/finalize', methods=['POST'])
+def api_medical_client_v1_finalize():
+    """Finalize streamed audio, meter/persist it, then run the shared pipeline."""
+    data = request.get_json(silent=True) or {}
+    user_id, error_response = _medical_client_require_access(data)
+    if error_response:
+        return error_response
+    transcript = str(data.get('transcript') or '').strip()
+    if not transcript:
+        return jsonify({'error': 'transcript_required'}), 400
+
+    # Reuse the exact web completion implementation. Its usage RPC is
+    # idempotent on jobId, so a safe client retry cannot double-charge.
+    job_id = str(data.get('jobId') or data.get('job_id') or '').strip()
+    existing_result = job_results_cache.get(job_id) if job_id else None
+    existing_info = pending_job_info.get(job_id) if job_id else None
+    already_finalized = (
+        isinstance(existing_result, dict)
+        and existing_result.get('status') == 'completed'
+        and isinstance(existing_info, dict)
+        and str(existing_info.get('user_id') or '') == str(user_id)
+    )
+    if already_finalized:
+        completion_response = jsonify(existing_result)
+        completion_status = 200
+    else:
+        completion_result = api_medical_complete_stream_transcription()
+        if isinstance(completion_result, tuple):
+            completion_response, completion_status = completion_result[0], int(completion_result[1])
+        else:
+            completion_response, completion_status = completion_result, 200
+        if completion_status >= 400:
+            return completion_result
+
+    prior = data.get('prior_formatted') or data.get('priorFormatted')
+    if prior is not None and not isinstance(prior, dict):
+        return jsonify({'error': 'invalid_prior_formatted'}), 400
+    try:
+        formatted = process_medical_transcript(
+            transcript,
+            target_lang=data.get('targetLang') or data.get('target_lang') or 'he',
+            user_id=user_id,
+            prior_formatted=prior,
+        )
+    except Exception:
+        logging.error(
+            'medical client finalize formatting failed job_id=%s error_type=pipeline_error',
+            str(data.get('jobId') or data.get('job_id') or '')[:64],
+        )
+        return jsonify({
+            'error': 'medical_processing_failed',
+            'transcriptionFinalized': True,
+        }), 502
+    payload = _medical_client_pipeline_payload(
+        formatted,
+        job_id=data.get('jobId') or data.get('job_id'),
+    )
+    payload['transcriptionFinalized'] = True
+    payload['engine'] = (completion_response.get_json(silent=True) or {}).get('engine')
+    return jsonify(payload), 200
 
 
 @app.route('/api/medical_training/config', methods=['GET'])
@@ -17604,6 +17984,37 @@ def sign_s3():
             request_data=data,
         )
 
+        # New medical visits: create public.jobs immediately (service role) so Personal /
+        # admin never depend on the browser insert winning a warmup race. Continuations
+        # pass ensureJobsRow=false and keep the canonical visit row.
+        jobs_db_id = None
+        ensure_jobs = bool(
+            data.get('ensureJobsRow')
+            if 'ensureJobsRow' in data
+            else data.get('ensure_jobs_row', True)
+        )
+        if is_medical and ensure_jobs and user_id and user_id != 'anonymous':
+            try:
+                jobs_db_id = _jobs_ensure_medical_row(
+                    user_id,
+                    job_id,
+                    s3_key,
+                    status='uploaded',
+                    patient_name=data.get('patientName') or data.get('patient_name'),
+                    patient_id_number=data.get('patientIdNumber') or data.get('patient_id_number'),
+                    visit_date=data.get('visitDate') or data.get('visit_date'),
+                )
+                if jobs_db_id:
+                    logging.info(
+                        "sign_s3 medical jobs row ensured job_id=%s jobs.id=%s",
+                        job_id,
+                        jobs_db_id,
+                    )
+                else:
+                    logging.warning("sign_s3 medical jobs row missing after ensure job_id=%s", job_id)
+            except Exception:
+                logging.exception("sign_s3 medical jobs ensure failed job_id=%s", job_id)
+
         logging.info(
             "sign_s3 response ready job_id=%s user=%s is_medical=%s total_ms=%.0f",
             job_id,
@@ -17620,6 +18031,7 @@ def sign_s3():
                 'isMedical': is_medical,
                 'displayName': display_name,
                 'originalFilename': filename,
+                'jobsDbId': jobs_db_id,
                 'signedHeaders': (
                     {
                         'x-amz-server-side-encryption': 'aws:kms',
@@ -18327,6 +18739,29 @@ def api_medical_complete_stream_transcription():
         input_s3_key=s3_key,
         bucket=bucket,
     )
+
+    # Client createJobOnUpload can miss (warmup dismiss race). Always ensure a jobs row here.
+    try:
+        job_db_id = _jobs_ensure_medical_row(
+            user_id,
+            job_id,
+            s3_key,
+            status='processed',
+            duration_sec=duration_sec,
+            patient_name=data.get('patientName') or data.get('patient_name'),
+            patient_id_number=data.get('patientIdNumber') or data.get('patient_id_number'),
+            visit_date=data.get('visitDate') or data.get('visit_date'),
+        )
+        if job_db_id:
+            logging.info(
+                "medical stream jobs row ensured job_id=%s jobs.id=%s",
+                job_id,
+                job_db_id,
+            )
+        else:
+            logging.warning("medical stream jobs row missing after ensure job_id=%s", job_id)
+    except Exception:
+        logging.exception("medical stream jobs ensure failed job_id=%s", job_id)
 
     payload = {
         'jobId': job_id,

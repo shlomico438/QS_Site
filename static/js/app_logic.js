@@ -10967,7 +10967,11 @@ async function initOpenInAppImpl(jobIdStr) {
     }
     window.uploadWasVideo = isVideo;
     qsPersistUploadWasVideoFlag(!!isVideo);
-    const uniqueSpeakers = new Set(window.currentSegments.map(s => s.speaker).filter(Boolean));
+    const uniqueSpeakers = new Set(
+        (window.currentSegments || [])
+            .map((s) => (typeof _speakerFromObj === 'function' ? _speakerFromObj(s) : (s && s.speaker)))
+            .filter(Boolean)
+    );
     window.aiDiarizationRan = uniqueSpeakers.size > 1;
 
     const placeholderEl = document.getElementById('placeholder');
@@ -11854,21 +11858,59 @@ function qsIsMedicalPatientIdentityHeaderLine(line) {
     const raw = String(line || '').trim();
     if (!raw) return false;
     const probe = raw.replace(/\*{1,2}/g, '').trim();
+    // Require label boundary so "תאריך ניתוח:" is not treated as letterhead.
+    const labelOnly = (
+        /^(תאריך|שם|ת\.?\s*ז\.?|ת״ז|ת'ז)\s*(:.*)?\s*$/u.test(probe)
+        || /^(date|name|id|patient\s*id|national\s*id)\s*(:.*)?\s*$/i.test(probe)
+    );
+    if (!labelOnly) return false;
     return (
         /^(תאריך|שם|ת\.?\s*ז\.?|ת״ז|ת'ז)\s*:?\s*/u.test(probe)
         || /^(date|name|id|patient\s*id|national\s*id)\s*:?\s*/i.test(probe)
     );
 }
 
+/** Section title alone (optional colon) that may sit above a letterhead date line. */
+function qsIsMedicalIdentitySectionPrefixLine(line) {
+    const probe = String(line || '')
+        .replace(/\*{1,2}/g, '')
+        .trim()
+        .replace(/[\s:：\-–—]+$/u, '')
+        .trim()
+        .toLowerCase();
+    if (!probe) return false;
+    return [
+        'תלונה', 'תלונות', 'תלונה עיקרית', 'תלונה עיקרית / אנמנזה', 'תלונה עיקרית / hpi',
+        'תכנים מרכזיים', 'הנדון', 'ברקע', 'רקע', 'ממצאים', 'בדיקה', 'בבדיקה',
+        'המלצות', 'המלצות למטופל', 'chief complaint', 'hpi', 'cc / hpi',
+    ].includes(probe);
+}
+
 /**
  * Strip trained letterhead identity rows from model text.
  * UI/Word already own תאריך/שם/ת.ז. from patient metadata.
+ * Also drops ``תאריך: …`` when it sits under תלונה/הנדון (injury date belongs in the narrative).
  */
 function qsStripLeadingPatientIdentityHeader(text) {
     const body = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '');
     if (!body.trim()) return '';
     const lines = body.split('\n');
     let i = 0;
+    let prefixEnd = 0;
+    while (i < lines.length) {
+        const line = String(lines[i] || '').trim();
+        if (!line) {
+            i += 1;
+            prefixEnd = i;
+            continue;
+        }
+        if (qsIsMedicalIdentitySectionPrefixLine(line)) {
+            i += 1;
+            prefixEnd = i;
+            continue;
+        }
+        break;
+    }
     let sawIdentity = false;
     while (i < lines.length) {
         const line = String(lines[i] || '').trim();
@@ -11887,7 +11929,7 @@ function qsStripLeadingPatientIdentityHeader(text) {
         break;
     }
     if (!sawIdentity) return body.trim();
-    return lines.slice(i).join('\n').trim();
+    return lines.slice(0, prefixEnd).concat(lines.slice(i)).join('\n').trim();
 }
 
 /** Strip a bare patient-name / "שם: X" line that was mistakenly put inside הנדון. */
@@ -12220,15 +12262,45 @@ async function createJobOnUpload({ jobId, s3Key, displayName, patientName, patie
     };
     const { data, error } = await supabase.from('jobs').insert([row]).select('id').single();
     if (error) {
+        // Server may have already ensured the row (sign-s3 / complete_stream). Bind that id.
+        try {
+            const { data: existing } = await supabase
+                .from('jobs')
+                .select('id')
+                .eq('runpod_job_id', jobId)
+                .eq('user_id', user.id)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (existing && existing.id) {
+                localStorage.setItem('lastJobDbId', existing.id);
+                if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
+                    qsBindMedicalSessionJobDbId(existing.id);
+                }
+                return existing.id;
+            }
+        } catch (_) {}
         console.error('createJobOnUpload:', error);
-        return;
+        try {
+            if (typeof qsUploadTraceErr === 'function') {
+                qsUploadTraceErr('create_job_on_upload_failed', {
+                    jobId: jobId || null,
+                    code: error && error.code,
+                    message: String((error && (error.message || error.details || error.hint)) || error || '').slice(0, 240),
+                    isMedical: isMedicalJob,
+                });
+            }
+        } catch (_) {}
+        return null;
     }
     if (data && data.id) {
         localStorage.setItem('lastJobDbId', data.id);
         if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) {
             qsBindMedicalSessionJobDbId(data.id);
         }
+        return data.id;
     }
+    return null;
 }
 
 async function updateJobStatus(dbId, status, resultPayload = null) {
@@ -12539,7 +12611,16 @@ window.downloadMovieWithBurnedSubtitles = async function(baseName) {
 function extractSegmentsFromJobPayload(payload) {
     const output = (payload && (payload.result || payload.output)) || payload || {};
     const segments = (output && output.segments) || payload?.segments || (payload?.data && payload.data.segments) || [];
-    return Array.isArray(segments) ? segments : [];
+    if (!Array.isArray(segments)) return [];
+    // Normalize worker speaker aliases onto `.speaker` so UI/export always see one field.
+    return segments.map((seg) => {
+        if (!seg || typeof seg !== 'object') return seg;
+        const sp = (typeof _speakerFromObj === 'function')
+            ? _speakerFromObj(seg)
+            : String(seg.speaker || '').trim();
+        if (!sp || seg.speaker === sp) return seg;
+        return Object.assign({}, seg, { speaker: sp });
+    });
 }
 
 /** Legacy GPT verification prefix; strip on ingest so UI/export stay clean. */
@@ -18856,8 +18937,8 @@ window.qsDismissActiveJob = function () {
     window.isTriggering = false;
     window._triggerRetriedForJobId = null;
     qsStopFakeProgress('dismiss_active_job');
-    window._medicalWarmupSession = null;
-    window._medicalWarmupPromise = null;
+    // Keep `_medicalWarmupSession` / `_medicalWarmupPromise` — dismissing a prior
+    // regular job must not abort an in-flight medical warmup that creates the jobs row.
     if (typeof window.qsClearActiveJob === 'function') {
         window.qsClearActiveJob();
     } else {
@@ -18996,6 +19077,15 @@ function qsHasTranscriptResult() {
     return !!(
         (Array.isArray(window.currentSegments) && window.currentSegments.length > 0)
         || (Array.isArray(window.currentWords) && window.currentWords.length > 0)
+        || (
+            typeof isMedicalModeEnabled === 'function'
+            && isMedicalModeEnabled()
+            && (
+                window._medicalHasResult === true
+                || String(window._medicalLiveStreamText || '').trim()
+                || (typeof qsMedicalHasFormattedSummary === 'function' && qsMedicalHasFormattedSummary())
+            )
+        )
     );
 }
 
@@ -19477,7 +19567,10 @@ function qsInvokeHandleJobUpdate(data) {
 }
 
 function setTranscriptActionButtonsVisible(visible) {
-    visible = !!visible && !qsTranscriptActionsSuppressedDuringProcessing();
+    // Showing while upload/processing is briefly busy must not tear the toolbar down —
+    // that race was hiding medical Word export after Summary painted.
+    if (visible && qsTranscriptActionsSuppressedDuringProcessing()) return;
+    visible = !!visible;
     const downloadBtn = document.getElementById('btn-download');
     const editBtn = document.getElementById('btn-edit') || document.querySelector('.toolbar-group button[onclick="window.toggleEditMode()"]');
     const translateBtn = document.getElementById('btn-translate');
@@ -22496,9 +22589,20 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!continueVisit) {
             // New upload session = new visit. Unbind so typing the next patient cannot rename the previous job.
             try { qsClearMedicalSessionJobDbId(); } catch (_) {}
-            if (typeof window.qsDismissActiveJob === 'function') {
-                window.qsDismissActiveJob();
-            }
+            // Do NOT call qsDismissActiveJob() here — it nulls `_medicalWarmupPromise` /
+            // `_medicalWarmupSession` while this function IS the warmup that creates the jobs row.
+            // Only clear prior active-job pointers so polling does not stick to an old visit.
+            try {
+                if (window._checkStatusPollInterval) {
+                    clearInterval(window._checkStatusPollInterval);
+                    window._checkStatusPollInterval = null;
+                }
+                window.isTriggering = false;
+                window._triggerRetriedForJobId = null;
+                ['activeJobId', 'pendingJobId', 'pendingS3Key'].forEach((k) => {
+                    try { localStorage.removeItem(k); } catch (_) {}
+                });
+            } catch (_) {}
         }
         const { data: { user } } = await supabase.auth.getUser();
         const userId = user ? user.id : null;
@@ -22508,6 +22612,9 @@ document.addEventListener('DOMContentLoaded', () => {
         qsUploadTrace('medical_upload_session_start', { filename, mime, continueVisit: !!continueVisit });
         const signT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         let res;
+        const patientNameForSign = typeof qsReadMedicalPatientName === 'function' ? qsReadMedicalPatientName() : '';
+        const patientIdForSign = typeof qsReadMedicalPatientIdNumber === 'function' ? qsReadMedicalPatientIdNumber() : '';
+        const visitDateForSign = typeof qsReadMedicalVisitDate === 'function' ? qsReadMedicalVisitDate() : '';
         try {
             res = await fetch('/api/sign-s3', {
                 method: 'POST',
@@ -22517,7 +22624,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     filetype: mime,
                     isMedical: true,
                     userId,
-                    language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he')
+                    language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he'),
+                    // Continuations reuse the canonical visit row — do not insert a second jobs row.
+                    ensureJobsRow: !continueVisit,
+                    patientName: patientNameForSign || undefined,
+                    patientIdNumber: patientIdForSign || undefined,
+                    visitDate: visitDateForSign || undefined,
                 })
             });
         } catch (signFetchErr) {
@@ -22552,6 +22664,7 @@ document.addEventListener('DOMContentLoaded', () => {
             filetype: mime,
             signedHeaders: out.data.signedHeaders || {},
             continueVisit: !!continueVisit,
+            jobsDbId: out.data.jobsDbId || out.data.jobs_db_id || null,
             canonicalS3Key: continueMeta ? String(continueMeta.inputS3Key || '').trim() : '',
             canonicalJobDbId: continueMeta ? String(continueMeta.jobDbId || '').trim() : '',
         };
@@ -22614,25 +22727,52 @@ document.addEventListener('DOMContentLoaded', () => {
             // Bind GPT/persist hint to this visit immediately — sticky previous-visit keys
             // otherwise attach old transcript JSON to the new recording job.
             try { window._qsInputS3KeyForGpt = session.s3Key; } catch (_) {}
-            const patientName = typeof qsReadMedicalPatientName === 'function' ? qsReadMedicalPatientName() : '';
-            const patientIdNumber = typeof qsReadMedicalPatientIdNumber === 'function' ? qsReadMedicalPatientIdNumber() : '';
+            const patientName = patientNameForSign || (typeof qsReadMedicalPatientName === 'function' ? qsReadMedicalPatientName() : '');
+            const patientIdNumber = patientIdForSign || (typeof qsReadMedicalPatientIdNumber === 'function' ? qsReadMedicalPatientIdNumber() : '');
             if (patientName) window.originalFileName = patientName;
-            if (typeof createJobOnUpload === 'function') {
+            // Prefer server-created jobs.id from sign-s3 (service role). Client insert is fallback only.
+            let dbId = session.jobsDbId || null;
+            if (dbId) {
+                try {
+                    localStorage.setItem('lastJobDbId', dbId);
+                    qsBindMedicalSessionJobDbId(dbId);
+                } catch (_) {}
+            }
+            if (!dbId && typeof createJobOnUpload === 'function') {
                 const jobT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-                await createJobOnUpload({
+                let createdId = await createJobOnUpload({
                     jobId: session.jobId,
                     s3Key: session.s3Key,
                     displayName: patientName || undefined,
                     patientName: patientName || undefined,
                     patientIdNumber: patientIdNumber || undefined,
                 });
-                const dbId = localStorage.getItem('lastJobDbId') || null;
+                // One retry — transient auth/RLS blips should not leave medical visits off Personal.
+                if (!createdId) {
+                    try {
+                        createdId = await createJobOnUpload({
+                            jobId: session.jobId,
+                            s3Key: session.s3Key,
+                            displayName: patientName || undefined,
+                            patientName: patientName || undefined,
+                            patientIdNumber: patientIdNumber || undefined,
+                        });
+                    } catch (_) {}
+                }
+                dbId = createdId || localStorage.getItem('lastJobDbId') || null;
                 qsUploadTraceErr(dbId ? 'medical_create_job_done' : 'medical_create_job_missing_db_id', {
                     jobId: session.jobId,
                     elapsedMs: Math.round(
                         ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - jobT0
                     ),
                     dbId,
+                    via: 'client_insert',
+                });
+            } else if (dbId) {
+                qsUploadTraceErr('medical_create_job_done', {
+                    jobId: session.jobId,
+                    dbId,
+                    via: 'sign_s3_ensure',
                 });
             }
         }
@@ -23856,6 +23996,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     transcript,
                     duration_sec: Math.max(0, Number(durationMs || 0) / 1000),
                     isMedical: true,
+                    patientName: (typeof qsReadMedicalPatientName === 'function' ? qsReadMedicalPatientName() : '') || undefined,
+                    patientIdNumber: (typeof qsReadMedicalPatientIdNumber === 'function' ? qsReadMedicalPatientIdNumber() : '') || undefined,
+                    visitDate: (typeof qsReadMedicalVisitDate === 'function' ? qsReadMedicalVisitDate() : '') || undefined,
                 }),
             });
         } catch (completeFetchErr) {
@@ -23931,6 +24074,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof qsSetProcessingOverlayActive === 'function') qsSetProcessingOverlayActive(false);
             } catch (_) {}
             try { document.body.classList.remove('qs-app-busy'); } catch (_) {}
+            try {
+                if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+            } catch (_) {}
+            try {
+                if (typeof qsScheduleTranscriptToolbarEnsure === 'function') {
+                    qsScheduleTranscriptToolbarEnsure('medical_silent_upload_summary_onscreen', { force: true });
+                } else if (typeof setTranscriptActionButtonsVisible === 'function') {
+                    setTranscriptActionButtonsVisible(true);
+                }
+            } catch (_) {}
             console.info('[qs-processing-ui] animation stopped: phase_lines_panel', {
                 ts: new Date().toISOString(),
                 isTriggering: false,
@@ -24074,6 +24227,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     phaseIndexWhenStopped: 0,
                 });
             }
+            try {
+                if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+            } catch (_) {}
+            try {
+                if (typeof qsScheduleTranscriptToolbarEnsure === 'function') {
+                    qsScheduleTranscriptToolbarEnsure('medical_post_summary_upload', { force: true });
+                } else if (typeof setTranscriptActionButtonsVisible === 'function') {
+                    setTranscriptActionButtonsVisible(true);
+                }
+            } catch (_) {}
             if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
         }
     }
@@ -25770,10 +25933,21 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!needsSummary) {
                 window._qsMedicalStreamAwaitingSummary = null;
                 window._qsMedicalSummaryGenerating = false;
+                window._medicalHasResult = true;
                 updateMedicalTabUi();
                 if (typeof renderTranscriptFromCues === 'function') {
                     renderTranscriptFromCues(window.currentSegments || []);
                 }
+                try {
+                    if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+                } catch (_) {}
+                try {
+                    if (typeof qsScheduleTranscriptToolbarEnsure === 'function') {
+                        qsScheduleTranscriptToolbarEnsure('medical_summary_tab_already_ready', { force: true });
+                    } else if (typeof setTranscriptActionButtonsVisible === 'function') {
+                        setTranscriptActionButtonsVisible(true);
+                    }
+                } catch (_) {}
                 return;
             }
             window._qsMedicalSummaryInFlight = true;
@@ -25848,6 +26022,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (typeof renderTranscriptFromCues === 'function') {
                             renderTranscriptFromCues(window.currentSegments || []);
                         }
+                        try {
+                            if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+                        } catch (_) {}
+                        try {
+                            if (typeof qsScheduleTranscriptToolbarEnsure === 'function') {
+                                qsScheduleTranscriptToolbarEnsure('medical_summary_tab_ready', { force: true });
+                            } else if (typeof setTranscriptActionButtonsVisible === 'function') {
+                                setTranscriptActionButtonsVisible(true);
+                            }
+                        } catch (_) {}
                         // One layout pass only — delayed resyncs were yanking scroll to top during save/upload.
                         try {
                             if (typeof qsScheduleMobileTranscriptLayoutSync === 'function') {
@@ -26074,6 +26258,19 @@ document.addEventListener('DOMContentLoaded', () => {
             qsMedicalHardResetToEntry();
             return;
         }
+        // Do not wipe an in-flight upload/transcription — that stops the progress UI
+        // while S3/trigger may still be running and looks like a "stuck" upload.
+        if (window.isTriggering || window.__QS_UPLOAD_PIPELINE_BUSY) {
+            if (typeof showStatus === 'function') {
+                showStatus(
+                    (typeof window.t === 'function' ? window.t('upload_already_running') : null)
+                    || 'A transcription is already running.',
+                    true,
+                    { duration: 5000 }
+                );
+            }
+            return;
+        }
         resetScreenToInitial();
         if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
         if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
@@ -26298,7 +26495,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (mobileSessionBtn) {
         mobileSessionBtn.addEventListener('click', () => {
-            if (window.isTriggering) return;
+            if (window.isTriggering || window.__QS_UPLOAD_PIPELINE_BUSY) return;
             if (isMedicalModeEnabled()) {
                 void confirmAndStartMedicalNewSession();
                 return;
@@ -26631,6 +26828,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // If the user flips the "Show" switch, we just re-render
     if (speakerToggle) {
         speakerToggle.addEventListener('change', () => {
+            speakerToggle.dataset.qsUserToggled = '1';
             if (window.currentSegments.length > 0) {
                 document.getElementById('transcript-window').innerHTML = renderParagraphs(window.currentSegments);
             }
@@ -26639,8 +26837,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // If the user flips "Detect", we just update the visual state (Snapshot rule)
     if (diarizationToggle) {
-        diarizationToggle.addEventListener('change', syncSpeakerControls);
+        diarizationToggle.addEventListener('change', () => {
+            try {
+                if (typeof qsPersistDiarizationTogglePref === 'function') {
+                    qsPersistDiarizationTogglePref(!!diarizationToggle.checked);
+                }
+            } catch (_) {}
+            syncSpeakerControls();
+        });
     }
+    try {
+        if (typeof qsApplyDiarizationToggleDefault === 'function') qsApplyDiarizationToggleDefault();
+    } catch (_) {}
     // Set initial state
     syncSpeakerControls();
     setDiarizationBusyState(!!window.isTriggering);
@@ -27059,6 +27267,16 @@ document.addEventListener('DOMContentLoaded', () => {
             qsStopFakeProgress('medical_summary_onscreen_skip_job_update');
             if (mainBtn) mainBtn.disabled = false;
             setDiarizationBusyState(false);
+            try {
+                if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
+            } catch (_) {}
+            try {
+                if (typeof qsScheduleTranscriptToolbarEnsure === 'function') {
+                    qsScheduleTranscriptToolbarEnsure('medical_summary_onscreen_skip_job_update', { force: true });
+                } else if (typeof setTranscriptActionButtonsVisible === 'function') {
+                    setTranscriptActionButtonsVisible(true);
+                }
+            } catch (_) {}
             if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
             console.info('[qs-processing-ui] medical summary on screen; skipping job UI refresh', { jobId });
             return;
@@ -27419,18 +27637,26 @@ document.addEventListener('DOMContentLoaded', () => {
             })();
         }
 
-        // We create a Set of all speaker IDs found in the segments
-        const uniqueSpeakers = new Set(
-            (window.currentSegments || [])
-                .map((seg) => seg && seg.speaker)
-                .filter((sp) => sp != null && String(sp).trim() !== '')
-        );
+        // Speakers may live on cues and/or word tokens after the word-model rebuild.
+        const uniqueSpeakers = new Set();
+        (window.currentSegments || []).forEach((seg) => {
+            const sp = (typeof _speakerFromObj === 'function')
+                ? _speakerFromObj(seg)
+                : _normalizeSpeakerId(seg && seg.speaker);
+            if (sp) uniqueSpeakers.add(sp);
+        });
+        (window.currentWords || []).forEach((w) => {
+            const sp = (typeof _speakerFromObj === 'function')
+                ? _speakerFromObj(w)
+                : _normalizeSpeakerId(w && w.speaker);
+            if (sp) uniqueSpeakers.add(sp);
+        });
 
         // Only enable if there are 2 or more DIFFERENT speakers
         window.aiDiarizationRan = uniqueSpeakers.size > 1;
         // AUTO-ACTIVATE: If AI ran, we turn the 'Show Speakers' switch ON
         const speakerToggle = document.getElementById('toggle-speaker');
-        if (window.aiDiarizationRan && speakerToggle) {
+        if (window.aiDiarizationRan && speakerToggle && !speakerToggle.dataset.qsUserToggled) {
             speakerToggle.checked = true;
         }
 
@@ -27684,13 +27910,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         // RULE: Only enable the 'Show' switch if AI actually ran for this specific job
         if (window.aiDiarizationRan) {
             speakerToggle.disabled = false;
-            speakerToggle.parentElement.style.opacity = "1";
-            // We don't force it to 'checked' here so the user can still hide them if they want
+            if (speakerToggle.parentElement) speakerToggle.parentElement.style.opacity = "1";
+            // Auto-show labels when diarization data first arrives (user can still hide).
+            if (!speakerToggle.dataset.qsUserToggled) speakerToggle.checked = true;
         } else {
             speakerToggle.disabled = true;
             speakerToggle.checked = false; // Force OFF if no data exists
-            speakerToggle.parentElement.style.opacity = "0.5";
+            if (speakerToggle.parentElement) speakerToggle.parentElement.style.opacity = "0.5";
         }
+    }
 
     // 1. Fixed: Attached to window to solve "ReferenceError"
     window.render = function() {
@@ -27730,7 +27958,11 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         transcriptWindow.classList.toggle('qs-rtl', !!layout.isRtl);
         transcriptWindow.style.direction = layout.textDirection;
         transcriptWindow.style.textAlign = layout.textAlign;
-        if (window.isDocumentMode) {
+        const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
+        const showSpeakerLabels = !!(isSpeakerVisible && window.aiDiarizationRan);
+        // Flat clean_transcript has no speaker labels — when diarization is on, use
+        // speaker-grouped segments instead so "זיהוי דוברים" is visible in the output.
+        if (window.isDocumentMode && !showSpeakerLabels) {
             const docParagraphs = getDocFormatParagraphs();
             const banner = qsTranscriptCleanupBannerHtml();
             if (docParagraphs.length) {
@@ -27748,13 +27980,15 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
         const html = groupedData.map((g, rowIndex) => {
             // 2. Fixed: Get state of both toggles
-            const isSpeakerVisible = document.getElementById('toggle-speaker')?.checked;
             const isTimeVisible = isTimeToggleVisible();
 
-            const showLabel = isSpeakerVisible && window.aiDiarizationRan;
+            const showLabel = showSpeakerLabels;
 
             const startNum = Number(g.start);
             const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
+            const speakerLabel = (typeof formatSpeaker === 'function')
+                ? formatSpeaker(g.speaker)
+                : String(g.speaker || '').replace('SPEAKER_', 'דובר ');
             return `
             <div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom: 2px; cursor: pointer; direction: ${layout.textDirection}; text-align: ${layout.textAlign};"${rowClick}>
                 <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
@@ -27764,7 +27998,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     </span>
 
                     <span style="display: ${showLabel ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(g.speaker)};">
-                        ${g.speaker.replace('SPEAKER_', 'דובר ')}
+                        ${speakerLabel}
                     </span>
                 </div><p class="transcript-preview-line" data-idx="${rowIndex}" style="margin: 0 !important; margin-top: -2px; line-height: 1.2; unicode-bidi:plaintext; direction: ${layout.textDirection}; text-align: ${layout.textAlign};">${window.isDocumentMode ? g.text : wrapTextByMaxChars(g.text, 50)}</p>
             </div>`;
@@ -27773,7 +28007,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         transcriptWindow.innerHTML = html;
         transcriptWindow.contentEditable = 'false';
     };
-    }
     // --- 3. UI HELPERS ---
     function updateSpeakerToggleUI(hasSpeakerData) {
         const diarizationToggle = document.getElementById('diarization-toggle');
@@ -29434,8 +29667,10 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
             fileInput.value = ""; // Reset for next selection
 
-            // 1. Get the snapshot of the toggle state RIGHT NOW
-            const diarizationValue = document.getElementById('diarization-toggle')?.checked || false;
+            // 1. Get the snapshot of the toggle state RIGHT NOW (default ON for regular)
+            const diarizationValue = (typeof qsReadDiarizationToggle === 'function')
+                ? qsReadDiarizationToggle()
+                : !!(document.getElementById('diarization-toggle')?.checked);
 
             // Show progress bar for upload; processing phase uses % in button only
             showProgressBar();
@@ -30319,6 +30554,35 @@ function qsPopulateRegularAsrLangSelect(select) {
     if (select.value !== current) select.value = 'auto';
 }
 
+// v2: old qs_diarization_default='0' was left from when product default was OFF and
+// kept forcing the switch off for everyone who had visited once.
+const QS_DIARIZATION_PREF_KEY = 'qs_diarization_default_v2';
+
+/** Product default: זיהוי דוברים ON (unless user explicitly turned it off). */
+function qsApplyDiarizationToggleDefault() {
+    const el = document.getElementById('diarization-toggle');
+    if (!el) return;
+    let pref = null;
+    try { pref = localStorage.getItem(QS_DIARIZATION_PREF_KEY); } catch (_) {}
+    if (pref === '0') el.checked = false;
+    else el.checked = true; // default ON, including pref === '1' or missing
+    try { localStorage.removeItem('qs_diarization_default'); } catch (_) {}
+}
+
+function qsPersistDiarizationTogglePref(on) {
+    try {
+        localStorage.setItem(QS_DIARIZATION_PREF_KEY, on ? '1' : '0');
+        localStorage.removeItem('qs_diarization_default');
+    } catch (_) {}
+}
+
+/** Snapshot for upload/trigger — defaults to true when the control is missing. */
+function qsReadDiarizationToggle() {
+    const el = document.getElementById('diarization-toggle');
+    if (!el) return true;
+    return !!el.checked;
+}
+
 function qsSyncRegularAsrLangUi() {
     const wrap = document.getElementById('regular-asr-lang-wrap');
     const select = document.getElementById('regular-asr-lang-select');
@@ -30369,8 +30633,12 @@ function qsWireRegularAsrLangUi() {
 
 try {
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', qsWireRegularAsrLangUi);
+        document.addEventListener('DOMContentLoaded', () => {
+            try { qsApplyDiarizationToggleDefault(); } catch (_) {}
+            qsWireRegularAsrLangUi();
+        });
     } else {
+        try { qsApplyDiarizationToggleDefault(); } catch (_) {}
         qsWireRegularAsrLangUi();
     }
 } catch (_) {}
@@ -30379,6 +30647,9 @@ window.setUserAsrLang = setUserAsrLang;
 window.qsBuildAsrLanguageFields = qsBuildAsrLanguageFields;
 window.qsSyncRegularAsrLangUi = qsSyncRegularAsrLangUi;
 window.qsWireRegularAsrLangUi = qsWireRegularAsrLangUi;
+window.qsApplyDiarizationToggleDefault = qsApplyDiarizationToggleDefault;
+window.qsPersistDiarizationTogglePref = qsPersistDiarizationTogglePref;
+window.qsReadDiarizationToggle = qsReadDiarizationToggle;
 
 /** Enforce minimum duration per segment and no overlaps. Returns new array; does not mutate. */
 function normalizeSegmentDurations(segments, minDuration = 0.5) {
@@ -31986,6 +32257,68 @@ function _normalizeWordsCaptionsModel(words, captions) {
     }
 }
 
+function _normalizeSpeakerId(raw) {
+    const sp = String(raw || '').trim();
+    if (!sp || sp === 'monologue' || sp === 'none' || sp === 'Unknown') return '';
+    return sp;
+}
+
+/** Read speaker id from WhisperX / worker variants (speaker, spk, speaker_id, …). */
+function _speakerFromObj(obj) {
+    if (!obj || typeof obj !== 'object') return '';
+    return _normalizeSpeakerId(
+        obj.speaker != null ? obj.speaker
+            : (obj.spk != null ? obj.spk
+                : (obj.speaker_id != null ? obj.speaker_id
+                    : (obj.speakerId != null ? obj.speakerId
+                        : (obj.Speaker != null ? obj.Speaker : ''))))
+    );
+}
+
+/** When flat word_segments lack speaker, copy from overlapping segment speaker labels. */
+function _assignSpeakersFromSegmentsToWords(words, segments) {
+    if (!Array.isArray(words) || !words.length || !Array.isArray(segments) || !segments.length) return;
+    const labeled = segments
+        .map((seg) => {
+            const sp = _speakerFromObj(seg);
+            const start = _asTranscriptTime(seg && seg.start);
+            const end = _asTranscriptTime(seg && seg.end);
+            if (!sp || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+            return { sp, start, end };
+        })
+        .filter(Boolean);
+    if (!labeled.length) return;
+    for (const w of words) {
+        if (!w || _normalizeSpeakerId(w.speaker)) continue;
+        const mid = (Number(w.start) + Number(w.end)) / 2;
+        if (!Number.isFinite(mid)) continue;
+        for (const seg of labeled) {
+            if (mid >= seg.start && mid <= seg.end) {
+                w.speaker = seg.sp;
+                break;
+            }
+        }
+    }
+}
+
+/** Majority speaker across words[lo..hi] (WhisperX diarization). */
+function _majoritySpeakerInWordRange(words, lo, hi) {
+    if (!Array.isArray(words) || !Number.isFinite(lo) || !Number.isFinite(hi) || hi < lo) return '';
+    const counts = Object.create(null);
+    let best = '';
+    let bestN = 0;
+    for (let i = lo; i <= hi; i++) {
+        const sp = _normalizeSpeakerId(words[i] && words[i].speaker);
+        if (!sp) continue;
+        counts[sp] = (counts[sp] || 0) + 1;
+        if (counts[sp] > bestN) {
+            bestN = counts[sp];
+            best = sp;
+        }
+    }
+    return best;
+}
+
 function _buildWordModelFromSegments(segments) {
     // Build flat words[] + captions[] ONLY from real word timestamps (no estimating).
     const words = [];
@@ -31993,6 +32326,7 @@ function _buildWordModelFromSegments(segments) {
     let wi = 0;
     for (let si = 0; si < segments.length; si++) {
         const seg = segments[si] || {};
+        const segSpeaker = _speakerFromObj(seg);
         const ws = seg.words;
         if (!Array.isArray(ws) || ws.length === 0) continue;
         const startIndex = wi;
@@ -32002,7 +32336,10 @@ function _buildWordModelFromSegments(segments) {
             const start = _asTranscriptTime(w.start);
             const end = _asTranscriptTime(w.end);
             if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-            words.push({ id: `w${wi}`, text, start, end, highlighted: false });
+            const wordSpeaker = _speakerFromObj(w) || segSpeaker;
+            const entry = { id: `w${wi}`, text, start, end, highlighted: false };
+            if (wordSpeaker) entry.speaker = wordSpeaker;
+            words.push(entry);
             wi++;
         }
         const endIndex = wi - 1;
@@ -32026,20 +32363,27 @@ function _buildWordModelFromFlatWordSegments(flatWords, gapSec) {
         const start = _asTranscriptTime(w.start);
         const end = _asTranscriptTime(w.end);
         if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-        words.push({
+        const speaker = _speakerFromObj(w);
+        const entry = {
             id: `w${i}`,
             text: String(text != null ? text : '').trim(),
             start,
             end,
             highlighted: false
-        });
+        };
+        if (speaker) entry.speaker = speaker;
+        words.push(entry);
     }
     const captions = [];
     let startIdx = 0;
     for (let i = 0; i < words.length; i++) {
         const next = words[i + 1];
         const silence = next ? (next.start - words[i].end) : gapOk + 1;
-        if (silence > gapOk || !next) {
+        const speakerChanged = next
+            && _normalizeSpeakerId(words[i].speaker)
+            && _normalizeSpeakerId(next.speaker)
+            && _normalizeSpeakerId(words[i].speaker) !== _normalizeSpeakerId(next.speaker);
+        if (silence > gapOk || speakerChanged || !next) {
             captions.push({ id: `c${captions.length}`, wordStartIndex: startIdx, wordEndIndex: i });
             startIdx = i + 1;
         }
@@ -32058,7 +32402,11 @@ function _tryBuildWordModelFromSegmentsAndFlat(segments, flatWordSegments) {
         if (m) return m;
     }
     if (Array.isArray(flatWordSegments) && flatWordSegments.length) {
-        return _buildWordModelFromFlatWordSegments(flatWordSegments);
+        const m = _buildWordModelFromFlatWordSegments(flatWordSegments);
+        if (m && m.words) {
+            try { _assignSpeakersFromSegmentsToWords(m.words, segs); } catch (_) {}
+        }
+        return m;
     }
     return null;
 }
@@ -32108,12 +32456,15 @@ function _captionsToCues(words, captions) {
         const ws = words[c.wordStartIndex];
         const we = words[c.wordEndIndex];
         if (!ws || !we) continue;
-        cues.push({
+        const speaker = _majoritySpeakerInWordRange(words, c.wordStartIndex, c.wordEndIndex);
+        const cue = {
             start: ws.start,
             end: we.end,
             text: getCaptionText(c, words),
             semanticCandidates: c.semanticCandidates,
-        });
+        };
+        if (speaker) cue.speaker = speaker;
+        cues.push(cue);
     }
     return cues;
 }
@@ -33214,6 +33565,15 @@ function renderWordCaptionEditor() {
         const tsLine = timingMode
             ? _qsCaptionTimeRangeHtml(start, endT)
             : formatTime(start);
+        const showSpeakerLabels = !!(
+            document.getElementById('toggle-speaker')?.checked && window.aiDiarizationRan
+        );
+        const capSpeaker = _majoritySpeakerInWordRange(words, cap.wordStartIndex, cap.wordEndIndex);
+        const speakerMeta = (showSpeakerLabels && capSpeaker)
+            ? `<span class="caption-speaker" style="display:block; font-weight:600; color:${getSpeakerColor(capSpeaker)};">${
+                (typeof formatSpeaker === 'function') ? formatSpeaker(capSpeaker) : capSpeaker.replace('SPEAKER_', 'דובר ')
+            }</span>`
+            : '';
         const bodyBlock = (timingMode && ci === timingSel)
             ? `
               <div class="caption-row-body qs-sync-caption-body" style="display:flex; align-items:center; margin-top:0; width:100%; min-width:0;">
@@ -33229,7 +33589,7 @@ function renderWordCaptionEditor() {
                   ${(!timingMode && isEditing) ? '' : toolbarHtml}
                 </div>
               </div>`;
-        const tsBlock = `<div class="caption-ts segment-timestamps">${tsLine}</div>`;
+        const tsBlock = `<div class="caption-ts segment-timestamps">${tsLine}${speakerMeta}</div>`;
         const captionMainHeader = (!timingMode && isEditing)
             ? `<div class="caption-row-ts-toolbar-row" dir="ltr">${toolbarHtml}${tsBlock}</div>`
             : tsBlock;
