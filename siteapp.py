@@ -2477,6 +2477,25 @@ def _runpod_input_language_fields(language, transcription_options=None, data=Non
     return fields
 
 
+def _client_num_speakers(data=None, default=2, lo=1, hi=10):
+    """Exact diarization count from the upload screen. Default 2, clamped to 1–10."""
+    data = data or {}
+    raw = None
+    for key in ("num_speakers", "numSpeakers", "speakerCount"):
+        if key in data and data.get(key) is not None and str(data.get(key)).strip() != "":
+            raw = data.get(key)
+            break
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        count = default
+    if count < lo:
+        return lo
+    if count > hi:
+        return hi
+    return count
+
+
 def _site_transcription_options_from_payload(data=None):
     """Optional transcript tuning from Site (request + Site env).
 
@@ -2510,6 +2529,8 @@ def _site_transcription_options_from_payload(data=None):
         "save_pre_align_json": True,
         "align_model_name": _pick("align_model_name", "TRANSCRIBE_ALIGN_MODEL_NAME", str, ""),
     }
+    if not _request_json_is_medical(data):
+        out["num_speakers"] = _client_num_speakers(data)
     hint = _client_language_hint(data)
     if hint:
         out["language_hint"] = hint

@@ -363,6 +363,29 @@
         </div>
 
         <div class="upload-zone">
+            <div id="regular-start-modal" class="translation-modal-backdrop" style="display:none;" aria-hidden="true">
+            <div class="translation-modal qs-start-modal" role="dialog" aria-modal="true" aria-labelledby="regular-start-modal-title">
+                <h3 id="regular-start-modal-title" data-i18n="regular_start_title">הגדרות נוספות</h3>
+                <label class="qs-start-speaker-row" for="diarization-toggle">
+                    <input type="checkbox" id="diarization-toggle">
+                    <span data-i18n="regular_enable_speakers">זיהוי דוברים</span>
+                </label>
+                <div class="regular-asr-lang-field" id="regular-speaker-count-wrap" hidden>
+                    <label class="regular-asr-lang-label" for="regular-speaker-count-select" data-i18n="regular_speaker_count_label">מספר דוברים</label>
+                    <select id="regular-speaker-count-select" class="regular-asr-lang-select regular-speaker-count-select" data-i18n-aria-label="regular_speaker_count_aria" aria-label="מספר דוברים"></select>
+                </div>
+                <div class="regular-asr-lang-wrap" id="regular-asr-lang-wrap">
+                    <div class="regular-asr-lang-field">
+                        <label class="regular-asr-lang-label" for="regular-asr-lang-select" data-i18n="regular_asr_lang_label">שפת תמלול</label>
+                        <select id="regular-asr-lang-select" class="regular-asr-lang-select" data-i18n-aria-label="regular_asr_lang_aria" aria-label="שפת תמלול"></select>
+                    </div>
+                </div>
+                <div class="translation-modal-actions">
+                    <button type="button" id="regular-start-cancel" class="translation-modal-btn secondary" data-i18n="cancel">ביטול</button>
+                    <button type="button" id="regular-start-confirm" class="translation-modal-btn primary" data-i18n="regular_start_continue">המשך</button>
+                </div>
+            </div>
+        </div>
             <div class="upload-controls-row">
                 <div class="regular-record-wrap" id="regular-record-wrap" hidden>
                     <label class="regular-record-label" id="regular-record-label" for="regular-record-btn" data-i18n="regular_record_audio">הקלטת שמע</label>
@@ -379,12 +402,6 @@
                 <input type="file" id="fileInput" class="qs-visually-hidden-file" accept="video/*,audio/*,.m4a,.mp3,.wav,.aac,.ogg,.flac,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav,.json,application/json" aria-hidden="true" tabindex="-1">
                 <div class="upload-main-cluster">
                     <button class="btn btn-primary" id="main-btn" type="button" data-i18n="upload_and_process"{% if medical_entry %} style="display:none;"{% endif %}>התחל כאן</button>
-                    <div class="regular-asr-lang-wrap" id="regular-asr-lang-wrap"{% if medical_entry %} hidden{% endif %}>
-                        <div class="regular-asr-lang-field">
-                            <label class="regular-asr-lang-label" for="regular-asr-lang-select" data-i18n="regular_asr_lang_label">שפת תמלול</label>
-                            <select id="regular-asr-lang-select" class="regular-asr-lang-select" data-i18n-aria-label="regular_asr_lang_aria" aria-label="שפת תמלול"></select>
-                        </div>
-                    </div>
                 </div>
             </div>
             {% if medical_entry | default(false) %}

@@ -10339,6 +10339,7 @@ async function initPersonalPage() {
                             jobId: transcribeJobId,
                             task: 'transcribe',
                             isMedical: isMedicalModeEnabled(),
+                            ...(typeof qsSpeakerCountPayload === 'function' ? qsSpeakerCountPayload() : { numSpeakers: 2 }),
                             ...(typeof qsBuildAsrLanguageFields === 'function'
                                 ? qsBuildAsrLanguageFields()
                                 : { language: 'auto' }),
@@ -26271,14 +26272,72 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return;
         }
+        if (!fileInput) return;
+        if (typeof qsOpenRegularStartModal === 'function' && qsOpenRegularStartModal()) return;
+        try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
+        fileInput.click();
+    }
+
+    function qsBeginRegularFilePick() {
         resetScreenToInitial();
         if (typeof window.applyMedicalModeUi === 'function') window.applyMedicalModeUi();
         if (typeof syncMedicalPrimaryActionBtn === 'function') syncMedicalPrimaryActionBtn();
-        if (fileInput) {
-            try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
-            fileInput.click();
+        if (!fileInput) return;
+        try { window.__QS_FILE_PICKER_PURPOSE = 'new_upload'; } catch (_) {}
+        fileInput.click();
+    }
+
+    function qsWireRegularStartModal() {
+        const modal = document.getElementById('regular-start-modal');
+        const confirmBtn = document.getElementById('regular-start-confirm');
+        const cancelBtn = document.getElementById('regular-start-cancel');
+        const speakerBox = document.getElementById('diarization-toggle');
+        if (!modal || modal.dataset.qsWired === '1') return;
+        modal.dataset.qsWired = '1';
+        const close = () => {
+            modal.style.display = 'none';
+            modal.setAttribute('aria-hidden', 'true');
+        };
+        window.qsOpenRegularStartModal = () => {
+            if (typeof qsApplyDiarizationToggleDefault === 'function') qsApplyDiarizationToggleDefault();
+            if (typeof qsSyncRegularAsrLangUi === 'function') qsSyncRegularAsrLangUi();
+            if (typeof qsSyncSpeakerCountUi === 'function') qsSyncSpeakerCountUi();
+            if (typeof qsSyncStartSpeakerCountVisibility === 'function') qsSyncStartSpeakerCountVisibility();
+            const dialog = modal.querySelector('.qs-start-modal');
+            if (dialog) dialog.dir = document.documentElement.dir || 'rtl';
+            modal.style.display = 'flex';
+            modal.setAttribute('aria-hidden', 'false');
+            return true;
+        };
+        if (speakerBox) {
+            speakerBox.addEventListener('change', () => {
+                if (typeof qsSyncStartSpeakerCountVisibility === 'function') qsSyncStartSpeakerCountVisibility();
+            });
+        }
+        if (cancelBtn) cancelBtn.addEventListener('click', close);
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) close();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && modal.getAttribute('aria-hidden') === 'false') close();
+        });
+        if (confirmBtn) {
+            confirmBtn.addEventListener('click', () => {
+                const lang = document.getElementById('regular-asr-lang-select');
+                if (lang && typeof setUserAsrLang === 'function') setUserAsrLang(lang.value);
+                if (speakerBox && typeof qsPersistDiarizationTogglePref === 'function') {
+                    qsPersistDiarizationTogglePref(!!speakerBox.checked);
+                }
+                const count = document.getElementById('regular-speaker-count-select');
+                if (count && speakerBox && speakerBox.checked && typeof setUserSpeakerCount === 'function') {
+                    setUserSpeakerCount(count.value);
+                }
+                close();
+                qsBeginRegularFilePick();
+            });
         }
     }
+    qsWireRegularStartModal();
 
     window.qsMedicalStartNewSession = openFilePickerAfterDisclaimer;
 
@@ -26616,6 +26675,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             jobId: transcribeJobId,
                             task: 'transcribe',
                             isMedical: isMedicalModeEnabled(),
+                            ...(typeof qsSpeakerCountPayload === 'function' ? qsSpeakerCountPayload() : { numSpeakers: 2 }),
                             ...(typeof qsBuildAsrLanguageFields === 'function'
                                 ? qsBuildAsrLanguageFields()
                                 : { language: 'auto' }),
@@ -29648,7 +29708,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
             fileInput.value = ""; // Reset for next selection
 
-            // 1. Get the snapshot of the toggle state RIGHT NOW (default ON for regular)
+            // 1. Snapshot the start-window speaker checkbox (unchecked unless the user turned it on)
             const diarizationValue = (typeof qsReadDiarizationToggle === 'function')
                 ? qsReadDiarizationToggle()
                 : !!(document.getElementById('diarization-toggle')?.checked);
@@ -29673,6 +29733,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                     filetype: qsGuessUploadMimeType(currentFile, currentFile.type),
                     diarization: diarizationValue,
                     isMedical: isMedicalModeEnabled(),
+                    ...qsSpeakerCountPayload(),
                     userId: userId,
                     ...(isMedicalModeEnabled()
                         ? { language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') }
@@ -29900,6 +29961,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         jobId: jobId,
                         diarization: diarizationValue,
                         isMedical: isMedicalModeEnabled(),
+                        ...qsSpeakerCountPayload(),
                         ...(isMedicalModeEnabled()
                             ? { language: (typeof getUserTargetLang === 'function' ? getUserTargetLang() : 'he') }
                             : (typeof qsBuildAsrLanguageFields === 'function'
@@ -30468,6 +30530,84 @@ function setUserAsrLang(mode) {
 }
 
 /** Fields for multipart-init / trigger_processing (regular mode). */
+const QS_SPEAKER_COUNT_KEY = 'qs_speaker_count';
+const QS_SPEAKER_COUNT_MIN = 1;
+const QS_SPEAKER_COUNT_MAX = 10;
+const QS_SPEAKER_COUNT_DEFAULT = 2;
+
+function qsClampSpeakerCount(raw) {
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return QS_SPEAKER_COUNT_DEFAULT;
+    return Math.min(QS_SPEAKER_COUNT_MAX, Math.max(QS_SPEAKER_COUNT_MIN, n));
+}
+
+function getUserSpeakerCount() {
+    try {
+        const stored = localStorage.getItem(QS_SPEAKER_COUNT_KEY);
+        if (stored == null || String(stored).trim() === '') return QS_SPEAKER_COUNT_DEFAULT;
+        return qsClampSpeakerCount(stored);
+    } catch (_) {
+        return QS_SPEAKER_COUNT_DEFAULT;
+    }
+}
+
+function setUserSpeakerCount(raw) {
+    const count = qsClampSpeakerCount(raw);
+    try { localStorage.setItem(QS_SPEAKER_COUNT_KEY, String(count)); } catch (_) {}
+    return count;
+}
+
+function qsSpeakerCountPayload() {
+    if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return {};
+    if (typeof qsReadDiarizationToggle === 'function' && !qsReadDiarizationToggle()) return {};
+    return { numSpeakers: getUserSpeakerCount() };
+}
+
+function qsSyncStartSpeakerCountVisibility() {
+    const box = document.getElementById('diarization-toggle');
+    const wrap = document.getElementById('regular-speaker-count-wrap');
+    if (!wrap) return;
+    const show = !!(box && box.checked);
+    wrap.hidden = !show;
+    wrap.style.display = show ? '' : 'none';
+}
+
+function qsPopulateSpeakerCountSelect(select) {
+    if (!select) return;
+    const current = getUserSpeakerCount();
+    if (select.options.length !== (QS_SPEAKER_COUNT_MAX - QS_SPEAKER_COUNT_MIN + 1)) {
+        select.innerHTML = '';
+        for (let n = QS_SPEAKER_COUNT_MIN; n <= QS_SPEAKER_COUNT_MAX; n++) {
+            const opt = document.createElement('option');
+            opt.value = String(n);
+            opt.textContent = String(n);
+            select.appendChild(opt);
+        }
+    }
+    select.value = String(current);
+    if (select.value !== String(current)) select.value = String(QS_SPEAKER_COUNT_DEFAULT);
+}
+
+function qsSyncSpeakerCountUi() {
+    const select = document.getElementById('regular-speaker-count-select');
+    if (!select) return;
+    qsPopulateSpeakerCountSelect(select);
+    const aria = qsRegularAsrLangI18n('regular_speaker_count_aria', 'Number of speakers');
+    select.setAttribute('aria-label', aria);
+}
+
+function qsWireSpeakerCountUi() {
+    const select = document.getElementById('regular-speaker-count-select');
+    if (select && select.dataset.qsWired !== '1') {
+        select.dataset.qsWired = '1';
+        select.addEventListener('change', () => {
+            setUserSpeakerCount(select.value);
+            qsSyncSpeakerCountUi();
+        });
+    }
+    qsSyncSpeakerCountUi();
+}
+
 function qsBuildAsrLanguageFields() {
     const language = getUserAsrLang();
     const out = { language };
@@ -30535,19 +30675,21 @@ function qsPopulateRegularAsrLangSelect(select) {
     if (select.value !== current) select.value = 'auto';
 }
 
-// v2: old qs_diarization_default='0' was left from when product default was OFF and
-// kept forcing the switch off for everyone who had visited once.
-const QS_DIARIZATION_PREF_KEY = 'qs_diarization_default_v2';
+// v3: product default is OFF. v2 stored '1' because the window used to open checked.
+const QS_DIARIZATION_PREF_KEY = 'qs_diarization_default_v3';
 
-/** Product default: זיהוי דוברים ON (unless user explicitly turned it off). */
+/** זיהוי דוברים starts unchecked unless the user turned it on and continued. */
 function qsApplyDiarizationToggleDefault() {
     const el = document.getElementById('diarization-toggle');
     if (!el) return;
     let pref = null;
     try { pref = localStorage.getItem(QS_DIARIZATION_PREF_KEY); } catch (_) {}
-    if (pref === '0') el.checked = false;
-    else el.checked = true; // default ON, including pref === '1' or missing
-    try { localStorage.removeItem('qs_diarization_default'); } catch (_) {}
+    el.checked = pref === '1';
+    try {
+        localStorage.removeItem('qs_diarization_default');
+        localStorage.removeItem('qs_diarization_default_v2');
+    } catch (_) {}
+    if (typeof qsSyncStartSpeakerCountVisibility === 'function') qsSyncStartSpeakerCountVisibility();
 }
 
 function qsPersistDiarizationTogglePref(on) {
@@ -30557,9 +30699,11 @@ function qsPersistDiarizationTogglePref(on) {
     } catch (_) {}
 }
 
-/** Speaker identification is always on. The transcript bar only shows or hides labels. */
+/** True when the start window's speaker checkbox is on. */
 function qsReadDiarizationToggle() {
-    return true;
+    const el = document.getElementById('diarization-toggle');
+    if (!el) return false;
+    return !!el.checked;
 }
 
 function qsSyncRegularAsrLangUi() {
@@ -30576,7 +30720,8 @@ function qsSyncRegularAsrLangUi() {
             )
         )
     );
-    if (wrap) wrap.hidden = !!(medicalOn || sessionDone);
+    if (wrap && wrap.closest('#regular-start-modal')) wrap.hidden = false;
+    else if (wrap) wrap.hidden = !!(medicalOn || sessionDone);
     if (!select) return;
     if (!select.options.length) qsPopulateRegularAsrLangSelect(select);
     const mode = getUserAsrLang();
@@ -30615,10 +30760,12 @@ try {
         document.addEventListener('DOMContentLoaded', () => {
             try { qsApplyDiarizationToggleDefault(); } catch (_) {}
             qsWireRegularAsrLangUi();
+            qsWireSpeakerCountUi();
         });
     } else {
         try { qsApplyDiarizationToggleDefault(); } catch (_) {}
         qsWireRegularAsrLangUi();
+        qsWireSpeakerCountUi();
     }
 } catch (_) {}
 window.getUserAsrLang = getUserAsrLang;
@@ -30629,6 +30776,9 @@ window.qsWireRegularAsrLangUi = qsWireRegularAsrLangUi;
 window.qsApplyDiarizationToggleDefault = qsApplyDiarizationToggleDefault;
 window.qsPersistDiarizationTogglePref = qsPersistDiarizationTogglePref;
 window.qsReadDiarizationToggle = qsReadDiarizationToggle;
+window.getUserSpeakerCount = getUserSpeakerCount;
+window.qsSpeakerCountPayload = qsSpeakerCountPayload;
+window.qsWireSpeakerCountUi = qsWireSpeakerCountUi;
 
 /** Enforce minimum duration per segment and no overlaps. Returns new array; does not mutate. */
 function normalizeSegmentDurations(segments, minDuration = 0.5) {
