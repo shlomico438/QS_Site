@@ -7980,11 +7980,166 @@ const getSpeakerColor = (id) => {
     return colors[num % colors.length];
 };
 
+function qsSpeakerAppearanceNumber(raw) {
+    const id = String(raw || '').trim();
+    if (!id || id === 'none' || id === 'monologue' || id === 'Unknown') return null;
+    const timed = [];
+    const pushAll = (list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach((item) => {
+            const sp = String((item && item.speaker) || '').trim();
+            if (!sp || sp === 'none' || sp === 'monologue' || sp === 'Unknown') return;
+            const t = Number(item && item.start);
+            timed.push({ sp, t: Number.isFinite(t) ? t : 0 });
+        });
+    };
+    pushAll(typeof window !== 'undefined' ? window.currentSegments : null);
+    pushAll(typeof window !== 'undefined' ? window.currentWords : null);
+    timed.sort((a, b) => a.t - b.t);
+    const order = [];
+    timed.forEach((item) => {
+        if (!order.includes(item.sp)) order.push(item.sp);
+    });
+    const idx = order.indexOf(id);
+    return idx >= 0 ? idx + 1 : null;
+}
+
+const QS_SPEAKER_NAMES_PREFIX = 'qs_speaker_names:';
+let qsSpeakerNames = {};
+let qsSpeakerNamesJobKey = '';
+
+function qsCurrentSpeakerNamesJobKey() {
+    try {
+        return String(
+            localStorage.getItem('lastJobId')
+            || localStorage.getItem('activeJobId')
+            || localStorage.getItem('lastJobDbId')
+            || ''
+        ).trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+function qsEnsureSpeakerNamesLoaded() {
+    const key = qsCurrentSpeakerNamesJobKey();
+    if (qsSpeakerNamesJobKey === '__new__') return;
+    if (key === qsSpeakerNamesJobKey) return;
+    qsSpeakerNamesJobKey = key;
+    qsSpeakerNames = {};
+    if (!key) return;
+    try {
+        const parsed = JSON.parse(localStorage.getItem(QS_SPEAKER_NAMES_PREFIX + key) || 'null');
+        if (parsed && typeof parsed === 'object') qsSpeakerNames = parsed;
+    } catch (_) {}
+}
+
+function qsResetSpeakerNamesForNewJob() {
+    qsSpeakerNames = {};
+    qsSpeakerNamesJobKey = '__new__';
+}
+
+function qsBindSpeakerNamesToCurrentJob() {
+    const key = qsCurrentSpeakerNamesJobKey();
+    qsSpeakerNamesJobKey = key || '__new__';
+    if (!key) return;
+    try { localStorage.setItem(QS_SPEAKER_NAMES_PREFIX + key, JSON.stringify(qsSpeakerNames)); } catch (_) {}
+}
+
+function qsSetSpeakerName(rawId, name) {
+    qsEnsureSpeakerNamesLoaded();
+    const id = String(rawId || '').trim();
+    if (!id) return;
+    const clean = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!clean) delete qsSpeakerNames[id];
+    else qsSpeakerNames[id] = clean;
+    const key = qsSpeakerNamesJobKey === '__new__' ? '' : qsCurrentSpeakerNamesJobKey();
+    if (key) {
+        qsSpeakerNamesJobKey = key;
+        try { localStorage.setItem(QS_SPEAKER_NAMES_PREFIX + key, JSON.stringify(qsSpeakerNames)); } catch (_) {}
+    }
+}
+
+function qsEscapeSpeakerText(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function qsSpeakerRenameHint() {
+    try {
+        if (typeof window.t === 'function') {
+            const v = window.t('speaker_rename_hint');
+            if (v && v !== 'speaker_rename_hint') return v;
+        }
+    } catch (_) {}
+    return 'לחץ כדי לשנות את השם';
+}
+
 const formatSpeaker = (raw) => {
     if (!raw) return "דובר לא ידוע";
-    const match = raw.match(/SPEAKER_(\d+)/);
-    return match ? `דובר ${parseInt(match[1]) + 1}` : raw;
+    const id = String(raw).trim();
+    qsEnsureSpeakerNamesLoaded();
+    const custom = qsSpeakerNames[id];
+    if (custom) return custom;
+    const byAppearance = qsSpeakerAppearanceNumber(raw);
+    if (byAppearance) return `דובר ${byAppearance}`;
+    const match = id.match(/SPEAKER_(\d+)/i);
+    return match ? `דובר ${parseInt(match[1], 10) + 1}` : id;
 };
+
+function qsSpeakerLabelHtml(rawId) {
+    const id = String(rawId || '').trim();
+    return `<button type="button" class="qs-speaker-name" data-qs-speaker="${qsEscapeSpeakerText(id)}" title="${qsEscapeSpeakerText(qsSpeakerRenameHint())}">${qsEscapeSpeakerText(formatSpeaker(id))}</button>`;
+}
+
+function qsBeginSpeakerRename(button) {
+    if (!button || button.dataset.qsEditing === '1') return;
+    const id = button.getAttribute('data-qs-speaker') || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'qs-speaker-name-input';
+    input.value = formatSpeaker(id);
+    input.maxLength = 40;
+    input.setAttribute('aria-label', qsSpeakerRenameHint());
+    button.dataset.qsEditing = '1';
+    button.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = (save) => {
+        if (done) return;
+        done = true;
+        if (save) qsSetSpeakerName(id, input.value);
+        if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
+        else if (typeof window.render === 'function') window.render();
+    };
+    input.addEventListener('keydown', (event) => {
+        event.stopPropagation();
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            finish(true);
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            finish(false);
+        }
+    });
+    input.addEventListener('mousedown', (event) => event.stopPropagation());
+    input.addEventListener('click', (event) => event.stopPropagation());
+    input.addEventListener('blur', () => finish(true));
+}
+
+document.addEventListener('click', (event) => {
+    const button = event.target && event.target.closest ? event.target.closest('.qs-speaker-name') : null;
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    qsBeginSpeakerRename(button);
+}, true);
+window.qsResetSpeakerNamesForNewJob = qsResetSpeakerNamesForNewJob;
+window.qsBindSpeakerNamesToCurrentJob = qsBindSpeakerNamesToCurrentJob;
 
 
 window.qsCloseMobileNav = function qsCloseMobileNav() {
@@ -26889,9 +27044,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (speakerToggle) {
         speakerToggle.addEventListener('change', () => {
             speakerToggle.dataset.qsUserToggled = '1';
-            if (window.currentSegments.length > 0) {
-                document.getElementById('transcript-window').innerHTML = renderParagraphs(window.currentSegments);
-            }
         });
     }
 
@@ -28038,9 +28190,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
 
             const startNum = Number(g.start);
             const rowClick = Number.isFinite(startNum) ? ` onclick="window.jumpTo(${startNum})"` : '';
-            const speakerLabel = (typeof formatSpeaker === 'function')
-                ? formatSpeaker(g.speaker)
-                : String(g.speaker || '').replace('SPEAKER_', 'דובר ');
+            const speakerLabel = qsSpeakerLabelHtml(g.speaker);
             return `
             <div class="paragraph-row" id="seg-row-${rowIndex}" style="display:block; margin-bottom: 2px; cursor: pointer; direction: ${layout.textDirection}; text-align: ${layout.textAlign};"${rowClick}>
                 <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
@@ -29432,7 +29582,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                             ${formatTime(newSeg.start)}
                         </span>
                         <span style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
-                            ${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
+                            ${qsSpeakerLabelHtml(seg.speaker || 'SPEAKER_00')}
                         </span>
                     </div>
                     <p data-idx="${idx + 1}" style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2;" onclick="window.jumpTo(${newSeg.start})"><br></p>
@@ -29477,7 +29627,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                         ${formatTime(splitTime)}
                     </span>
                     <span style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(seg.speaker)};">
-                        ${(seg.speaker || 'SPEAKER_00').replace('SPEAKER_', 'דובר ')}
+                        ${qsSpeakerLabelHtml(seg.speaker || 'SPEAKER_00')}
                     </span>
                 </div>
                 <p data-idx="${idx + 1}" style="margin: 0 !important; margin-top: -2px; cursor: pointer; line-height: 1.2;" onclick="window.jumpTo(${splitTime})"></p>
@@ -29508,7 +29658,6 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
         const isTimeVisible = isTimeToggleVisible();
 
         const rawSpeaker = group.speaker || "SPEAKER_00";
-        const speakerDisplay = rawSpeaker.replace('SPEAKER_', 'דובר ');
         const fullTextRaw = group.sentences.map(s => s.text).join(" ");
         const fullText = window.isDocumentMode ? fullTextRaw : wrapTextByMaxChars(fullTextRaw, 50);
         const translatedParts = group.sentences.map(s => s.translated_text).filter(Boolean);
@@ -29524,7 +29673,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
             <div style="font-size: 0.74em; color: #9ca3af; margin-bottom: 0; line-height: 1.05;">
                 <div style="display: ${isTimeVisible ? 'block' : 'none'};">${formatTime(group.start)}</div>
                 <div style="display: ${isSpeakerVisible ? 'block' : 'none'}; font-weight: 600; color: ${getSpeakerColor(rawSpeaker)};">
-                    ${speakerDisplay}
+                    ${qsSpeakerLabelHtml(rawSpeaker)}
                 </div>
             </div>
             <p style="margin: 0 !important; margin-top: -2px; line-height: 1.2; font-size: 1.1em;">
@@ -29705,6 +29854,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 }
 
             const currentFile = file; // Captured for use in the fetch
+            if (typeof qsResetSpeakerNamesForNewJob === 'function') qsResetSpeakerNamesForNewJob();
             try { window.__QS_ALLOW_MEDIA_AFTER_LOCAL_JSON = false; } catch (_) {}
             fileInput.value = ""; // Reset for next selection
 
@@ -29786,6 +29936,7 @@ function groupSegmentsBySpeaker(segments, enableGlue = true) {
                 localStorage.setItem('lastS3Key', s3Key);
                 localStorage.setItem('pendingS3Key', s3Key);
                 localStorage.setItem('lastJobId', jobId);
+                if (typeof qsBindSpeakerNamesToCurrentJob === 'function') qsBindSpeakerNamesToCurrentJob();
                 // New upload invalidates any prior jobs UUID (important for guest→re-login reopen).
                 try { localStorage.removeItem('lastJobDbId'); } catch (_) {}
                 if (typeof qsRememberMediaDurationSec === 'function') {
@@ -33698,7 +33849,7 @@ function renderWordCaptionEditor() {
         const capSpeaker = _majoritySpeakerInWordRange(words, cap.wordStartIndex, cap.wordEndIndex);
         const speakerMeta = (showSpeakerLabels && capSpeaker)
             ? `<span class="caption-speaker" style="display:block; font-weight:600; color:${getSpeakerColor(capSpeaker)};">${
-                (typeof formatSpeaker === 'function') ? formatSpeaker(capSpeaker) : capSpeaker.replace('SPEAKER_', 'דובר ')
+                qsSpeakerLabelHtml(capSpeaker)
             }</span>`
             : '';
         const bodyBlock = (timingMode && ci === timingSel)

@@ -5645,6 +5645,33 @@ html[dir="rtl"] .main-app-container.medical-mode #transcript-window .qs-medical-
     border-bottom: 1px dashed #ccc;
 }
 
+button.qs-speaker-name {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    font-weight: 600;
+    color: inherit;
+    cursor: pointer;
+    text-align: inherit;
+}
+button.qs-speaker-name:hover {
+    text-decoration: underline;
+}
+.qs-speaker-name-input {
+    box-sizing: border-box;
+    width: 9rem;
+    max-width: 46vw;
+    border: 1px solid #c7c9ff;
+    border-radius: 6px;
+    padding: 1px 6px;
+    font: inherit;
+    font-weight: 600;
+    color: #1e1b4b;
+    background: #fff;
+}
 .hide-time .ts-col, .hide-speaker .speaker-label {
     display: none !important;
 }

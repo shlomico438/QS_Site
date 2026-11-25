@@ -155,6 +155,7 @@ window.translations = {
         // Toolbar
         time: "חתימת זמן",
         speaker: "דובר",
+        speaker_rename_hint: "לחץ כדי לשנות את השם",
         download: "הורד",
         edit: "ערוך",
         save: "שמור",
@@ -842,6 +843,7 @@ window.translations = {
         cinematic_desc: "Serif • Caps",
         time: "Timestamp",
         speaker: "Speaker",
+        speaker_rename_hint: "Click to rename",
         download: "Download",
         edit: "Edit",
         save: "Save",
