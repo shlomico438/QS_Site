@@ -2496,6 +2496,28 @@ def _client_num_speakers(data=None, default=2, lo=1, hi=10):
     return count
 
 
+def _client_speaker_bounds(data=None):
+    """Exact 2/3/4, or a 5+ range of 5–10. A range must not also set num_speakers."""
+    data = data or {}
+
+    def _optional_int(keys):
+        for key in keys:
+            if key not in data or data.get(key) is None or str(data.get(key)).strip() == "":
+                continue
+            try:
+                return int(data.get(key))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    min_count = _optional_int(("min_speakers", "minSpeakers"))
+    max_count = _optional_int(("max_speakers", "maxSpeakers"))
+    if min_count and max_count and 1 <= min_count <= max_count <= 10 and max_count > min_count:
+        return {"exact": False, "min": min_count, "max": max_count}
+    exact = _client_num_speakers(data)
+    return {"exact": True, "min": exact, "max": exact}
+
+
 def _site_transcription_options_from_payload(data=None):
     """Optional transcript tuning from Site (request + Site env).
 
@@ -2530,7 +2552,12 @@ def _site_transcription_options_from_payload(data=None):
         "align_model_name": _pick("align_model_name", "TRANSCRIBE_ALIGN_MODEL_NAME", str, ""),
     }
     if not _request_json_is_medical(data):
-        out["num_speakers"] = _client_num_speakers(data)
+        bounds = _client_speaker_bounds(data)
+        if bounds["exact"]:
+            out["num_speakers"] = bounds["min"]
+        else:
+            out["min_speakers"] = bounds["min"]
+            out["max_speakers"] = bounds["max"]
     hint = _client_language_hint(data)
     if hint:
         out["language_hint"] = hint
@@ -15141,6 +15168,13 @@ def api_format_transcript_summary():
         t_cleanup = time.time()
         cleaned = ''
         last_err = None
+        single_call_limit = max(2500, min(int(os.environ.get('FORMAT_TRANSCRIPT_HTTP_CHUNK_CHARS', '4000') or 4000), 6000))
+        if mode == 'cleanup' and len(raw) > single_call_limit:
+            return jsonify({
+                "error": "cleanup_too_long",
+                "chars": len(raw),
+                "chunk": True,
+            }), 409
         for attempt in range(1, max_attempts + 1):
             try:
                 out = _format_transcript_cleanup_openai(
@@ -16750,6 +16784,48 @@ def _resolve_post_summary_storage_target(job_id, user_id, input_s3_key):
     return uid or 'anonymous', in_key
 
 
+def _cleanup_long_transcript(text, **kwargs):
+    """Proofread a long transcript in pieces so one call cannot time out or drop the ending."""
+    text = str(text or "").strip()
+    if not text:
+        return {"clean_transcript": ""}
+    try:
+        max_c = int(os.environ.get("FORMAT_TRANSCRIPT_HTTP_CHUNK_CHARS", "4000") or 4000)
+    except (TypeError, ValueError):
+        max_c = 4000
+    max_c = max(2500, min(max_c, 6000))
+    chunks = _split_text_for_format_chunks(text, max_c)
+    if len(chunks) <= 1:
+        return _format_transcript_cleanup_openai(text, **kwargs)
+    per_timeout = min(int(kwargs.get("timeout_sec") or 45), 45)
+    rest = {key: value for key, value in kwargs.items() if key not in ("timeout_sec", "read_retries")}
+    parts = []
+    for idx, chunk in enumerate(chunks, start=1):
+        try:
+            out = _format_transcript_cleanup_openai(
+                chunk,
+                timeout_sec=per_timeout,
+                read_retries=0,
+                **rest,
+            )
+            cleaned = str((out or {}).get("clean_transcript") or "").strip()
+            if cleaned and len(cleaned) >= max(40, int(len(chunk) * 0.45)):
+                parts.append(cleaned)
+            else:
+                logging.warning(
+                    "cleanup chunk too short %s/%s in=%s out=%s; keeping source",
+                    idx,
+                    len(chunks),
+                    len(chunk),
+                    len(cleaned),
+                )
+                parts.append(chunk)
+        except Exception as err:
+            logging.warning("cleanup chunk failed %s/%s: %s", idx, len(chunks), err)
+            parts.append(chunk)
+    return {"clean_transcript": "\n".join(parts).strip()}
+
+
 def _schedule_post_summary_formatting(
     job_id,
     user_id,
@@ -16803,7 +16879,7 @@ def _schedule_post_summary_formatting(
             last_err = None
             for attempt in range(1, max_attempts + 1):
                 try:
-                    clean_result = _format_transcript_cleanup_openai(
+                    clean_result = _cleanup_long_transcript(
                         plain_text,
                         # Cleanup may receive mixed Hebrew/English speech. Keep each
                         # passage in its source language; only the summary is Hebrew.

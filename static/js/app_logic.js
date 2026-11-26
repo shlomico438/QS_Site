@@ -18446,28 +18446,51 @@ async function qsWaitForServerCleanTranscript(options = {}) {
     return hasCleanTranscript();
 }
 
+/** A short reply must not replace a long transcript. The 147-minute job returned 10k chars and was saved as done. */
+function qsCleanupLooksComplete(source, clean) {
+    const src = String(source || '').trim().length;
+    const out = String(clean || '').trim().length;
+    if (!out) return false;
+    if (src < 8000) return out >= Math.max(20, src * 0.35);
+    return out >= src * 0.55;
+}
+
 /** Client cleanup with retries — used when server Phase-B never wrote clean_transcript. */
 async function qsClientCleanupWithRetries(fullText, targetLang, jobId, options = {}) {
-    // API mode=cleanup already retries internally — keep client attempts low.
     const maxAttempts = Math.max(1, Math.min(3, Number(options.attempts) || 2));
     const text = String(fullText || '').trim();
     if (!text) return false;
+    const chunked = text.length > 6000;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const { ok, fmt } = await runFormatTranscriptCleanupRequest(
-                text,
-                targetLang || 'preserve',
-                jobId,
-                { mode: 'cleanup' }
-            );
+            const { ok, fmt } = chunked
+                ? await runFormatTranscriptCleanupChunked(text, targetLang || 'preserve', jobId)
+                : await runFormatTranscriptCleanupRequest(
+                    text,
+                    targetLang || 'preserve',
+                    jobId,
+                    { mode: 'cleanup' }
+                );
             const clean = String((fmt && fmt.clean_transcript) || '').trim();
-            if (ok && clean) {
+            if (ok && qsCleanupLooksComplete(text, clean)) {
                 qsApplyCleanupResult(clean);
-                console.info('[GPT] client cleanup ok', { attempt, maxAttempts, chars: clean.length });
+                console.info('[GPT] client cleanup ok', {
+                    attempt,
+                    maxAttempts,
+                    chars: clean.length,
+                    sourceChars: text.length,
+                    chunked,
+                });
                 try { void qsPersistFormattedDocToS3(); } catch (_) {}
                 return true;
             }
-            console.warn('[GPT] client cleanup empty/fail', { attempt, maxAttempts });
+            console.warn('[GPT] client cleanup empty/fail', {
+                attempt,
+                maxAttempts,
+                chars: clean.length,
+                sourceChars: text.length,
+                chunked,
+            });
         } catch (e) {
             console.warn('[GPT] client cleanup error', { attempt, maxAttempts, err: e });
         }
@@ -18677,8 +18700,30 @@ const PROCESSING_PHASES_HE = [
 ];
 const QS_GPT_PHASE_INDEX = 4;
 const QS_PIPELINE_TRANSCRIBE_MS = 45000;
+const QS_PIPELINE_TRANSCRIBE_MS_PER_MIN = 20000;
+const QS_PIPELINE_TRANSCRIBE_MS_MAX = 25 * 60 * 1000;
 const QS_PIPELINE_VOCAL_MS = 90000;
 const QS_PIPELINE_SUMMARY_MS = 16000;
+
+/** Fake transcribe bar: 20s of movement per minute of media, never shorter than 45s. */
+function qsPipelineTranscribeDurationMs() {
+    let sec = 0;
+    try {
+        if (typeof qsClientMediaDurationSecForCredits === 'function') {
+            sec = Number(qsClientMediaDurationSecForCredits()) || 0;
+        }
+    } catch (_) {}
+    if (!(sec > 0)) {
+        try {
+            if (typeof qsUploadMediaDurationForApi === 'function') {
+                sec = Number(qsUploadMediaDurationForApi()) || 0;
+            }
+        } catch (_) {}
+    }
+    if (!(sec > 0)) return QS_PIPELINE_TRANSCRIBE_MS;
+    const scaled = Math.round((sec / 60) * QS_PIPELINE_TRANSCRIBE_MS_PER_MIN);
+    return Math.max(QS_PIPELINE_TRANSCRIBE_MS, Math.min(QS_PIPELINE_TRANSCRIBE_MS_MAX, scaled));
+}
 
 function qsConfigurePipelineForMusicMode(isMusic) {
     window.__QS_PIPELINE_MUSIC_MODE = !!isMusic;
@@ -18801,7 +18846,7 @@ function qsStartUnifiedProgressPhase(phase) {
     if (phase === 'vocal_separation') {
         window.__QS_UNIFIED_PROGRESS_TIMER = qsAnimateUnifiedProgress(QS_PIPELINE_VOCAL_MS, 95, 'vocal_separation');
     } else if (phase === 'transcribe') {
-        window.__QS_UNIFIED_PROGRESS_TIMER = qsAnimateUnifiedProgress(QS_PIPELINE_TRANSCRIBE_MS, 95, 'transcribe');
+        window.__QS_UNIFIED_PROGRESS_TIMER = qsAnimateUnifiedProgress(qsPipelineTranscribeDurationMs(), 95, 'transcribe');
     } else if (phase === 'summary') {
         window.__QS_UNIFIED_PROGRESS_TIMER = qsAnimateUnifiedProgress(QS_PIPELINE_SUMMARY_MS, 95, 'summary');
     }
@@ -18820,7 +18865,7 @@ function qsEnsureUnifiedProgressPhase(phase) {
             } catch (_) {}
             const duration = phase === 'vocal_separation'
                 ? QS_PIPELINE_VOCAL_MS
-                : (phase === 'summary' ? QS_PIPELINE_SUMMARY_MS : QS_PIPELINE_TRANSCRIBE_MS);
+                : (phase === 'summary' ? QS_PIPELINE_SUMMARY_MS : qsPipelineTranscribeDurationMs());
             const remainingFrac = Math.max(0.08, (95 - currentPct) / 95);
             const ms = Math.max(1000, Math.round(duration * remainingFrac));
             const start = Date.now();
@@ -30681,37 +30726,41 @@ function setUserAsrLang(mode) {
 }
 
 /** Fields for multipart-init / trigger_processing (regular mode). */
-const QS_SPEAKER_COUNT_KEY = 'qs_speaker_count';
-const QS_SPEAKER_COUNT_MIN = 1;
-const QS_SPEAKER_COUNT_MAX = 10;
-const QS_SPEAKER_COUNT_DEFAULT = 2;
+const QS_SPEAKER_COUNT_KEY = 'qs_speaker_count_v2';
+const QS_SPEAKER_COUNT_DEFAULT = '5plus';
+const QS_SPEAKER_COUNT_OPTIONS = ['2', '3', '4', '5plus'];
 
-function qsClampSpeakerCount(raw) {
-    const n = parseInt(raw, 10);
-    if (!Number.isFinite(n)) return QS_SPEAKER_COUNT_DEFAULT;
-    return Math.min(QS_SPEAKER_COUNT_MAX, Math.max(QS_SPEAKER_COUNT_MIN, n));
+function qsNormalizeSpeakerChoice(raw) {
+    const text = String(raw == null ? '' : raw).trim().toLowerCase();
+    if (text === '5plus' || text === '5+') return '5plus';
+    const n = parseInt(text, 10);
+    if (n === 3 || n === 4) return String(n);
+    if (Number.isFinite(n) && n >= 5) return '5plus';
+    return QS_SPEAKER_COUNT_DEFAULT;
 }
 
 function getUserSpeakerCount() {
     try {
         const stored = localStorage.getItem(QS_SPEAKER_COUNT_KEY);
         if (stored == null || String(stored).trim() === '') return QS_SPEAKER_COUNT_DEFAULT;
-        return qsClampSpeakerCount(stored);
+        return qsNormalizeSpeakerChoice(stored);
     } catch (_) {
         return QS_SPEAKER_COUNT_DEFAULT;
     }
 }
 
 function setUserSpeakerCount(raw) {
-    const count = qsClampSpeakerCount(raw);
-    try { localStorage.setItem(QS_SPEAKER_COUNT_KEY, String(count)); } catch (_) {}
-    return count;
+    const choice = qsNormalizeSpeakerChoice(raw);
+    try { localStorage.setItem(QS_SPEAKER_COUNT_KEY, choice); } catch (_) {}
+    return choice;
 }
 
 function qsSpeakerCountPayload() {
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return {};
     if (typeof qsReadDiarizationToggle === 'function' && !qsReadDiarizationToggle()) return {};
-    return { numSpeakers: getUserSpeakerCount() };
+    const choice = getUserSpeakerCount();
+    if (choice === '5plus') return { minSpeakers: 5, maxSpeakers: 10 };
+    return { numSpeakers: parseInt(choice, 10) };
 }
 
 function qsSyncStartSpeakerCountVisibility() {
@@ -30726,17 +30775,19 @@ function qsSyncStartSpeakerCountVisibility() {
 function qsPopulateSpeakerCountSelect(select) {
     if (!select) return;
     const current = getUserSpeakerCount();
-    if (select.options.length !== (QS_SPEAKER_COUNT_MAX - QS_SPEAKER_COUNT_MIN + 1)) {
+    const wanted = QS_SPEAKER_COUNT_OPTIONS.join(',');
+    if (select.dataset.qsChoices !== wanted) {
         select.innerHTML = '';
-        for (let n = QS_SPEAKER_COUNT_MIN; n <= QS_SPEAKER_COUNT_MAX; n++) {
+        QS_SPEAKER_COUNT_OPTIONS.forEach((value) => {
             const opt = document.createElement('option');
-            opt.value = String(n);
-            opt.textContent = String(n);
+            opt.value = value;
+            opt.textContent = value === '5plus' ? '5+' : value;
             select.appendChild(opt);
-        }
+        });
+        select.dataset.qsChoices = wanted;
     }
-    select.value = String(current);
-    if (select.value !== String(current)) select.value = String(QS_SPEAKER_COUNT_DEFAULT);
+    select.value = current;
+    if (select.value !== current) select.value = QS_SPEAKER_COUNT_DEFAULT;
 }
 
 function qsSyncSpeakerCountUi() {
