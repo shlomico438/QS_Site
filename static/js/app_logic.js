@@ -18726,12 +18726,12 @@ const PROCESSING_PHASES_HE = [
 ];
 const QS_GPT_PHASE_INDEX = 4;
 const QS_PIPELINE_TRANSCRIBE_MS = 45000;
-const QS_PIPELINE_TRANSCRIBE_MS_PER_MIN = 10000;
-const QS_PIPELINE_TRANSCRIBE_MS_MAX = 12.5 * 60 * 1000;
+const QS_PIPELINE_TRANSCRIBE_MS_PER_MIN = 5000;
+const QS_PIPELINE_TRANSCRIBE_MS_MAX = 6.25 * 60 * 1000;
 const QS_PIPELINE_VOCAL_MS = 90000;
 const QS_PIPELINE_SUMMARY_MS = 16000;
 
-/** Fake transcribe bar: 10s of movement per minute of media, never shorter than 45s. */
+/** Fake transcribe bar: 5s of movement per minute of media, never shorter than 45s. */
 function qsPipelineTranscribeDurationMs() {
     let sec = 0;
     try {
