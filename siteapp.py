@@ -15180,7 +15180,7 @@ def api_format_transcript_summary():
                 out = _format_transcript_cleanup_openai(
                     raw,
                     target_lang=target_lang,
-                    timeout_sec=int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '90') or 90),
+                    timeout_sec=40 if len(raw) <= 6000 else int(os.environ.get('GPT_FORMAT_CLEANUP_TIMEOUT_SEC', '90') or 90),
                     read_retries=read_retries,
                     is_music=is_music_format,
                     is_medical=is_medical,

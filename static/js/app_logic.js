@@ -15226,7 +15226,7 @@ window.qsMedicalClearTypoFixUndo = qsMedicalClearTypoFixUndo;
 
 async function runFormatTranscriptCleanChunkRequest(chunkText, targetLang, jobId) {
     const userId = await qsCurrentUserId();
-    const base = { ...qsCleanupRequestBase(targetLang, jobId), userId: userId || undefined, mode: 'clean_chunk' };
+    const base = { ...qsCleanupRequestBase(targetLang, jobId), userId: userId || undefined, mode: 'cleanup' };
     const res = await fetch('/api/format_transcript_summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -15247,34 +15247,55 @@ async function runFormatTranscriptCleanupChunked(fullText, targetLang, jobId) {
     }
     const parts = new Array(chunks.length);
     let completed = 0;
+    let corrected = 0;
     const parallel = Math.max(1, Math.min(QS_CLEANUP_CHUNK_PARALLEL, chunks.length));
+    window._qsCleanupInFlight = true;
     window._qsCleanupProgress = { current: 0, total: chunks.length };
     const t0 = performance.now();
     let nextIdx = 0;
+    const noteProgress = () => {
+        console.info('[GPT] cleanup chunk', { current: completed, total: chunks.length, corrected });
+        if (typeof showStatus === 'function') {
+            showStatus(`מתקן תמלול ${completed}/${chunks.length}`, false, { duration: 8000 });
+        }
+    };
     const processOne = async () => {
         while (nextIdx < chunks.length) {
             const i = nextIdx++;
-            const { ok, res, fmt } = await runFormatTranscriptCleanChunkRequest(chunks[i], targetLang, jobId);
-            if (!ok || !fmt || !String(fmt.clean_transcript || '').trim()) {
-                const errMsg = (fmt && fmt.error) ? String(fmt.error) : `HTTP ${res && res.status}`;
-                throw new Error(`cleanup chunk ${i + 1}/${chunks.length} failed: ${errMsg}`);
+            const source = chunks[i];
+            try {
+                const { ok, fmt } = await runFormatTranscriptCleanChunkRequest(source, targetLang, jobId);
+                const clean = String((fmt && fmt.clean_transcript) || '').trim();
+                if (ok && clean && clean.length >= Math.max(20, source.length * 0.45)) {
+                    parts[i] = clean;
+                    corrected++;
+                } else {
+                    parts[i] = source;
+                    console.warn('[GPT] cleanup chunk kept source', { chunk: i + 1, total: chunks.length });
+                }
+            } catch (err) {
+                parts[i] = source;
+                console.warn('[GPT] cleanup chunk error', { chunk: i + 1, total: chunks.length, err });
             }
-            parts[i] = String(fmt.clean_transcript || '').trim();
             completed++;
             window._qsCleanupProgress = { current: completed, total: chunks.length };
-            if (typeof window._qsRerenderTranscriptView === 'function') window._qsRerenderTranscriptView();
+            noteProgress();
         }
     };
     await Promise.all(Array.from({ length: parallel }, () => processOne()));
-    const clean = parts.filter(Boolean).join('\n\n').trim();
+    window._qsCleanupInFlight = false;
+    const clean = parts.filter(Boolean).join('\n').trim();
     const elapsedMs = Math.round(performance.now() - t0);
+    const enough = corrected >= Math.max(1, Math.ceil(chunks.length * 0.5));
     qsTrackEvent('cleanup_generation_time', {
         duration_ms: elapsedMs,
-        ok: !!clean,
+        ok: enough,
         chunked: true,
         chunk_count: chunks.length,
+        corrected_chunks: corrected,
     });
-    if (!clean) return { ok: false, res: null, fmt: null };
+    console.info('[GPT] cleanup chunks finished', { corrected, total: chunks.length, chars: clean.length, enough });
+    if (!clean || !enough) return { ok: false, res: null, fmt: null };
     return { ok: true, res: { status: 200 }, fmt: normalizeFormattedFields({ clean_transcript: clean }) };
 }
 
@@ -18509,21 +18530,26 @@ async function qsEnsureCleanTranscriptAfterSummary(options = {}) {
     if (typeof isMedicalModeEnabled === 'function' && isMedicalModeEnabled()) return true;
     if (window.__qsGptDisabled === true) return false;
     if (hasCleanTranscript()) return true;
-    // Do not clear a failure already signaled by the socket for this job.
-    if (!window._qsServerCleanupFailed) {
-        console.info('[GPT] waiting for server post-summary cleanup');
-    }
-    const got = await qsWaitForServerCleanTranscript(options);
-    if (got || hasCleanTranscript()) return true;
     const fullText = typeof buildTranscriptTextForGptFormat === 'function'
         ? buildTranscriptTextForGptFormat()
         : '';
+    const longTranscript = String(fullText || '').trim().length > 6000;
+    // A long file cannot finish server cleanup inside the 20s wait. Start the chunked pass now.
+    if (!longTranscript) {
+        if (!window._qsServerCleanupFailed) {
+            console.info('[GPT] waiting for server post-summary cleanup');
+        }
+        const got = await qsWaitForServerCleanTranscript(options);
+        if (got || hasCleanTranscript()) return true;
+    }
     if (!String(fullText || '').trim()) return false;
     const jobId = localStorage.getItem('lastJobId')
         || localStorage.getItem('pendingJobId')
         || (options && options.jobId)
         || undefined;
-    console.warn('[GPT] server cleanup missing; client cleanup fallback');
+    console.info(longTranscript
+        ? '[GPT] long transcript; starting chunked cleanup'
+        : '[GPT] server cleanup missing; client cleanup fallback');
     return qsClientCleanupWithRetries(fullText, 'preserve', jobId, {
         attempts: Number(options.clientAttempts) || 2,
     });
@@ -18700,12 +18726,12 @@ const PROCESSING_PHASES_HE = [
 ];
 const QS_GPT_PHASE_INDEX = 4;
 const QS_PIPELINE_TRANSCRIBE_MS = 45000;
-const QS_PIPELINE_TRANSCRIBE_MS_PER_MIN = 20000;
-const QS_PIPELINE_TRANSCRIBE_MS_MAX = 25 * 60 * 1000;
+const QS_PIPELINE_TRANSCRIBE_MS_PER_MIN = 10000;
+const QS_PIPELINE_TRANSCRIBE_MS_MAX = 12.5 * 60 * 1000;
 const QS_PIPELINE_VOCAL_MS = 90000;
 const QS_PIPELINE_SUMMARY_MS = 16000;
 
-/** Fake transcribe bar: 20s of movement per minute of media, never shorter than 45s. */
+/** Fake transcribe bar: 10s of movement per minute of media, never shorter than 45s. */
 function qsPipelineTranscribeDurationMs() {
     let sec = 0;
     try {
